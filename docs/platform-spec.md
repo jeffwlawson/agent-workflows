@@ -94,10 +94,12 @@ workflows, which the build reads.
 > **Actions orchestrator:** each reusable's runner step is
 > `npm exec --prefix "$RUNNER_TEMP" --yes --package=@jeffwlawson/agent-workflows@<version> -- agent-workflows <runner>`,
 > with the inputs in that step's `env:` and its job's, and each command step the same with the
-> command's name. The red check's job installs the package first, with
-> `npm install --prefix "$RUNNER_TEMP"`, and runs its two commands from `RUNNER_TEMP`, where that
-> line finds the install without asking the registry (§8); fix's agent job and update-branch's
-> gate job do the same for theirs.
+> command's name. The red check's job, fix's agent job and update-branch's gate job install the
+> package first, with `npm install --prefix "$RUNNER_TEMP"`, and run their commands from
+> `RUNNER_TEMP`, where that line finds the install without asking the registry (§8, §9). Fix's
+> runner works in the checkout, where `npm exec` finds no install under its `--prefix`, so it runs
+> that install's binary by its path, `"$RUNNER_TEMP/node_modules/.bin/agent-workflows" fix`, and is
+> handed no registry token.
 
 ### 2.2 Inputs
 
@@ -497,7 +499,8 @@ pin is behind. For any other orchestrator, **`doctor` cannot check this.** Its p
 code, not in the repository.
 
 > **Actions orchestrator:** the caller's `uses:` ref names a release, and that release's reusable
-> names the same version in its `npm exec`, so one pin selects the YAML and the runner together.
+> names the same version in its `npm exec`, or, in fix's agent job, in the `npm install` whose
+> binary its runner runs, so one pin selects the YAML and the runner together.
 
 > **Service orchestrator:** one install is one release for the service and every subcommand it
 > runs. The worker starts each runner and command as a child process of its own installed package,

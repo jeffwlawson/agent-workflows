@@ -2491,3 +2491,24 @@ registry-backed install at about 1.5 to 2.2 s. The same timing against GitHub Pa
 the release that ships this, and is worth taking on its first run. The habit:
 the check that read the registry, not the tarball, is the one that found it. A guard that relies on
 another system's behaviour wants a check of that system, run on the first release.
+
+## 2026-10-18: the runner npm could not find from the checkout
+
+#473 installed the package early in fix's agent job, into `RUNNER_TEMP`, so `fix:prepare` and
+`fix:bundle` could run it without the registry. Both run from `RUNNER_TEMP` and worked. The runner
+step beside them was left as it was, `npm exec --prefix "$RUNNER_TEMP"`, run from the checkout,
+where it does its git work. Before #473 that prefix was empty, so npm installed into its own cache
+and put that on `PATH`. Now the package was already under the prefix, so npm installed nothing and
+added no install directory to `PATH`: only `node_modules/.bin` of the directory it runs in and each
+one above it (`libnpmexec` and `@npmcli/run-script`, npm 11.19). The first fix round on v0.8.6,
+on #486, died `agent-workflows: not found` with exit 127, before anything could write a reason, in
+every repository on that release.
+
+The first fix proposed put `$RUNNER_TEMP/node_modules/.bin` on `PATH`. That `PATH` comes after the
+checkout's own `node_modules/.bin`, which the PR's code had just had the chance to write, in a step
+holding the agent's token. The runner now runs the install's binary by its path instead, and holds
+no registry token. Nothing caught it because no test reads what `npm exec` does with the directory
+it runs in, and the tests that held each step's shape held each step alone. The new check in
+`tests/workflows.test.ts` holds the job: the package runs in one of three forms and no other, and
+in a job that installs it early, every step runs from that install. The habit: a step moved into a
+job changes what the steps beside it can find, and the job is what the test has to read.

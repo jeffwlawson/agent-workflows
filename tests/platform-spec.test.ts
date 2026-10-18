@@ -395,14 +395,15 @@ describe("each reusable sets its subcommands' required inputs", () => {
 
   /**
    * Each step that invokes `subcommand`, in the reusable named after its
-   * workflow, with the env its job and itself give it.
+   * workflow, with the env its job and itself give it: by `npm exec`, or by
+   * the installed binary's quoted path, as fix's runner is.
    */
   const subcommandSteps = (subcommand: Runner | Command): readonly Readonly<Record<string, unknown>>[] => {
     const workflowName = subcommand in RUNNERS ? subcommand : workflowOf(subcommand as Command);
     const workflow = parse(fs.readFileSync(path.join(".github", "workflows", `${workflowName}.yml`), "utf8")) as {
       readonly jobs: Readonly<Record<string, Job>>;
     };
-    const invokes = new RegExp(`agent-workflows ${subcommand}\\s*$`, "m");
+    const invokes = new RegExp(`agent-workflows"? ${subcommand}\\s*$`, "m");
     return Object.values(workflow.jobs).flatMap((job) =>
       (job.steps ?? []).filter((step) => invokes.test(step.run ?? "")).map((step) => ({ ...job.env, ...step.env })),
     );

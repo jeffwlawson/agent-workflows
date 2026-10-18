@@ -82,6 +82,30 @@ const CALLER_DIR = "examples/callers";
 const PIN = `v${(JSON.parse(fs.readFileSync("package.json", "utf8")) as { version: string }).version}`;
 
 /**
+ * The three forms a reusable's step runs the package in, and the only three
+ * (see *a job that installs the package early runs it from that install*):
+ *
+ * - `npm exec`, which installs the package at the version it names, into
+ *   npm's cache, and runs a subcommand of it. Its one capture group past the
+ *   version is the subcommand's workflow, the part before any `:<step>`.
+ * - The early install (#422), into `RUNNER_TEMP` while nothing of the PR's has
+ *   run, at the version it names.
+ * - That install's binary, run by its path, for the runner of a job holding
+ *   one: the runner works in the checkout, where `npm exec` finds no install
+ *   under its `--prefix` (#486's fix round).
+ */
+const PACKAGE_EXEC =
+  /^npm exec --prefix "\$RUNNER_TEMP" --yes --package=@jeffwlawson\/agent-workflows@(\d+\.\d+\.\d+) -- agent-workflows ([a-z-]+)(?::[a-z-]+)?$/;
+const EARLY_INSTALL = /^npm install --prefix "\$RUNNER_TEMP" --no-save @jeffwlawson\/agent-workflows@(\d+\.\d+\.\d+)$/;
+const INSTALLED_BIN = /^"\$RUNNER_TEMP\/node_modules\/\.bin\/agent-workflows" ([a-z-]+)(?::[a-z-]+)?$/;
+
+/** The subcommand a step runs, `<workflow>` or `<workflow>:<step>`, in either form that runs one. */
+const subcommandRun = (step: { readonly run?: string }): string | undefined => {
+  const run = (step.run ?? "").trim();
+  return / -- agent-workflows (\S+)$/.exec(run)?.[1] ?? (INSTALLED_BIN.test(run) ? run.split(" ")[1] : undefined);
+};
+
+/**
  * The three PR workflows that act on a PR's branch. Every one of them has to
  * work against the PR's *real* base, not a hardcoded `main`
  * (jeffwlawson/winget-manifest-lint#71, jeffwlawson/winget-manifest-lint#100).
@@ -5734,7 +5758,13 @@ describe("every workflow invokes the runners at a pinned version", () => {
   const invocationsIn = (file: string): readonly string[] =>
     stepsOf(file)
       .map((step) => (step.run ?? "").trim())
-      .filter((run) => run.startsWith("npm exec") || run.startsWith("npx "));
+      .filter((run) => run.startsWith("npm exec") || run.startsWith("npx ") || INSTALLED_BIN.test(run));
+
+  /** The early installs a file makes, whose version a binary run by path is. */
+  const installsIn = (file: string): readonly string[] =>
+    stepsOf(file)
+      .map((step) => (step.run ?? "").trim())
+      .filter((run) => run.startsWith("npm install") && run.includes(manifest.name));
 
   /**
    * The runner's, where the job runs commands beside it, as review's runs
@@ -5742,7 +5772,7 @@ describe("every workflow invokes the runners at a pinned version", () => {
    */
   const invocation = (file: string): string => {
     const invocations = invocationsIn(file);
-    const runners = invocations.filter((run) => !/ -- agent-workflows [a-z-]+:[a-z-]+$/.test(run));
+    const runners = invocations.filter((run) => !(subcommandRun({ run }) ?? "").includes(":"));
     const chosen = runners.length > 0 ? runners : invocations;
 
     expect(chosen).toHaveLength(1);
@@ -5767,10 +5797,14 @@ describe("every workflow invokes the runners at a pinned version", () => {
   });
 
   it.each(runnerWorkflows)("%s: runs its own subcommand, at an exact version", (file) => {
-    const match = invocation(file).match(PIN);
+    const run = invocation(file);
+    const match = run.match(PIN);
+    const installed = run.match(INSTALLED_BIN);
 
-    expect(match).not.toBeNull();
-    expect(match?.[2]).toBe(subcommandOf(file));
+    expect(match ?? installed).not.toBeNull();
+    expect(match?.[2] ?? installed?.[1]).toBe(subcommandOf(file));
+    // A binary run by path is at the version its job's install names.
+    if (installed !== null) expect(installsIn(file)).not.toHaveLength(0);
   });
 
   /**
@@ -5780,8 +5814,12 @@ describe("every workflow invokes the runners at a pinned version", () => {
    * down at `npx`. Both read as "done" to the person who did half of it.
    */
   it.each(runnerWorkflows)("%s: pins the version this repo publishes", (file) => {
-    expect(invocation(file).match(PIN)?.[1]).toBe(manifest.version);
-    for (const run of invocationsIn(file)) expect(run.match(PIN)?.[1], run).toBe(manifest.version);
+    const runner = invocation(file);
+    if (!INSTALLED_BIN.test(runner)) expect(runner.match(PIN)?.[1]).toBe(manifest.version);
+    for (const run of invocationsIn(file).filter((line) => !INSTALLED_BIN.test(line))) {
+      expect(run.match(PIN)?.[1], run).toBe(manifest.version);
+    }
+    for (const run of installsIn(file)) expect(run.match(EARLY_INSTALL)?.[1], run).toBe(manifest.version);
   });
 
   /**
@@ -6600,13 +6638,15 @@ describe("the runner package is installed from GitHub Packages", () => {
    * subcommand it names, where the workflow has one: a command its job runs
    * after it from an early install, as fix's `fix:bundle` does (#472), is not
    * the runner. `follow-ups` has none, and its one step runs its command.
+   * And the installed binary run by its path, as fix's runner is, from the
+   * install its job holds.
    */
   const runnerStepIndex = (file: string): number => {
     const workflow = path.basename(file, ".yml");
     return stepsOf(file).findLastIndex((s) => {
       const run = (s.run ?? "").trim();
-      const runs = run.startsWith("npm exec") || run.startsWith("npx ");
-      return runs && (!(workflow in RUNNERS) || run.endsWith(` agent-workflows ${workflow}`));
+      const runs = run.startsWith("npm exec") || run.startsWith("npx ") || INSTALLED_BIN.test(run);
+      return runs && (!(workflow in RUNNERS) || subcommandRun(s) === workflow);
     });
   };
 
@@ -6833,11 +6873,16 @@ describe("the runner package is installed from GitHub Packages", () => {
    * (`XXXXX-XXXXX-XXXXX-XXXXX`), so the symptom moved: it used to be a token
    * that was never a token, and is now an unresolved `${NODE_AUTH_TOKEN}` and a
    * plain 401. Neither reads as "nobody set the env".
+   *
+   * Except a runner that runs its job's early install by path, as fix's does:
+   * it asks the registry for nothing, and the install is its job's one step
+   * holding the token.
    */
-  it.each(runnerWorkflows)("%s: hands the runner step a token", (file) => {
+  it.each(runnerWorkflows)("%s: hands the runner step a token where it installs", (file) => {
     const step = stepsOf(file)[runnerStepIndex(file)];
 
-    expect(step?.env?.["NODE_AUTH_TOKEN"]).toBe("${{ secrets.GITHUB_TOKEN }}");
+    if (INSTALLED_BIN.test((step?.run ?? "").trim())) expect(step?.env ?? {}).not.toHaveProperty("NODE_AUTH_TOKEN");
+    else expect(step?.env?.["NODE_AUTH_TOKEN"]).toBe("${{ secrets.GITHUB_TOKEN }}");
   });
 
   /**
@@ -8350,6 +8395,128 @@ describe("the PRD chain's progress", () => {
 });
 
 /**
+ * **A job that installs the package early runs it from that install** (#422,
+ * #473), and nothing in the loop runs the package in a form this cannot
+ * classify. #473 put fix's runner, still `npm exec`, in a job that had just
+ * installed the package under `RUNNER_TEMP`: with the package already under
+ * its `--prefix`, `npm exec` installs nothing and puts no install directory on
+ * `PATH`, only `node_modules/.bin` of the directory it runs in and each one
+ * above it, so from the checkout it found no command, exit 127 and no reason
+ * file, on every repository on that release. No test ran the YAML.
+ *
+ * So the rule, over every job of every reusable and every composite action:
+ * the package is run in one of the three forms `PACKAGE_EXEC`,
+ * `EARLY_INSTALL` and `INSTALLED_BIN` name and in no other, so a fourth is a
+ * failure here rather than a job this skips; in a job holding the install, a
+ * command runs by `npm exec` from `RUNNER_TEMP`, where npm finds it, and the
+ * runner runs the install's binary by path from the checkout, where it works;
+ * the install is that job's one step handed the registry token; and outside
+ * such a job nothing runs a binary no step installed. A runner never moves
+ * out of the checkout, which is where it does its git work.
+ */
+describe("a job that installs the package early runs it from that install", () => {
+  const actionFiles = fs
+    .readdirSync(path.join(".github", "actions"))
+    .map((d) => path.join(".github", "actions", d, "action.yml"))
+    .filter((f) => fs.existsSync(f));
+  /** Every job of every reusable, and each composite action's steps, by a label naming it. */
+  const jobs: readonly (readonly [string, Job])[] = [
+    ...runnerWorkflows.flatMap((file) =>
+      Object.entries(workflowOf(file).jobs).map(([id, job]) => [`${path.basename(file)} ${id}`, job] as const),
+    ),
+    ...actionFiles.map((file) => {
+      const action = parse(fs.readFileSync(file, "utf8")) as { readonly runs?: { readonly steps?: readonly Step[] } };
+      return [file, { steps: action.runs?.steps ?? [] }] as const;
+    }),
+  ];
+  const FORMS = [PACKAGE_EXEC, EARLY_INSTALL, INSTALLED_BIN];
+  const runOf = (step: Step): string => (step.run ?? "").trim();
+  /**
+   * A step whose script names the package or runs its binary, outside a shell
+   * comment: the npm spec, the binary by path, or the binary as a word. Not
+   * the repository's slug, `jeffwlawson/agent-workflows`, which a message may
+   * cite.
+   */
+  const PACKAGE_NAMED = /@jeffwlawson\/agent-workflows\b|\.bin\/agent-workflows\b|(?<![\w/.-])agent-workflows\b(?![\w/-])/;
+  const namesPackage = (step: Step): boolean =>
+    runOf(step)
+      .split("\n")
+      .some((line) => !/^\s*#/.test(line) && PACKAGE_NAMED.test(line));
+  const installs = (step: Step): boolean => EARLY_INSTALL.test(runOf(step));
+  const isRunner = (step: Step): boolean => (subcommandRun(step) ?? "") in RUNNERS;
+  const withInstall = jobs.filter(([, job]) => (job.steps ?? []).some(installs));
+
+  it("reads every reusable's jobs and at least one composite action", () => {
+    expect(actionFiles).not.toHaveLength(0);
+    expect(new Set(jobs.map(([label]) => label.split(" ")[0]))).toEqual(
+      new Set([...runnerWorkflows.map((file) => path.basename(file)), ...actionFiles]),
+    );
+  });
+
+  it("runs the package in one of three forms, alone on its step, and in no other", () => {
+    const offenders = jobs.flatMap(([label, job]) =>
+      (job.steps ?? [])
+        .filter((step) => namesPackage(step) && !FORMS.some((form) => form.test(runOf(step))))
+        .map((step) => `${label}: ${step.name ?? "(unnamed)"}: ${runOf(step)}`),
+    );
+
+    expect(offenders).toEqual([]);
+  });
+
+  /**
+   * By name, so the checks below are known to read each: a job that starts
+   * installing early is added here in the same change, which is the point.
+   */
+  it("finds the jobs that install the package early", () => {
+    expect(withInstall.map(([label]) => label).sort()).toEqual(["fix.yml fix", "review.yml red-check"]);
+  });
+
+  it.each(withInstall)("%s: installs once, from RUNNER_TEMP, before the PR's code, the one step handed the token", (_, job) => {
+    const steps = job.steps ?? [];
+    const install = steps.findIndex(installs);
+    const dependencies = steps.findIndex((s) => s.name === "Install dependencies");
+
+    expect(steps.filter(installs)).toHaveLength(1);
+    expect(steps[install]?.["working-directory"]).toBe("${{ runner.temp }}");
+    expect(steps[install]?.env?.["NODE_AUTH_TOKEN"]).toBe("${{ secrets.GITHUB_TOKEN }}");
+    expect(dependencies).toBeGreaterThan(install);
+    expect(job.env ?? {}).not.toHaveProperty("NODE_AUTH_TOKEN");
+    for (const step of steps.filter((_, i) => i !== install)) {
+      expect(step.env ?? {}, step.name).not.toHaveProperty("NODE_AUTH_TOKEN");
+    }
+  });
+
+  it.each(withInstall)("%s: runs every step of the package from that install", (_, job) => {
+    const steps = job.steps ?? [];
+    const install = steps.findIndex(installs);
+    const running = steps.filter((s) => namesPackage(s) && !installs(s));
+
+    for (const step of running) {
+      expect(steps.indexOf(step), `${step.name} runs before the install`).toBeGreaterThan(install);
+      if (isRunner(step)) {
+        expect(runOf(step), step.name).toMatch(INSTALLED_BIN);
+      } else {
+        expect(runOf(step), step.name).toMatch(PACKAGE_EXEC);
+        expect(step["working-directory"], step.name).toBe("${{ runner.temp }}");
+      }
+    }
+    expect(running.length).toBeGreaterThan(0);
+  });
+
+  it("runs an installed binary only where its job installs it, and every runner from the checkout", () => {
+    const loose = jobs
+      .filter(([, job]) => !(job.steps ?? []).some(installs))
+      .flatMap(([label, job]) => (job.steps ?? []).filter((s) => INSTALLED_BIN.test(runOf(s))).map((s) => `${label}: ${s.name}`));
+    const moved = jobs.flatMap(([label, job]) =>
+      (job.steps ?? []).filter((s) => isRunner(s) && s["working-directory"] !== undefined).map((s) => `${label}: ${s.name}`),
+    );
+
+    expect(loose).toEqual([]);
+    expect(moved).toEqual([]);
+  });
+});
+
+/**
  * The red check (#231, PRD #212): a job that runs the tests a pull request adds
  * or changes against the merge-base, and reports each as red, broken or passed.
  * What its steps do to a tree and to a JUnit report is run in
@@ -8718,7 +8885,7 @@ describe("a split run keeps every write off the agent's runner", () => {
     // The runner, by its name: a command such as `fix:publish` runs in the
     // publish job, and starts no agent.
     const runs = (id: string): boolean =>
-      (jobNamed(file, id).steps ?? []).some((s) => (s.run ?? "").trim().endsWith(`-- agent-workflows ${agent}`));
+      (jobNamed(file, id).steps ?? []).some((s) => subcommandRun(s) === agent);
 
     for (const id of SPLIT_RUNS[file] ?? []) expect(runs(id), id).toBe(id === agent);
   });
@@ -9406,7 +9573,7 @@ describe("no job that runs an agent names a secret that writes", () => {
     const file = path.join(WORKFLOW_DIR, f);
     return Object.entries(workflowOf(file).jobs)
       .filter(([, job]) =>
-        (job.steps ?? []).some((s) => AGENT_COMMANDS.some((c) => new RegExp(`-- agent-workflows ${c}\\s*$`).test(s.run ?? ""))),
+        (job.steps ?? []).some((s) => AGENT_COMMANDS.some((c) => subcommandRun(s) === c)),
       )
       .map(([id, job]) => [`${f} ${id}`, job] as const);
   });
@@ -9904,7 +10071,7 @@ describe("fix's agent job bundles its commits with fix:bundle", () => {
   });
 
   it("runs always(), after the runner and the transcript, and before the hand-over", () => {
-    const runner = steps().findIndex((s) => (s.run ?? "").trim().endsWith(" agent-workflows fix"));
+    const runner = steps().findIndex((s) => subcommandRun(s) === "fix");
 
     expect(bundle()?.if).toBe("always()");
     expect(runner).toBeGreaterThan(-1);
@@ -9948,14 +10115,15 @@ describe("fix's agent job bundles its commits with fix:bundle", () => {
 
   /**
    * **The install, once and early** (#422's shape): after the checkout and
-   * before the adopter's *Install dependencies*, the one step there handed
-   * the registry token for it, so nothing after the agent and the PR's own
-   * code asks the registry with one.
+   * before the adopter's *Install dependencies*, the one step of the job
+   * handed the registry token, so nothing after the agent and the PR's own
+   * code asks the registry with one, the runner included: it runs that
+   * install's binary by its path.
    */
-  it("installs the package early, and hands no step after the runner the registry token", () => {
+  it("installs the package early, and hands no other step the registry token", () => {
     const all = steps();
     const install = index("Install the package");
-    const runner = all.findIndex((s) => (s.run ?? "").trim().endsWith(" agent-workflows fix"));
+    const runner = all.findIndex((s) => subcommandRun(s) === "fix");
 
     expect(all[install]?.run).toBe(`npm install --prefix "$RUNNER_TEMP" --no-save @jeffwlawson/agent-workflows@${VERSION}`);
     expect(all[install]?.["working-directory"]).toBe("${{ runner.temp }}");
@@ -9971,7 +10139,9 @@ describe("fix's agent job bundles its commits with fix:bundle", () => {
     });
     expect(install).toBeGreaterThan(all.findIndex((s) => (s.uses ?? "").startsWith("actions/checkout@")));
     expect(install).toBeLessThan(index("Install dependencies"));
-    for (const step of all.slice(runner + 1)) expect(step.env ?? {}, step.name).not.toHaveProperty("NODE_AUTH_TOKEN");
+    expect(all[runner]?.run).toBe(`"$RUNNER_TEMP/node_modules/.bin/agent-workflows" fix`);
+    expect(install).toBeLessThan(runner);
+    for (const step of all.filter((_, i) => i !== install)) expect(step.env ?? {}, step.name).not.toHaveProperty("NODE_AUTH_TOKEN");
     for (const step of all.slice(runner + 1).filter(runsPackage)) expect((step.run ?? "").startsWith("npm exec"), step.name).toBe(true);
   });
 

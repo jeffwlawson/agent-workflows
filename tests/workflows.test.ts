@@ -5515,21 +5515,25 @@ describe("the one-PR-per-PRD rule is amended where it is written, not only where
    * row that requested review once, on the last slice, and gains the rows the
    * chain now runs by.
    */
-  it("rewrites parity §2a: the slice PR is the unit of review, the PRD PR the unit of merge", () => {
+  it("rewrites parity §2a: the slice round is the unit of review, the PRD PR the unit of merge", () => {
     const section = topLevel(parity, "## 2a.");
     const trade = subsection(section, /^### The trade/);
 
     expect(section).not.toMatch(/^### The trade: review is once per PR, not once per slice$/m);
     expect(section).not.toContain("Adds `agent:review` to the PR only when no sub-issues remain");
     expect(section).not.toMatch(/asks for `agent:review`\s+on it by hand/);
-    expect(trade).toMatch(/^### The trade: the slice PR is the unit of review, the PRD PR the unit of merge$/m);
+    expect(trade).toMatch(/^### The trade: the slice round is the unit of review, the PRD PR the unit of merge$/m);
     expect(trade).toMatch(/no per-slice review\s+workflow/);
-    expect(trade).toMatch(/integration review/);
+    expect(trade).toMatch(/final review/);
     // Per round since #331: every slice of a PRD is a round of one PRD PR,
     // so a per-PR budget was one every slice shared.
     expect(trade).toMatch(/automatic-fix bound is per round/);
     expect(trade).toMatch(/every slice round has its own, and so does the final review/);
-    expect(section).toContain("Adds `agent:review` to **every** slice PR");
+    expect(section).toContain("Adds `agent:review` to the PRD PR **after every slice**");
+    // PRD #222 retired the slice PR: §2a describes the one PRD PR, not the
+    // slice PRs and their merges.
+    expect(section).not.toContain("**Merges the waiting slice PR first**");
+    expect(section).not.toContain("A **draft slice PR** per sub-issue");
     expect(section).toMatch(/resumes the handover/);
   });
 
@@ -5548,7 +5552,7 @@ describe("the one-PR-per-PRD rule is amended where it is written, not only where
     expect(amended).toContain('"once per PR, never once per slice"');
     expect(amended).toMatch(/no per-slice\s+review workflow/);
     expect(amended).toMatch(/bounded per pull\s+request/);
-    expect(amended).toContain("](#the-trade-the-slice-pr-is-the-unit-of-review-the-prd-pr-the-unit-of-merge)");
+    expect(amended).toContain("](#the-trade-the-slice-round-is-the-unit-of-review-the-prd-pr-the-unit-of-merge)");
   });
 
   /**

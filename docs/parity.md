@@ -115,56 +115,62 @@ Lettered rather than numbered so the cross-references in the rest of this file k
 jeffwlawson/winget-manifest-lint#92.
 
 Labelling a **parent** issue `agent:implement` implements its sub-issues one at a time — one per
-run — each on a **slice branch** of its own, opened as a **slice PR** into a single **PRD branch**.
-Every slice PR gets the ordinary review round, and the chain waits for that round to end before it
-builds the next slice. The slice PRs land on the PRD branch one merge each; the one **PRD PR**, from
-the PRD branch into the base branch, is what a human merges. Rewritten for PRD #171: until then
-every slice accumulated onto one branch and one PR, and review was requested once, at the end — the
-trade below records why that changed.
+run — each as commits straight onto a single **PRD branch**, reviewed on the one **PRD PR** from
+the PRD branch into the base branch, which is what a human merges. Every slice gets a **slice
+round** on the PRD PR, and the chain builds the next slice only once that round ends on an
+approval. No slice has a branch or a pull request of its own (PRD #222). Rewritten twice: until
+PRD #171 every slice accumulated onto one branch and one PR, and review was requested once, at the
+end; PRD #171 gave each slice its own slice PR into the PRD branch; and PRD #222 kept the review per
+slice and dropped the slice PR — the trade below records why.
 
 | Feature | CVM | Ours | Note |
 |---|:--:|:--:|---|
 | Triggered by `agent:implement` on a parent issue | ✅ | ✅ | |
 | Refuses a **nested** PRD (a PRD that is itself a sub-issue) | ✅ | ✅ | two owners of one ordering, neither able to see the other's chain |
-| Refuses a **finished** PRD | ✅ | ✅ | and *without* `agent:blocked` — a finished PRD is a success state, and the label would be the stale one §10 warns about. CVM's test is "every sub-issue closed"; ours adds "no slice PR open, and the PRD PR handed over or absent", because a PRD whose last slice PR is still open, or whose PRD PR is still a draft, is waiting on the finishing run rather than finished |
+| Refuses a **finished** PRD | ✅ | ✅ | and *without* `agent:blocked` — a finished PRD is a success state, and the label would be the stale one §10 warns about. CVM's test is "every sub-issue closed"; ours never reads which sub-issues are closed, since they stay open until the PRD PR merges. Finished is every sub-issue built and the PRD PR handed over: with more than one slice, the final review's request marked in its progress table; with one, marked ready. A PRD whose last slice is built and approved but not handed over is waiting on the finishing run rather than finished |
 | Refuses a `wayfinder:*` planning artifact | ❌ | ➕ | the same refusal `agent-implement` carries, for the map that has sub-issues and so reaches this workflow instead |
 | Refuses a parent with open `blocked_by` edges | ❌ | ➕ | #14, and the one place this workflow reads an edge — see the ordering note below. Being a coordinator exempts nothing, and the cost of running anyway is larger than the flat case's one wasted run: a single label lands every slice on one PRD branch, built on work that does not exist yet. **Last** of the refusals, after the finished one: a finished PRD can still carry an open edge, and read first it would collect the `agent:blocked` the row above withholds, on an issue no later run can clear it from |
-| Targets the **first still-open** sub-issue, in sub-issues API order | ✅ | ✅ | see the ordering note below |
+| Checks the sub-issue order against their `blocked_by` links, **once**, before the first slice | ❌ | ➕ | PRD #222. Refuses a list where a sub-issue comes before one it is blocked by, or one blocked from outside the PRD, before anything is built. Never as later slices are reached — see the ordering note below |
+| Targets the **first sub-issue not yet built**, in sub-issues API order | ✅ | ✅ | CVM's is the first still-open one. Ours is the first open sub-issue no commit on the PRD branch names in an `Agent-Slice: #<sub>` trailer (#242), never read off which are closed, so closing or reopening one by hand neither skips nor repeats work. See the ordering note below |
 | One PRD branch `agent/prd-<n>-<slug>`, reused across the chain | ✅ | ✅ | found on the remote by `agent/prd-<n>-*`, never by the whole recomputed name — the slug comes from the parent's *title* and a title is editable, so a retitle mid-chain would otherwise fork a slice off `main` and open a second PRD PR. Two matches is ambiguous and fails the run rather than guessing |
-| One **slice branch** per sub-issue, `agent/slice-<parent>-<sub>-<slug>` | ❌ | ➕ | branched from the PRD branch tip. Never under `agent/prd-`, so the PRD branch lookup cannot match it and the two cannot collide as git refs. Deleted when its slice PR merges |
-| Plain `git push`, never force | ✅ | ✅ | the PRD branch carries every earlier slice; a force push is a chain eating its own history |
-| A **draft slice PR** per sub-issue, based on the PRD branch, carrying `Part of #<sub-issue>` | ❌ | ➕ | CVM opens one PR per PRD. `Part of`, not `Closes`: the sub-issue's own state is the chain's "built" marker, and must not wait on a merge. Found by its **base**, never its name, and more than one open refuses rather than guessing which to merge |
-| Closes each finished sub-issue with a comment naming the commit SHA | ✅ | ✅ | when its slice PR opens, so "first open sub-issue" still means the next slice to build. The only record tying a closed sub-issue to its code once the slice branch is gone |
-| Adds `agent:review` to **every** slice PR | ❌ | ➕ | CVM adds it once, when no sub-issues remain — the trade below |
-| Advances by re-labelling the **parent** with `AGENT_PAT` | ✅ | ✅ | CVM's run re-labels itself after each slice. Ours re-labels nothing: the **advance** does, `review`'s `advance` job running `review:advance` (#423), when a slice round on the PRD PR ends on 🟢 (§10). `fix` carries no copy: on a PRD PR every fix run asks for a review, pushed or not (PRD #222), and that review's advance ends the round. It parks, with a comment on the parent, on every other ending but a fix round starting, and a human's re-label of the parent is then the acceptance. Without the App or the PAT it warns, and says on the PRD PR what it would have written on the parent |
-| **Merges the waiting slice PR first**, as a step of its own | ❌ | ➕ | refuses into `agent:blocked`, naming the slice PR, while `agent:review`, `agent:fix` or `agent:update-branch` is on it, or while it is conflicted, pointing at `agent:update-branch` on it. Pinned with `--match-head-commit` to the head it inspected; squash, then rebase, then a merge commit, whichever the repository allows first. It never reads the verdict, so a human's re-label and the advance's are one path |
-| A **draft PRD PR**, opened with the first slice merge and carrying `Closes #<parent>` | ✅ | ✅ | CVM's one PR, drafted until the chain finishes. Ours also carries the **slices table**: one row per slice, written by the run that merges it and never refreshed. Merged with `AGENT_PAT` so the PRD PR's CI and Follow-ups see each slice; the `GITHUB_TOKEN` fallback warns that neither ran |
-| A **finishing run** hands the PRD PR over | ❌ | ➕ | no model: merges the last slice PR, writes its row, then adds `agent:review` to the PRD PR for an **integration review** when more than one slice was merged, and marks it ready itself when one was |
-| Label adds and the merge run under `set -e` | — | ➕ | each warn-if-no-PAT `if` returns 0 when the PAT *is* set; without `-e` a failed add exits the step green, `failure()` never fires, and the slice PR sits in draft asking nobody for review |
-| `failure_reason.txt` → issue comment, `agent:blocked`, and the trigger label taken off | ✅ | ✅ | on the **parent**; the failure comment names which sub-issue stopped the chain and, when there is one, the slice PR it had already opened |
+| Each slice is **commits on the PRD branch**, with no branch or PR of its own | ✅ | ✅ | PRD #222, which retired the slice branch and slice PR of PRD #171. Every commit a build run makes carries an `Agent-Slice: #<sub>` trailer, so a sub-issue's commits are its **slice range** (`shared/slice-ranges.ts`); a chain an older release started with slice PRs is refused by name while one is still open into the PRD branch (pre-upgrade compatibility, #224) |
+| Plain `git push`, never force | ✅ | ✅ | the PRD branch carries every earlier slice, and verdicts and review threads are pinned to its commits; a force push is a chain eating its own history and orphaning its reviews |
+| Closes each finished sub-issue with a comment naming the commit SHA | ✅ | ❌ | no step closes a sub-issue: the PRD PR's `Closes` line names the parent and every open sub-issue, so merging it closes exactly the work it contains, and a PRD PR closed unmerged closes nothing. The record tying a sub-issue to its code is its slice range. A build run comments on the sub-issue it starts with the run's link, and the run past an approval notes the approved slice there |
+| Adds `agent:review` to the PRD PR **after every slice** | ❌ | ➕ | the slice's round. CVM adds it once, when no sub-issues remain — the trade below |
+| Advances by re-labelling the **parent** with `AGENT_PAT` | ✅ | ✅ | CVM's run re-labels itself after each slice. Ours re-labels nothing: the **advance** does, `review`'s `advance` job running `review:advance` (#423), when a slice round on the PRD PR ends on 🟢 (§10). `fix` carries no copy: on a PRD PR every fix run asks for a review, pushed or not (PRD #222), and that review's advance ends the round. It parks, with a comment on the parent, on every other ending but a fix round starting. A human's re-label of a parked parent does not move it on: the next run's preflight reads the verdict on the PRD PR's head, never the label (row below). Without the App or the PAT it warns, and says on the PRD PR what it would have written on the parent |
+| **The next slice waits for an approval**, read live off the PRD PR's head | ❌ | ➕ | PRD #222. The preflight reads the `agent-review` verdict on the PRD PR's head and builds the next slice only on an approval; anything else refuses and names the ways on, and a round still in flight (`agent:review`, `agent:fix` or `agent:update-branch` on the PRD PR) is never cut short. The label is never the gate: anyone with triage rights can add it |
+| **Merges the default branch into the PRD branch** before building | ❌ | ➕ | #245, wherever the default branch has moved, as a commit carrying an `Agent-Catch-Up` trailer that falls outside every slice range. Never a rebase: a conflict parks the chain, builds nothing and names `agent:update-branch` on the PRD PR |
+| A **draft PRD PR**, opened by the run that builds the first slice | ✅ | ✅ | CVM's one PR, drafted until the chain finishes. Ours carries `Closes` for the parent and every open sub-issue, and the **progress table** and status line (#246, #298), rendered from live state by the gate as a slice starts, the runner as its round is asked for, review's advance at every ending of a round, and a build run that stops. Opened with the loop's App token or `AGENT_PAT`, since the Actions bot may not create a PR, and pushed with the same token, so the PRD PR's CI, the default branch's, runs on every slice |
+| A **finishing run** hands the PRD PR over | ❌ | ➕ | no model, builds nothing: with one slice landed it marks the PRD PR ready, since that slice's round already read the same diff; with more than one it marks the **final review** requested in the progress table and adds `agent:review` to the PRD PR |
+| Label adds run under `set -e` | — | ➕ | without `-e` a failed add exits the step green, `failure()` never fires, and the slice asks nobody for review; with it, the failure comment names the PRD PR to label by hand |
+| `failure_reason.txt` → issue comment, `agent:blocked`, and the trigger label taken off | ✅ | ✅ | on the **parent**; the failure comment names which sub-issue stopped the chain and the retry that fits where it stopped: a slice already pushed is pointed at its review, and commits the PRD branch never got are kept on a **rescue branch** (#303), named, which the retry resumes from |
 | Agent-authored PR title + body | ✅ | ❌ | same gap as §2, same fixed heredoc |
 
-**Ordering comes from creation order, not from the edges.** The chain walks sub-issues API order and
-never reads `blocked-by`. That is safe only because sub-issues are *created* in dependency order,
-blockers first — the topological sort happens once, at publish time. Since
-jeffwlawson/winget-manifest-lint#93 that is a written contract rather than an assumption about
-whoever publishes: `docs/agents/ticket-shape.md` holds the publish order, the verification steps,
-and the repair. Do not add edge-reading here; fix the publish order instead. The edges exist as the
-record of why the order is what it is (§10).
+**Ordering comes from creation order, checked once against the edges.** The chain walks sub-issues
+API order. That is safe only because sub-issues are *created* in dependency order, blockers first —
+the topological sort happens once, at publish time. Since jeffwlawson/winget-manifest-lint#93 that
+is a written contract rather than an assumption about whoever publishes: `docs/agents/ticket-shape.md`
+holds the publish order, the verification steps, and the repair. Since PRD #222 the preflight also
+reads every sub-issue's `blocked_by` links **once, before the first slice is built**, and refuses a
+list whose order contradicts them, or a sub-issue blocked from outside the PRD — when the fix costs
+a reorder rather than several slices. It never reads them again as later slices are reached:
+sub-issues stay open until the PRD PR merges, so a link between two slices never clears while the
+chain runs, and a per-slice check would refuse every slice after the first. Do not add per-slice
+edge-reading here; fix the publish order instead. The edges are the record of why the order is
+what it is (§10).
 
-**The preflight reads one edge, and it is not the walk.** Since #14 it asks whether the **parent**
-is `blocked_by` anything still open, and refuses the whole run if so. That is not the edge-reading
-the rule above forbids: it is one question, asked once, about whether the chain starts at all —
-about a deliverable whose blocker sits outside the PRD entirely — and it decides nothing about
-*order*. Sequencing within the walk is still creation order, still edge-free. The distinction is
-also why the refusal belongs on the parent and nowhere else: slices are pieces of one feature
-landing on one branch, so a slice that needs outside work blocks the whole PRD rather than itself
-(you cannot merge four of five and wait), and on a correctly published batch a mid-walk read would
-in any case tell the walk nothing it does not already know. `docs/agents/ticket-shape.md` has each
-slice `blocked-by` its predecessor by construction, and the chain closes each slice before targeting
-the next, so those edges are satisfied by the time such a read would see them. What an out-of-order
-publish does to that, and why it is still not an argument for reading edges per slice, is below under
-[*Containment transfers authorisation*](#containment-transfers-authorisation-sequencing-does-not).
+**The preflight's edge reads are not the walk.** Since #14 it asks whether the **parent** is
+`blocked_by` anything still open, and refuses the whole run if so: one question, asked every run,
+about whether the chain runs at all — about a deliverable whose blocker sits outside the PRD
+entirely — and it decides nothing about *order*. The sub-issue check above is asked once, before
+the first slice, and only checks the order the walk will take; sequencing within the walk is still
+creation order. The distinction is also why an outside blocker belongs on the parent: slices are
+pieces of one feature landing on one branch, so a slice that needs outside work blocks the whole
+PRD rather than itself (you cannot merge four of five and wait). `docs/agents/ticket-shape.md` has
+each slice `blocked-by` its predecessor by construction, and those links stay open for the whole
+chain, which is why the check runs before the first slice and never after. What a reorder made
+mid-chain does to that, and why it is still not an argument for reading edges per slice, is below
+under [*Containment transfers authorisation*](#containment-transfers-authorisation-sequencing-does-not).
 
 **Two workflows, one label, and exactly one of them speaks.** `agent-implement` and
 `agent-implement-prd` share `agent:implement` on `issues: [labeled]`, so both jobs start on every
@@ -183,25 +189,27 @@ the same "this issue is not open" comment twice, seconds apart, from two runs th
 other. A nested PRD routes to the PRD path deliberately — it is the one shape both could claim, and
 the PRD path is the one that can explain what is wrong with it.
 
-**Every preflight state is safe to re-run.** The run decides what it is from two readings — is a
-sub-issue still open, and is a slice PR open against the PRD branch — and each combination is a row
-a retried or interrupted run can land on without doing anything twice:
+**Every preflight state is safe to re-run.** The run decides what it is from two readings — which
+sub-issues the PRD branch has built, and what the PRD PR says — and each combination is a row a
+retried or interrupted run can land on without doing anything twice:
 
-| Open sub-issue | Open slice PR | The run |
+| Built | PRD PR | The run |
 |---|---|---|
-| yes | yes | merges it, then builds the next slice |
-| yes | no | builds the next slice — the first run, a retry after a failed build, or the first run after an upgrade |
-| no | yes | **finishing run**: merges it, hands the PRD PR over |
-| no | no, PRD PR still a draft | **resumes the handover** — a run died after the last merge |
-| no | no, PRD PR handed over or none | refuses: the PRD is finished |
+| nothing | — | checks the links, builds the first slice |
+| some | none open | opens it and asks for its review — a run died after its push |
+| some | head not approved | refuses, naming the ways on |
+| some | approved, some left | builds the next slice |
+| some | approved, none left, not handed over | **finishing run**: hands the PRD PR over, or **resumes the handover** a run died in |
+| some | handed over, none left | refuses: the PRD is finished |
 
-The fourth row is what retired the manual step this section used to describe. A chain whose last
-run died after closing its last sub-issue once landed on the finished-PRD refusal, and both that
-refusal and the failure comment asked a human to add `agent:review` to the PR by hand — a second
-owner of the one handoff. Now the same re-label that retries everything else resumes the handover,
-and nothing in the chain is left for a human to finish except the merge.
+The finishing row is what retired a manual step this section once described. A chain whose last run
+died after its last slice once landed on the finished-PRD refusal, and both that refusal and the
+failure comment asked a human to add `agent:review` to the PR by hand — a second owner of the one
+handoff. Finished is now read off what the handover leaves, never off the draft state alone, so the
+same re-label that retries everything else resumes the handover, and nothing in the chain is left
+for a human to finish except the merge.
 
-### The trade: the slice PR is the unit of review, the PRD PR the unit of merge
+### The trade: the slice round is the unit of review, the PRD PR the unit of merge
 
 **What this section used to say**, verified against CVM on 2026-08-07: review is once per PR, not
 once per slice. CVM's handoff is gated on the remaining count being zero, so `agent:review` is
@@ -215,21 +223,23 @@ accepted: a design error in slice 1 is not caught until slice N is written on to
 reviewer as 2,000+ lines in one pass, one automatic fix round covered the whole PRD, and
 its findings anchored across work built at different times. So:
 
-- **The slice PR is the unit of review.** The same `review` workflow runs once per slice PR, with
-  its own round and its own automatic fix rounds. There is still **no per-slice review
-  workflow** — what changed is which pull request a slice is, not how review works. The stale-anchor
-  objection does not return, because nothing moves under an open round: a slice PR's diff is its own
-  three-dot diff against the PRD branch, and the next slice is not built until the round ends.
+- **The slice is the unit of review.** PRD #171 made each slice a slice PR into the PRD branch;
+  PRD #222 kept the review per slice and dropped the slice PR, so each slice is now a **slice round**
+  on the PRD PR, with its own automatic fix rounds. There is still **no per-slice review
+  workflow** — the same `review` workflow runs, told "slice *k* of *n*", handed the slice range's
+  commits and the sub-issue's acceptance criteria, and allowed to raise only what those commits
+  cause. The stale-anchor objection does not return, because nothing moves under an open round: the
+  next slice is not built until the round ends on an approval.
 - **The PRD PR is the unit of merge.** One per PRD, merged by a human, never by the loop, and never
-  approved by it. Its own review is the **integration review**, asked for once by the finishing run
-  and only when more than one slice was merged: every slice was already reviewed on its slice PR, so
-  it looks only for what spans slices — contracts between them, duplication, scaffolding one slice
-  left dead for a later one — and never re-raises a slice's leftover findings. A one-slice PRD
-  skips it, because its PRD PR diff is the lines its slice PR's review already read.
+  approved by it. It ends with the **final review**, asked for once by the finishing run and only
+  when more than one slice landed: a review of the whole PRD PR with no slice range, which rules on
+  every finding still open, honours every decline, looks for what spans slices — contracts between
+  them, duplication, scaffolding one slice left dead for a later one — and marks the PRD PR ready on
+  approval. A one-slice PRD skips it, because its slice round already read the same diff.
 - **The automatic-fix bound is per round.** It was once per pull request (§10), which made it once
-  per slice PR plus once on the PRD PR. Since PRD #200 it is the fix-round budget, with the early
-  stop under it (#201, #202): more rounds per slice are the lever for fewer leftover 🟡 findings,
-  and the early stop is what keeps them from being spent on a round that changes nothing. Since
+  per slice PR plus once on the PRD PR, while slice PRs existed. Since PRD #200 it is the fix-round
+  budget, with the early stop under it (#201, #202): more rounds per slice are the lever for fewer
+  leftover 🟡 findings, and the early stop is what keeps them from being spent on a round that changes nothing. Since
   PRD #222 every slice is a round of one PRD PR, so a budget counted per pull request was shared by
   every slice, and a PRD whose slices needed more fixes than the budget parked a healthy slice with
   none of its own spent (PRD PRs #330 and #424). Since #331 the budget is each **round's** on a PRD
@@ -237,10 +247,9 @@ its findings anchored across work built at different times. So:
   apart by the round header of the review they link to. Off a PRD PR it is the pull request's.
 
 **The cost now is wall-clock**: each slice's review and fix time adds up, plus a no-model finishing
-run per PRD. Two gaps are accepted rather than closed. A slice's CI ran against the PRD branch as it
-was when the slice was built, so the combined code is first tested by the PRD PR's CI after each
-merge; and a `GITHUB_TOKEN` fallback merge fires no event, so neither that CI nor Follow-ups runs —
-both named in the warning the merge step prints.
+run per PRD. The CI gap the slice PRs left is closed: the PRD PR's base is the default branch, so
+the default branch's CI runs on every slice as it is pushed, against the slices before it and the
+default branch merged in.
 
 **The self-review line stays.** `implement-prd/prompt.md` still asks the implement agent to review
 its own slice before committing ("BEFORE YOU COMMIT"), which is what a human's local `/implement` …
@@ -279,28 +288,27 @@ nowhere else:
 **The sub-issue row is the load-bearing one, and it is a decision rather than an omission.** The
 chain walks sub-issues in API order and reads `blocked_by` **nowhere**:
 [`docs/agents/ticket-shape.md`](./agents/ticket-shape.md#creation-order-is-execution-order) puts
-the topological sort on whoever publishes the batch, and the ordering note above records reading
-edges mid-walk as a deliberate non-goal (§10 too, and `implement-prd.yml`'s own header). Underneath
+the topological sort on whoever publishes the batch, the preflight checks that order against the
+links once, before the first slice, and the ordering note above records reading edges mid-walk as
+a deliberate non-goal (§10 too, and `implement-prd.yml`'s own header). Underneath
 the contract is the design reason it exists: slices are pieces of one feature landing on one branch,
 so a slice that needs outside work means the *whole PRD* is blocked — you cannot merge four of five
 and wait. That dependency belongs as an edge on the parent, which is the one the preflight reads.
 And a mid-walk read is in any case the wrong place to catch it. Every slice after the first is
-`blocked-by` its predecessor by construction, but the chain closes each slice before targeting the
-next, and both existing checks refuse on *open* blockers only — `select(.state == "open")` — so a
-per-slice read mirroring them passes on every in-PRD edge a correct publish gives, spending a call
-per slice to re-derive the order the walk already has. **Two cases do make it refuse on an in-PRD
-edge**, and together they are the strongest argument for reading per slice. They are one defect
-wearing two faces — the walk order and the edges disagree — and this file names both: a batch
-published out of dependency order, which `ticket-shape.md` calls, in the section linked above, the
-one nothing catches; and a batch published correctly and *then* reordered by a drag in the parent's
-UI, which §10 names as the hazard the ordering rule buys. It is still the wrong shape of answer. The
-refusal lands mid-walk, after however many slices are already committed to the branch — the hazard
-arriving late rather than a repair for it, and the repair in both cases is the order itself, fixed
-where it is set: the publish sequence, or the sub-issue moved back through the parent's ordering
-(§10). That is where `ticket-shape.md` and `implement-prd.yml`'s header both put it. Every *other*
+`blocked-by` its predecessor by construction, and sub-issues stay open until the PRD PR merges, so
+a per-slice read refusing on open blockers would refuse every slice after the first on the edges a
+correct publish gives. **The disagreement it would be looking for has two faces** — the walk order
+and the edges disagree — and this file names both: a batch published out of dependency order, and a
+batch published correctly and *then* reordered by a drag in the parent's UI, which §10 names as the
+hazard the ordering rule buys. The first is what the one check before the first slice catches, when
+nothing has been built yet (PRD #222). The second, a reorder mid-chain, is still caught by nothing,
+and a per-slice read is still the wrong shape of answer: the refusal lands mid-walk, after however
+many slices are already committed to the branch — the hazard arriving late rather than a repair for
+it, and the repair is the order itself, fixed where it is set: the sub-issue moved back through the
+parent's ordering (§10). That is where `ticket-shape.md` and `implement-prd.yml`'s header both put it. Every *other*
 edge such a read could refuse on points outside the PRD, and that is precisely the edge that belongs
-on the parent: read once, before anything lands, rather than discovered four slices in with the
-branch already carrying them and the PR left in draft.
+on the parent: read every run, before anything lands, rather than discovered four slices in with
+the branch already carrying them and the PR left in draft.
 
 **The distinction is easy to lose while holding it**, which is the argument for a section rather
 than an aside. `36cdc47` states it in full and then defers the second check with "same argument
@@ -387,7 +395,7 @@ PRD.
 | **Replies in review threads** | ✅ | ➕ | the review replies where it **closes** a thread, and only there (#111): `resolutionReason` is recorded by GitHub and readable nowhere afterwards, so the reply is the only record of why a finding closed. `agent:fix` replies in every thread it is asked about and closes none (§4) |
 | **Marks the PR ready for review** when done | ✅ | ✅ | `success()` only, so a failed review leaves the PR in draft — see the invariant in §10. Since #102 it also skips the pull requests whose automatic fix is about to run: it is not the human's turn yet, and the end of that round marks it ready — the re-review where the fix pushed, and the fix run itself where it did not (#159). **Requires `AGENT_PAT`**: `GITHUB_TOKEN` cannot convert a draft at all |
 | **Starts fix rounds by itself, on the verdict that says no reading is needed** | ❌ | ➕ | #102 (PRD #101), and the fix-round budget since #201 (PRD #200). Up to `AGENT_MAX_FIX_ROUNDS` automatic rounds per pull request, or on a PRD PR per slice round and for the final review (#331), default 3, counted from the `agent-fix-round` statuses posted beside the verdicts that asked for a round (#297); the `auto-fix` input it replaced was a deprecated alias from v0.7.5 and has been removed (#366). The last step of the review's posting job (#257), which has no checkout, no toolchain and no agent; one of the `AGENT_PAT` uses in the workflow, beside the advance below. Bounded twice: the budget stops it past N rounds on the same PR, and the early stop (#202) ends it after a fix round that closed none of the findings it was given, matched by id (§10). The round rule that bounded it before is retired |
-| **Advances the PRD chain when a slice PR's round ends** | ❌ | ➕ | #176 (PRD #171). The **advance**, `review`'s `advance` job after the posting job, running the command `review:advance` (#423): re-adds `agent:implement` to the PRD PR's **parent** when a slice round ends on 🟢, and parks on the parent on every other ending but a fix round starting. `fix` has no advance of its own: on a PRD PR every fix run asks for a review, whether or not it pushed (PRD #222), and that review's advance ends the round. The same shape as the fix round: no checkout, no model, the loop's App token, `AGENT_PAT` or nothing. Bounded by the number of sub-issues (§10) |
+| **Advances the PRD chain when a slice round ends** | ❌ | ➕ | #176 (PRD #171). The **advance**, `review`'s `advance` job after the posting job, running the command `review:advance` (#423): re-adds `agent:implement` to the PRD PR's **parent** when a slice round ends on 🟢, and parks on the parent on every other ending but a fix round starting. `fix` has no advance of its own: on a PRD PR every fix run asks for a review, whether or not it pushed (PRD #222), and that review's advance ends the round. The same shape as the fix round: no checkout, no model, the loop's App token, `AGENT_PAT` or nothing. Bounded by the number of sub-issues (§10) |
 | Emits a verdict (`improved` / `clean`) | ✅ | ❌ | only meaningful with self-improvement |
 | Approve / request-changes | ❌ | ❌ | both always post `COMMENT` |
 | Installs an external `code-review` skill at run time | ✅ | ❌ | CVM pulls `mattpocock/skills`; ours inlines the checklist in the prompt |
@@ -889,7 +897,7 @@ expensive to rediscover.
   the PRD PR each get the budget, and nothing gets more. (Since PRD #222 there are no slice PRs, and
   since #331 a PRD PR's budget is each round's: every slice round, and the final review.) The reasoning, and the cost this
   replaced, are in
-  [§2a's trade](#the-trade-the-slice-pr-is-the-unit-of-review-the-prd-pr-the-unit-of-merge).
+  [§2a's trade](#the-trade-the-slice-round-is-the-unit-of-review-the-prd-pr-the-unit-of-merge).
 - **Two workflows may share a trigger label only if exactly one of them speaks.** `agent-implement`
   and `agent-implement-prd` both fire on `agent:implement`, and partition by issue shape. Whichever
   does not own the shape defers: no comment, no label edit, `exit 0`. A comment there is a second

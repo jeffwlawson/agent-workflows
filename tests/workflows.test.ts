@@ -1325,6 +1325,7 @@ describe("PR workflows refuse a closed or merged PR", () => {
 
     expect(steps.map((s) => [s.name, s.id, s.if])).toEqual([
       ["Set up Node for the gate", undefined, undefined],
+      ["Install the package", undefined, undefined],
       ["Refuse or claim the pull request", "gate", undefined],
       ["Hand the gate's decision to the job", "state", "always()"],
       ["Checkout PR head", undefined, "steps.state.outputs.proceed == 'true'"],
@@ -1332,26 +1333,29 @@ describe("PR workflows refuse a closed or merged PR", () => {
       ["Hand the merge to the job", "merged", "always() && steps.state.outputs.proceed == 'true'"],
       ["Start the agent's clock", "clock", "steps.state.outputs.proceed == 'true'"],
     ]);
-    expect(steps[1]?.run ?? "").toMatch(/-- agent-workflows update-branch:gate$/);
-    expect(steps[4]?.run ?? "").toMatch(/-- agent-workflows update-branch:merge$/);
-    // Only the two command steps run the package, and only the gate, before
-    // the checkout, is handed the registry token; the merge runs from the
-    // gate's install, from `RUNNER_TEMP`, so no `.npmrc` of the checkout is
-    // read. The job's `GH_TOKEN` is the workflow token, which only the
+    expect(steps[2]?.run ?? "").toMatch(/-- agent-workflows update-branch:gate$/);
+    expect(steps[5]?.run ?? "").toMatch(/-- agent-workflows update-branch:merge$/);
+    // Only the two command steps run the package, both from the install
+    // made before the checkout, which is the one step handed the registry
+    // token: `npm exec` finds a package it ran itself in its own cache, not
+    // under the prefix, so the merge could not reuse the gate's. From
+    // `RUNNER_TEMP`, so no `.npmrc` of the checkout is read. The job's `GH_TOKEN` is the workflow token, which only the
     // commands spend: no other step names `gh` or `git`.
     expect(steps.filter((s) => /npm exec/.test(s.run ?? "")).map((s) => s.id)).toEqual(["gate", "merge"]);
-    expect(steps.filter((s) => s.env?.["NODE_AUTH_TOKEN"] !== undefined).map((s) => s.id)).toEqual(["gate"]);
-    expect(steps[1]?.env?.["NODE_AUTH_TOKEN"]).toBe("${{ secrets.GITHUB_TOKEN }}");
-    expect(steps[4]?.["working-directory"]).toBe("${{ runner.temp }}");
-    expect(steps[4]?.env).toEqual({ OUTPUT_DIR: "${{ runner.temp }}/merge", CHECKOUT: "${{ github.workspace }}" });
+    expect(steps.filter((s) => s.env?.["NODE_AUTH_TOKEN"] !== undefined).map((s) => s.name)).toEqual(["Install the package"]);
+    expect(steps[1]?.run).toBe(`npm install --prefix "$RUNNER_TEMP" --no-save @jeffwlawson/agent-workflows@${PIN.slice(1)}`);
+    expect(steps[1]?.["working-directory"]).toBe("${{ runner.temp }}");
+    expect(steps[1]?.env).toEqual({ NODE_AUTH_TOKEN: "${{ secrets.GITHUB_TOKEN }}" });
+    expect(steps[5]?.["working-directory"]).toBe("${{ runner.temp }}");
+    expect(steps[5]?.env).toEqual({ OUTPUT_DIR: "${{ runner.temp }}/merge", CHECKOUT: "${{ github.workspace }}" });
     expect(gate.env?.["GH_TOKEN"]).toBe("${{ secrets.GITHUB_TOKEN }}");
-    for (const step of steps.filter((s) => s.id !== "gate" && s.id !== "merge")) {
+    for (const step of steps.filter((s) => s.id !== "gate" && s.id !== "merge" && s.name !== "Install the package")) {
       expect(step.run ?? "", step.name).not.toMatch(/\bgh |\bgit |GH_TOKEN|secrets\./);
       expect(JSON.stringify(step.env ?? {}), step.name).not.toMatch(/secrets\./);
     }
     expect(JSON.stringify(gate)).not.toMatch(/AGENT_PAT|AGENT_APP|loop-token/);
     // The wait's bound is the command's default, not a setting of this file's.
-    expect(steps[1]?.env?.["POST_WAIT_SECONDS"]).toBeUndefined();
+    expect(steps[2]?.env?.["POST_WAIT_SECONDS"]).toBeUndefined();
     expect(gate.env?.["PR_STATE"]).toBe("${{ github.event.pull_request.state }}");
     expect(gate.env?.["PR_MERGED"]).toBe("${{ github.event.pull_request.merged }}");
   });
@@ -1398,7 +1402,7 @@ describe("PR workflows refuse a closed or merged PR", () => {
     });
     expect(COMMANDS["update-branch:gate"].outputs).toContain("gate.json");
     expect(COMMANDS["update-branch:merge"].outputs).toContain("merge.json");
-    expect(steps[1]?.env?.["OUTPUT_DIR"]).toBe("${{ runner.temp }}");
+    expect(steps[2]?.env?.["OUTPUT_DIR"]).toBe("${{ runner.temp }}");
     expect(state).toContain('file="${RUNNER_TEMP}/gate.json"');
     expect(state).toContain(`jq -r 'to_entries[] | "\\(.key)=\\(.value)"' "$file" >> "$GITHUB_OUTPUT"`);
     expect(merged).toContain('file="${RUNNER_TEMP}/merge/merge.json"');

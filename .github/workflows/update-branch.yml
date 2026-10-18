@@ -146,7 +146,7 @@ jobs:
       # The refusal and the label transitions.
       pull-requests: write
       # Installing the package `update-branch:gate` and `update-branch:merge`
-      # run from, by `npm exec`. GitHub Packages has no anonymous install, so
+      # run from, by `npm install`. GitHub Packages has no anonymous install, so
       # this is needed even though the package is public, and, being a bound,
       # it grants nothing without the caller's own `packages: read`, which
       # both caller sets already grant.
@@ -199,6 +199,23 @@ jobs:
           scope: "@jeffwlawson"
           package-manager-cache: false
 
+      # The package, installed once and early, the way fix's agent job
+      # installs it (#472), for the two commands this job runs:
+      # `update-branch:gate` before the checkout, and `update-branch:merge`
+      # after it. `npm exec` takes a package already installed under its
+      # `--prefix` at the exact version it names without a request; one it
+      # ran itself is in npm's own cache, not under the prefix, so a later
+      # `npm exec` would ask the registry again. This is the one step of the
+      # job handed the registry token, before anything is checked out, and
+      # from `RUNNER_TEMP`, so no `.npmrc` of a checkout is read.
+      - name: Install the package
+        working-directory: ${{ runner.temp }}
+        env:
+          # `GITHUB_TOKEN`, carrying the `packages: read` the caller granted:
+          # there is no anonymous install.
+          NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: npm install --prefix "$RUNNER_TEMP" --no-save @jeffwlawson/agent-workflows@0.8.6
+
       # Everything this job settles before the checkout, as one command
       # (#481): the pre-flight, which refuses a closed or merged pull request
       # with a comment and then takes `agent:update-branch` off; the
@@ -211,12 +228,10 @@ jobs:
       - name: Refuse or claim the pull request
         id: gate
         env:
-          # `GITHUB_TOKEN`, carrying the `packages: read` the caller granted:
-          # there is no anonymous install.
-          NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           OUTPUT_DIR: ${{ runner.temp }}
         # `npm exec --prefix` rather than a bare `npx`: see the long note on
-        # the runner step below.
+        # the runner step below. From the install above, so it asks the
+        # registry nothing.
         run: npm exec --prefix "$RUNNER_TEMP" --yes --package=@jeffwlawson/agent-workflows@0.8.6 -- agent-workflows update-branch:gate
 
       # Glue only Actions can do (ADR 0003): the gate's decision, copied into
@@ -266,10 +281,10 @@ jobs:
       # After the checkout of the PR's code, though it runs none of it: from
       # `RUNNER_TEMP`, so npm reads no `.npmrc` of the checkout, and with no
       # `NODE_AUTH_TOKEN`, so it holds no registry token while it could. It
-      # runs the install the gate's `npm exec` left in npm's cache, which the
-      # same spec at the same exact version takes without a request. Its
-      # reason file goes in a directory of its own, so it never reads as the
-      # gate's.
+      # runs from the install *Install the package* made under `RUNNER_TEMP`
+      # before the checkout, which the same spec at the same exact version
+      # takes without a request. Its reason file goes in a directory of its
+      # own, so it never reads as the gate's.
       - name: Attempt the merge
         if: steps.state.outputs.proceed == 'true'
         id: merge

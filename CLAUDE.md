@@ -162,13 +162,14 @@ pin of each step that runs the package (twenty-one: one in each of the six reusa
 `review:publish`, `review:conclude` and `review:advance` beside the runner in `review.yml`,
 `fix:gate`, `fix:prepare`, `fix:bundle`, `fix:publish` and `fix:conclude` beside the runner in `fix.yml`, and
 `update-branch:gate` and `update-branch:merge` beside the runner in `update-branch.yml`), the `npm install` pin of each step that installs it
-early, ahead of the commands that run from that install (two: one ahead of the red check's two in
-`review.yml`, and one ahead of `fix:prepare` and `fix:bundle` in `fix.yml`), the `uses:` ref of
+early, ahead of the commands that run from that install (three: one ahead of the red check's two in
+`review.yml`, one ahead of `fix:prepare` and `fix:bundle` in `fix.yml`, and one ahead of
+`update-branch:gate` and `update-branch:merge` in `update-branch.yml`), the `uses:` ref of
 each caller in the two caller files
 of each of the two caller sets, and the `uses:` ref a reusable's step names a composite action in
 `.github/actions/` with (eight of those: `loop-token` once in each of `implement.yml`, `fix.yml`
 and `update-branch.yml`, twice in `implement-prd.yml` and three times in `review.yml`, so
-forty-three pins in the ten files). It
+forty-four pins in the ten files). It
 runs from the `version` lifecycle script, which npm fires *after* the manifest is bumped and
 *before* the commit is made, so everything it stages lands in the same `v<version>` commit. It
 stages **by path** — the ten it wrote, never `-A`: npm's dirty-tree check passes untracked

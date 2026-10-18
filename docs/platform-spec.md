@@ -96,7 +96,8 @@ workflows, which the build reads.
 > with the inputs in that step's `env:` and its job's, and each command step the same with the
 > command's name. The red check's job installs the package first, with
 > `npm install --prefix "$RUNNER_TEMP"`, and runs its two commands from `RUNNER_TEMP`, where that
-> line finds the install without asking the registry (§8).
+> line finds the install without asking the registry (§8); fix's agent job and update-branch's
+> gate job do the same for theirs.
 
 ### 2.2 Inputs
 
@@ -1423,7 +1424,8 @@ deciding writes none.
 **`doctor` cannot check this.** The record is written by the orchestrator's posting code, for the reason §4.3 gives.
 
 > **Actions orchestrator:** the gate job's first work, after a Node set up for it, since nothing is
-> checked out yet; no adopter step runs in that job. `HEAD_SHA`, `PR_STATE` and `PR_MERGED` are the
+> checked out yet, and the package installed under `RUNNER_TEMP` with the registry token, which
+> this command and `update-branch:merge` both run from; no adopter step runs in that job. `HEAD_SHA`, `PR_STATE` and `PR_MERGED` are the
 > label's event's, and `GH_TOKEN` is the job's own, with `pull-requests: write`. `OUTPUT_DIR` is
 > `runner.temp`. A glue step copies `gate.json` into the step output `proceed`, `always()`, and the
 > job's `refused` output is `false` where it is `true`, `true` where it is `false`, and empty where
@@ -1828,7 +1830,7 @@ Nothing. It reads `BASE_REF`'s commits, and parses no record string.
 
 > **Actions orchestrator:** the gate job, after the checkout of the head and only where
 > `update-branch:gate` claimed the run. It runs none of the pull request's code, and still runs
-> from `RUNNER_TEMP` with no registry token, from the install the gate's `npm exec` left. `GH_TOKEN`
+> from `RUNNER_TEMP` with no registry token, from the install the gate job made before its checkout. `GH_TOKEN`
 > is the job's, and `CHECKOUT` the workspace. `OUTPUT_DIR` is a directory of its own under
 > `runner.temp`. A glue step, `always()` where the gate went ahead, copies `merge.json` into the
 > job's `status`, `base` and `conflicts` outputs, the paths joined by spaces, and its

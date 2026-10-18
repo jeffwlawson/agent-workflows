@@ -192,8 +192,8 @@ const REF_COUNT = 2 * Object.values(CALLERS_PER_FILE).reduce((sum, n) => sum + n
  * resolves the loop's token names `loop-token` (#319, #320): implement's
  * publish job, implement-prd's catch-up and publish jobs, fix's and
  * update-branch's publish jobs, and review's `time-limit`, `post-review` and
- * `advance` jobs. Eight, beside the twenty-one `npm exec` pins, the two `npm
- * install`s and the twelve callers, so the release rewrites forty-three pins
+ * `advance` jobs. Eight, beside the twenty-one `npm exec` pins, the three `npm
+ * install`s and the twelve callers, so the release rewrites forty-four pins
  * in ten files. Review's advance named `advance-prd` too, until it became
  * `review:advance` (#423).
  */
@@ -230,12 +230,13 @@ const PACKAGE_COUNT = Object.values(PACKAGE_SITES).reduce((sum, n) => sum + n, 0
 /**
  * The steps that install the package ahead of the steps that run it,
  * `npm install … @jeffwlawson/agent-workflows@<version>`: the red check's
- * (#422) and fix's agent job's (#472), each the one step of its job handed
- * the registry token for an install.
+ * (#422), fix's agent job's (#472) and update-branch's gate job's (#481),
+ * each the one step of its job handed the registry token for an install.
  */
 const INSTALL_SITES: Readonly<Record<string, number>> = {
   ".github/workflows/fix.yml": 1,
   ".github/workflows/review.yml": 1,
+  ".github/workflows/update-branch.yml": 1,
 };
 const INSTALL_COUNT = Object.values(INSTALL_SITES).reduce((sum, n) => sum + n, 0);
 const PIN_COUNT = PACKAGE_COUNT + INSTALL_COUNT + REF_COUNT + ACTION_COUNT;

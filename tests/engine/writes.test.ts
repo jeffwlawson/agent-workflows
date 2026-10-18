@@ -258,6 +258,31 @@ describe("githubReader", () => {
     ]);
   });
 
+  it("reads every page of a pull request's conversation comments, with their authors and links", async () => {
+    const { transport, sent } = recording((s) => {
+      const after = "variables" in s ? s.variables["after"] : undefined;
+      return {
+        repository: {
+          pullRequest: {
+            comments:
+              after === null
+                ? { nodes: [{ id: "IC_1", url: "https://github.com/o/r/pull/7#issuecomment-1", author: { login: "maintainer" } }], pageInfo: { hasNextPage: true, endCursor: "c1" } }
+                : { nodes: [{ id: "IC_2", url: "https://github.com/o/r/pull/7#issuecomment-2", author: null }], pageInfo: { hasNextPage: false, endCursor: null } },
+          },
+        },
+      };
+    });
+
+    expect(await githubReader(REPO, transport).conversationComments(7)).toEqual([
+      { id: "IC_1", author: "maintainer", url: "https://github.com/o/r/pull/7#issuecomment-1" },
+      { id: "IC_2", author: "unknown", url: "https://github.com/o/r/pull/7#issuecomment-2" },
+    ]);
+    expect(sent.map((s) => ("variables" in s ? s.variables : undefined))).toEqual([
+      { owner: "o", name: "r", number: 7, after: null },
+      { owner: "o", name: "r", number: 7, after: "c1" },
+    ]);
+  });
+
   it("reads every page of a pull request's reviews, oldest first", async () => {
     const review = (n: number) => ({
       html_url: `https://github.com/o/r/pull/7#pullrequestreview-${n}`,

@@ -1,6 +1,7 @@
 import { asArray, asRecord, asString, standardSchema } from "./common.js";
 import { parseOutOfScopeNotes, type OutOfScopeNote } from "./fix-notes.js";
 import { withoutFindingMarkers } from "./review-findings.js";
+import { CONVERSATION_OUTCOME_MARKER, TOP_LEVEL_COMMENT_MARKER } from "./record.js";
 import { withoutHeader } from "./round-header.js";
 
 /** What the fix agent decided about one review thread. */
@@ -299,9 +300,11 @@ export const filterConversationOutcomes = (
 };
 
 /**
- * Marks the record of what a run did with the conversation comments. A
- * **different** string from `TOP_LEVEL_COMMENT_MARKER`, and both halves of that
- * are load-bearing.
+ * True for a conversation-outcome record this workflow posted.
+ *
+ * `CONVERSATION_OUTCOME_MARKER` (`shared/record.ts`) marks the record of what
+ * a run did with the conversation comments. A **different** string from
+ * `TOP_LEVEL_COMMENT_MARKER`, and both halves of that are load-bearing.
  *
  * *Marked*, because `pr-feedback.ts` keeps marked comments out of the
  * conversation surface: unmarked, the next `agent:fix` run would read this
@@ -314,9 +317,6 @@ export const filterConversationOutcomes = (
  * round's is about that round. (Neither is what raises work: an out-of-scope
  * note carries a marker of its own, `OUT_OF_SCOPE_NOTE_MARKER`, since #213.)
  */
-export const CONVERSATION_OUTCOME_MARKER = "<!-- agent-fix:conversation-outcomes -->";
-
-/** True for a conversation-outcome record this workflow posted. */
 export const isAgentConversationOutcome = (body: string | null | undefined): boolean =>
   (body ?? "").includes(CONVERSATION_OUTCOME_MARKER);
 
@@ -371,8 +371,11 @@ export const renderConversationOutcomes = (
 };
 
 /**
- * Appended to every top-level comment the workflow posts. An HTML comment, so
- * it is invisible in rendered Markdown.
+ * True for a PR conversation comment this workflow posted.
+ *
+ * `TOP_LEVEL_COMMENT_MARKER` (`shared/record.ts`) is appended to every
+ * top-level comment the workflow posts. An HTML comment, so it is invisible in
+ * rendered Markdown.
  *
  * It does two jobs. First, `pr-feedback.ts` drops marked comments from the
  * `conversation` surface, which is what stops the next `agent:fix` run reading
@@ -391,9 +394,6 @@ export const renderConversationOutcomes = (
  * harvests these comments into issues, which is why an out-of-scope note is a
  * channel of its own since #213 (`shared/fix-notes.ts`).
  */
-export const TOP_LEVEL_COMMENT_MARKER = "<!-- agent-fix:top-level -->";
-
-/** True for a PR conversation comment this workflow posted. */
 export const isAgentTopLevelComment = (body: string | null | undefined): boolean =>
   (body ?? "").includes(TOP_LEVEL_COMMENT_MARKER);
 
@@ -410,7 +410,7 @@ export const unmarkedBody = (body: string): string =>
  * stated purpose is narrow enough that a run with three separate things
  * belonging to no thread is a channel misfiring rather than a productive run.
  */
-const MAX_TOP_LEVEL_COMMENTS = 2;
+export const MAX_TOP_LEVEL_COMMENTS = 2;
 
 /**
  * Bound the channel mechanically, in the same spirit as `filterOutcomes`: the
@@ -422,8 +422,9 @@ const MAX_TOP_LEVEL_COMMENTS = 2;
  * `alreadyPosted` is the bodies of marked comments already on the PR. The
  * comparison is exact after stripping the marker and trimming, so it catches a
  * verbatim repeat and not a reworded one; the cap, not the dedupe, is the real
- * bound. Kept bodies come back stamped, since the marker is what makes both
- * this dedupe and the `conversation` filter possible.
+ * bound. Kept bodies come back as the text alone, with no marker and no
+ * header: `fix:publish` adds both (`renderTopLevelComment`), so nothing the
+ * runner writes carries a marker of the loop's.
  */
 export const filterTopLevelComments = (
   comments: readonly TopLevelComment[],
@@ -447,10 +448,17 @@ export const filterTopLevelComments = (
       overCap += 1;
       continue;
     }
-    kept.push({ body: `${body}\n\n${TOP_LEVEL_COMMENT_MARKER}` });
+    kept.push({ body });
   }
   if (overCap > 0) {
     console.warn(`Dropping ${overCap} top-level comment(s) beyond the cap of ${MAX_TOP_LEVEL_COMMENTS}.`);
   }
   return kept;
 };
+
+/**
+ * The comment `fix:publish` posts for one kept top-level comment: its text,
+ * then the marker, which is what makes both this channel's dedupe and the
+ * `conversation` filter possible.
+ */
+export const renderTopLevelComment = (text: string): string => `${text}\n\n${TOP_LEVEL_COMMENT_MARKER}`;

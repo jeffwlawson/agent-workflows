@@ -133,6 +133,11 @@ export interface GitReader {
    * not verify throws.
    */
   verifyBundle(path: string): Promise<readonly BundleHead[]>;
+  /**
+   * Whether `ancestor` is in `commit`'s history, `commit` itself included:
+   * whether a commit builds on another. Both have to be in the repository.
+   */
+  isAncestor(ancestor: string, commit: string): Promise<boolean>;
 }
 
 /** The reader over `repository`. */
@@ -146,6 +151,16 @@ export const gitReader = (repository: GitRepository): GitReader => {
     }
   };
   return {
+    isAncestor: async (ancestor, commit) => {
+      try {
+        await run("git", ["merge-base", "--is-ancestor", ancestor, commit], { cwd: repository.dir, env, encoding: "utf8" });
+        return true;
+      } catch (error) {
+        // 1 is git's "not an ancestor"; anything else is a failure to answer.
+        if (typeof error === "object" && error !== null && (error as { code?: unknown }).code === 1) return false;
+        throw new GitError(lastLine(outputOf(error, "stderr")) || (error instanceof Error ? error.message : String(error)));
+      }
+    },
     verifyBundle: async (path) => {
       await git(["bundle", "verify", "--quiet", path]);
       const listed = await git(["bundle", "unbundle", path]);

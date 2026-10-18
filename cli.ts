@@ -3,7 +3,7 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import { fileURLToPath } from "node:url";
 import { commonWriters } from "./shared/common.js";
-import type { CommandIo, OutputWriters, ReadingIo } from "./shared/command-io.js";
+import type { CheckoutIo, OutputWriters, ReadingIo } from "./shared/command-io.js";
 import { COMMANDS, type Command, type Runner } from "./shared/contract.js";
 import { fail, gitEnvironment, readInputs, writers, type InputValues } from "./shared/env.js";
 import { VERSION } from "./shared/manifest.js";
@@ -150,7 +150,8 @@ const readingCommand = <C extends ReadingCommand>(
  * inputs, the real writers over both tokens and the reader, built here from
  * those inputs. Every write it makes is appended to `write_log.jsonl` as it
  * lands, and the log's last line says how the command ended, whether it
- * returned or threw.
+ * returned or threw. Its git writes and reads are made in `CHECKOUT` where it
+ * declares one, and in the directory it runs in otherwise.
  */
 type WritingCommand = {
   [C in Command]: (typeof COMMANDS)[C]["inputs"] extends { readonly LOOP_TOKEN: unknown }
@@ -163,7 +164,7 @@ type WritingCommand = {
 const writingCommand = <C extends WritingCommand>(
   name: C,
   load: () => Promise<
-    (inputs: InputValues<(typeof COMMANDS)[C]["inputs"]>, io: CommandIo<(typeof COMMANDS)[C]["outputs"]>) => Promise<unknown>
+    (inputs: InputValues<(typeof COMMANDS)[C]["inputs"]>, io: CheckoutIo<(typeof COMMANDS)[C]["outputs"]>) => Promise<unknown>
   >,
   summary: string,
 ): Subcommand => ({
@@ -176,8 +177,9 @@ const writingCommand = <C extends WritingCommand>(
     const declared = COMMANDS[name];
     const inputs = readInputs(declared.inputs);
     const outputs = writers<(typeof COMMANDS)[C]["outputs"]>(declared.outputs);
+    const checkout = (inputs as Readonly<Record<string, string>>)["CHECKOUT"];
     const { io, end } = liveCommandIo(inputs, outputs, (line) => outputs.appendLine("write_log.jsonl", line), {
-      dir: process.cwd(),
+      dir: checkout ?? process.cwd(),
       env: gitEnvironment(),
     });
     try {
@@ -298,6 +300,11 @@ export const SUBCOMMANDS: Readonly<Record<string, Subcommand>> = {
     "fix:bundle",
     async () => (await import("./fix/bundle.js")).bundle,
     "Bundle the agent's commits on a pull request's branch for the publish job (no model).",
+  ),
+  "fix:publish": writingCommand(
+    "fix:publish",
+    async () => (await import("./fix/publish.js")).publish,
+    "Push a fix run's commits and post its replies, comments and notes, then hand it on (no model).",
   ),
   "follow-ups:file": command(
     "follow-ups:file",

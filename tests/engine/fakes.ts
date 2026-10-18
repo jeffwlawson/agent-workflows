@@ -8,9 +8,9 @@
  * GitHub. A write past its limit is recorded as received, and refused before
  * it reaches the fake.
  */
-import { GitError } from "../../engine/git.js";
+import { GitError, type BundleHead, type GitReader } from "../../engine/git.js";
 import { GitHubError } from "../../engine/github.js";
-import type { CheckRun, CommitStatus, GitHubReader, PullRequest, WorkflowRun } from "../../engine/read.js";
+import type { CheckRun, CommitStatus, ConversationComment, GitHubReader, PullRequest, WorkflowRun } from "../../engine/read.js";
 import {
   createWriters,
   type Backend,
@@ -42,6 +42,8 @@ export interface FakeGitHub {
   readonly statuses: Map<string, CommitStatus[]>;
   /** Per pull request, each thread by id, with its replies and how it was resolved. */
   readonly threads: Map<number, Map<string, { replies: string[]; resolved?: string }>>;
+  /** Per pull request, the comments on its conversation, oldest first. */
+  readonly conversation: Map<number, ConversationComment[]>;
   /** Labels on issues that are not pull requests. */
   readonly issueLabels: Map<number, string[]>;
   /**
@@ -112,6 +114,7 @@ export const fakeGitHub = (pullRequests: readonly Partial<FakePullRequest>[] = [
   ),
   statuses: new Map(),
   threads: new Map(),
+  conversation: new Map(),
   issueLabels: new Map(),
   branches: new Map(),
   commits: new Map(),
@@ -167,6 +170,11 @@ export const fakeReader = (github: FakeGitHub): { readonly reader: GitHubReader;
       return github.reviews
         .filter((review) => review.pullRequestId === nodeId)
         .map((review) => ({ url: review.url, commit: review.commit, body: review.body, author: review.token }));
+    },
+    conversationComments: async (number) => {
+      reads.push({ method: "conversationComments", args: [number] });
+      pullRequestOf(github, number);
+      return [...(github.conversation.get(number) ?? [])];
     },
     pullRequestCommits: async (number) => {
       reads.push({ method: "pullRequestCommits", args: [number] });
@@ -414,5 +422,37 @@ export const fakeWriters = <T extends string>(
     writes,
     lines,
     entries: log.entries,
+  };
+};
+
+/**
+ * A git reader over what a test says a checkout holds: the heads each bundle
+ * carries, by path, where `verifyBundle` throws for a path not there, as git
+ * does for a bundle that does not verify; and the commits each commit builds
+ * on, by commit, each including itself, where `isAncestor` throws for a
+ * commit not there, as git does for one the repository lacks. Every call is
+ * recorded, in order.
+ */
+export const fakeGit = (holds: {
+  readonly bundles?: Readonly<Record<string, readonly BundleHead[]>>;
+  readonly history?: Readonly<Record<string, readonly string[]>>;
+}): { readonly git: GitReader; readonly calls: readonly string[] } => {
+  const calls: string[] = [];
+  return {
+    calls,
+    git: {
+      verifyBundle: async (path) => {
+        calls.push(`verifyBundle ${path}`);
+        const heads = holds.bundles?.[path];
+        if (heads === undefined) throw new GitError("error: could not verify the bundle, by the fake");
+        return heads;
+      },
+      isAncestor: async (ancestor, commit) => {
+        calls.push(`isAncestor ${ancestor} ${commit}`);
+        const history = holds.history?.[commit];
+        if (history === undefined) throw new GitError(`fatal: Not a valid commit name ${commit}, by the fake`);
+        return history.includes(ancestor);
+      },
+    },
   };
 };

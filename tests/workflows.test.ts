@@ -1342,8 +1342,8 @@ describe("PR workflows refuse a closed or merged PR", () => {
  * warning naming both commits: the review side settles on the tip itself.
  */
 describe("a run that pushed waits for the PR head before asking for a review", () => {
+  // Fix's wait is `fix:publish`'s (#468), held in `tests/fix/publish.test.ts`.
   const cases: readonly (readonly [string, string, string])[] = [
-    ["fix.yml", "Request re-review", "PR_NUMBER"],
     ["update-branch.yml", "Request a review of the resolution", "PR_NUMBER"],
     ["implement.yml", "Request review", "NEW_PR"],
     ["implement-prd.yml", "Request review", "PRD_PR"],
@@ -1467,11 +1467,10 @@ describe("agent-fix refuses an event head behind the live branch", () => {
     expect(run()).toContain('ls-remote "${GITHUB_SERVER_URL}/${GH_REPO}.git" "refs/heads/${BRANCH}"');
     expect(run()).toContain('[ "$live" != "$BRANCH_HEAD_SHA" ]');
     expect(run()).not.toContain("headRefOid");
-    // Still the SHA the push's lease pins, so the two agree on what "current" is.
+    // Still the SHA the push's lease pins, so the two agree on what "current"
+    // is: `fix:publish` leases on `HEAD_SHA`, the same event field (#468).
     expect(jobOf(FIX).env?.["BRANCH_HEAD_SHA"]).toBe("${{ github.event.pull_request.head.sha }}");
-    expect(stepsOf(FIX).find((s) => s.name === "Push branch")?.run ?? "").toContain(
-      '--force-with-lease="refs/heads/$BRANCH:$BRANCH_HEAD_SHA"',
-    );
+    expect(stepsOf(FIX).find((s) => s.id === "publish")?.env?.["HEAD_SHA"]).toBe("${{ github.event.pull_request.head.sha }}");
   });
 
   /**
@@ -2179,226 +2178,53 @@ describe("agent-review starts fix rounds itself, within the fix-round budget", (
 
 /**
  * The fix round closes itself out (#96): a push asks for the review of what it
- * pushed, instead of leaving a pull request whose verdict says "add agent:fix"
- * on a branch where the fix has already landed.
- *
- * This is the `agent:fix` → `agent:review` leg that `docs/parity.md` §10
- * already calls safe, and the bounds it rests on are the fix-round budget
- * (#201) and the early stop (#202): the review this asks for starts another
- * round only within the budget, and never after a round that closed none of
- * its findings (`deriveVerdict`). (Not "review adds no trigger label of its
- * own", which stopped being true at #102, and no longer the round rule, which
- * PRD #200 retired.)
- *
- * Nothing here has a runtime symptom when it breaks, which is why it is
- * asserted against the workflow text. A request that never fires leaves a
- * pushed fix sitting unreviewed and looking finished; one that fires on a run
- * that pushed *nothing* asks for a review of a branch that did not move, which
- * re-reviews the same commit and re-posts the verdict that already stood.
+ * pushed, a note asks for the review that rules on it (#213), and a run that
+ * did neither marks the pull request ready (#159). Since #468 that is
+ * `fix:publish`'s, last of its writes, and held in `tests/fix/publish.test.ts`
+ * by the writes it attempts. What is held here is the wiring the YAML still
+ * owns: the failure comment's remedy reads whether the run pushed or posted a
+ * note from what `fix:publish` reported, never from a file the agent wrote.
  */
 describe("agent-fix asks for the re-review its own push needs", () => {
   const FIX = path.join(WORKFLOW_DIR, "fix.yml");
   const stepNamed = (name: string): Step | undefined => stepsOf(FIX).find((s) => s.name === name);
-  const request = (): Step | undefined => stepNamed("Request re-review");
+  const glue = (): Step | undefined => stepsOf(FIX).find((s) => s.id === "published");
 
-  /**
-   * Both arms of the push write the output, not just the one that pushed. An
-   * unset output is indistinguishable from a step that never ran, and those two
-   * differ in exactly what this gate has to know.
-   */
-  it("reports whether the branch actually moved", () => {
-    const push = stepNamed("Push branch");
+  it("leaves the re-review and the ready mark to fix:publish, and no gh call in the YAML makes either", () => {
+    const text = fs.readFileSync(FIX, "utf8");
 
-    expect(push?.id).toBe("push");
-    expect(push?.run ?? "").toContain('echo "pushed=true"');
-    expect(push?.run ?? "").toContain('echo "pushed=false" >> "$GITHUB_OUTPUT"');
+    expect(text).not.toContain('--add-label "agent:review"');
+    expect(text).not.toContain("gh pr ready");
+    expect(stepNamed("Request re-review")).toBeUndefined();
+    expect(stepNamed("Mark PR ready for review")).toBeUndefined();
   });
 
   /**
-   * On a PRD PR, whatever it pushed (PRD #222): asserted with the PRD chain's
-   * other rules, below.
+   * `pushed` and `noted` are what `fix:publish` wrote into `published.json`,
+   * copied into step outputs by glue that runs `always()`, so a run that
+   * stopped after its push still says it pushed.
    */
-  it("requests the review only when the fix pushed something or posted a note", () => {
-    expect((request()?.if ?? "").replace(/\s+/g, " ").trim()).toBe(
-      "needs.fix.result == 'success' && success() && (steps.push.outputs.pushed == 'true' || steps.notes.outputs.posted == 'true' || (startsWith(github.event.pull_request.head.ref, 'agent/prd-') && steps.push.outputs.pushed == 'false'))",
-    );
-    expect(request()?.run ?? "").toContain('--add-label "agent:review"');
-  });
-
-  /**
-   * **A run that pushed nothing but posted an out-of-scope note asks for a
-   * re-review** (#213), because the review is what rules on the note: filed on
-   * merge, or dropped with a reason. Unreviewed, a note is filed by nobody,
-   * which is the loss jeffwlawson/mealie-mcp-server#82 showed.
-   *
-   * `posted` is written on both arms and is true only where a note actually
-   * went up: one that failed to post is one no review can rule on.
-   */
-  it("posts the notes in a step that says whether any went up", () => {
-    const notes = stepNamed("Post out-of-scope notes");
-
-    expect(notes?.id).toBe("notes");
-    expect(notes?.env?.["NOTES"]).toBe("${{ runner.temp }}/out_of_scope_notes.json");
-    expect(notes?.run ?? "").toContain("posted=false");
-    expect(notes?.run ?? "").toContain('echo "posted=${posted}" >> "$GITHUB_OUTPUT"');
-    const post = notes?.run ?? "";
-    expect(post.indexOf("posted=true")).toBeGreaterThan(post.indexOf('if gh pr comment "$PR_NUMBER"'));
-  });
-
-  /** A run that only posted notes moved no head, so it has no commit to wait for. */
-  it("waits for the pushed head only where it pushed", () => {
-    const run = request()?.run ?? "";
-
-    expect(request()?.env?.["PUSHED"]).toBe("${{ steps.push.outputs.pushed }}");
-    expect(run.indexOf('if [ "$PUSHED" = "true" ]; then')).toBeGreaterThan(-1);
-    expect(run.indexOf('if [ "$PUSHED" = "true" ]; then')).toBeLessThan(run.indexOf("--json headRefOid"));
-  });
-
-  /**
-   * **And the other arm hands the pull request back** (#159). Draft means the
-   * loop is still working (`docs/parity.md` §10), and since #102 review leaves
-   * a pull request whose automatic fix is about to start in draft, on the
-   * reading that the re-review at the end of the round marks it ready. A round
-   * that declines every finding pushes nothing and asks for nothing, so no
-   * re-review comes: without this arm that pull request is a draft with no
-   * state label, under a verdict saying a fix round started and a re-review
-   * follows.
-   *
-   * The two arms partition the success path on the same output, which is what
-   * makes "the loop marks it ready when it hands it back" a rule rather than
-   * two steps that happen not to overlap.
-   */
-  const ready = (): Step | undefined => stepNamed("Mark PR ready for review");
-
-  it("marks the pull request ready exactly where it asks for no review", () => {
-    expect((ready()?.if ?? "").replace(/\s+/g, " ").trim()).toBe(
-      "needs.fix.result == 'success' && success() && steps.push.outputs.pushed != 'true' && steps.notes.outputs.posted != 'true' && steps.nothing.outputs.nothing != 'true' && !startsWith(github.event.pull_request.head.ref, 'agent/prd-')",
-    );
-    expect(ready()?.run ?? "").toContain('gh pr ready "$PR_NUMBER"');
-  });
-
-  /**
-   * MUST use the loop's App or `AGENT_PAT`, for the reason review's own step
-   * does: `GITHUB_TOKEN` cannot convert a draft at all, whatever it is granted. A warning rather
-   * than a failure, also for review's reason — by this point every thread has
-   * its reply, and a pull request stuck in draft is not worth failing the run
-   * that answered them.
-   */
-  it("marks it ready with the loop's token, and warns rather than failing without the App or the PAT", () => {
-    expect(ready()?.env?.["GH_TOKEN"]).toBe("${{ steps.token.outputs.token }}");
-    expect(ready()?.run ?? "").toContain("::warning::");
-    expect(ready()?.run ?? "").not.toContain("|| true");
-  });
-
-  /**
-   * And a run that **failed** leaves it a draft, which is the half of the
-   * invariant that predates all of this: a draft agreeing with `agent:blocked`
-   * is the second signal that the pipeline did not complete. `success()` is
-   * what carries that, in both arms.
-   */
-  it("leaves a failed run's pull request in draft", () => {
-    expect(ready()?.if ?? "").toContain("success()");
-  });
-
-  /**
-   * Last of the success arms. The review reads the feedback on the pull
-   * request, so a request made before the replies and the top-level comments
-   * are posted starts a round that reads the round before it.
-   */
-  it("asks only once this run has said everything it has to say", () => {
-    const names = stepsOf(FIX).map((s) => s.name ?? "");
-
-    for (const earlier of [
-      "Reply to review threads",
-      "Post conversation comment outcomes",
-      "Post top-level comments",
-      "Post out-of-scope notes",
-    ]) {
-      // `toContain` first: a renamed step makes `indexOf` return -1, which every
-      // "is after" assertion passes vacuously.
-      expect(names).toContain(earlier);
-      expect(names.indexOf("Request re-review")).toBeGreaterThan(names.indexOf(earlier));
-    }
-  });
-
-  /**
-   * The same PAT requirement every label transition in this loop carries: a
-   * label added with `GITHUB_TOKEN` triggers nothing, so the pull request would
-   * carry `agent:review` and simply sit there — the silent no-op
-   * `implement-prd`'s two adds are warned about in the same words.
-   */
-  /**
-   * In the log **and** on the pull request (#105). A warning annotation is on a
-   * run nobody opens, and what it contradicts is the verdict line the
-   * maintainer acted on: "a re-review follows automatically" is what they were
-   * told, and without the PAT the label goes on and nothing fires.
-   */
-  it("says on the pull request, not only in the log, that no review will start", () => {
-    const run = request()?.run ?? "";
-
-    expect(request()?.env?.["GH_TOKEN"]).toBe("${{ steps.token.outputs.token }}");
-    expect(request()?.env?.["TOKEN_SOURCE"]).toBe("${{ steps.token.outputs.source }}");
-    expect(run).toContain("::warning::");
-    expect(run).toContain("gh pr comment");
-    expect(run).toContain("AGENT_PAT");
-    // Inside the arm that knows there is no PAT, not on every run: a comment
-    // on the pull requests where the re-review *did* start is noise on the
-    // channel this one needs to be read on.
-    const arm = run.slice(run.indexOf('if [ "$TOKEN_SOURCE" != "app" ] && [ "$TOKEN_SOURCE" != "pat" ]'));
-
-    expect(arm).toContain("gh pr comment");
-  });
-
-  /**
-   * …and fails the run when the add itself fails, naming the way out. The
-   * failure comment's generic remedy — re-add `agent:fix` — is the wrong one
-   * here: this run's threads are answered and resolved, so a second fix run
-   * finds nothing trusted to act on and refuses. Without the reason file the
-   * comment reads `(no reason file written)`, which is the signature of a run
-   * that never reached the runner at all.
-   */
-  it("fails with a reason a human can act on rather than swallowing the add", () => {
-    const run = request()?.run ?? "";
-
-    expect(run).toContain("set -euo pipefail");
-    expect(run).toContain("failure_reason.txt");
-    expect(run).toContain("exit 1");
-    // The two tolerances are removals (#236): this run's own label, which
-    // comes off before the next step's goes on, and the removal before the
-    // add. A label that is not there is not a failure.
-    expect(run.split("\n").filter((l) => l.includes("|| true"))).toEqual([
-      'gh pr edit "$PR_NUMBER" --remove-label "agent:fix" || true',
-      'gh pr edit "$PR_NUMBER" --remove-label "agent:review" || true',
-    ]);
+  it("copies what fix:publish reported into the outputs the failure comment reads", () => {
+    expect(glue()?.if).toBe("always()");
+    expect(glue()?.run ?? "").toContain('file="${RUNNER_TEMP}/publish/published.json"');
+    expect(glue()?.run ?? "").toContain(`jq -r '"pushed=\\(.pushed)", "noted=\\(.notesPosted)"' "$file" >> "$GITHUB_OUTPUT"`);
+    expect(COMMANDS["fix:publish"].outputs).toContain("published.json");
   });
 
   /**
    * And the comment that reports a failure stops contradicting the reason it
-   * just wrote (#105). The step above writes "re-adding `agent:fix` would …
-   * refuse" and the failure comment appended its fixed "Re-add `agent:fix` to
-   * retry" underneath it — one comment, two opposite instructions, on the one
-   * surface a blocked pull request is read from. Now the remedy comes from
-   * whether the branch moved, the way `update-branch`'s does.
+   * just wrote (#105): the remedy comes from whether the branch moved, the
+   * way `update-branch`'s does, and after a note from the review that rules
+   * on it (#213), never from re-adding `agent:fix`.
    */
-  it("does not tell a human to re-add the label after its threads are answered", () => {
-    const blocked = stepNamed("Mark blocked on failure");
-
-    expect(blocked?.env?.["PUSHED"]).toBe("${{ steps.push.outputs.pushed }}");
-    expect(blocked?.run ?? "").toContain('"$PUSHED" = "true"');
-  });
-
-  /**
-   * Nor after its out-of-scope notes are posted (#213): a second fix run would
-   * answer the same threads again, and what is missing is the review that
-   * rules on the notes.
-   */
-  it("sends a run that posted notes to the review, not back to the fix", () => {
+  it("does not tell a human to re-add the label after its threads are answered or its notes posted", () => {
     const blocked = stepNamed("Mark blocked on failure");
     const run = blocked?.run ?? "";
-    const arm = run.slice(run.indexOf('elif [ "$NOTED" = "true" ]; then'));
 
-    expect(blocked?.env?.["NOTED"]).toBe("${{ steps.notes.outputs.posted }}");
-    expect(arm).toContain("add \\`agent:review\\`");
+    expect(blocked?.env?.["PUSHED"]).toBe("${{ steps.published.outputs.pushed }}");
+    expect(blocked?.env?.["NOTED"]).toBe("${{ steps.published.outputs.noted }}");
+    expect(run).toContain('"$PUSHED" = "true"');
+    expect(run.slice(run.indexOf('elif [ "$NOTED" = "true" ]; then'))).toContain("add \\`agent:review\\`");
   });
 });
 
@@ -2642,23 +2468,19 @@ describe("a PRD PR's draft state and fix rounds", () => {
     }
   });
 
-  it("fix never marks a PRD PR ready", () => {
-    expect(flat(fixStep("Mark PR ready for review")?.if)).toContain(
-      "!startsWith(github.event.pull_request.head.ref, 'agent/prd-')",
-    );
-    expect([...fs.readFileSync(FIX, "utf8").matchAll(/gh pr ready/g)]).toHaveLength(1);
-  });
-
   /**
-   * `== 'false'`, not `!= 'true'`: the push writes its output on both arms,
-   * and unset is a run that never reached it, a refusal or one with nothing to
-   * do, which asks for nothing.
+   * Fix's are `fix:publish`'s (#468): on a PRD PR every run that got as far
+   * as the push asks for a review, whatever it pushed, and none is marked
+   * ready, which `tests/fix/publish.test.ts` holds. What the YAML owns is
+   * telling it the head branch, from the event, and marking nothing itself.
    */
-  it("fix asks for a re-review on a PRD PR whatever it pushed", () => {
-    expect(flat(fixStep("Request re-review")?.if)).toContain(
-      "(startsWith(github.event.pull_request.head.ref, 'agent/prd-') && steps.push.outputs.pushed == 'false')",
-    );
-    expect(fixStep("Request re-review")?.run ?? "").toContain('--add-label "agent:review"');
+  it("fix's command is told the head branch, and fix's YAML marks nothing ready and asks for no review", () => {
+    const text = fs.readFileSync(FIX, "utf8");
+
+    expect(jobNamed(FIX, "publish").env?.["BRANCH"]).toBe("${{ github.event.pull_request.head.ref }}");
+    expect(fixStep("Publish the fix")?.run ?? "").toMatch(/ agent-workflows fix:publish$/);
+    expect(text).not.toContain("gh pr ready");
+    expect(text).not.toContain('--add-label "agent:review"');
   });
 });
 
@@ -2696,35 +2518,27 @@ describe("the reviewer closes a thread, and the fix run never does", () => {
   /**
    * And it still replies to every thread, which is the half that stays. "I
    * looked and declined" is worth saying out loud, and the reply is what the
-   * next review reads before it rules.
+   * next review reads before it rules. Since #468 the replies are
+   * `fix:publish`'s, `reply` writes from the runner's `thread_outcomes.json`,
+   * and its limits name no resolve (`tests/fix/publish.test.ts`); no step of
+   * the YAML makes a reply at all.
    */
-  it("still replies in every thread the fix run was shown", () => {
-    const reply = stepsOf(FIX).find((s) => s.name === "Reply to review threads");
-
-    expect(reply?.run ?? "").toContain(REPLY_MUTATION);
-    expect(reply?.env?.["OUTCOMES"]).toBe("${{ runner.temp }}/thread_outcomes.json");
+  it("still replies in every thread the fix run was shown, from fix:publish", () => {
+    expect(fs.readFileSync(FIX, "utf8")).not.toContain(REPLY_MUTATION);
+    expect(RUNNERS.fix.outputs).toContain("thread_outcomes.json");
+    expect(COMMANDS["fix:publish"].inputs.FIX_DIR.files).toHaveProperty("thread_outcomes.json");
   });
 
   /**
    * **And the conversation gets the same report** (#104). The other surface has
    * no threads to reply into, so the outcomes are one comment on the pull
-   * request, composed by the runner and posted here.
-   *
-   * The empty case is the one to get right, and it is why this reads `-s` rather
-   * than `-f`: the runner writes the file on every run, so an empty file means
-   * "no conversation comments" and an absent one means the runner never got
-   * here. Posting an empty body would put a bot comment on every fix run, which
-   * is the noise the top-level cap exists against.
+   * request, rendered by `fix:publish` from the runner's data, each comment's
+   * author and link read from GitHub (#468).
    */
   it("records what it did with the conversation comments too", () => {
-    const record = stepsOf(FIX).find((s) => s.name === "Post conversation comment outcomes");
-
-    expect(record?.env?.["RECORD"]).toBe("${{ runner.temp }}/conversation_outcomes.md");
-    expect(record?.run ?? "").toContain('[ ! -s "$RECORD" ]');
-    expect(record?.run ?? "").toContain("gh pr comment");
-    // A failure to post is reported and does not fail the run, as the sibling
-    // reporting steps are: the fix is already pushed by this point.
-    expect(record?.["continue-on-error"]).toBe(true);
+    expect(RUNNERS.fix.outputs).toContain("conversation_outcomes.json");
+    expect(COMMANDS["fix:publish"].inputs.FIX_DIR.files).toHaveProperty("conversation_outcomes.json");
+    expect(fs.readFileSync(FIX, "utf8")).not.toContain("conversation_outcomes.md");
   });
 
   /**
@@ -6728,10 +6542,14 @@ describe("the runner package is installed from GitHub Packages", () => {
   // call, so two lookups never return the same object and `indexOf` finds
   // nothing.
   //
-  // The last of each: review's job runs `review:gate` on a registry and a
-  // Node of its own before the checkout (#420), and the runner's are after.
-  const authIndex = (file: string): number =>
-    stepsOf(file).findLastIndex((s) => (s.with ?? {})["registry-url"] !== undefined);
+  // The last of each before the runner: review's job runs `review:gate` on a
+  // registry and a Node of its own before the checkout (#420), and the
+  // runner's are after; fix's publish job sets up its own for `fix:publish`
+  // after the runner, on a runner of its own (#468).
+  const authIndex = (file: string): number => {
+    const runner = runnerStepIndex(file);
+    return stepsOf(file).findLastIndex((s, i) => (runner < 0 || i < runner) && (s.with ?? {})["registry-url"] !== undefined);
+  };
 
   const authStep = (file: string): Step | undefined => stepsOf(file)[authIndex(file)];
 
@@ -7931,13 +7749,13 @@ describe("a trigger label is on while its run works, and off when it ends", () =
   /**
    * And a hand-off takes the run's own label off before it adds the next
    * step's, in the same step and only on its success path, so the issue or
-   * pull request never carries both.
+   * pull request never carries both. Fix's is `fix:publish`'s (#468), whose
+   * tests hold the order of its writes.
    */
   it.each([
     ["implement.yml", "Request review", 'gh issue edit "$ISSUE_NUMBER" --remove-label "agent:implement"', 'gh pr edit "$NEW_PR" --add-label "agent:review"'],
     ["implement-prd.yml", "Request review", 'gh issue edit "$ISSUE_NUMBER" --remove-label "agent:implement"', 'gh pr edit "$PRD_PR" --add-label "agent:review"'],
     ["implement-prd.yml", "handover", 'gh issue edit "$ISSUE_NUMBER" --remove-label "agent:implement"', 'gh pr edit "$PRD_PR" --add-label "agent:review"'],
-    ["fix.yml", "Request re-review", 'gh pr edit "$PR_NUMBER" --remove-label "agent:fix"', 'gh pr edit "$PR_NUMBER" --add-label "agent:review"'],
     ["update-branch.yml", "Request a review of the resolution", 'gh pr edit "$PR_NUMBER" --remove-label "agent:update-branch"', 'gh pr edit "$PR_NUMBER" --add-label "agent:review"'],
   ])("%s: %s takes its own label off before it adds the next", (name, step, removal, add) => {
     const found = stepsOf(fileOf(name)).find((s) => s.name === step || s.id === step);
@@ -8081,45 +7899,16 @@ describe("every failure and refusal says so in one of two patterns", () => {
 
   /**
    * A fix with nothing to act on used to fail through the runner and add
-   * `agent:blocked`. Now the runner exits 0 with a file saying so, and the
-   * workflow posts a note and goes on to end green.
+   * `agent:blocked`. Now the runner exits 0 with a file saying so, and
+   * `fix:publish` posts a note, pushes nothing, hands nothing back and asks
+   * for nothing (#468; `tests/fix/publish.test.ts`). What the YAML owns is
+   * handing the file over and reading the runner's success as one.
    */
-  it("fix: a run with nothing to act on posts a note, blocks nothing and ends green", () => {
-    const steps = stepsOf(FIX);
-    const index = steps.findIndex((s) => s.name === "Say there was nothing to do");
-    const step = steps[index];
-    const run = step?.run ?? "";
-
-    expect(step?.if).toBe("needs.fix.result == 'success' && success()");
-    expect(index).toBeGreaterThan(steps.findIndex((s) => s.name === "Run fix agent"));
-    expect(index).toBeLessThan(steps.findIndex((s) => s.name === "Push branch"));
-    expect(run).toContain('[ -f "${RUNNER_TEMP}/nothing_to_do.txt" ] || exit 0');
-    expect(run).toContain(
-      '--body "**\\`agent:fix\\` had nothing to do:** There are no open review findings or comments for it to act on."',
-    );
-    expect(run).not.toContain("agent:blocked");
-    expect(run).not.toContain("exit 1");
-    expect(run).toMatch(/\|\| echo "::warning::[^"]+"$/m);
-  });
-
-  /**
-   * But nothing to do is not a round that ended: nothing was read, so nothing
-   * was decided. Its output skips the push, which leaves `pushed` unset, so the
-   * pull request is not handed back as ready, and on a PRD PR no review is
-   * asked for, since that arm is gated on `pushed == 'false'`.
-   */
-  it("fix: a run with nothing to act on pushes nothing, hands nothing back and asks for nothing", () => {
-    const steps = stepsOf(FIX);
-    const step = (name: string): Step | undefined => steps.find((s) => s.name === name);
-    const skip = "steps.nothing.outputs.nothing != 'true'";
-
-    expect(step("Say there was nothing to do")?.id).toBe("nothing");
-    expect(step("Say there was nothing to do")?.run ?? "").toContain('echo "nothing=true" >> "$GITHUB_OUTPUT"');
-    expect(step("Push branch")?.if ?? "").toContain(skip);
-    expect(step("Mark PR ready for review")?.if ?? "").toContain(skip);
-    // The PRD PR's re-review reads only `pushed`, which a skipped push never writes.
-    expect(step("Request re-review")?.if ?? "").toContain("steps.push.outputs.pushed == 'false'");
-    expect(step("Request re-review")?.if ?? "").not.toContain("pushed != ");
+  it("fix: a run with nothing to act on is fix:publish's to say, and blocks nothing", () => {
+    expect(RUNNERS.fix.outputs).toContain("nothing_to_do.txt");
+    expect(COMMANDS["fix:publish"].inputs.FIX_DIR.files).toHaveProperty("nothing_to_do.txt");
+    expect(fs.readFileSync(FIX, "utf8")).not.toContain("had nothing to do");
+    expect(stepsOf(FIX).find((s) => s.name === "Mark blocked on failure")?.if).toContain("needs.fix.result != 'success'");
   });
 
   /**
@@ -8750,9 +8539,11 @@ describe("a split run keeps every write off the agent's runner", () => {
         readonly bundle?: string;
         readonly bundleIf: string;
         readonly branch: string;
-        readonly ancestors: readonly string[];
-        readonly pushed: string;
-        readonly blocks: number;
+        /**
+         * The shell push and the checks before it, where a shell step pushes:
+         * fix's is `fix:publish` (#468), whose tests hold its bundle checks.
+         */
+        readonly push?: { readonly ancestors: readonly string[]; readonly pushed: string; readonly blocks: number };
         readonly patJobs: readonly string[];
       }
     >
@@ -8765,9 +8556,7 @@ describe("a split run keeps every write off the agent's runner", () => {
       bundle: 'git bundle create "${RUNNER_TEMP}/branch.bundle" "refs/heads/${BRANCH}" "^refs/heads/${BASE_REF}"',
       bundleIf: "success()",
       branch: "BRANCH",
-      ancestors: ["$BASE_SHA"],
-      pushed: 'push --force origin "$BRANCH"',
-      blocks: 5,
+      push: { ancestors: ["$BASE_SHA"], pushed: 'push --force origin "$BRANCH"', blocks: 5 },
       patJobs: ["publish"],
     },
     "fix.yml": {
@@ -8779,10 +8568,6 @@ describe("a split run keeps every write off the agent's runner", () => {
       // However the job ended (#303): a stopped run's commits are rescued.
       bundleIf: "always()",
       branch: "BRANCH",
-      ancestors: ["$BRANCH_HEAD_SHA"],
-      pushed: 'push --force-with-lease="refs/heads/$BRANCH:$BRANCH_HEAD_SHA" origin "$BRANCH"',
-      // No "finished without handing over": no bundle is no commits.
-      blocks: 4,
       patJobs: ["publish"],
     },
     "update-branch.yml": {
@@ -8793,9 +8578,7 @@ describe("a split run keeps every write off the agent's runner", () => {
       bundle: 'git bundle create "${RUNNER_TEMP}/branch.bundle" "refs/heads/${BRANCH}" "^${BRANCH_HEAD_SHA}" "^${BASE_SHA}"',
       bundleIf: "success()",
       branch: "BRANCH",
-      ancestors: ["$BRANCH_HEAD_SHA", "$BASE_SHA"],
-      pushed: 'push --force-with-lease="refs/heads/$BRANCH:$BRANCH_HEAD_SHA" origin "$BRANCH"',
-      blocks: 5,
+      push: { ancestors: ["$BRANCH_HEAD_SHA", "$BASE_SHA"], pushed: 'push --force-with-lease="refs/heads/$BRANCH:$BRANCH_HEAD_SHA" origin "$BRANCH"', blocks: 5 },
       patJobs: ["publish"],
     },
     "implement-prd.yml": {
@@ -8807,9 +8590,7 @@ describe("a split run keeps every write off the agent's runner", () => {
       // However the job ended (#303): a stopped run's commits are rescued.
       bundleIf: "always()",
       branch: "PRD_BRANCH",
-      ancestors: ["$BASE_SHA"],
-      pushed: 'push origin "$PRD_BRANCH"',
-      blocks: 5,
+      push: { ancestors: ["$BASE_SHA"], pushed: 'push origin "$PRD_BRANCH"', blocks: 5 },
       // The catch-up pushes the default branch's merge before the agent runs,
       // on a runner of its own.
       patJobs: ["catch_up", "publish"],
@@ -8846,8 +8627,10 @@ describe("a split run keeps every write off the agent's runner", () => {
 
   it.each(splits)("%s: runs the agent in its own job and nowhere else", (_, file) => {
     const { agent } = rolesOf(file);
+    // The runner, by its name: a command such as `fix:publish` runs in the
+    // publish job, and starts no agent.
     const runs = (id: string): boolean =>
-      (jobNamed(file, id).steps ?? []).some((s) => (s.run ?? "").includes("-- agent-workflows "));
+      (jobNamed(file, id).steps ?? []).some((s) => (s.run ?? "").trim().endsWith(`-- agent-workflows ${agent}`));
 
     for (const id of SPLIT_RUNS[file] ?? []) expect(runs(id), id).toBe(id === agent);
   });
@@ -8927,8 +8710,8 @@ describe("a split run keeps every write off the agent's runner", () => {
    * read. Every check precedes the push, and none of them reads the agent's
    * job.
    */
-  it.each(splits)("%s: checks the bundle before it pushes", (name, file) => {
-    const spec = specOf(name);
+  it.each(splits.filter(([name]) => specOf(name).push !== undefined))("%s: checks the bundle before it pushes", (name, file) => {
+    const spec = { ...specOf(name), ...specOf(name).push! };
     const push = (jobNamed(file, rolesOf(file).publish).steps ?? []).find((s) => s.id === "push");
     const run = push?.run ?? "";
     const at = (needle: string): number => {
@@ -8961,8 +8744,12 @@ describe("a split run keeps every write off the agent's runner", () => {
     expect(jobNamed(path.join(WORKFLOW_DIR, "update-branch.yml"), "gate").outputs?.["base"]).toBe("${{ steps.merge.outputs.base_sha }}");
     expect(pushEnv(path.join(WORKFLOW_DIR, "implement-prd.yml"))["BASE_SHA"]).toBe("${{ needs.catch_up.outputs.head }}");
     expect(jobNamed(path.join(WORKFLOW_DIR, "implement-prd.yml"), "catch_up").outputs?.["head"]).toBe("${{ steps.tip.outputs.sha }}");
-    // fix's is the event's head, which the gate confirmed is the branch's.
+    // fix's is the event's head, which the gate confirmed is the branch's,
+    // handed to `fix:publish` as `HEAD_SHA` (#468).
     expect(jobNamed(path.join(WORKFLOW_DIR, "fix.yml"), "publish").env?.["BRANCH_HEAD_SHA"]).toBe("${{ github.event.pull_request.head.sha }}");
+    expect((jobNamed(path.join(WORKFLOW_DIR, "fix.yml"), "publish").steps ?? []).find((s) => s.id === "publish")?.env?.["HEAD_SHA"]).toBe(
+      "${{ github.event.pull_request.head.sha }}",
+    );
   });
 
   it.each(splits)("%s: spends the PAT only in the jobs that write and run no agent", (name, file) => {
@@ -9094,7 +8881,8 @@ describe("the loop resolves its token in the jobs that write", () => {
   /**
    * Before the job's first use of it. A gate-side or publish job resolves it
    * at its start, where nothing runs before it but the fetches of what the
-   * jobs ahead handed over, and a publish job `always()`, since it also
+   * jobs ahead handed over, and fix's one checkout (#468), and a publish job
+   * `always()`, since it also
    * reports a failed agent and takes the trigger label off after one.
    *
    * Review's advance job resolves it right after Node, ahead of the
@@ -9124,7 +8912,9 @@ describe("the loop resolves its token in the jobs that write", () => {
         expect(steps[at]?.if).toBeUndefined();
         continue;
       }
-      for (const before of steps.slice(0, at)) expect(before.uses ?? "", `${id}: ${before.name}`).toMatch(/^actions\/download-artifact@/);
+      // Fix's publish job checks out once, at its start, ahead of both (#468).
+      const ahead = file.endsWith("fix.yml") ? /^actions\/(?:checkout|download-artifact)@/ : /^actions\/download-artifact@/;
+      for (const before of steps.slice(0, at)) expect(before.uses ?? "", `${id}: ${before.name}`).toMatch(ahead);
       expect(steps[at]?.if, id).toBe(id === "publish" ? "always()" : undefined);
     }
   });
@@ -9175,10 +8965,11 @@ describe("the loop resolves its token in the jobs that write", () => {
     );
     const writes = Object.values(workflowOf(file).jobs)
       .flatMap((job) => job.steps ?? [])
-      .filter((s) => /\bpush (--force )?origin\b|\bgh pr create\b|\bgh pr ready\b/.test(codeOf(s)) || handOff.test(codeOf(s)) || INLINE.test(codeOf(s)));
+      .filter((s) => /\bpush (--force |--force-with-lease=\S+ )?origin\b|\bgh pr create\b|\bgh pr ready\b/.test(codeOf(s)) || handOff.test(codeOf(s)) || INLINE.test(codeOf(s)));
 
     // Review's writes are all its commands' (#417, #419, #423), each handed
-    // the resolved token as `LOOP_TOKEN`, which the test above holds.
+    // the resolved token as `LOOP_TOKEN`, which the test above holds, and so
+    // are fix's but the rescue's push (#468).
     if (file === REVIEW) {
       expect(writes).toEqual([]);
       return;
@@ -9202,7 +8993,7 @@ describe("the loop resolves its token in the jobs that write", () => {
         .split("\n")
         .filter((l) => !INLINE.test(l))
         .join("\n");
-      if (/\bpush (--force )?origin\b|\bgh pr create\b|\bgh pr ready\b/.test(bare) || handOff.test(bare)) {
+      if (/\bpush (--force |--force-with-lease=\S+ )?origin\b|\bgh pr create\b|\bgh pr ready\b/.test(bare) || handOff.test(bare)) {
         const variable = /\bpush\b/.test(bare) ? "PUSH_TOKEN" : "GH_TOKEN";
         expect(step.env?.[variable], `${step.name}: ${variable}`).toBe(TOKEN);
       }
@@ -9429,12 +9220,13 @@ describe("no checkout an agent runs in leaves a credential behind", () => {
         expect(auth, `${step.name}: ${line.trim()}`).toBeDefined();
 
         // A push spends the push token from its own step's env; a fetch the
-        // job's read token, which is never the PAT.
+        // job's read token, which is never the PAT, from the job's env or,
+        // where the job sets no token (fix's publish job, #468), its step's.
         const source = verb === "push" ? "PUSH_TOKEN" : "GH_TOKEN";
         expect(run).toContain(`${auth}=$(printf 'x-access-token:%s' "$${source}" | base64 | tr -d '\\n')`);
         expect(run).toContain(`echo "::add-mask::\${${auth}}"`);
         if (verb === "push") expect(step.env?.["PUSH_TOKEN"], step.name).toBe(PUSH_TOKEN);
-        else expect(job.env?.["GH_TOKEN"]).toBe("${{ secrets.GITHUB_TOKEN }}");
+        else expect(step.env?.["GH_TOKEN"] ?? job.env?.["GH_TOKEN"], step.name).toBe("${{ secrets.GITHUB_TOKEN }}");
       }
     }
   });
@@ -9468,13 +9260,15 @@ describe("no checkout an agent runs in leaves a credential behind", () => {
    * Moving the token changed how each push authenticates and nothing about what
    * it pushes: implement's new branch is forced, fix's and update-branch's
    * pushes keep the lease on the head the run started from, and the PRD
-   * branch's stay plain (asserted with the chain, above).
+   * branch's stay plain (asserted with the chain, above). Fix's push to the
+   * pull request is `fix:publish`'s since #468, a `pushRef` leased on
+   * `HEAD_SHA`, which `tests/fix/publish.test.ts` and the engine's git tests
+   * hold; its rescue is still shell.
    */
   it.each([
     [IMPLEMENT, 'push --force origin "$BRANCH"'],
     [
       path.join(WORKFLOW_DIR, "fix.yml"),
-      'push --force-with-lease="refs/heads/$BRANCH:$BRANCH_HEAD_SHA" origin "$BRANCH"',
       // The rescue (#303), to a side branch and never the pull request's.
       'push --force-with-lease="refs/heads/${RESCUE_BRANCH}:${current}" origin "${tip}:refs/heads/${RESCUE_BRANCH}"',
     ],
@@ -9692,10 +9486,14 @@ describe("rescue and resume for fix and implement-prd", () => {
       prepare: "Prepare branch and make the PR base available for diffing",
       // `fix:bundle` (#472).
       bundle: "Bundle the agent's commits",
+      // What `fix:publish` reported it pushed (#468).
       condition:
-        "always() && needs.gate.outputs.refused == 'false' && (cancelled() || failure() || needs.fix.result == 'failure' || needs.fix.result == 'cancelled') && steps.push.outputs.pushed != 'true'",
-      // Not on a nothing-to-do run, which exits before it reads the rescue.
-      deleteIf: "needs.fix.result == 'success' && success() && steps.nothing.outputs.nothing != 'true'",
+        "always() && needs.gate.outputs.refused == 'false' && (cancelled() || failure() || needs.fix.result == 'failure' || needs.fix.result == 'cancelled') && steps.published.outputs.pushed != 'true'",
+      // As data, for `fix:publish` to say (#468).
+      ignored: "rescue_ignored.json",
+      // `fix:publish` deletes the rescue and says it was set aside (#468):
+      // `tests/fix/publish.test.ts` holds both.
+      deleteIf: "",
       label: "agent:fix",
     },
     {
@@ -9706,6 +9504,7 @@ describe("rescue and resume for fix and implement-prd", () => {
       bundle: "Bundle the branch",
       condition:
         "always() && needs.gate.outputs.refused == 'false' && needs.gate.outputs.build == 'true' && (cancelled() || failure() || needs.implement-prd.result == 'failure' || needs.implement-prd.result == 'cancelled') && steps.push.outputs.head == ''",
+      ignored: "rescue_ignored.md",
       deleteIf: "needs.implement-prd.result == 'success' && success()",
       label: "agent:implement",
     },
@@ -9761,11 +9560,13 @@ describe("rescue and resume for fix and implement-prd", () => {
     const upload = steps.find((s) => s.name === "Hand the branch to the publish job");
 
     expect(steps.find((s) => s.name === c.bundle)?.if).toBe("always()");
-    expect(upload?.with?.["path"]).toContain("${{ runner.temp }}/rescue_ignored.md");
+    expect(upload?.with?.["path"]).toContain(`\${{ runner.temp }}/${c.ignored}`);
     expect(code(steps[named(steps, c.prepare)])).toContain(`"+refs/heads/\${RESCUE_BRANCH}:${rescueRef("${RESCUE_BRANCH}")}"`);
   });
 
-  it.each(CASES)("$agent: deletes the rescue branch once a run succeeds, after its push", (c) => {
+  const SHELL = CASES.filter((c) => c.deleteIf !== "");
+
+  it.each(SHELL)("$agent: deletes the rescue branch once a run succeeds, after its push", (c) => {
     const steps = jobNamed(c.file, "publish").steps ?? [];
     const at = named(steps, "Delete the rescue branch");
     const run = code(steps[at]);
@@ -9775,11 +9576,26 @@ describe("rescue and resume for fix and implement-prd", () => {
     expect(run).toContain('gh api --method DELETE "repos/{owner}/{repo}/git/refs/heads/${RESCUE_BRANCH}"');
   });
 
-  it.each(CASES)("$agent: says so where it set a rescue aside, however the run ends", (c) => {
+  it.each(SHELL)("$agent: says so where it set a rescue aside, however the run ends", (c) => {
     const step = (jobNamed(c.file, "publish").steps ?? []).find((s) => s.name === "Say the rescue was set aside");
 
     expect(step?.if).toBe("always()");
     expect(code(step)).toContain('note="${RUNNER_TEMP}/rescue_ignored.md"');
+  });
+
+  /**
+   * Fix's two are `fix:publish`'s (#468): it is told the rescue branch and
+   * reads the runner's note as data, and it runs on every ending of the
+   * agent's job, so the note is said however the run ends.
+   */
+  it("fix: hands fix:publish the rescue branch and the note, however the agent's job ended", () => {
+    const publish = (jobNamed(path.join(WORKFLOW_DIR, "fix.yml"), "publish").steps ?? []).find((s) => s.id === "publish");
+
+    expect(COMMANDS["fix:publish"].inputs).toHaveProperty("RESCUE_BRANCH");
+    expect(COMMANDS["fix:publish"].inputs.FIX_DIR.files).toHaveProperty("rescue_ignored.json");
+    expect(publish?.env?.["AGENT_RESULT"]).toBe("${{ needs.fix.result }}");
+    expect(publish?.if ?? "").toMatch(/^always\(\) /);
+    expect(publish?.if ?? "").not.toContain("needs.fix.result == 'success'");
   });
 });
 
@@ -10029,35 +9845,161 @@ describe("fix's agent job bundles its commits with fix:bundle", () => {
   });
 
   /**
-   * The runner's declared files and `fix:bundle`'s, under `bundle/`, and no
-   * others: until `fix:publish` declares what it reads (#468), the hand-over
-   * is held to everything its two producers declare.
+   * Exactly the files `fix:publish` declares it reads (#468), from each of its
+   * two directories: the runner's at `runner.temp`, and `fix:bundle`'s under
+   * `bundle/`. Beside them, the two producers' reason files, which the
+   * publish job's failure comment reads until `fix:conclude` declares them.
    */
-  it("hands over exactly the runner's declared files and fix:bundle's", () => {
-    const every = (producer: string, outputs: readonly string[]): DirectoryInput => ({
-      required: true,
-      producer,
-      files: Object.fromEntries(outputs.map((file) => [file, "sometimes"] as const)),
+  it("hands over exactly the files fix:publish declares, from both directories", () => {
+    const withReason = (input: DirectoryInput): DirectoryInput => ({
+      ...input,
+      files: { ...input.files, "failure_reason.txt": "sometimes" },
     });
+    const { FIX_DIR, BUNDLE_DIR } = COMMANDS["fix:publish"].inputs;
 
-    expectHandsOver(steps()[index("Hand the branch to the publish job")], every("fix", RUNNERS.fix.outputs), {
-      bundle: every("fix:bundle", COMMANDS["fix:bundle"].outputs),
-    });
+    expect(FIX_DIR.producer).toBe("fix");
+    expect(BUNDLE_DIR.producer).toBe("fix:bundle");
+    expectHandsOver(steps()[index("Hand the branch to the publish job")], withReason(FIX_DIR), { bundle: withReason(BUNDLE_DIR) });
   });
 
   /**
-   * The download puts the artifact in `runner.temp`, so the publish job's
-   * push and rescue read the bundle where `fix:bundle` wrote it, under
-   * `bundle/`, until `fix:publish` and `fix:conclude` replace them.
+   * The download puts the artifact in `runner.temp`, so `fix:publish` reads
+   * the runner's files there and the bundle where `fix:bundle` wrote it,
+   * under `bundle/`, and the rescue reads the same bundle, until
+   * `fix:conclude` replaces it.
    */
-  it("has the publish job's push and rescue read the bundle where the download puts it", () => {
+  it("has fix:publish and the rescue read the bundle where the download puts it", () => {
     const publish = jobNamed(FIX, "publish").steps ?? [];
     const download = publish.find((s) => s.name === "Fetch what the agent handed over");
+    const command = publish.find((s) => s.id === "publish");
 
     expect(download?.with?.["path"]).toBe("${{ runner.temp }}");
-    for (const id of ["push", "rescue"]) {
-      expect(publish.find((s) => s.id === id)?.run ?? "", id).toContain('bundle="${RUNNER_TEMP}/bundle/branch.bundle"');
+    expect(command?.env?.["FIX_DIR"]).toBe("${{ runner.temp }}");
+    expect(command?.env?.["BUNDLE_DIR"]).toBe("${{ runner.temp }}/bundle");
+    expect(publish.find((s) => s.id === "rescue")?.run ?? "").toContain('bundle="${RUNNER_TEMP}/bundle/branch.bundle"');
+  });
+});
+
+/**
+ * `fix:publish` (#468): the publish job's success arm, a command of the
+ * package. What its writes are and in what order is held in
+ * `tests/fix/publish.test.ts`; what is held here is what the YAML owns: the
+ * job's one checkout at its start, its grant, which step is handed which
+ * token, and what the command is told.
+ */
+describe("fix's publish job posts the round with fix:publish", () => {
+  const FIX = path.join(WORKFLOW_DIR, "fix.yml");
+  const job = (): Job => jobNamed(FIX, "publish");
+  const steps = (): readonly Step[] => job().steps ?? [];
+  const command = (): Step | undefined => steps().find((s) => s.id === "publish");
+  const VERSION = PIN.slice(1);
+
+  it("runs fix:publish, from RUNNER_TEMP, at the pin", () => {
+    expect(command()?.run).toBe(
+      `npm exec --prefix "$RUNNER_TEMP" --yes --package=@jeffwlawson/agent-workflows@${VERSION} -- agent-workflows fix:publish`,
+    );
+    expect(command()?.["working-directory"]).toBe("${{ runner.temp }}");
+    expect(command()?.env?.["CHECKOUT"]).toBe("${{ github.workspace }}");
+  });
+
+  /**
+   * One checkout, the job's first step, of the head the run started from,
+   * with no credential left in it, wherever the gate claimed the run: the
+   * rescue's own mid-job checkout is gone.
+   */
+  it("checks out once, at its start, without credentials", () => {
+    const checkouts = steps().filter((s) => (s.uses ?? "").startsWith("actions/checkout@"));
+
+    expect(checkouts).toHaveLength(1);
+    expect(steps()[0]?.uses ?? "").toMatch(/^actions\/checkout@/);
+    expect(steps()[0]?.if).toBe("needs.gate.outputs.refused == 'false'");
+    expect(steps()[0]?.with).toMatchObject({
+      ref: "${{ github.event.pull_request.head.sha }}",
+      "fetch-depth": 0,
+      "persist-credentials": false,
+    });
+  });
+
+  /** As review's posting job (*Authenticate to GitHub Packages*): a Node and the registry before the command. */
+  it("sets up Node and the package's registry before the command, and may read the package", () => {
+    const node = steps().findIndex((s) => (s.uses ?? "").startsWith("actions/setup-node@"));
+
+    expect(job().permissions).toEqual({ contents: "write", "pull-requests": "write", packages: "read" });
+    expect(steps()[node]?.with).toMatchObject({
+      "node-version": "24",
+      "registry-url": "https://npm.pkg.github.com",
+      scope: "@jeffwlawson",
+      "package-manager-cache": false,
+    });
+    expect(node).toBeLessThan(steps().findIndex((s) => s.id === "publish"));
+    expect(command()?.env?.["NODE_AUTH_TOKEN"]).toBe("${{ secrets.GITHUB_TOKEN }}");
+  });
+
+  /**
+   * No job-level `GH_TOKEN`, and the loop's token to `fix:publish` alone of
+   * the steps that replace the success arm. The rescue and the failure
+   * comment, still shell until `fix:conclude`, are handed theirs themselves.
+   */
+  it("sets no job-level token, and hands the loop's to fix:publish and the rescue alone", () => {
+    expect(job().env ?? {}).not.toHaveProperty("GH_TOKEN");
+    const holding = steps()
+      .filter((s) => JSON.stringify(s.env ?? {}).includes("steps.token.outputs.token"))
+      .map((s) => s.id ?? s.name);
+
+    expect(holding).toEqual(["publish", "rescue"]);
+    expect(command()?.env).toMatchObject({
+      GH_TOKEN: "${{ secrets.GITHUB_TOKEN }}",
+      LOOP_TOKEN: "${{ steps.token.outputs.token }}",
+      LOOP_TOKEN_SOURCE: "${{ steps.token.outputs.source }}",
+    });
+    for (const step of steps()) {
+      const tokens = Object.keys(step.env ?? {}).filter((name) => /TOKEN/.test(name));
+      if (tokens.length === 0) continue;
+      expect(["publish", "rescue", "Mark blocked on failure", "Always remove the trigger label"], step.name).toContain(step.id ?? step.name);
     }
+  });
+
+  /**
+   * Its inputs, each set by the step or its job, and the head the bundle has
+   * to build on from the label's event, never from a file the agent's job
+   * wrote (ADR 0006).
+   */
+  it("sets exactly its declared inputs, the head from the event", () => {
+    const env = { ...(job().env ?? {}), ...(command()?.env ?? {}) };
+    const set = Object.keys(env).filter((name) => name !== "NODE_AUTH_TOKEN" && name !== "BRANCH_HEAD_SHA");
+    const optional = Object.entries(COMMANDS["fix:publish"].inputs)
+      .filter(([, input]) => !input.required)
+      .map(([name]) => name);
+
+    expect(command()?.env?.["HEAD_SHA"]).toBe("${{ github.event.pull_request.head.sha }}");
+    expect(command()?.env?.["AGENT_RESULT"]).toBe("${{ needs.fix.result }}");
+    expect([...set, ...optional].sort()).toEqual(Object.keys(COMMANDS["fix:publish"].inputs).sort());
+  });
+
+  /**
+   * On a mint that succeeded, wherever the agent's job ran; and never on a
+   * finished agent's run that is being cancelled, which would push. Its
+   * reason, where it stops, is in its own directory, which the failure
+   * comment reads on a finished agent's run.
+   */
+  it("runs wherever the agent's job ran and the token was minted, and its reason reaches the failure comment", () => {
+    const flat = (command()?.if ?? "").replace(/\s+/g, " ").trim();
+    const blocked = steps().find((s) => s.name === "Mark blocked on failure")?.run ?? "";
+
+    expect(flat).toBe(
+      "always() && steps.token.outcome == 'success' && needs.fix.result != 'skipped' && (needs.fix.result != 'success' || !cancelled())",
+    );
+    expect(command()?.env?.["OUTPUT_DIR"]).toBe("${{ runner.temp }}/publish");
+    expect(blocked).toContain('reason_file="${RUNNER_TEMP}/publish/failure_reason.txt"');
+  });
+
+  /** Every write it made, kept for whoever audits the run, by the path it declares. */
+  it("keeps its write log", () => {
+    const keep = steps().find((s) => s.name === "Keep the write log");
+
+    expect(keep?.if).toBe("always()");
+    expect(keep?.with?.["path"]).toBe("${{ runner.temp }}/publish/write_log.jsonl");
+    expect(COMMANDS["fix:publish"].outputs).toContain("write_log.jsonl");
   });
 });
 

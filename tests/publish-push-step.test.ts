@@ -98,12 +98,6 @@ const bundle = (w: World, ...refs: string[]): void => {
   git(w.agent, "bundle", "create", "--quiet", path.join(w.runner, "branch.bundle"), ...refs, "^refs/heads/main");
 };
 
-/** The same, where fix's agent job hands it over: in `fix:bundle`'s own directory, `bundle/` (#472). */
-const fixBundle = (w: World, ...refs: string[]): void => {
-  fs.mkdirSync(path.join(w.runner, "bundle"), { recursive: true });
-  git(w.agent, "bundle", "create", "--quiet", path.join(w.runner, "bundle", "branch.bundle"), ...refs, "^refs/heads/main");
-};
-
 interface Outcome {
   readonly status: number | null;
   readonly reason: string;
@@ -253,9 +247,10 @@ describe.skipIf(!CAN_RUN)("implement's publish job pushes the agent's bundle onl
 });
 
 /**
- * The same check in the three runs split after implement's (#308), each
+ * The same check in the runs split after implement's (#308), each
  * executed on the arms its own push differs on: what the bundle must build
- * on, and what the push leases against.
+ * on, and what the push leases against. Fix's is `fix:publish`'s since #468,
+ * and its scenarios are `tests/fix/publish.test.ts`'s.
  */
 const pushStepOf = (file: string): string => {
   const workflow = parse(fs.readFileSync(path.join(".github", "workflows", file), "utf8")) as Workflow;
@@ -301,7 +296,7 @@ const pushWith = (w: World, file: string, env: Readonly<Record<string, string>>)
   };
 };
 
-/** The pull request's branch on `origin` at the base, as a fix or a refresh finds it. */
+/** The pull request's branch on `origin` at the base, as a refresh finds it. */
 const prBranch = (w: World): void => {
   git(w.agent, "push", "--quiet", "origin", `${w.base}:refs/heads/${BRANCH}`);
   git(w.publish, "fetch", "--quiet", "origin");
@@ -337,59 +332,6 @@ describe.skipIf(!CAN_RUN)("implement-prd's publish job pushes the slice only onc
       bundle(w, `refs/heads/${BRANCH}`);
 
       refused(pushWith(w, "implement-prd.yml", env(w)), /don't build on `agent\/issue-7-add-a-widget` as this run left it/);
-    },
-    CEILING,
-  );
-});
-
-describe.skipIf(!CAN_RUN)("fix's publish job pushes the agent's commits only once they check out", () => {
-  const env = (w: World): Record<string, string> => ({ BRANCH, BRANCH_HEAD_SHA: w.base });
-
-  it(
-    "pushes the commits on the pull request's head, under its lease, and reports it",
-    () => {
-      const w = world();
-      prBranch(w);
-      fixBundle(w, `refs/heads/${BRANCH}`);
-      const outcome = pushWith(w, "fix.yml", env(w));
-      const commit = git(w.agent, "rev-parse", "HEAD");
-
-      expect(outcome.status).toBe(0);
-      expect(outcome.pushed).toBe(commit);
-      expect(outcome.head).toBe(commit);
-    },
-    CEILING,
-  );
-
-  it(
-    "reads no bundle as no commits, and pushes nothing without failing",
-    () => {
-      const w = world();
-      prBranch(w);
-      const outcome = pushWith(w, "fix.yml", env(w));
-
-      expect(outcome.status).toBe(0);
-      expect(outcome.pushed).toBe(w.base);
-      expect(outcome.reason).toBe("");
-    },
-    CEILING,
-  );
-
-  it(
-    "refuses a branch that does not build on the pull request's head",
-    () => {
-      const w = world();
-      prBranch(w);
-      git(w.agent, "checkout", "--quiet", "--orphan", "unrelated");
-      git(w.agent, "commit", "--quiet", "-m", "unrelated history");
-      git(w.agent, "branch", "--quiet", "-D", BRANCH);
-      git(w.agent, "branch", "--quiet", "-m", BRANCH);
-      fixBundle(w, `refs/heads/${BRANCH}`);
-      const outcome = pushWith(w, "fix.yml", env(w));
-
-      expect(outcome.status).not.toBe(0);
-      expect(outcome.pushed).toBe(w.base);
-      expect(outcome.reason).toMatch(/don't build on the PR's head as this run found it, so nothing was pushed\.\n$/);
     },
     CEILING,
   );
@@ -468,54 +410,4 @@ describe.skipIf(!CAN_RUN)("update-branch's publish job pushes a merge it made, o
     },
     CEILING,
   );
-});
-
-/**
- * fix's publish job reads no bundle as no commits, so it must first know the
- * hand-over arrived at all: a finished runner always writes its thread
- * outcomes or its nothing-to-do note, and where neither came, the run fails
- * with that said rather than marking the PR ready with the work dropped.
- */
-describe.skipIf(!CAN_RUN)("fix's publish job refuses a finished agent's hand-over that never arrived", () => {
-  const STEP = "Check the agent's hand-over arrived";
-  const step = (): { readonly if?: string; readonly run?: string } => {
-    const workflow = parse(fs.readFileSync(path.join(".github", "workflows", "fix.yml"), "utf8")) as {
-      readonly jobs: Record<string, { readonly steps?: readonly { readonly name?: string; readonly if?: string; readonly run?: string }[] }>;
-    };
-    const steps = workflow.jobs["publish"]?.steps ?? [];
-    const at = steps.findIndex((s) => s.name === STEP);
-
-    expect(at, `fix.yml's publish job has no \`${STEP}\` step`).toBeGreaterThan(-1);
-    // After the fetch and the token's resolution, and before anything that
-    // reads a missing file as none.
-    expect(steps.slice(0, at).map((s) => s.name)).toEqual(["Fetch what the agent handed over", "Resolve the loop's token"]);
-    return steps[at] ?? {};
-  };
-
-  const check = (files: readonly string[]): { readonly status: number | null; readonly reason: string } => {
-    const runner = fs.mkdtempSync(path.join(os.tmpdir(), "agent-fix-handover-"));
-    for (const file of files) fs.writeFileSync(path.join(runner, file), "");
-    const result = spawnSync("bash", ["-e", "-c", step().run ?? ""], {
-      encoding: "utf8",
-      timeout: SUBPROCESS_TIMEOUT,
-      env: { ...process.env, RUNNER_TEMP: runner },
-    });
-    const reason = path.join(runner, "failure_reason.txt");
-    return { status: result.status, reason: fs.existsSync(reason) ? fs.readFileSync(reason, "utf8") : "" };
-  };
-
-  it("runs only where the agent's job succeeded", () => {
-    expect(step().if).toBe("needs.fix.result == 'success'");
-  });
-
-  it.each([["thread_outcomes.json"], ["nothing_to_do.txt"]])("goes on where %s arrived", (file) => {
-    expect(check([file])).toEqual({ status: 0, reason: "" });
-  });
-
-  it("fails with a reason where neither arrived, even beside a bundle", () => {
-    const outcome = check(["branch.bundle"]);
-
-    expect(outcome.status).not.toBe(0);
-    expect(outcome.reason).toBe("The agent finished, but what it handed over did not arrive, so nothing was pushed or posted.\n");
-  });
 });

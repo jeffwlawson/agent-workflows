@@ -39,12 +39,19 @@ export const roundHeader = (scope: RoundScope, step: RoundStep, number: number):
   return `**${step === "review" ? "Review" : "Fix"} ${number}**`;
 };
 
+/** A round header, bold, of any of its three shapes: what `roundHeader` writes. */
+export const ROUND_HEADER =
+  /\*\*(?:Slice \d+ of \d+ · #\d+ · (?:review|fix) \d+|Final review · (?:review|fix) \d+|(?:Review|Fix) \d+)\*\*/;
+
 /** A header as the first line of a body, and the blank lines after it. */
-const LEADING_HEADER =
-  /^\*\*(?:Slice \d+ of \d+ · #\d+ · (?:review|fix) \d+|Final review · (?:review|fix) \d+|(?:Review|Fix) \d+)\*\*[ \t]*(?:\r?\n)*/;
+const LEADING_HEADER = new RegExp(`^${ROUND_HEADER.source}[ \\t]*(?:\\r?\\n)*`);
 
 /** `body` opening with `header`, on a line of its own. */
 export const withHeader = (header: string, body: string): string => `${header}\n\n${body}`;
+
+/** `body` under `header`, where there is one and `body` is not empty. */
+export const headed = (header: string | undefined, body: string): string =>
+  header === undefined || body === "" ? body : withHeader(header, body);
 
 /** `body` with the header it opens with, if any, taken off: what a comparison between two runs' bodies reads. */
 export const withoutHeader = (body: string): string => body.replace(LEADING_HEADER, "");

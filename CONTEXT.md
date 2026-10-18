@@ -440,7 +440,8 @@ records the rule and why it replaced "every guard and every step" in the reusabl
 moved (PRD #409): every one of its steps that reads or changes the record or decides is a command.
 **Five reusables still run their steps as inline shell**: `implement`, `implement-prd`, `fix`,
 `update-branch` and `follow-ups`, whose filing alone is a command, `follow-ups:file`; `fix` is
-moving (PRD #466), and its bundling is a command, `fix:bundle`. Until a
+moving (PRD #466): its bundling is a command, `fix:bundle`, and so is its publish job's
+success arm, `fix:publish`. Until a
 reusable has moved, a fix to one of its steps still goes in its YAML.
 
 **A runner** is the part of the package that does an agent's work: TypeScript plus a prompt, invoked
@@ -452,9 +453,9 @@ an argument is refused rather than ignored. Its boundary with whatever invokes i
 that reads or changes the PR or issue, or decides anything, and starts no agent. It is invoked the
 way a runner is, as one subcommand with no arguments and its whole input in the environment, and
 fails the way a runner does. It is named `<workflow>:<step>`, such as `review:publish`, so a bare
-name is always a runner. `follow-ups:file`, `review:gate`, `review:budget`, `review:collect-checks`,
-`review:red-check-place`, `review:red-check-classify`, `review:publish`, `review:conclude` and
-`review:advance` are the commands today; every other step a command will be still runs as YAML
+name is always a runner. `fix:bundle`, `fix:publish`, `follow-ups:file`, `review:gate`,
+`review:budget`, `review:collect-checks`, `review:red-check-place`, `review:red-check-classify`,
+`review:publish`, `review:conclude` and `review:advance` are the commands today; every other step a command will be still runs as YAML
 shell, in the five reusables that have not moved. A command that
 only decides or reads, as `review:gate` does before the review job's checkout (#420),
 `review:budget` does for the fix-round budget after it (#331) and `review:collect-checks` does

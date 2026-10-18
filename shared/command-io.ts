@@ -10,7 +10,7 @@
  * `workflow` is the job's own, which the loop recognises its reviews, comments
  * and statuses by (`docs/platform-spec.md` §4.1).
  */
-import { gitWrites, githubRemote, type GitRepository } from "../engine/git.js";
+import { gitReader, gitWrites, githubRemote, type GitReader, type GitRepository } from "../engine/git.js";
 import { fetchTransport } from "../engine/github.js";
 import { githubReader, type GitHubReader } from "../engine/read.js";
 import { createWriters, type Backend, type Limits, type WriteLog, type Writer } from "../engine/writer.js";
@@ -44,6 +44,15 @@ export interface CommandIo<O extends Outputs> extends ReadingIo<O> {
   readonly writers: (limits: Limits) => Readonly<Record<Token, Writer>>;
 }
 
+/**
+ * What a command that works in a checkout is handed besides: what git can tell
+ * it there, without a token, such as whether a bundle verifies. `fix:publish`
+ * checks the agent's bundle with it before it pushes from it.
+ */
+export interface CheckoutIo<O extends Outputs> extends CommandIo<O> {
+  readonly git: GitReader;
+}
+
 /** The real ones, for `repo` with the workflow's token. */
 export const liveReadingIo = <O extends Outputs>(
   tokens: { readonly GH_REPO: string; readonly GH_TOKEN: string },
@@ -54,7 +63,8 @@ export const liveReadingIo = <O extends Outputs>(
  * The real ones, for `repo` with the two tokens, each line of the write log
  * handed to `appendLine` as it is made. Each token's backend makes its GitHub
  * writes over the API and its git writes in `checkout`, the repository the
- * command runs in, pushing to the repository's remote on GitHub. `end` writes the log's last line, how
+ * command runs in, pushing to the repository's remote on GitHub, and its git
+ * reader reads the same checkout. `end` writes the log's last line, how
  * the command ended, and writes nothing where the command never asked for its
  * writers: a command that wrote nothing has no log, and its
  * `failure_reason.txt` says why.
@@ -64,7 +74,7 @@ export const liveCommandIo = <O extends Outputs>(
   outputs: OutputWriters<O>,
   appendLine: (line: string) => void,
   checkout: GitRepository,
-): { readonly io: CommandIo<O>; readonly end: (error?: unknown) => void } => {
+): { readonly io: CheckoutIo<O>; readonly end: (error?: unknown) => void } => {
   let log: WriteLog | undefined;
   const workflow = fetchTransport(tokens.GH_TOKEN);
   const remote = { ...checkout, remote: githubRemote(tokens.GH_REPO) };
@@ -88,6 +98,7 @@ export const liveCommandIo = <O extends Outputs>(
         return made.writers;
       },
       github: githubReader(tokens.GH_REPO, workflow),
+      git: gitReader(checkout),
       outputs,
     },
     end: (error) => {

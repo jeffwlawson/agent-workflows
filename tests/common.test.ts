@@ -779,7 +779,9 @@ describe("readInputs and input: a subcommand's declared inputs, read loudly", ()
   beforeEach(() => {
     scratch = fs.mkdtempSync(path.join(os.tmpdir(), "common-inputs-"));
     for (const n of NAMES) delete process.env[n];
-    for (const n of new Set(SUBCOMMANDS.flatMap(requiredOf))) process.env[n] = "given";
+    // A required input that accepts only some values is given the first of
+    // them: `fix:publish`'s `AGENT_RESULT` (#468).
+    for (const [n, d] of SUBCOMMANDS.flatMap(declared)) if (d.required) process.env[n] = d.accepts?.[0] ?? "given";
     process.env["OUTPUT_DIR"] = scratch;
     process.env["GH_REPO"] = "o/r";
     process.env["GH_TOKEN"] = "a-token";

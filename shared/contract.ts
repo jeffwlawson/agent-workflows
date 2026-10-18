@@ -267,6 +267,13 @@ export interface CommandContract {
  *   `review:advance` parks the chain and writes the progress table from, as
  *   data (ADR 0007): written before the agent runs, and again once the
  *   review knows what it leaves open.
+ * - `fix`'s files are what `fix:publish` posts from, as data and raw text
+ *   with no marker and no finished comment (ADR 0006, ADR 0007): each thread
+ *   outcome's id, status and reply, each conversation outcome's comment id,
+ *   status and reply, each top-level comment's text, each out-of-scope note's
+ *   fields, the rescue it set aside (`rescue_ignored.json`), and the round
+ *   header the comments open with, as plain text (`round_header.txt`), where
+ *   the rounds could be read.
  */
 export const RUNNERS = {
   implement: {
@@ -353,9 +360,10 @@ export const RUNNERS = {
     outputs: [
       ...EVERY_SUBCOMMAND_OUTPUTS,
       "nothing_to_do.txt",
-      "rescue_ignored.md",
+      "rescue_ignored.json",
+      "round_header.txt",
       "thread_outcomes.json",
-      "conversation_outcomes.md",
+      "conversation_outcomes.json",
       "top_level_comments.json",
       "out_of_scope_notes.json",
     ],
@@ -465,6 +473,20 @@ export const TOKENLESS = {
 } as const satisfies Inputs;
 
 /**
+ * `fix:bundle`, declared ahead of `COMMANDS` so that `fix:publish` can read
+ * its outputs (`readsFromCommand`). See `COMMANDS`.
+ */
+const FIX_BUNDLE = {
+  inputs: {
+    ...TOKENLESS,
+    CHECKOUT: REQUIRED,
+    BRANCH: REQUIRED,
+    HEAD_SHA: REQUIRED,
+  },
+  outputs: [...EVERY_SUBCOMMAND_OUTPUTS, "branch.bundle"],
+} as const satisfies CommandContract;
+
+/**
  * What the red check's two commands read beside their own: `TOKENLESS`, and
  * the pull request's checkout, which they work in.
  */
@@ -560,6 +582,17 @@ const REVIEW_RED_CHECK_PLACE = {
  *   `HEAD_SHA`, the head the run started from as the label's event saw it,
  *   into `branch.bundle`, and writes nothing where there are none. It reads
  *   no repository and is handed no token.
+ * - `fix:publish` posts a fix round from the runner's hand-over, read through
+ *   `FIX_DIR`, and pushes the bundle `fix:bundle` wrote, read through
+ *   `BUNDLE_DIR` and checked in `CHECKOUT` against `HEAD_SHA`, the head the
+ *   run started from as the label's event saw it, never a file the agent's
+ *   job wrote. `AGENT_RESULT` is how the agent's job ended: on any ending but
+ *   `success` it says only that the rescue was set aside, where the runner
+ *   set one aside, since the rest is the failure arm's. `HEAD_WAIT_SECONDS`
+ *   and `HEAD_POLL_SECONDS` bound the wait for the pull request to show the
+ *   pushed head before the re-review is asked for. `published.json` is
+ *   whether it pushed, the pushed head, whether a note went up and whether
+ *   there was nothing to do, written as each becomes true.
  * - `review:advance` moves a PRD PR's chain on after a review, or parks it:
  *   the progress table and status line for how the round ended, then
  *   `agent:implement` back on the parent on a slice round's approval, or the
@@ -570,14 +603,33 @@ const REVIEW_RED_CHECK_PLACE = {
  *   the runner's park hand-over through `PARK_DIR`.
  */
 export const COMMANDS = {
-  "fix:bundle": {
+  "fix:bundle": FIX_BUNDLE,
+  "fix:publish": {
     inputs: {
-      ...TOKENLESS,
-      CHECKOUT: REQUIRED,
+      ...EVERY_SUBCOMMAND,
+      ...LOOP,
+      PR_NUMBER: REQUIRED,
       BRANCH: REQUIRED,
       HEAD_SHA: REQUIRED,
+      RESCUE_BRANCH: REQUIRED,
+      AGENT_RESULT: { required: true, accepts: ["success", "failure", "cancelled", "skipped"] },
+      CHECKOUT: REQUIRED,
+      HEAD_WAIT_SECONDS: { required: false, default: "60" },
+      HEAD_POLL_SECONDS: { required: false, default: "5" },
+      FIX_DIR: readsFrom("fix", {
+        "nothing_to_do.txt": "sometimes",
+        "rescue_ignored.json": "sometimes",
+        "round_header.txt": "sometimes",
+        "thread_outcomes.json": "sometimes",
+        "conversation_outcomes.json": "sometimes",
+        "top_level_comments.json": "sometimes",
+        "out_of_scope_notes.json": "sometimes",
+      }),
+      BUNDLE_DIR: readsFromCommand("fix:bundle", FIX_BUNDLE, {
+        "branch.bundle": "sometimes",
+      }),
     },
-    outputs: [...EVERY_SUBCOMMAND_OUTPUTS, "branch.bundle"],
+    outputs: [...EVERY_SUBCOMMAND_OUTPUTS, "published.json", WRITE_LOG],
   },
   "follow-ups:file": {
     inputs: {

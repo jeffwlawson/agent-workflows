@@ -287,3 +287,23 @@ describe("verifyBundle", () => {
     await expect(gitReader({ dir: empty, env }).verifyBundle(bundle)).rejects.toBeInstanceOf(GitError);
   });
 });
+
+describe("isAncestor", () => {
+  it("is true for a commit in another's history, and for the commit itself", async () => {
+    const reader = gitReader({ dir: work, env });
+
+    expect(await reader.isAncestor(base, next)).toBe(true);
+    expect(await reader.isAncestor(next, next)).toBe(true);
+  });
+
+  it("is false for a sibling and for a descendant", async () => {
+    const reader = gitReader({ dir: work, env });
+
+    expect(await reader.isAncestor(next, other)).toBe(false);
+    expect(await reader.isAncestor(next, base)).toBe(false);
+  });
+
+  it("throws where the repository does not hold a commit, rather than reading it as not built on", async () => {
+    await expect(gitReader({ dir: work, env }).isAncestor("f".repeat(40), next)).rejects.toBeInstanceOf(GitError);
+  });
+});

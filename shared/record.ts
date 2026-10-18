@@ -30,6 +30,31 @@
  */
 export const DEFAULT_LOOP_ACCOUNT = "github-actions[bot]";
 
+
+// Fix's markers, which `fix:publish` writes from `fix`'s hand-over and the
+// runners read back off the loop's own comments.
+
+/**
+ * Appended to every top-level comment `fix` posts. It keeps the comment out
+ * of the next fix run's feedback and is what that channel is deduped on
+ * (`shared/fix-output.ts`). Not a selector for filing anything.
+ */
+export const TOP_LEVEL_COMMENT_MARKER = "<!-- agent-fix:top-level -->";
+
+/**
+ * Ends the record of what a fix run did with the conversation comments (#104):
+ * a different string from `TOP_LEVEL_COMMENT_MARKER`, since a record repeated
+ * across rounds is correct and a top-level comment repeated is not.
+ */
+export const CONVERSATION_OUTCOME_MARKER = "<!-- agent-fix:conversation-outcomes -->";
+
+/**
+ * The selector an out-of-scope note carries (#213), followed by the note as
+ * JSON inside the same HTML comment (`shared/fix-notes.ts`). Read only off a
+ * comment the loop posted, never on the marker alone.
+ */
+export const OUT_OF_SCOPE_NOTE_MARKER = "agent-fix:out-of-scope";
+
 // Headings and markers in posts.
 
 /**

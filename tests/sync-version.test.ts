@@ -192,8 +192,8 @@ const REF_COUNT = 2 * Object.values(CALLERS_PER_FILE).reduce((sum, n) => sum + n
  * resolves the loop's token names `loop-token` (#319, #320): implement's
  * publish job, implement-prd's catch-up and publish jobs, fix's and
  * update-branch's publish jobs, and review's `time-limit`, `post-review` and
- * `advance` jobs. Eight, beside the fifteen `npm exec` pins, the two `npm
- * install`s and the twelve callers, so the release rewrites thirty-seven pins
+ * `advance` jobs. Eight, beside the sixteen `npm exec` pins, the two `npm
+ * install`s and the twelve callers, so the release rewrites thirty-eight pins
  * in ten files. Review's advance named `advance-prd` too, until it became
  * `review:advance` (#423).
  */
@@ -213,10 +213,10 @@ const ACTION_COUNT = Object.values(ACTION_SITES).reduce((sum, actions) => sum + 
  * `review:collect-checks` (#421), `review:red-check-place` and
  * `review:red-check-classify` (#422), `review:publish` (#417),
  * `review:conclude` (#419) and `review:advance` (#423) beside the runner,
- * and in `fix.yml` `fix:bundle` (#472).
+ * and in `fix.yml` `fix:bundle` (#472) and `fix:publish` (#468).
  */
 const PACKAGE_SITES: Readonly<Record<string, number>> = {
-  ".github/workflows/fix.yml": 2,
+  ".github/workflows/fix.yml": 3,
   ".github/workflows/follow-ups.yml": 1,
   ".github/workflows/implement-prd.yml": 1,
   ".github/workflows/implement.yml": 1,

@@ -206,10 +206,9 @@ describe.skipIf(!CAN_RUN)("the PR side's writes, by the resolver's source", () =
   const tokenOf = (source: string): string => `${source || "unknown"}-token`;
   const fallback = /::warning::.*[Nn]either the loop's App nor AGENT_PAT is set/;
 
-  describe.each([
-    ["fix", "Request re-review"],
-    ["update-branch", "Request a review of the resolution"],
-  ] as const)("%s's %s", (command, name) => {
+  // Fix's re-review and ready-mark are `fix:publish`'s (#468), held in
+  // `tests/fix/publish.test.ts`.
+  describe.each([["update-branch", "Request a review of the resolution"]] as const)("%s's %s", (command, name) => {
     const request = (source: string): Outcome =>
       execute(jobStep(command, "publish", name), {
         GH_TOKEN: tokenOf(source),
@@ -239,15 +238,7 @@ describe.skipIf(!CAN_RUN)("the PR side's writes, by the resolver's source", () =
   });
 
   // Review's advance and park of the PRD chain are `review:advance`'s
-  // (#423), held in `tests/review/advance.test.ts`.
-
-  /** Review's is `review:conclude`'s (#419), held in `tests/review/conclude.test.ts`. */
-  describe.each([["fix", "publish"]] as const)("%s's ready-mark", (command, job) => {
-    it.each(["app", "pat", "workflow"])("marks the PR ready with the resolved token (source %j)", (source) => {
-      const outcome = execute(jobStep(command, job, "Mark PR ready for review"), { GH_TOKEN: tokenOf(source), PR_NUMBER: "152" });
-
-      expect(outcome.status, outcome.stdout).toBe(0);
-      expect(outcome.gh).toEqual([`${tokenOf(source)} pr ready 152`]);
-    });
-  });
+  // (#423), held in `tests/review/advance.test.ts`. The ready-mark is
+  // `review:conclude`'s (#419) and `fix:publish`'s (#468), held in
+  // `tests/review/conclude.test.ts` and `tests/fix/publish.test.ts`.
 });

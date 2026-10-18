@@ -198,7 +198,7 @@ describe("fix:publish writes in today's order", () => {
     expect(github.branches.has(RESCUE)).toBe(false);
     expect(github.pullRequests.get(PR)?.labels).toEqual([REVIEW_LABEL]);
     expect(logLines().at(-1)).toEqual({ ended: "finished", writes: 11 });
-    expect(files.get("published.json")).toEqual({ pushed: true, head: TIP, notesPosted: true, nothingToDo: false });
+    expect(files.get("published.json")).toEqual({ pushed: true, head: TIP, notesPosted: true, nothingToDo: false, rescueNoted: true });
   });
 
   /** --force-with-lease pinned to the head the event named: what moved the branch during the run is not clobbered. */
@@ -425,7 +425,7 @@ describe("fix:publish ends the round the way the run went", () => {
 
     expect(writeTypes().slice(-3)).toEqual(["removeLabel", "removeLabel", "addLabel"]);
     expect(writeTypes()).not.toContain("markReadyForReview");
-    expect(files.get("published.json")).toEqual({ pushed: false, notesPosted: true, nothingToDo: false });
+    expect(files.get("published.json")).toEqual({ pushed: false, notesPosted: true, nothingToDo: false, rescueNoted: false });
   });
 
   /** A note that failed to post is one no review can rule on. */
@@ -525,7 +525,7 @@ describe("fix:publish with nothing to do", () => {
     ]);
     expect(github.branches.get(RESCUE)).toBe(RESCUED);
     expect(github.pullRequests.get(PR)?.draft).toBe(true);
-    expect(files.get("published.json")).toEqual({ pushed: false, notesPosted: false, nothingToDo: true });
+    expect(files.get("published.json")).toEqual({ pushed: false, notesPosted: false, nothingToDo: true, rescueNoted: false });
   });
 });
 
@@ -609,6 +609,16 @@ describe("fix:publish on a run that did not finish", () => {
     expect(writeTypes()).toEqual(["comment"]);
     expect(commentBodies()).toEqual([ignoredNote(FIX_LABEL, RESCUE, "this pull request's head")]);
     expect(git.calls).toEqual([]);
+  });
+
+  /** Recorded only where it went up, so fix:conclude says it where GitHub refused it. */
+  it("records the rescue-set-aside note only where it went up", async () => {
+    handOver({ "rescue_ignored.json": { branch: RESCUE, movedPast: RESCUED } });
+    github.fails = (write) => write.type === "comment";
+
+    await run(INPUTS({ AGENT_RESULT: "failure" }));
+
+    expect(files.get("published.json")).toMatchObject({ rescueNoted: false });
   });
 
   it("writes nothing at all where nothing was set aside, and asks for no hand-over", async () => {

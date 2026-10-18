@@ -1528,6 +1528,24 @@ describe("agent-fix's gate is `fix:gate`, handed the event's head", () => {
   });
 
   /**
+   * A gate that claimed the run and then failed, at the probe, wrote its
+   * sentence on its own runner: the copy step hands it on whole, under a
+   * delimiter of its own, as the job's `failure-reason`, and `fix:conclude`
+   * is told it as `GATE_REASON`.
+   */
+  it("hands the gate's reason on to fix:conclude", () => {
+    const run = copyStep()?.run ?? "";
+
+    expect(run).toContain('reason="${RUNNER_TEMP}/failure_reason.txt"');
+    expect(run).toContain('echo "failure-reason<<${delimiter}"');
+    expect(run.indexOf("failure-reason<<")).toBeLessThan(run.indexOf("gate.json"));
+    expect(jobNamed(FIX, "gate").outputs?.["failure-reason"]).toBe("${{ steps.state.outputs.failure-reason }}");
+    const conclude = (jobNamed(FIX, "publish").steps ?? []).find((s) => s.name === "Conclude the run");
+    expect(conclude?.env?.["GATE_REASON"]).toBe("${{ needs.gate.outputs.failure-reason }}");
+    expect(COMMANDS["fix:conclude"].inputs).toHaveProperty("GATE_REASON");
+  });
+
+  /**
    * The gate job has no checkout, so Node and the registry are set up for
    * the command alone, as review's gate job does. No adopter step runs in
    * it, so it needs none of the `userconfig` handling (#429) review's has.

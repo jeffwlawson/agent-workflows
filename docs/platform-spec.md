@@ -1425,7 +1425,9 @@ deciding writes none.
 > label's event's, and `GH_TOKEN` is the job's own, with `pull-requests: write`. `OUTPUT_DIR` is
 > `runner.temp`. A glue step copies `gate.json` into the step output `proceed`, `always()`, and the
 > job's `refused` output is `false` where it is `true`, `true` where it is `false`, and empty where
-> there is none: a gate that died before deciding, which `fix:conclude` reads as such. The job
+> there is none: a gate that died before deciding, which `fix:conclude` reads as such. The same
+> step copies `fix:gate`'s `failure_reason.txt`, where it wrote one, into the job's
+> `failure-reason` output, which `fix:conclude` is handed as `GATE_REASON`. The job
 > fails where the command does, so a failed probe never starts the agent's job.
 
 ### `fix:prepare`
@@ -1568,7 +1570,7 @@ the command; every other write is tolerated, a warning where GitHub refuses it.
 
 | Output | When it is written |
 |---|---|
-| `published.json` | From its first write: `pushed`, whether it pushed, `head`, the pushed commit, where it did, `notesPosted`, whether an out-of-scope note went up, and `nothingToDo`, each written as it becomes true. |
+| `published.json` | From its first write: `pushed`, whether it pushed, `head`, the pushed commit, where it did, `notesPosted`, whether an out-of-scope note went up, `nothingToDo`, and `rescueNoted`, whether the rescue-set-aside note went up, each written as it becomes true. |
 | `write_log.jsonl` | Every write as it lands, one JSON line each, and a last line for how the command ended, as `review:publish`'s. Not written where it wrote nothing. |
 
 **`doctor` cannot check this.** These tables are the command's, for the reason §6 gives.
@@ -1610,7 +1612,8 @@ before it, and it works out the ending from them. Each is one of:
   download and `fix:publish` that did not succeed: a fixed sentence for the mint and the download,
   `fix:publish`'s `failure_reason.txt`, or a cancel where that step was cancelled or skipped.
   Otherwise, where the gate, the agent's job or a step was cancelled, a cancel, or the time limit
-  where `TIMED_OUT` is `true`; and failing that, `fix:prepare`'s `failure_reason.txt`, or the
+  where `TIMED_OUT` is `true`; and failing that, `GATE_REASON` where the gate failed, then
+  `fix:prepare`'s `failure_reason.txt`, or the
   runner's, or `fix:bundle`'s, or, where none was written, that it gave no reason, or the time limit where
   the agent's job failed and `TIMED_OUT` is `true`. The retry is to add `agent:review` where
   `published.json` says it pushed, or posted a note, and to add `agent:fix` otherwise; a rescue is
@@ -1625,7 +1628,8 @@ are each a warning, and nothing is rescued. With no loop token (`LOOP_TOKEN` emp
 `MINT_OUTCOME` not `success`) it pushes nothing, and the comment says the commits were not saved.
 
 Before any of these, the rescue-set-aside note, where the runner set a rescue aside and
-`fix:publish` did not run (`PUBLISH_OUTCOME` empty or `skipped`) to say it. Every write is
+`published.json` does not say `fix:publish` posted it: it did not run, or stopped before it got
+that far, reading the pull request or checking the hand-over. Every write is
 tolerated: one GitHub refuses is a warning, so a run that cannot comment still takes its label
 off. The rescue is made with `LOOP_TOKEN`; everything else with `GH_TOKEN`.
 
@@ -1642,6 +1646,7 @@ off. The rescue is made with `LOOP_TOKEN`; everything else with `GH_TOKEN`.
 | `CHECKOUT` | required | | A checkout of the repository, at `HEAD_SHA`, the bundle is checked in and rescued from. |
 | `REFUSED` | optional | `""` | Accepts `true` or `false`: `false` where the gate claimed the run, `true` where it refused. Empty is a gate that died before it decided. |
 | `GATE_RESULT` | required | | How the gate's job ended: `success`, `failure`, `cancelled` or `skipped`. |
+| `GATE_REASON` | optional | `""` | The sentence `fix:gate` failed with, where it failed after claiming the run, such as at the permission probe. |
 | `AGENT_RESULT` | required | | How the agent's job ended: `success`, `failure`, `cancelled` or `skipped`. |
 | `TIMED_OUT` | optional | `""` | `true` where the agent's job ran its whole limit. |
 | `TIMEOUT_MINUTES` | optional | `""` | That limit, for the comment. |
@@ -1671,8 +1676,9 @@ off. The rescue is made with `LOOP_TOKEN`; everything else with `GH_TOKEN`.
 **`doctor` cannot check this.** The record is written by the orchestrator's posting code, for the reason §4.3 gives.
 
 > **Actions orchestrator:** the publish job's step after `fix:publish`, run `always()`, from
-> `RUNNER_TEMP` and working in the job's one checkout. It is told the gate's `refused` output and
-> result, the agent's job's result and its `timed-out` output, the limit as
+> `RUNNER_TEMP` and working in the job's one checkout. It is told the gate's `refused` output,
+> result and `failure-reason` output, which the gate job's glue step copies from `fix:gate`'s
+> reason file, the agent's job's result and its `timed-out` output, the limit as
 > `AGENT_TIMEOUT_MINUTES` or 30, and the outcomes of the mint, the download and `fix:publish`.
 > `timed-out` is the agent's job's last step's, `always()`, which compares the time since the
 > gate's clock with the limit, less a minute, wherever that job did not succeed: glue only

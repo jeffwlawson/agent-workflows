@@ -83,18 +83,23 @@ export const publish = async (inputs: Inputs, io: Io): Promise<void> => {
       : undefined;
 
   const { loop, workflow } = io.writers(limits(threads.size));
-  const state: Published = { pushed: false, notesPosted: false, nothingToDo: false };
+  const state: Published = { pushed: false, notesPosted: false, nothingToDo: false, rescueNoted: false };
   const record = (): void => io.outputs.writeJson("published.json", state);
   record();
 
   // Step 1: a rescue branch the runner set aside because the pull request's
   // head moved since it was saved (#303), said however the run ended, so work
   // nobody built on is not dropped silently.
+  // Recorded once it went up, so `fix:conclude` says it wherever this did not.
   if (rescue !== undefined) {
-    await tolerated(
+    const noted = await tolerated(
       () => workflow.comment(pr, setAsideNote(rescue.branch)),
       `Could not say on PR #${pr} that ${rescue.branch} was set aside.`,
     );
+    if (noted) {
+      state.rescueNoted = true;
+      record();
+    }
   }
   // Every other ending is `fix:conclude`'s.
   if (!finished) {
@@ -220,6 +225,8 @@ interface Published {
   head?: string;
   notesPosted: boolean;
   nothingToDo: boolean;
+  /** Whether the rescue-set-aside note went up: where it did not, `fix:conclude` posts it. */
+  rescueNoted: boolean;
 }
 
 const NOTHING_TO_DO =

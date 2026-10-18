@@ -82,8 +82,9 @@ const put = (dir: "publish" | "prepare" | "fix" | "bundle", name: string, value:
 /** `fix:bundle`'s bundle: the agent made commits. */
 const bundled = (): void => put("bundle", "branch.bundle", "a bundle");
 /** What `fix:publish` wrote, as it writes it. */
-const published = (over: Partial<{ pushed: boolean; head: string; notesPosted: boolean; nothingToDo: boolean }> = {}): void =>
-  put("publish", "published.json", { pushed: false, notesPosted: false, nothingToDo: false, ...over });
+const published = (
+  over: Partial<{ pushed: boolean; head: string; notesPosted: boolean; nothingToDo: boolean; rescueNoted: boolean }> = {},
+): void => put("publish", "published.json", { pushed: false, notesPosted: false, nothingToDo: false, rescueNoted: false, ...over });
 
 type Inputs = Parameters<typeof conclude>[0];
 
@@ -101,6 +102,7 @@ const INPUTS = (over: Partial<Inputs> = {}): Inputs => ({
   CHECKOUT: "/checkout",
   REFUSED: "false",
   GATE_RESULT: "success",
+  GATE_REASON: "",
   AGENT_RESULT: "success",
   TIMED_OUT: "false",
   TIMEOUT_MINUTES: "30",
@@ -188,9 +190,9 @@ describe("fix:conclude ends a run that finished", () => {
     expect(git.calls).toEqual([]);
   });
 
-  /** Where publish ran it said the rescue was set aside, as its first write. */
-  it("leaves the rescue-set-aside note to fix:publish where it ran", async () => {
-    published();
+  /** Where publish said the rescue was set aside, as its first write, it recorded so. */
+  it("leaves the rescue-set-aside note to fix:publish where it posted it", async () => {
+    published({ rescueNoted: true });
     put("fix", "rescue_ignored.json", { branch: RESCUE, movedPast: EARLIER });
 
     await run();
@@ -279,11 +281,32 @@ describe("fix:conclude says how a stopped run ended, in the one pattern", () => 
   });
 
   /** The gate claimed the run and then failed, its permission probe say: no reason reached this job. */
-  it("says a run whose gate failed after claiming it gave no reason", async () => {
+  it("says a run whose gate failed after claiming it, and handed on no reason, gave none", async () => {
     await run(INPUTS({ GATE_RESULT: "failure", AGENT_RESULT: "skipped", PUBLISH_OUTCOME: "skipped" }));
 
     expect(comment()).toContain("It stopped without giving a reason.");
     expect(writes()).toEqual(STOPPED_WRITES);
+  });
+
+  /** The gate's reason file is on its own runner, so its job hands the sentence on as an output. */
+  it("gives the reason a gate that failed after claiming the run handed on", async () => {
+    const probe =
+      "Couldn't add `agent:fix` to PR #7, which it already carries, so this job's token cannot write labels here and nothing was started. Check that the caller grants `pull-requests: write`.";
+
+    await run(INPUTS({ GATE_RESULT: "failure", GATE_REASON: `${probe}\n`, AGENT_RESULT: "skipped", PUBLISH_OUTCOME: "skipped" }));
+
+    expect(comment()).toBe(`**\`agent:fix\` stopped:** ${probe}\n\n[Workflow run](${RUN_URL}) · To try again, add \`agent:fix\`.\n`);
+    expect(writes()).toEqual(STOPPED_WRITES);
+  });
+
+  /** A gate that succeeded has nothing to say for itself, whatever its output holds. */
+  it("reads the gate's reason only where the gate failed", async () => {
+    put("fix", "failure_reason.txt", "The runner wrote this.\n");
+
+    await run(INPUTS(AGENT_FAILED({ GATE_REASON: "The gate wrote this." })));
+
+    expect(comment()).toContain("The runner wrote this.");
+    expect(comment()).not.toContain("The gate wrote this.");
   });
 
   it("says a run cancelled while it published was cancelled, though the agent's job succeeded", async () => {
@@ -631,6 +654,31 @@ describe("fix:conclude says a rescue was set aside where fix:publish did not", (
 
     expect(writes()).toEqual(["workflow comment", ...STOPPED_WRITES]);
     expect(comments()[0]).toBe(ignoredNote(FIX_LABEL, RESCUE, "this pull request's head"));
+  });
+
+  /**
+   * On a stopped run publish reads the pull request and checks the whole
+   * hand-over before its first write: a read GitHub fails, or a file it
+   * refuses, ends it before the note, so the note is said here.
+   */
+  it("posts the note where publish failed before posting it", async () => {
+    put("fix", "rescue_ignored.json", { branch: RESCUE, movedPast: EARLIER });
+    put("publish", "failure_reason.txt", "Could not read PR #7's review threads from GitHub, so nothing was pushed or posted: 502\n");
+
+    await run(INPUTS(AGENT_FAILED({ PUBLISH_OUTCOME: "failure" })));
+
+    expect(writes()).toEqual(["workflow comment", ...STOPPED_WRITES]);
+    expect(comments()[0]).toBe(ignoredNote(FIX_LABEL, RESCUE, "this pull request's head"));
+  });
+
+  it("posts the note where publish ran but GitHub refused it", async () => {
+    put("fix", "rescue_ignored.json", { branch: RESCUE, movedPast: EARLIER });
+    published({ rescueNoted: false });
+
+    await run();
+
+    expect(writes()).toEqual(["workflow comment", `workflow removeLabel ${FIX_LABEL}`]);
+    expect(comments()).toEqual([ignoredNote(FIX_LABEL, RESCUE, "this pull request's head")]);
   });
 
   /** The runner's files are the agent's to write: one that does not read is said, and the run still ends. */

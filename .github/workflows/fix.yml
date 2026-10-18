@@ -161,6 +161,10 @@ jobs:
       # `implement.yml`, so the jobs after it read one word the same way.
       refused: ${{ steps.state.outputs.proceed == 'true' && 'false' || steps.state.outputs.proceed == 'false' && 'true' || '' }}
       started: ${{ steps.clock.outputs.started }}
+      # The sentence `fix:gate` failed with, where it failed after claiming
+      # the run (the probe), for `fix:conclude`'s failure comment: its reason
+      # file is in this job's `runner.temp`, which no later job can read.
+      failure-reason: ${{ steps.state.outputs.failure-reason }}
 
     env:
       PR_NUMBER: ${{ github.event.pull_request.number }}
@@ -219,11 +223,22 @@ jobs:
       # the step output `proceed`, which the job's `refused` and the clock
       # read. `always()`, so a gate that decided to go ahead and then failed,
       # at the probe, still says so; nothing where it wrote no `gate.json`,
-      # which `refused` reads as a gate that died before deciding.
+      # which `refused` reads as a gate that died before deciding. And the
+      # reason the gate failed with, where it wrote one, as `failure-reason`,
+      # whole, under a delimiter of its own, as review's job hands its on.
       - name: Hand the gate's decision to the job
         id: state
         if: always()
         run: |
+          reason="${RUNNER_TEMP}/failure_reason.txt"
+          if [ -f "$reason" ]; then
+            delimiter="REASON_$(date +%s%N)_${RANDOM}"
+            {
+              echo "failure-reason<<${delimiter}"
+              printf '%s\n' "$(cat "$reason")"
+              echo "$delimiter"
+            } >> "$GITHUB_OUTPUT"
+          fi
           file="${RUNNER_TEMP}/gate.json"
           [ -f "$file" ] || { echo "fix:gate wrote no gate.json; this run decided nothing."; exit 0; }
           jq -r 'to_entries[] | "\(.key)=\(.value)"' "$file" >> "$GITHUB_OUTPUT"
@@ -809,6 +824,7 @@ jobs:
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
           REFUSED: ${{ needs.gate.outputs.refused }}
           GATE_RESULT: ${{ needs.gate.result }}
+          GATE_REASON: ${{ needs.gate.outputs.failure-reason }}
           AGENT_RESULT: ${{ needs.fix.result }}
           TIMED_OUT: ${{ needs.fix.outputs.timed-out }}
           TIMEOUT_MINUTES: ${{ vars.AGENT_TIMEOUT_MINUTES || '30' }}

@@ -52,7 +52,7 @@ export const conclude = async (inputs: Inputs, io: Io): Promise<void> => {
   // What each producer left, read and checked before the first write.
   const published = readDirectory(COMMANDS["fix:conclude"].inputs.PUBLISH_DIR, inputs.PUBLISH_DIR, {
     "published.json": json(
-      object({ pushed: FLAG, head: optional(matching(/[0-9a-f]{40}/, "a full commit id")), notesPosted: FLAG, nothingToDo: FLAG }),
+      object({ pushed: FLAG, head: optional(matching(/[0-9a-f]{40}/, "a full commit id")), notesPosted: FLAG, nothingToDo: FLAG, rescueNoted: FLAG }),
     ),
     "failure_reason.txt": text,
   });
@@ -67,10 +67,12 @@ export const conclude = async (inputs: Inputs, io: Io): Promise<void> => {
 
   const { workflow, loop } = io.writers(LIMITS);
 
-  // A rescue the runner set aside, said however the run ended, where publish
-  // did not run to say it: it is publish's first write wherever it ran.
+  // A rescue the runner set aside, said however the run ended, wherever
+  // publish did not say it: it did not run, or stopped before its first write
+  // (reading the pull request or checking the hand-over), or GitHub refused
+  // its note. What it said, it records in `published.json`.
   const setAside = handOver["rescue_ignored.json"];
-  if (setAside !== undefined && (inputs.PUBLISH_OUTCOME === "" || inputs.PUBLISH_OUTCOME === "skipped")) {
+  if (setAside !== undefined && published["published.json"]?.rescueNoted !== true) {
     await tolerated(`Could not say on PR #${pr} that ${setAside.branch} was set aside.`, () =>
       workflow.comment(pr, setAsideNote(setAside.branch)),
     );
@@ -178,11 +180,14 @@ const endingOf = (inputs: Inputs): Ending => {
     return stopped(() => measured(CANCELLED));
   }
   // The agent's job failed, or never ran behind a gate that failed after it
-  // claimed the run: `fix:prepare`'s reason, for an agent's job that stopped
-  // before the runner started, then the runner's, and failing that
-  // `fix:bundle`'s, for an agent's job that failed only at the bundle.
+  // claimed the run: the gate's reason, which its job hands on as an output
+  // since its file is on its own runner; then `fix:prepare`'s, for an agent's
+  // job that stopped before the runner started, then the runner's, and
+  // failing that `fix:bundle`'s, for an agent's job that failed only at the
+  // bundle.
+  const gate = inputs.GATE_RESULT === "failure" ? inputs.GATE_REASON.trim() : "";
   return stopped(({ prepare, runner, bundle }) => {
-    const reason = prepare?.trim() || runner?.trim() || bundle?.trim();
+    const reason = gate || prepare?.trim() || runner?.trim() || bundle?.trim();
     if (reason !== undefined && reason !== "") return reason;
     return inputs.AGENT_RESULT === "failure" ? measured(NO_REASON) : NO_REASON;
   });

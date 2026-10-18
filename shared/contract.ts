@@ -655,11 +655,13 @@ const REVIEW_RED_CHECK_PLACE = {
  *   and `HEAD_POLL_SECONDS` bound the wait for the pull request to show the
  *   pushed head before the re-review is asked for. `published.json` is
  *   whether it pushed, the pushed head, whether a note went up and whether
- *   there was nothing to do, written as each becomes true.
+ *   there was nothing to do, and whether the rescue-set-aside note went up,
+ *   written as each becomes true.
  * - `fix:conclude` ends every fix run, success included: a stopped run's
  *   commits rescued to `RESCUE_BRANCH` where nothing was pushed, the
  *   failure comment, `agent:fix` off and `agent:blocked`. It is told how the
- *   gate and the agent's job ended (`REFUSED`, `GATE_RESULT`,
+ *   gate and the agent's job ended (`REFUSED`, `GATE_RESULT`, the gate's
+ *   reason where it failed after claiming the run, `GATE_REASON`,
  *   `AGENT_RESULT`), whether the agent's job ran out of time (`TIMED_OUT`,
  *   `TIMEOUT_MINUTES`), and the publish job's steps' outcomes
  *   (`MINT_OUTCOME`, `DOWNLOAD_OUTCOME`, `PUBLISH_OUTCOME`), and reads what
@@ -705,6 +707,7 @@ export const COMMANDS = {
       CHECKOUT: REQUIRED,
       REFUSED: { required: false, default: "", accepts: ["true", "false"] },
       GATE_RESULT: { required: true, accepts: RESULTS },
+      GATE_REASON: EMPTY,
       AGENT_RESULT: { required: true, accepts: RESULTS },
       TIMED_OUT: EMPTY,
       TIMEOUT_MINUTES: EMPTY,

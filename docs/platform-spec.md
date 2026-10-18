@@ -1424,8 +1424,7 @@ deciding writes none.
 **`doctor` cannot check this.** The record is written by the orchestrator's posting code, for the reason §4.3 gives.
 
 > **Actions orchestrator:** the gate job's first work, after a Node set up for it, since nothing is
-> checked out yet, and the package installed under `RUNNER_TEMP` with the registry token, which
-> this command and `update-branch:merge` both run from; no adopter step runs in that job. `HEAD_SHA`, `PR_STATE` and `PR_MERGED` are the
+> checked out yet; no adopter step runs in that job. `HEAD_SHA`, `PR_STATE` and `PR_MERGED` are the
 > label's event's, and `GH_TOKEN` is the job's own, with `pull-requests: write`. `OUTPUT_DIR` is
 > `runner.temp`. A glue step copies `gate.json` into the step output `proceed`, `always()`, and the
 > job's `refused` output is `false` where it is `true`, `true` where it is `false`, and empty where
@@ -1782,7 +1781,9 @@ claimed, and again however the command ends, and not at all where it died before
 **`doctor` cannot check this.** The record is written by the orchestrator's posting code, for the reason §4.3 gives.
 
 > **Actions orchestrator:** the gate job's first work, after a Node set up for it, since nothing is
-> checked out yet; no adopter step runs in that job. `PR_STATE` and `PR_MERGED` are the label's
+> checked out yet, and the package installed under `RUNNER_TEMP` with the registry token, which
+> this command and `update-branch:merge` both run from; no adopter step runs in that job.
+> `PR_STATE` and `PR_MERGED` are the label's
 > event's, and `GH_TOKEN` is the job's own, with `pull-requests: write`. `OUTPUT_DIR` is
 > `runner.temp`. A glue step copies `gate.json` into the step output `proceed`, `always()`, which
 > the checkout, `update-branch:merge` and the job's `refused` output read, `refused` with

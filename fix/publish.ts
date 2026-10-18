@@ -2,6 +2,7 @@ import * as path from "node:path";
 import { GitHubError } from "../engine/github.js";
 import { GitError } from "../engine/git.js";
 import { WriteFailed, type Limits, type Writer } from "../engine/writer.js";
+import { checkBundle } from "../shared/bundle.js";
 import type { CheckoutIo } from "../shared/command-io.js";
 import { COMMANDS } from "../shared/contract.js";
 import type { InputValues } from "../shared/env.js";
@@ -10,7 +11,7 @@ import { MAX_TOP_LEVEL_COMMENTS, renderConversationOutcomes, renderTopLevelComme
 import { choice, json, list, matching, object, optional, readDirectory, target, text, type Parser } from "../shared/hand-over.js";
 import { FIX_LABEL, PRD_BRANCH_PREFIX, REVIEW_LABEL } from "../shared/record.js";
 import { headed, ROUND_HEADER } from "../shared/round-header.js";
-import { checkBundle, present, rescueIgnored, setAsideNote } from "./hand-over.js";
+import { present, rescueIgnored, setAsideNote } from "./hand-over.js";
 
 type Declared = (typeof COMMANDS)["fix:publish"];
 type Inputs = InputValues<Declared["inputs"]>;

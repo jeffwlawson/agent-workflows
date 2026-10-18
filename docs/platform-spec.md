@@ -61,8 +61,8 @@ cannot check is one only an orchestrator's author will catch.
 - **Command.** A subcommand that does an orchestrator's work on the record and starts no agent,
   named `<workflow>:<step>`: `fix:gate`, `fix:prepare`, `fix:bundle`, `fix:publish`, `fix:conclude`, `follow-ups:file`, `review:gate`, `review:budget`,
   `review:collect-checks`, `review:red-check-place`, `review:red-check-classify`, `review:publish`,
-  `review:conclude`, `review:advance`, `update-branch:gate`, `update-branch:merge` and
-  `update-branch:prepare`. §2 says where it differs from a runner.
+  `review:conclude`, `review:advance`, `update-branch:gate`, `update-branch:merge`,
+  `update-branch:prepare` and `update-branch:bundle`. §2 says where it differs from a runner.
 - **Orchestrator.** Whatever invokes a runner and acts on its result: it decides when a runner runs,
   prepares the checkout, sets the inputs, and posts, pushes and labels with what comes back. The
   Actions orchestrator is a caller plus its reusable workflow, and `CONTEXT.md`'s *three parts*
@@ -141,7 +141,7 @@ The inputs every runner reads, set once for any of them:
 | `GH_TOKEN` | required | | The token `gh` reads. The runners only read with it, `fix:prepare` reads and fetches the rescue branch with it, and `update-branch:merge` and `update-branch:prepare` fetch the base branch with it; `follow-ups:file` files issues with it, and `review:publish` posts the review, the summary and the verdict with it, `review:conclude` its comments, its error verdict and the labels nothing fires on, `review:advance` a PRD PR's progress list and its notes there, `fix:gate` its refusals and its label transitions, `fix:publish` its thread replies, its comments and notes, and the rescue branch's deletion, `fix:conclude` its failure comment, the rescue-set-aside note where `fix:publish` did not post it, and `agent:fix` off and `agent:blocked` on, and `update-branch:gate` its refusal and its label transitions. |
 
 A command that runs where no token is held, as the red check's two do beside the pull request's own
-code and `fix:bundle` does after the agent, reads `OUTPUT_DIR` alone of these: it reads no repository, so it declares neither `GH_REPO`
+code and `fix:bundle` and `update-branch:bundle` do after the agent, reads `OUTPUT_DIR` alone of these: it reads no repository, so it declares neither `GH_REPO`
 nor `GH_TOKEN`, and an orchestrator hands it neither.
 
 Every runner starts the agent, so every runner reads the inputs that choose its sandbox (§3). An
@@ -1733,9 +1733,9 @@ neither.
 > **Actions orchestrator:** a merge that does not conflict is pushed without the runner. Otherwise
 > the agent's job installs the package under `RUNNER_TEMP` after its checkout, the one step of the
 > job handed the registry token, runs `update-branch:prepare` from it before the adopter's toolchain
-> and `setup`, and runs the runner as that install's binary, by its path, from the checkout; and
-> a publish job pushes the resolution, posts `update_comment.md`, carries the earlier verdict over
-> to the merge commit or adds `agent:review`.
+> and `setup`, runs the runner as that install's binary, by its path, from the checkout, and
+> `update-branch:bundle` from it after the runner; and a publish job pushes the resolution, posts
+> `update_comment.md`, carries the earlier verdict over to the merge commit or adds `agent:review`.
 
 ### `update-branch:gate`
 
@@ -1896,6 +1896,51 @@ Nothing. It reads `BASE_REF`'s commits, and parses no record string.
 > `CHECKOUT` the workspace. `OUTPUT_DIR` is a directory of its own under `runner.temp`, which the
 > job's upload carries under `prepare/`; the publish job's failure comment reads its reason there,
 > ahead of the runner's.
+
+### `update-branch:bundle`
+
+Bundles the agent's resolution for whatever pushes it, as `fix:bundle` bundles: the commits on
+`refs/heads/<BRANCH>` in the checkout that neither `HEAD_SHA`, the head the run started from, nor
+`BASE_SHA`, the base commit `update-branch:merge` merged, holds, as a thin bundle holding exactly
+that one ref, with those two commits its prerequisites. It runs no model, reads no repository,
+holds no token, and writes nothing to the record.
+
+- **Nothing to bundle** is a refusal, unlike `fix:bundle`'s: a run that resolved the conflicts
+  committed a merge of the two. No such commit fails it with `` The agent finished without
+  committing a merge of the base into `<BRANCH>`, so there was no resolution to push and the branch
+  was left untouched. ``, and no `refs/heads/<BRANCH>` at all with `` The agent's job has no
+  `<BRANCH>` to hand over, so the branch was left untouched. ``
+- **A failure of git.** Fails the command, naming the branch, with git's reason.
+
+#### Inputs
+
+| Input | Kind | Default | What it is |
+|---|---|---|---|
+| `CHECKOUT` | required | | The checkout the agent worked in, with its head branch as `BRANCH`. |
+| `BRANCH` | required | | The pull request's head branch. |
+| `HEAD_SHA` | required | | The head the run started from, as the event that asked for it saw it. |
+| `BASE_SHA` | required | | The base commit `update-branch:merge` merged, its `merge.json`'s `base`: a gate fact. |
+
+#### Outputs
+
+| Output | When it is written |
+|---|---|
+| `branch.bundle` | Where there are commits ahead of `HEAD_SHA` and `BASE_SHA`: the bundle. |
+
+**`doctor` cannot check this.** These tables are the command's, for the reason §6 gives.
+
+#### What it reads from the record
+
+Nothing. Its inputs are the checkout, the head the event named and the base commit the gate read.
+
+> **Actions orchestrator:** the agent's job, after the runner and the transcript, where the runner
+> succeeded. It runs from the package install the job makes after its checkout, from
+> `RUNNER_TEMP`, and is handed no token: the job's `GH_TOKEN` is set empty for it. `CHECKOUT` is
+> the workspace, `BRANCH` and `HEAD_SHA` the label's event's, and `BASE_SHA` the gate job's `base`
+> output. `OUTPUT_DIR` is a directory of its own under `runner.temp`, which the job's upload
+> carries under `bundle/`; the publish job's shell push reads the bundle there and checks it before
+> it pushes, and its failure comment reads the reason there, after prepare's and ahead of the
+> runner's.
 
 ## 11. `follow-ups`
 

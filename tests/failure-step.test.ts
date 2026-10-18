@@ -423,6 +423,25 @@ describe.skipIf(!CAN_RUN)("a failure step says whether the run failed, timed out
       expect(outcome.comment).not.toContain("timed out");
     });
   });
+
+  /**
+   * `update-branch:bundle` (#483) refuses after the runner succeeded, where
+   * the agent committed no resolution, and writes its reason under `bundle/`
+   * of the agent's hand-over. Until `update-branch:conclude` reads it, the
+   * failure step does.
+   */
+  describe("update-branch, where update-branch:bundle refused", () => {
+    const update = CASES.find((c) => c.command === "update-branch") as Case;
+    const REASON =
+      "The agent finished without committing a merge of the base into `agent/issue-7`, so there was no resolution to push and the branch was left untouched.";
+
+    it("names bundle's reason", () => {
+      const outcome = run(update, "failure", 120, String(update.minutes), "false", { "bundle/failure_reason.txt": `${REASON}\n` });
+
+      expect(outcome.comment).toContain(`**\`agent:update-branch\` stopped:** ${REASON}\n`);
+      expect(outcome.gh.some((argv) => argv.includes("--add-label agent:blocked"))).toBe(true);
+    });
+  });
 });
 
 /**

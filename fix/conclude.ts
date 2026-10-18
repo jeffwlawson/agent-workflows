@@ -1,13 +1,14 @@
 import * as path from "node:path";
 import { GitHubError } from "../engine/github.js";
 import { WriteFailed, type Lease, type Limits, type Writer } from "../engine/writer.js";
+import { checkBundle } from "../shared/bundle.js";
 import type { CheckoutIo } from "../shared/command-io.js";
 import { workflowRunUrl } from "../shared/common.js";
 import { COMMANDS } from "../shared/contract.js";
 import type { InputValues } from "../shared/env.js";
 import { choice, json, matching, object, optional, readDirectory, text } from "../shared/hand-over.js";
 import { BLOCKED_LABEL, FIX_LABEL, REVIEW_LABEL } from "../shared/record.js";
-import { checkBundle, present, rescueIgnored, setAsideNote } from "./hand-over.js";
+import { present, rescueIgnored, setAsideNote } from "./hand-over.js";
 
 type Declared = (typeof COMMANDS)["fix:conclude"];
 type Inputs = InputValues<Declared["inputs"]>;

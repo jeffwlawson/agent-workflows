@@ -575,20 +575,36 @@ jobs:
           retention-days: ${{ inputs.transcript-retention-days }}
           overwrite: true
 
-      # The resolution, as the one thing `publish` pushes on this path. A bundle
-      # rather than a push from here: this job holds no token that can write,
-      # and the runner that ran the agent is not one to spend a token on. Thin,
-      # the pull request's head and the base commit being its prerequisites,
-      # which `publish` has from its own checkout and fetch.
+      # The resolution, as the one thing `publish` pushes on this path:
+      # `update-branch:bundle` (#483) bundles the branch ahead of the pull
+      # request's head and the base commit the gate merged, which `publish` has
+      # from its own checkout and fetch, the way `fix:bundle` bundles. A
+      # bundle rather than a push from here: this job holds no token that can
+      # write, and the runner that ran the agent is not one to spend a token
+      # on. Where the agent succeeded only: nothing to bundle then is a
+      # refusal, with a reason. Into a directory of its own, which the
+      # hand-over below carries beside the runner's files.
+      #
+      # From the install above, run from `RUNNER_TEMP` and working in the
+      # checkout, and **with no token**: the agent and the PR's code have run,
+      # and the job's `GH_TOKEN` is set empty for it.
       - name: Bundle the branch
         if: success()
-        run: git bundle create "${RUNNER_TEMP}/branch.bundle" "refs/heads/${BRANCH}" "^${BRANCH_HEAD_SHA}" "^${BASE_SHA}"
+        working-directory: ${{ runner.temp }}
+        env:
+          NPM_CONFIG_USERCONFIG: ${{ steps.npmrc.outputs.userconfig }}
+          GH_TOKEN: ""
+          OUTPUT_DIR: ${{ runner.temp }}/bundle
+          CHECKOUT: ${{ github.workspace }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: npm exec --prefix "$RUNNER_TEMP" --yes --package=@jeffwlawson/agent-workflows@0.8.7 -- agent-workflows update-branch:bundle
 
       # The bundle, the comment the runner wrote and the reason file on a
-      # failure, the runner's at `runner.temp` and `update-branch:prepare`'s
-      # under `prepare/`, as one artifact. The paths' common directory is
-      # `runner.temp`, so `prepare/` stays as it is in the artifact and where
-      # `publish` downloads it. `always()`, because a failed run is one of
+      # failure: the runner's at `runner.temp`, `update-branch:prepare`'s
+      # under `prepare/`, and `update-branch:bundle`'s, the bundle and its
+      # reason file, under `bundle/`, as one artifact. The paths' common
+      # directory is `runner.temp`, so `prepare/` and `bundle/` stay as they
+      # are in the artifact and where `publish` downloads it. `always()`, because a failed run is one of
       # the outcomes `publish` reports, and any of them may be missing.
       # Uploading needs no scope: the artifact service takes the runner's own
       # token, so this job stays read-only. `overwrite`, so a re-run replaces
@@ -604,7 +620,8 @@ jobs:
           name: agent-update-branch
           path: |
             ${{ runner.temp }}/prepare/failure_reason.txt
-            ${{ runner.temp }}/branch.bundle
+            ${{ runner.temp }}/bundle/branch.bundle
+            ${{ runner.temp }}/bundle/failure_reason.txt
             ${{ runner.temp }}/failure_reason.txt
             ${{ runner.temp }}/update_comment.md
           if-no-files-found: ignore
@@ -698,7 +715,8 @@ jobs:
       # **What is pushed is never the agent's job's word alone.** A clean merge
       # is made here, again, of the base commit the gate merged cleanly: a
       # merge of the same two commits under the same name, so the same merge.
-      # A resolution is the bundle, checked as implement.yml's is: intact,
+      # A resolution is `update-branch:bundle`'s bundle, under `bundle/` where
+      # the download puts it, checked as implement.yml's is: intact,
       # exactly the pull request's branch and nothing else, and built on both
       # the head this run was started for and the base commit the gate read.
       # Its content is the agent's to write and the review's to judge.
@@ -715,7 +733,7 @@ jobs:
         run: |
           set -euo pipefail
           base="$BASE_REF"
-          bundle="${RUNNER_TEMP}/branch.bundle"
+          bundle="${RUNNER_TEMP}/bundle/branch.bundle"
 
           block() {
             printf '%s\n' "$1" > "${RUNNER_TEMP}/failure_reason.txt"
@@ -1023,11 +1041,14 @@ jobs:
           GATE_REASON: ${{ needs.gate.outputs.failure-reason }}
         run: |
           # The agent's job's reason file: `update-branch:prepare`'s, under
-          # `prepare/`, where it refused before the runner ran, or else the
-          # runner's.
+          # `prepare/`, where it refused before the runner ran;
+          # `update-branch:bundle`'s, under `bundle/`, where it refused after
+          # the runner succeeded; or else the runner's.
           reason_file=""
           if [ -f "${RUNNER_TEMP}/prepare/failure_reason.txt" ]; then
             reason_file="${RUNNER_TEMP}/prepare/failure_reason.txt"
+          elif [ -f "${RUNNER_TEMP}/bundle/failure_reason.txt" ]; then
+            reason_file="${RUNNER_TEMP}/bundle/failure_reason.txt"
           elif [ -f "${RUNNER_TEMP}/failure_reason.txt" ]; then
             reason_file="${RUNNER_TEMP}/failure_reason.txt"
           fi

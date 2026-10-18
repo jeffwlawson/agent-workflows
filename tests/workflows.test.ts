@@ -8842,7 +8842,11 @@ describe("a split run keeps every write off the agent's runner", () => {
         readonly agentPermissions: Readonly<Record<string, string>>;
         readonly gateWrites: readonly string[];
         readonly group: string;
-        /** The agent's job's `git bundle create`, where a shell step bundles: fix's is `fix:bundle` (#472). */
+        /**
+         * The agent's job's `git bundle create`, where a shell step bundles:
+         * fix's is `fix:bundle` (#472), and update-branch's
+         * `update-branch:bundle` (#483).
+         */
         readonly bundle?: string;
         readonly bundleIf: string;
         readonly branch: string;
@@ -8882,7 +8886,6 @@ describe("a split run keeps every write off the agent's runner", () => {
       agentPermissions: { contents: "read", packages: "read", "pull-requests": "read" },
       gateWrites: ["pull-requests"],
       group: `agent-pr-\${{ github.event.pull_request.number }}${otherLabel("agent:update-branch")}`,
-      bundle: 'git bundle create "${RUNNER_TEMP}/branch.bundle" "refs/heads/${BRANCH}" "^${BRANCH_HEAD_SHA}" "^${BASE_SHA}"',
       bundleIf: "success()",
       branch: "BRANCH",
       push: { ancestors: ["$BRANCH_HEAD_SHA", "$BASE_SHA"], pushed: 'push --force-with-lease="refs/heads/$BRANCH:$BRANCH_HEAD_SHA" origin "$BRANCH"', blocks: 5 },
@@ -10437,26 +10440,22 @@ describe("update-branch's agent job repeats the conflicted merge with update-bra
   });
 
   /**
-   * The artifact carries the runner's declared files at `runner.temp` and
-   * `update-branch:prepare`'s under `prepare/`, each set read off its
-   * declaration, and the branch's bundle, which a shell step still makes
-   * and no subcommand declares yet.
+   * The artifact carries the runner's declared files at `runner.temp`,
+   * `update-branch:prepare`'s under `prepare/` and `update-branch:bundle`'s
+   * under `bundle/` (#483), each set read off its declaration.
    */
-  it("hands over exactly the runner's and update-branch:prepare's declared files, and the bundle", () => {
+  it("hands over exactly the runner's, update-branch:prepare's and update-branch:bundle's declared files", () => {
     const upload = steps()[index("Hand the branch to the publish job")];
     const declared = (producer: string, outputs: readonly string[]): DirectoryInput => ({
       required: true,
       producer,
       files: Object.fromEntries(outputs.map((file) => [file, "sometimes" as const])),
     });
-    const lines = String(upload?.with?.["path"] ?? "").split("\n");
 
-    expect(lines.map((line) => line.trim())).toContain("${{ runner.temp }}/branch.bundle");
-    expectHandsOver(
-      { ...upload, with: { ...upload?.with, path: lines.filter((line) => line.trim() !== "${{ runner.temp }}/branch.bundle").join("\n") } },
-      declared("update-branch", RUNNERS["update-branch"].outputs),
-      { prepare: declared("update-branch:prepare", COMMANDS["update-branch:prepare"].outputs) },
-    );
+    expectHandsOver(upload, declared("update-branch", RUNNERS["update-branch"].outputs), {
+      prepare: declared("update-branch:prepare", COMMANDS["update-branch:prepare"].outputs),
+      bundle: declared("update-branch:bundle", COMMANDS["update-branch:bundle"].outputs),
+    });
   });
 
   /**
@@ -10472,6 +10471,98 @@ describe("update-branch's agent job repeats the conflicted merge with update-bra
     expect(download?.with?.["path"]).toBe("${{ runner.temp }}");
     expect(failure).toContain('"${RUNNER_TEMP}/prepare/failure_reason.txt"');
     expect(failure.indexOf("/prepare/failure_reason.txt")).toBeLessThan(failure.indexOf('"${RUNNER_TEMP}/failure_reason.txt"'));
+  });
+});
+
+/**
+ * `update-branch:bundle` (#483): the agent's resolution, bundled by a command
+ * in the agent's job where the runner succeeded, from the package installed
+ * early in that job, with no token, into a directory of its own the job's
+ * upload carries beside the runner's files. What it bundles and when it
+ * refuses is held in `tests/update-branch/bundle.test.ts`.
+ */
+describe("update-branch's agent job bundles its resolution with update-branch:bundle", () => {
+  const UPDATE = path.join(WORKFLOW_DIR, "update-branch.yml");
+  const job = (): Job => jobNamed(UPDATE, "update-branch");
+  const steps = (): readonly Step[] => job().steps ?? [];
+  const index = (name: string): number => {
+    const at = steps().findIndex((s) => s.name === name);
+    expect(at, `update-branch's agent job has no \`${name}\` step`).toBeGreaterThan(-1);
+    return at;
+  };
+  const BUNDLE = "Bundle the branch";
+  const VERSION = PIN.slice(1);
+  const bundle = (): Step | undefined => steps()[index(BUNDLE)];
+
+  it("runs update-branch:bundle in place of the shell step", () => {
+    expect(bundle()?.run).toBe(
+      `npm exec --prefix "$RUNNER_TEMP" --yes --package=@jeffwlawson/agent-workflows@${VERSION} -- agent-workflows update-branch:bundle`,
+    );
+    expect(COMMANDS["update-branch:bundle"].outputs).toContain("branch.bundle");
+    expect(steps().some((s) => (s.run ?? "").includes("git bundle"))).toBe(false);
+  });
+
+  /** Where the runner succeeded, after it and the transcript, and last before the hand-over. */
+  it("runs on success, after the runner and the transcript, and before the hand-over", () => {
+    const runner = steps().findIndex((s) => subcommandRun(s) === "update-branch");
+
+    expect(bundle()?.if).toBe("success()");
+    expect(runner).toBeGreaterThan(-1);
+    expect(index(BUNDLE)).toBeGreaterThan(runner);
+    expect(index(BUNDLE)).toBeGreaterThan(index("Upload the session transcript"));
+    expect(index(BUNDLE)).toBe(index("Hand the branch to the publish job") - 1);
+    expect(bundle()?.["working-directory"]).toBe("${{ runner.temp }}");
+    expect(bundle()?.env?.["NPM_CONFIG_USERCONFIG"]).toBe("${{ steps.npmrc.outputs.userconfig }}");
+  });
+
+  /**
+   * Its inputs, each set by the step or its job, the start head from the
+   * label's event and the base commit the gate's, never a file the agent's
+   * job wrote (ADR 0006).
+   */
+  it("sets exactly its declared inputs, the start head from the event and the base commit the gate's", () => {
+    const env = { ...job().env, ...bundle()?.env };
+
+    expect(bundle()?.env).toMatchObject({
+      OUTPUT_DIR: "${{ runner.temp }}/bundle",
+      CHECKOUT: "${{ github.workspace }}",
+      HEAD_SHA: "${{ github.event.pull_request.head.sha }}",
+    });
+    expect(env["BASE_SHA"]).toBe("${{ needs.gate.outputs.base }}");
+    expect(env["BRANCH"]).toBe("${{ github.event.pull_request.head.ref }}");
+    for (const name of Object.keys(COMMANDS["update-branch:bundle"].inputs)) expect(env, name).toHaveProperty(name);
+    const set = Object.keys(bundle()?.env ?? {}).filter((name) => name !== "NPM_CONFIG_USERCONFIG" && name !== "GH_TOKEN");
+    for (const name of set) expect(COMMANDS["update-branch:bundle"].inputs, name).toHaveProperty(name);
+  });
+
+  it("is handed no token and no writer", () => {
+    const step = bundle();
+    const text = JSON.stringify(step);
+
+    expect(step?.env?.["GH_TOKEN"]).toBe("");
+    for (const name of ["LOOP_TOKEN", "NODE_AUTH_TOKEN", "AGENT_PAT", "secrets.", "steps.token"]) {
+      expect(text, name).not.toContain(name);
+    }
+    expect(COMMANDS["update-branch:bundle"].inputs).not.toHaveProperty("GH_TOKEN");
+    expect(COMMANDS["update-branch:bundle"].inputs).not.toHaveProperty("GH_REPO");
+  });
+
+  /**
+   * Until `update-branch:publish` reads it as a directory input of its own,
+   * the publish job's shell push reads the bundle where the download puts
+   * it, and the failure step its reason, after prepare's and ahead of the
+   * runner's.
+   */
+  it("has the shell push read the bundle, and the failure step its reason, where the download puts them", () => {
+    const publish = jobNamed(UPDATE, "publish").steps ?? [];
+    const push = publish.find((s) => s.id === "push")?.run ?? "";
+    const failure = publish.find((s) => s.name === "Mark blocked on failure")?.run ?? "";
+
+    expect(push).toContain('bundle="${RUNNER_TEMP}/bundle/branch.bundle"');
+    expect(push).not.toContain('"${RUNNER_TEMP}/branch.bundle"');
+    expect(failure).toContain('"${RUNNER_TEMP}/bundle/failure_reason.txt"');
+    expect(failure.indexOf("/prepare/failure_reason.txt")).toBeLessThan(failure.indexOf("/bundle/failure_reason.txt"));
+    expect(failure.indexOf("/bundle/failure_reason.txt")).toBeLessThan(failure.indexOf('"${RUNNER_TEMP}/failure_reason.txt"'));
   });
 });
 

@@ -466,7 +466,7 @@ const REVIEW_PUBLISH = {
  * `EVERY_SUBCOMMAND`: `OUTPUT_DIR`, and neither the repository nor the token,
  * since it reads no repository and is handed none. The red check's two
  * (#422), whose job runs the pull request's own code, and `fix:bundle`
- * (#472), which runs after the agent.
+ * (#472) and `update-branch:bundle` (#483), which run after the agent.
  */
 export const TOKENLESS = {
   OUTPUT_DIR: EVERY_SUBCOMMAND.OUTPUT_DIR,
@@ -698,6 +698,12 @@ const REVIEW_RED_CHECK_PLACE = {
  *   gate merged, into `BRANCH`, as the loop's committer. It refuses where the
  *   base no longer holds `BASE_SHA` and where the merge does not conflict,
  *   and writes nothing to the record.
+ * - `update-branch:bundle` bundles the agent's resolution on `BRANCH`, in
+ *   `CHECKOUT`, ahead of `HEAD_SHA`, the head the run started from, and
+ *   `BASE_SHA`, the base commit the gate merged, into `branch.bundle`, as
+ *   `fix:bundle` bundles. Where there is nothing to bundle it refuses: a run
+ *   that resolved the conflicts committed a merge. It reads no repository and
+ *   is handed no token.
  */
 export const COMMANDS = {
   "fix:gate": {
@@ -897,6 +903,16 @@ export const COMMANDS = {
       BASE_SHA: REQUIRED,
     },
     outputs: [...EVERY_SUBCOMMAND_OUTPUTS],
+  },
+  "update-branch:bundle": {
+    inputs: {
+      ...TOKENLESS,
+      CHECKOUT: REQUIRED,
+      BRANCH: REQUIRED,
+      HEAD_SHA: REQUIRED,
+      BASE_SHA: REQUIRED,
+    },
+    outputs: [...EVERY_SUBCOMMAND_OUTPUTS, "branch.bundle"],
   },
 } as const satisfies Readonly<Record<string, CommandContract>>;
 

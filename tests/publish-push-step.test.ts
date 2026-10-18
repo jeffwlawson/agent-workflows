@@ -355,6 +355,11 @@ describe.skipIf(!CAN_RUN)("update-branch's publish job pushes a merge it made, o
     git(w.publish, "checkout", "--quiet", "--detach", head);
     return { head, merged: git(seed, "rev-parse", "HEAD") };
   };
+  /** Where the download puts `update-branch:bundle`'s bundle (#483): under `bundle/`. */
+  const bundled = (w: World): string => {
+    fs.mkdirSync(path.join(w.runner, "bundle"), { recursive: true });
+    return path.join(w.runner, "bundle", "branch.bundle");
+  };
   const env = (head: string, merged: string, status: string): Record<string, string> => ({
     BRANCH,
     BRANCH_HEAD_SHA: head,
@@ -385,7 +390,7 @@ describe.skipIf(!CAN_RUN)("update-branch's publish job pushes a merge it made, o
       const { head, merged } = diverged(w);
       git(w.agent, "fetch", "--quiet", "origin");
       git(w.agent, "merge", "--quiet", "--no-edit", merged);
-      git(w.agent, "bundle", "create", "--quiet", path.join(w.runner, "branch.bundle"), `refs/heads/${BRANCH}`, `^${head}`, `^${merged}`);
+      git(w.agent, "bundle", "create", "--quiet", bundled(w), `refs/heads/${BRANCH}`, `^${head}`, `^${merged}`);
       const outcome = pushWith(w, "update-branch.yml", env(head, merged, "conflicts"));
 
       expect(outcome.status).toBe(0);
@@ -401,7 +406,7 @@ describe.skipIf(!CAN_RUN)("update-branch's publish job pushes a merge it made, o
       const { head, merged } = diverged(w);
       fs.writeFileSync(path.join(w.agent, "widget.txt"), "resolved, without main\n");
       git(w.agent, "commit", "--quiet", "-am", "Not a merge");
-      git(w.agent, "bundle", "create", "--quiet", path.join(w.runner, "branch.bundle"), `refs/heads/${BRANCH}`, `^${head}`);
+      git(w.agent, "bundle", "create", "--quiet", bundled(w), `refs/heads/${BRANCH}`, `^${head}`);
       const outcome = pushWith(w, "update-branch.yml", env(head, merged, "conflicts"));
 
       expect(outcome.status).not.toBe(0);

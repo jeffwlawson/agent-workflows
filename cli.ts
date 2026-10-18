@@ -440,6 +440,11 @@ export const SUBCOMMANDS: Readonly<Record<string, Subcommand>> = {
     async () => (await import("./update-branch/prepare.js")).prepare,
     "Make the gate's conflicted merge again for the agent, refusing where it no longer conflicts (no model).",
   ),
+  "update-branch:bundle": command(
+    "update-branch:bundle",
+    async () => (await import("./update-branch/bundle.js")).bundle,
+    "Bundle the agent's resolution of a pull request's conflicts for the publish job (no model).",
+  ),
   worker: serviceProcess(
     "worker",
     async () => (await import("./service/serve.js")).serveWorker,

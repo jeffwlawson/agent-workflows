@@ -613,6 +613,16 @@ const REVIEW_RED_CHECK_PLACE = {
  *   they could not be counted: what it says no round is starting with
  *   (#425). `ended.json` is whether the head moved while the review ran, and
  *   the posted review's URL.
+ * - `fix:gate` refuses or claims the pull request before the agent's job:
+ *   a closed or merged one, or one whose `BRANCH` tip cannot be read, is
+ *   gone or is not `HEAD_SHA`, is refused on the pull request, and one it
+ *   claims has the permission probe, `agent:blocked` off and the wait,
+ *   bounded by `POST_WAIT_SECONDS` and polled every `POST_POLL_SECONDS`,
+ *   while a review is posting. `HEAD_SHA`, `PR_STATE` and `PR_MERGED` are
+ *   the pull request as the label's event saw it. It declares no loop token:
+ *   every write it makes is the workflow token's. `gate.json` is its
+ *   decision, `proceed`, written however it ends, and absent where it died
+ *   before deciding.
  * - `fix:bundle` bundles the commits on `BRANCH`, in `CHECKOUT`, ahead of
  *   `HEAD_SHA`, the head the run started from as the label's event saw it,
  *   into `branch.bundle`, and writes nothing where there are none. It reads
@@ -649,6 +659,19 @@ const REVIEW_RED_CHECK_PLACE = {
  *   the runner's park hand-over through `PARK_DIR`.
  */
 export const COMMANDS = {
+  "fix:gate": {
+    inputs: {
+      ...EVERY_SUBCOMMAND,
+      PR_NUMBER: REQUIRED,
+      BRANCH: REQUIRED,
+      HEAD_SHA: REQUIRED,
+      PR_STATE: REQUIRED,
+      PR_MERGED: EMPTY,
+      POST_WAIT_SECONDS: { required: false, default: "600" },
+      POST_POLL_SECONDS: { required: false, default: "10" },
+    },
+    outputs: [...EVERY_SUBCOMMAND_OUTPUTS, "gate.json", WRITE_LOG],
+  },
   "fix:bundle": FIX_BUNDLE,
   "fix:publish": FIX_PUBLISH,
   "fix:conclude": {

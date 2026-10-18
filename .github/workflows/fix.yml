@@ -146,154 +146,87 @@ jobs:
     # trimming a job to fit, so a caller granting less than a block declares
     # fails before any job starts (probed, #146).
     permissions:
-      # The live head, read with `git ls-remote`.
+      # The live head, read from the branch ref.
       contents: read
       # The refusals and the label transitions.
       pull-requests: write
+      # Installing the package `fix:gate` runs from, by `npm exec`. GitHub
+      # Packages has no anonymous install, so this is needed even though the
+      # package is public, and, being a bound, it grants nothing without the
+      # caller's own `packages: read`, which both caller sets already grant.
+      packages: read
     outputs:
       # `false` where the run goes ahead, `true` where it refused, and empty
-      # where the pre-flight died before deciding: the three `refused` takes
-      # in `implement.yml`, so the jobs after it read one word the same way.
+      # where the gate died before deciding: the three `refused` takes in
+      # `implement.yml`, so the jobs after it read one word the same way.
       refused: ${{ steps.state.outputs.proceed == 'true' && 'false' || steps.state.outputs.proceed == 'false' && 'true' || '' }}
       started: ${{ steps.clock.outputs.started }}
 
     env:
       PR_NUMBER: ${{ github.event.pull_request.number }}
       BRANCH: ${{ github.event.pull_request.head.ref }}
-      BRANCH_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
       PR_STATE: ${{ github.event.pull_request.state }}
       PR_MERGED: ${{ github.event.pull_request.merged }}
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       GH_REPO: ${{ github.repository }}
 
     steps:
-      # Refuse if the event's head SHA is not the branch's live head (#188).
-      # Everything after this is pinned to that SHA — the checkout, and the
-      # push's `--force-with-lease` — so a run started behind the branch
-      # fast-forwards onto work already done, finds nothing to do, and re-posts
-      # its replies to threads it has already answered. Each such run stacked
-      # another near-identical reply on every thread.
-      #
-      # The live head is the **branch ref**, read with `git ls-remote`, not the
-      # pull request's `headRefOid`: in the case that raised this, the pull
-      # request itself went on reporting the old SHA after the branch had moved,
-      # so asking the pull request would have agreed with the stale event.
-      # Review's guard reads the tip the same way since #229. There is no
-      # checkout yet, so the remote is named by URL
-      # and authenticated the way `actions/checkout` does it, with the header
-      # masked. A branch name reaches git as a quoted argument, never as syntax.
-      #
-      # **An unreadable head refuses, deliberately** — the opposite of review's
-      # guard, which proceeds on an API blip. Review only reads; this run pushes
-      # and replies, and replying twice is the harm the check exists to stop, so
-      # "could not tell" must not read as "not stale". A failed `ls-remote` and
-      # an empty answer (no such branch) both stop, each with its own sentence.
-      # The cost is a human re-adding the label after a blip, which is cheap.
-      #
-      # Every refusal removes `agent:fix`. The ones the maintainer has to act
-      # on also add `agent:blocked` (#253): an unreadable head and a stale
-      # one. A closed PR and a deleted branch leave nothing to act on, so they
-      # get the note alone. Re-adding `agent:fix` is the retry, and
-      # `Transition labels` clears `agent:blocked` on the way in.
-      - name: "Pre-flight: refuse if the PR is closed, merged, or its head is stale"
-        id: state
-        run: |
-          set -uo pipefail
-          # In the loop's one order (#236): the comment first, then this run's
-          # own label off, then `agent:blocked`, so the label that names the
-          # next step goes on last.
-          # The comment is tolerated: under `-e` a failed one would end the step
-          # before the removal, and leave the label on with nothing behind it.
-          # One pattern for every refusal (#253): the label that did not run,
-          # then a sentence saying why and what to do, starting with a capital.
-          refuse() {
-            gh pr comment "$PR_NUMBER" --body "**\`agent:fix\` didn't run:** $1" || echo "::warning::Could not post the refusal comment on PR #${PR_NUMBER}."
-            gh pr edit "$PR_NUMBER" --remove-label "agent:fix" || true
-            if [ "${2:-}" = "blocked" ]; then
-              gh pr edit "$PR_NUMBER" --add-label "agent:blocked" || true
-            fi
-            echo "proceed=false" >> "$GITHUB_OUTPUT"
-          }
+      # `fix:gate` runs before anything is checked out, so there is no Node
+      # here yet: Node and the registry the package installs from, set up for
+      # the gate alone, as `review.yml`'s gate job does. A version rather than
+      # a version file, since there is no checkout to read one from: the one
+      # the package's `engines.node` names, which `tests/workflows.test.ts`
+      # holds it to. No adopter step runs in this job, so the `.npmrc` it
+      # points npm at needs none of the `userconfig` handling review's gate
+      # job has (#429).
+      - name: Set up Node for the gate
+        uses: actions/setup-node@v7
+        with:
+          node-version: "24"
+          registry-url: https://npm.pkg.github.com
+          scope: "@jeffwlawson"
+          package-manager-cache: false
 
-          if [ "$PR_STATE" != "open" ] || [ "$PR_MERGED" = "true" ]; then
-            refuse "This PR is closed."
-            exit 0
-          fi
-
-          auth=$(printf 'x-access-token:%s' "$GH_TOKEN" | base64 | tr -d '\n')
-          echo "::add-mask::${auth}"
-          if ! remote=$(git -c "http.extraHeader=AUTHORIZATION: basic ${auth}" \
-              ls-remote "${GITHUB_SERVER_URL}/${GH_REPO}.git" "refs/heads/${BRANCH}"); then
-            echo "::warning::Could not read the live head of ${BRANCH}; refusing rather than risk working from a stale SHA."
-            refuse "Couldn't check whether the PR changed since \`agent:fix\` was added. Add \`agent:fix\` to try again." blocked
-            exit 0
-          fi
-          # `ls-remote` matches a pattern against the tail of each ref, so the
-          # exact name is picked out rather than taking the first line.
-          live=$(printf '%s\n' "$remote" | awk -v ref="refs/heads/${BRANCH}" '$2 == ref { print $1 }')
-          if [ -z "$live" ]; then
-            echo "::warning::Branch ${BRANCH} was not found on the remote."
-            refuse "This PR's branch no longer exists, so there's nothing to fix."
-            exit 0
-          fi
-          if [ "$live" != "$BRANCH_HEAD_SHA" ]; then
-            echo "::warning::Stale head: this run was started for ${BRANCH_HEAD_SHA}, but ${BRANCH} is at ${live}. Refusing rather than redo finished work."
-            refuse "The PR changed after \`agent:fix\` was added. Add \`agent:fix\` again to work on the latest version. If the PR still shows the old commit, close and reopen it so GitHub catches up." blocked
-            exit 0
-          fi
-
-          echo "proceed=true" >> "$GITHUB_OUTPUT"
-
-      # The trigger label stays on while this run works and comes off in the
-      # last step (#236), so the one label to take off here is a block an
-      # earlier run left. The line before it is the permission probe, the label write a short
-      # token feels first, ahead of the agent pass it would otherwise spend: it
-      # adds the label this run already holds, which changes nothing, and is not
-      # `|| true`, so a short token fails the run before the checkout.
-      - name: Transition labels
-        if: steps.state.outputs.proceed == 'true'
-        run: |
-          gh pr edit "$PR_NUMBER" --add-label "agent:fix"
-          gh pr edit "$PR_NUMBER" --remove-label "agent:blocked" || true
-
-      # A review's posting job runs outside this group (#257): the group is
-      # released when the review job ends, before the review, its threads and
-      # its verdict are posted, so a run that waited in the group behind a
-      # review starts while they are still being written. This run reads
-      # them: the threads and the review its feedback is made of. So it waits while `agent:review` is on the pull
-      # request, which the posting job takes off only after every result is
-      # posted (`review.yml`'s *No concurrency group* on `post-review`).
+      # Everything this job settles before the agent's job, as one command
+      # (#470): the pre-flight, which refuses a closed or merged pull request,
+      # a branch that is gone, and a live head it cannot read or that is not
+      # the event's (#188); the permission probe, the label write a short
+      # token feels first, which fails the run before the agent's job starts;
+      # `agent:blocked` off; and the bounded wait while a review is posting
+      # (#257). `fix/gate.ts` says why each is as it is, an unreadable head
+      # refusing where review's gate proceeds included. Each refusal is said
+      # on the pull request, `agent:fix` comes off, and the two a maintainer
+      # has to act on add `agent:blocked`.
       #
-      # Bounded by the posting job's own `timeout-minutes`, ten, and then it
-      # goes on with a warning: a label nobody will take off (a review run that
-      # never started, or one labelled behind this run in the group) is no
-      # reason to fail, and is what the bound is for. An unreadable label keeps
-      # waiting, since "could not tell" must not read as "nothing is posting".
-      # Writes nothing, so it needs no tolerance.
-      #
-      # Held equal in `fix.yml` and `update-branch.yml` by a test.
-      - name: Wait for a review's posting to finish
-        if: steps.state.outputs.proceed == 'true'
+      # `HEAD_SHA`, `PR_STATE` and `PR_MERGED` are the pull request as the
+      # label's event saw it; the branch tip and the labels the command reads
+      # itself, with this job's token, which is also every write it makes.
+      # What it decided is its `gate.json`, which the step below copies into
+      # this job's outputs.
+      - name: Refuse or claim the pull request
+        id: gate
         env:
-          POST_WAIT_SECONDS: "600"
-          POST_POLL_SECONDS: "10"
+          # `GITHUB_TOKEN`, carrying the `packages: read` the caller granted:
+          # there is no anonymous install.
+          NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          OUTPUT_DIR: ${{ runner.temp }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        # `npm exec --prefix` rather than a bare `npx`: see the long note on
+        # the runner step below.
+        run: npm exec --prefix "$RUNNER_TEMP" --yes --package=@jeffwlawson/agent-workflows@0.8.5 -- agent-workflows fix:gate
+
+      # Glue only Actions can do (ADR 0003): the gate's decision, copied into
+      # the step output `proceed`, which the job's `refused` and the clock
+      # read. `always()`, so a gate that decided to go ahead and then failed,
+      # at the probe, still says so; nothing where it wrote no `gate.json`,
+      # which `refused` reads as a gate that died before deciding.
+      - name: Hand the gate's decision to the job
+        id: state
+        if: always()
         run: |
-          set -uo pipefail
-          deadline=$(( $(date +%s) + POST_WAIT_SECONDS ))
-          while :; do
-            if labels=$(gh pr view "$PR_NUMBER" --json labels --jq '[.labels[].name] | join(",")'); then
-              case ",${labels}," in
-                *,agent:review,*) ;;
-                *) echo "No review is posting on PR #${PR_NUMBER}."; exit 0 ;;
-              esac
-            fi
-            if [ "$(date +%s)" -ge "$deadline" ]; then
-              echo "::warning::\`agent:review\` is still on PR #${PR_NUMBER} (or its labels could not be read) after ${POST_WAIT_SECONDS} seconds, so this run goes on without waiting for a review to finish posting. If a review was posting, this run may not see its findings or its verdict."
-              exit 0
-            fi
-            echo "agent:review is on PR #${PR_NUMBER}: waiting for the review's posting job to finish."
-            sleep "$POST_POLL_SECONDS"
-          done
+          file="${RUNNER_TEMP}/gate.json"
+          [ -f "$file" ] || { echo "fix:gate wrote no gate.json; this run decided nothing."; exit 0; }
+          jq -r 'to_entries[] | "\(.key)=\(.value)"' "$file" >> "$GITHUB_OUTPUT"
 
       # The clock the agent's job reads its time limit off (#220). A job that
       # reaches its `timeout-minutes` is cancelled, not failed, and nothing in

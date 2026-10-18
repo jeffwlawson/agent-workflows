@@ -721,6 +721,7 @@ const callerFileSpec = (file: string) => CALLER_FILES[path.basename(file).replac
  * (jeffwlawson/winget-manifest-lint#97).
  */
 const REVIEW = path.join(WORKFLOW_DIR, "review.yml");
+const FIX = path.join(WORKFLOW_DIR, "fix.yml");
 
 /** …and the reference caller file holding the caller that triggers it. */
 const REVIEW_CALLER = path.join(CALLER_DIR, "pr.yml");
@@ -1269,7 +1270,7 @@ describe("PR workflows refuse a closed or merged PR", () => {
   // Second only to the clock a failure step reads its time limit off (#220),
   // which does nothing but note the time and is asserted exactly below, in
   // *a run that times out or is cancelled says so*.
-  it.each(PR_WORKFLOWS.filter((file) => file !== REVIEW))("%s: the guard is the first step and is itself ungated", (file) => {
+  it.each(PR_WORKFLOWS.filter((file) => file !== REVIEW && file !== FIX))("%s: the guard is the first step and is itself ungated", (file) => {
     const first = firstWorkStep(file);
 
     expect(first?.id).toBe("state");
@@ -1300,6 +1301,26 @@ describe("PR workflows refuse a closed or merged PR", () => {
     expect(steps[at + 2]?.run ?? "").toMatch(/-- agent-workflows review:gate$/);
   });
 
+  /**
+   * Fix's guard is `fix:gate` (#470), which refuses a closed or merged pull
+   * request from the state the job hands it (`tests/fix/gate.test.ts`). Its
+   * first work is the Node the command runs on, ungated, then the gate,
+   * ungated, then the step that hands its decision on as `state`'s outputs,
+   * which the job's `refused` and the clock read.
+   */
+  it("fix.yml: the gate is the first work after its Node, ungated, and hands on its decision as `state`", () => {
+    const steps = stepsOf(FIX);
+
+    expect(steps.slice(0, 4).map((s) => [s.name, s.id, s.if])).toEqual([
+      ["Set up Node for the gate", undefined, undefined],
+      ["Refuse or claim the pull request", "gate", undefined],
+      ["Hand the gate's decision to the job", "state", "always()"],
+      ["Start the agent's clock", "clock", "steps.state.outputs.proceed == 'true'"],
+    ]);
+    expect(steps[1]?.run ?? "").toMatch(/-- agent-workflows fix:gate$/);
+    expect(jobNamed(FIX, "gate").steps).toHaveLength(4);
+  });
+
   const PROCEED = "steps.state.outputs.proceed == 'true'";
 
   /**
@@ -1325,9 +1346,10 @@ describe("PR workflows refuse a closed or merged PR", () => {
   /**
    * Review's is no step: `review:conclude` takes `agent:blocked` off only on
    * a review that posted (#419), which a refusal never is
-   * (`tests/review/conclude.test.ts`).
+   * (`tests/review/conclude.test.ts`). Fix's is `fix:gate`'s, past its
+   * refusals (#470; `tests/fix/gate.test.ts`).
    */
-  it.each(PR_WORKFLOWS.filter((file) => file !== REVIEW))("%s: the label transition is gated on the guard", (file) => {
+  it.each(PR_WORKFLOWS.filter((file) => file !== REVIEW && file !== FIX))("%s: the label transition is gated on the guard", (file) => {
     const labelling = writerStepsOf(file).filter((s) => s.name === "Transition labels");
 
     expect(labelling).toHaveLength(1);
@@ -1452,92 +1474,87 @@ describe("agent-review settles on one commit and reads nothing else", () => {
 
 /**
  * The fix's own version of that refusal (#188), against the **branch ref**
- * rather than the pull request's `headRefOid`: the case that raised it had the
- * pull request reporting the old SHA after the branch moved, so asking the pull
- * request would agree with the stale event. A fix run started behind the branch
- * fast-forwards, finds nothing to do, and replies to every thread again.
+ * rather than the pull request's head: the case that raised it had the pull
+ * request reporting the old SHA after the branch moved, so asking the pull
+ * request would agree with the stale event. A fix run started behind the
+ * branch fast-forwards, finds nothing to do, and replies to every thread
+ * again.
+ *
+ * Since #470 it is `fix:gate`'s, and its refusals, their sentences, their
+ * labels and the unreadable head that refuses where review's proceeds are
+ * executed in `tests/fix/gate.test.ts`. What is held here is the wiring,
+ * which no call of the command can see.
  */
-describe("agent-fix refuses an event head behind the live branch", () => {
-  const FIX = path.join(WORKFLOW_DIR, "fix.yml");
-  const guard = (): Step | undefined => firstWorkStep(FIX);
-  const run = (): string => guard()?.run ?? "";
+describe("agent-fix's gate is `fix:gate`, handed the event's head", () => {
+  const gateStep = (): Step | undefined => jobNamed(FIX, "gate").steps?.find((s) => s.id === "gate");
+  const copyStep = (): Step | undefined => jobNamed(FIX, "gate").steps?.find((s) => s.id === "state");
 
-  it("compares the event SHA with the branch ref, in the guard", () => {
-    expect(guard()?.id).toBe("state");
-    expect(run()).toContain('ls-remote "${GITHUB_SERVER_URL}/${GH_REPO}.git" "refs/heads/${BRANCH}"');
-    expect(run()).toContain('[ "$live" != "$BRANCH_HEAD_SHA" ]');
-    expect(run()).not.toContain("headRefOid");
-    // Still the SHA the push's lease pins, so the two agree on what "current"
-    // is: `fix:publish` leases on `HEAD_SHA`, the same event field (#468).
-    expect(jobOf(FIX).env?.["BRANCH_HEAD_SHA"]).toBe("${{ github.event.pull_request.head.sha }}");
+  /**
+   * Still the SHA the push's lease pins, so the two agree on what "current"
+   * is: `fix:publish` leases on `HEAD_SHA`, the same event field (#468).
+   */
+  it("hands the gate the commit and the state the label's event carried", () => {
+    const gate = jobNamed(FIX, "gate");
+
+    expect(gateStep()?.env?.["HEAD_SHA"]).toBe("${{ github.event.pull_request.head.sha }}");
+    expect(gate.env?.["PR_STATE"]).toBe("${{ github.event.pull_request.state }}");
+    expect(gate.env?.["PR_MERGED"]).toBe("${{ github.event.pull_request.merged }}");
+    expect(gate.env?.["BRANCH"]).toBe("${{ github.event.pull_request.head.ref }}");
+    expect(gate.env?.["GH_TOKEN"]).toBe("${{ secrets.GITHUB_TOKEN }}");
     expect(stepsOf(FIX).find((s) => s.id === "publish")?.env?.["HEAD_SHA"]).toBe("${{ github.event.pull_request.head.sha }}");
+    // The wait's bound is the command's default, not a setting of this file's.
+    expect(gateStep()?.env?.["POST_WAIT_SECONDS"]).toBeUndefined();
+    // Nothing the gate writes has to start a run, so it holds no loop token.
+    expect(COMMANDS["fix:gate"].inputs).not.toHaveProperty("LOOP_TOKEN");
+    expect(JSON.stringify(gate)).not.toMatch(/AGENT_PAT|AGENT_APP|loop-token/);
   });
 
   /**
-   * `ls-remote` matches its pattern against the tail of each ref, so a branch
-   * `x/refs/heads/<name>` would also answer. The exact ref is picked out.
+   * `gate.json` is a declared output of the gate, written into the directory
+   * the copy reads. `refused` keeps its three values, `false`, `true`, and
+   * empty for a gate that wrote no decision, so the later jobs' `if:`s are
+   * unchanged.
    */
-  it("reads the exact ref out of the answer", () => {
-    expect(run()).toContain(`awk -v ref="refs/heads/\${BRANCH}" '$2 == ref { print $1 }'`);
-  });
-
-  /**
-   * The SHAs go to the log, and the comment says what the review's says for
-   * the same situation (#253): the PR changed, add the label again, and how
-   * to make GitHub catch up where it has not.
-   */
-  it("says why, as a warning naming both SHAs and as one comment giving the way out", () => {
-    const arm = run().slice(run().indexOf('[ "$live" != "$BRANCH_HEAD_SHA" ]'));
-    const stale = arm.slice(0, arm.indexOf("exit 0"));
-
-    expect(stale).toMatch(/::warning::[^\n]*\$\{BRANCH_HEAD_SHA\}[^\n]*\$\{live\}/);
-    expect(stale.match(/refuse "/g)).toHaveLength(1);
-    expect(stale).toContain(
-      'refuse "The PR changed after \\`agent:fix\\` was added. Add \\`agent:fix\\` again to work on the latest version. If the PR still shows the old commit, close and reopen it so GitHub catches up." blocked',
+  it("copies the gate's decision into `refused`, with its three values", () => {
+    expect(COMMANDS["fix:gate"].outputs).toContain("gate.json");
+    expect(gateStep()?.env?.["OUTPUT_DIR"]).toBe("${{ runner.temp }}");
+    const run = copyStep()?.run ?? "";
+    expect(run).toContain('file="${RUNNER_TEMP}/gate.json"');
+    expect(run).toContain('[ -f "$file" ] ||');
+    expect(run).toContain(`jq -r 'to_entries[] | "\\(.key)=\\(.value)"' "$file" >> "$GITHUB_OUTPUT"`);
+    expect(jobNamed(FIX, "gate").outputs?.["refused"]).toBe(
+      "${{ steps.state.outputs.proceed == 'true' && 'false' || steps.state.outputs.proceed == 'false' && 'true' || '' }}",
     );
   });
 
   /**
-   * The label the run consumed is gone and `agent:blocked` is on, so re-adding
-   * `agent:fix` is the retry and `Transition labels` clears the block.
+   * The gate job has no checkout, so Node and the registry are set up for
+   * the command alone, as review's gate job does. No adopter step runs in
+   * it, so it needs none of the `userconfig` handling (#429) review's has.
    */
-  it("leaves labels a human can retry from", () => {
-    const refuse = bashFunctionBody(run(), "refuse");
+  it("sets up Node for the gate, and installs the package with `packages: read`", () => {
+    const steps = jobNamed(FIX, "gate").steps ?? [];
+    const node = steps.find((s) => s.name === "Set up Node for the gate");
 
-    expect(refuse).toContain('--remove-label "agent:fix"');
-    expect(refuse).toContain('--add-label "agent:blocked"');
-    expect(refuse).toContain('echo "proceed=false" >> "$GITHUB_OUTPUT"');
-    expect(stepsOf(FIX).find((s) => s.name === "Transition labels")?.run ?? "").toContain(
-      '--remove-label "agent:blocked"',
-    );
+    expect(node?.uses).toMatch(/^actions\/setup-node@/);
+    expect(node?.with).toEqual({
+      "node-version": "24",
+      "registry-url": "https://npm.pkg.github.com",
+      scope: "@jeffwlawson",
+      "package-manager-cache": false,
+    });
+    expect(steps.map((s) => s.id)).not.toContain("npmrc");
+    expect(gateStep()?.env?.["NODE_AUTH_TOKEN"]).toBe("${{ secrets.GITHUB_TOKEN }}");
+    expect(jobNamed(FIX, "gate").permissions).toEqual({ contents: "read", "pull-requests": "write", packages: "read" });
+    expect(steps.some((s) => (s.uses ?? "").startsWith("actions/checkout@"))).toBe(false);
   });
 
-  /**
-   * The opposite of review's choice, and on purpose: this run pushes and
-   * replies, and replying twice is the harm. "Could not tell" must not read as
-   * "not stale", so a failed `ls-remote` and an empty answer both refuse.
-   */
-  it("refuses when the live head cannot be read, and says so beside the check", () => {
-    expect(run()).toContain("if ! remote=$(git");
-    expect(run()).toContain('if [ -z "$live" ]; then');
-    expect(run()).not.toContain('[ -n "$live" ] &&');
-    const armOf = (arm: string): string => {
-      const body = run().slice(run().indexOf(arm));
-      return body.slice(0, body.indexOf("exit 0"));
-    };
-    // Blocked where the maintainer has to act, and not on a deleted branch,
-    // which leaves nothing to act on (#253).
-    expect(armOf("if ! remote=$(git")).toMatch(/refuse ".*" blocked/);
-    expect(armOf('if [ -z "$live" ]; then')).toContain(
-      `refuse "This PR's branch no longer exists, so there's nothing to fix."\n`,
-    );
-    expect(fs.readFileSync(FIX, "utf8")).toContain("**An unreadable head refuses, deliberately**");
-  });
+  /** No shell is left in the gate job that reads the head or writes the record. */
+  it("leaves no shell pre-flight, transition or wait behind", () => {
+    const shell = JSON.stringify(jobNamed(FIX, "gate"));
 
-  /** And the proceed line is reached only past every refusal. */
-  it("proceeds only after the head is confirmed", () => {
-    expect(run().lastIndexOf('echo "proceed=true"')).toBeGreaterThan(run().indexOf('[ "$live" != "$BRANCH_HEAD_SHA" ]'));
-    expect(run().match(/proceed=true/g)).toHaveLength(1);
+    expect(shell).not.toMatch(/ls-remote|gh pr (edit|comment|view)/);
+    expect(stepsOf(FIX).map((s) => s.name)).not.toContain("Transition labels");
   });
 });
 
@@ -3758,7 +3775,7 @@ describe("every workflow in the loop is called rather than copied", () => {
    * about a token that is short for some other reason, which is why the
    * assertion is about step order rather than about a grant.
    */
-  it.each(PR_WORKFLOWS.filter((file) => file !== REVIEW))("%s: a 403 on the label transition fails before the checkout", (file) => {
+  it.each(PR_WORKFLOWS.filter((file) => file !== REVIEW && file !== FIX))("%s: a 403 on the label transition fails before the checkout", (file) => {
     const steps = stepsOf(file);
     const label = (guardJobOf(file).if ?? "").match(/github\.event\.label\.name == '(agent:[a-z-]+)'/)?.[1];
     const probe = `gh pr edit "$PR_NUMBER" --add-label "${label}"`;
@@ -3774,6 +3791,17 @@ describe("every workflow in the loop is called rather than copied", () => {
     const lines = (steps[transition]?.run ?? "").trim().split("\n");
     expect(lines[0]).toBe(probe);
     expect(lines.slice(1).every((line) => line.endsWith("|| true"))).toBe(true);
+  });
+
+  /**
+   * Fix's probe is `fix:gate`'s (#470), whose tests hold that a short token
+   * fails it, before the agent's job starts: the gate job, which the agent's
+   * job needs, holds the probe and no checkout.
+   */
+  it("fix.yml: the probe is fix:gate's, in the job the agent's job needs", () => {
+    expect(jobNamed(FIX, "fix").needs).toBe("gate");
+    expect(jobNamed(FIX, "fix").if ?? "").toContain("needs.gate.outputs.refused == 'false'");
+    expect((jobNamed(FIX, "gate").steps ?? []).some((s) => (s.run ?? "").trim().endsWith(" agent-workflows fix:gate"))).toBe(true);
   });
 
   /**
@@ -7627,7 +7655,9 @@ describe("a trigger label is on while its run works, and off when it ends", () =
     expect(JSON.stringify(steps)).not.toMatch(removal("agent:fix"));
   });
 
-  it.each(STEPPED)("%s: leaves %s on as the run starts", (name, label) => {
+  // Fix's probe and `agent:blocked` off are `fix:gate`'s (#470), and its
+  // tests hold them.
+  it.each(STEPPED.filter(([name]) => name !== "fix.yml"))("%s: leaves %s on as the run starts", (name, label) => {
     const transition = writerStepsOf(fileOf(name)).find((s) => s.name === "Transition labels");
 
     expect(transition).toBeDefined();
@@ -7740,7 +7770,7 @@ describe("a trigger label is on while its run works, and off when it ends", () =
   it.each([
     ["implement.yml", "preflight", 'gh issue comment "$ISSUE_NUMBER"', 'gh issue edit "$ISSUE_NUMBER" --remove-label "agent:implement"', 'gh issue edit "$ISSUE_NUMBER" --add-label "agent:blocked"'],
     ["implement-prd.yml", "preflight", 'gh issue comment "$ISSUE_NUMBER"', 'gh issue edit "$ISSUE_NUMBER" --remove-label "agent:implement"', 'gh issue edit "$ISSUE_NUMBER" --add-label "agent:blocked"'],
-    ["fix.yml", "state", 'gh pr comment "$PR_NUMBER"', 'gh pr edit "$PR_NUMBER" --remove-label "agent:fix"', 'gh pr edit "$PR_NUMBER" --add-label "agent:blocked"'],
+    // Fix's is `fix:gate`'s (#470), whose tests hold the order.
   ])("%s: a refusal comments, then takes its label off, then blocks", (name, id, comment, removal, blocked) => {
     const body = bashFunctionBody(runOf(fileOf(name), id), "refuse");
 
@@ -7856,7 +7886,8 @@ describe("every failure and refusal says so in one of two patterns", () => {
   const REFUSING = [
     { file: IMPLEMENT, label: "agent:implement", guard: "preflight" },
     { file: PRD, label: "agent:implement", guard: "preflight" },
-    { file: FIX, label: "agent:fix", guard: "state" },
+    // Fix's are `fix:gate`'s since #470, each held word for word in
+    // `tests/fix/gate.test.ts`.
   ] as const;
 
   it.each(STOPPED)("$file: a run that stopped says `$label stopped:`, the reason, the run and what to do", (c) => {
@@ -7919,8 +7950,6 @@ describe("every failure and refusal says so in one of two patterns", () => {
   it("blocks nothing that is closed, finished or has nothing to do", () => {
     const implement = runOf(IMPLEMENT, "preflight");
     const prd = runOf(PRD, "preflight");
-    const fix = runOf(FIX, "state");
-
     for (const run of [implement, prd]) {
       expect(armOf(run, '"$ISSUE_STATE" != "open"')).toContain(
         'refuse "This issue is closed. Reopen it, then add \\`agent:implement\\` again."',
@@ -7928,9 +7957,9 @@ describe("every failure and refusal says so in one of two patterns", () => {
       expect(armOf(run, '"$ISSUE_STATE" != "open"')).not.toContain("refuse_shape");
     }
     expect(armOf(implement, '-n "$existing"')).not.toContain("refuse_shape");
-    expect(fix).toContain('refuse "This PR is closed."\n');
-    // Review's closed pull request is blocked nowhere either, and its
-    // changed one is: `tests/review/gate.test.ts`.
+    // Review's and fix's closed pull request is blocked nowhere either, nor
+    // fix's deleted branch, and their changed one is:
+    // `tests/review/gate.test.ts` and `tests/fix/gate.test.ts`.
   });
 
   /**

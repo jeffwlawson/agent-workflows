@@ -146,19 +146,17 @@ const readingCommand = <C extends ReadingCommand>(
 
 /**
  * A command that writes through the engine's writer (ADR 0005): one that
- * declares the loop's token and a write log, and is handed, besides its
- * inputs, the real writers over both tokens and the reader, built here from
- * those inputs. Every write it makes is appended to `write_log.jsonl` as it
+ * declares a write log, and is handed, besides its inputs, the real writers
+ * over both tokens and the reader, built here from those inputs. One that
+ * declares no loop token, `fix:gate`, writes with the workflow's alone, and
+ * its `loop` writer holds no token, as one whose optional loop token is
+ * empty does. Every write it makes is appended to `write_log.jsonl` as it
  * lands, and the log's last line says how the command ended, whether it
  * returned or threw. Its git writes and reads are made in `CHECKOUT` where it
  * declares one, and in the directory it runs in otherwise.
  */
 type WritingCommand = {
-  [C in Command]: (typeof COMMANDS)[C]["inputs"] extends { readonly LOOP_TOKEN: unknown }
-    ? "write_log.jsonl" extends (typeof COMMANDS)[C]["outputs"][number]
-      ? C
-      : never
-    : never;
+  [C in Command]: "write_log.jsonl" extends (typeof COMMANDS)[C]["outputs"][number] ? C : never;
 }[Command];
 
 const writingCommand = <C extends WritingCommand>(
@@ -177,8 +175,10 @@ const writingCommand = <C extends WritingCommand>(
     const declared = COMMANDS[name];
     const inputs = readInputs(declared.inputs);
     const outputs = writers<(typeof COMMANDS)[C]["outputs"]>(declared.outputs);
-    const checkout = (inputs as Readonly<Record<string, string>>)["CHECKOUT"];
-    const { io, end } = liveCommandIo(inputs, outputs, (line) => outputs.appendLine("write_log.jsonl", line), {
+    const declaredValues = inputs as Readonly<Record<string, string>>;
+    const checkout = declaredValues["CHECKOUT"];
+    const tokens = { GH_REPO: inputs.GH_REPO, GH_TOKEN: inputs.GH_TOKEN, LOOP_TOKEN: declaredValues["LOOP_TOKEN"] ?? "" };
+    const { io, end } = liveCommandIo(tokens, outputs, (line) => outputs.appendLine("write_log.jsonl", line), {
       dir: checkout ?? process.cwd(),
       env: gitEnvironment(),
     });
@@ -296,6 +296,11 @@ export const SUBCOMMANDS: Readonly<Record<string, Subcommand>> = {
     },
   },
   fix: runner("fix", () => import("./fix/fix.js")),
+  "fix:gate": writingCommand(
+    "fix:gate",
+    async () => (await import("./fix/gate.js")).gate,
+    "Refuse a fix run on a closed, moved or deleted pull request, or claim it and wait for a review's posting (no model).",
+  ),
   "fix:bundle": command(
     "fix:bundle",
     async () => (await import("./fix/bundle.js")).bundle,

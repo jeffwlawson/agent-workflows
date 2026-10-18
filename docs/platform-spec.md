@@ -1384,7 +1384,8 @@ runs no model and needs no checkout. In order:
   the bound it goes on, with a warning.
 
 Every write is made with `GH_TOKEN`: none of them has to start a run. A refusal is a decision, and
-the command succeeds. `gate.json` is written however the command ends, with what was decided by
+the command succeeds. `gate.json` is written the moment the run is refused or claimed, ahead of the
+probe and the wait, so a cancel during either still finds it, and again however the command ends, with what was decided by
 then, so a run that failed at the probe still says it went ahead, and one that died before
 deciding writes none.
 

@@ -345,6 +345,34 @@ describe("fix:gate waits for a review's posting to finish", () => {
 });
 
 describe("fix:gate's decision", () => {
+  /**
+   * A cancel reaches Node as a signal, which ends it without running a
+   * `finally`: so the decision is on disk before the probe and the wait, and
+   * a run already claimed that is cancelled while it waits still reads as
+   * claimed, and gets the cancel comment and `agent:blocked` from
+   * `fix:conclude`, as the shell steps gave it.
+   */
+  it("writes that it went ahead before the probe and before the wait", async () => {
+    const seen: unknown[] = [];
+    const watching: GitHubReader = {
+      ...reader,
+      // A cancel at the wait's first read ends the process: what is on disk
+      // by then is all `fix:conclude` will see.
+      pullRequest: async (number) => {
+        seen.push(structuredClone(decided));
+        return reader.pullRequest(number);
+      },
+    };
+    github.fails = (write) => {
+      if (write.type === "addLabel") seen.push(structuredClone(decided));
+      return false;
+    };
+
+    await run(INPUTS(), watching);
+
+    expect(seen).toEqual([{ proceed: "true" }, { proceed: "true" }]);
+  });
+
   /** No decision at all is the third value of `refused`, empty: a gate that died before deciding. */
   it("writes nothing on an input it cannot read, so the run reads as undecided", async () => {
     await expect(run(INPUTS({ PR_NUMBER: "seven" }))).rejects.toThrow("PR_NUMBER");

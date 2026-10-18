@@ -18,7 +18,8 @@ type Io = CommandIo<Declared["outputs"]>;
  * the wait for a review's posting to finish.
  *
  * `gate.json` is its decision, `proceed`, `true` or `false`, which the
- * adapter copies into the job's `refused`. It is written however this ends,
+ * adapter copies into the job's `refused`. It is written as soon as it is
+ * decided, ahead of the probe and the wait, and again however this ends,
  * with what was decided by then: a gate that died before deciding writes
  * none, and the later jobs read that as the third value of `refused`, empty.
  * One that decided to go ahead and then failed, at the probe, still says so,
@@ -31,15 +32,23 @@ export const gate = async (inputs: Inputs, io: Io): Promise<void> => {
   const waitSeconds = seconds(inputs.POST_WAIT_SECONDS, "POST_WAIT_SECONDS");
   const pollSeconds = seconds(inputs.POST_POLL_SECONDS, "POST_POLL_SECONDS");
   const decided: { proceed?: "true" | "false" } = {};
+  // Written the moment it is decided, and again however this ends: a cancel
+  // reaches Node as a signal, which ends the process without running a
+  // `finally`, so a decision written only there is lost to one landing in the
+  // wait, and a run already claimed would read as undecided.
+  const decide = (proceed: "true" | "false"): void => {
+    decided.proceed = proceed;
+    io.outputs.writeJson("gate.json", decided);
+  };
   try {
     const { workflow } = io.writers(LIMITS);
     const refusal = await preflight(inputs, io.github);
     if (refusal !== undefined) {
       await refuse(pr, workflow, refusal);
-      decided.proceed = "false";
+      decide("false");
       return;
     }
-    decided.proceed = "true";
+    decide("true");
 
     // **The permission probe**: the label write a short token feels first,
     // ahead of the agent pass it would otherwise spend. It adds the label

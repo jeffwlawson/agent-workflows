@@ -621,7 +621,7 @@ const REVIEW_RED_CHECK_PLACE = {
  *   while a review is posting. `HEAD_SHA`, `PR_STATE` and `PR_MERGED` are
  *   the pull request as the label's event saw it. It declares no loop token:
  *   every write it makes is the workflow token's. `gate.json` is its
- *   decision, `proceed`, written however it ends, and absent where it died
+ *   decision, `proceed`, written as soon as it decides and however it ends, and absent where it died
  *   before deciding.
  * - `fix:bundle` bundles the commits on `BRANCH`, in `CHECKOUT`, ahead of
  *   `HEAD_SHA`, the head the run started from as the label's event saw it,

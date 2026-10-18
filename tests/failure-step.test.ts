@@ -373,6 +373,30 @@ describe.skipIf(!CAN_RUN)("a failure step says whether the run failed, timed out
       });
     }
   });
+
+  /**
+   * A gate command that failed after claiming the run, at the probe or the
+   * merge's fetch (#481), wrote its reason on the gate job's runner, which
+   * this job cannot read: it arrives as the gate job's `failure-reason`
+   * output, and is said where no reason file of this job's is.
+   */
+  describe("update-branch, where its gate job failed", () => {
+    const update = CASES.find((c) => c.command === "update-branch") as Case;
+    const GATE = { GATE_RESULT: "failure", AGENT_RESULT: "skipped", GATE_REASON: "Couldn't fetch `main` to merge it, so the branch was left untouched: gone" };
+
+    it("names the reason the gate job handed on", () => {
+      const outcome = run(update, "failure", 120, String(update.minutes), "false", {}, GATE);
+
+      expect(outcome.comment).toContain("**`agent:update-branch` stopped:** Couldn't fetch `main` to merge it, so the branch was left untouched: gone.\n");
+    });
+
+    it("names this job's own reason over it", () => {
+      const outcome = run(update, "failure", 120, String(update.minutes), "false", undefined, GATE);
+
+      expect(outcome.comment).toContain("The runner wrote this.");
+      expect(outcome.comment).not.toContain("Couldn't fetch");
+    });
+  });
 });
 
 /**

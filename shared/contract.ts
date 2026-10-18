@@ -678,6 +678,20 @@ const REVIEW_RED_CHECK_PLACE = {
  *   (`REVIEW_RESULT`, `POSTING_RESULT`), the review job's outputs, the
  *   posting job's (`MOVED`, `REVIEW_URL`) and the mint's outcome, and reads
  *   the runner's park hand-over through `PARK_DIR`.
+ * - `update-branch:gate` refuses or claims the pull request before the
+ *   checkout: a closed or merged one is refused on the pull request, and one
+ *   it claims has the permission probe, `agent:blocked` off and the wait,
+ *   bounded by `POST_WAIT_SECONDS` and polled every `POST_POLL_SECONDS`,
+ *   while a review is posting. `PR_STATE` and `PR_MERGED` are the pull
+ *   request as the label's event saw it, and `BRANCH` its head branch. It
+ *   declares no loop token, and reads no branch tip: it adds no refusal the
+ *   shell pre-flight it replaced lacked. `gate.json` is its decision,
+ *   `proceed`, as `fix:gate`'s is.
+ * - `update-branch:merge` fetches `BASE_REF` and merges it into `BRANCH`, the
+ *   commit checked out in `CHECKOUT`, as the loop's committer, and writes
+ *   nothing to the record. `merge.json` is what it came to: `status`,
+ *   `uptodate`, `clean` or `conflicts`; `base`, the base commit it fetched;
+ *   and `conflicts`, the conflicted paths, empty but on a conflict.
  */
 export const COMMANDS = {
   "fix:gate": {
@@ -846,6 +860,27 @@ export const COMMANDS = {
       ...RUN_LINK,
     },
     outputs: [...EVERY_SUBCOMMAND_OUTPUTS, WRITE_LOG],
+  },
+  "update-branch:gate": {
+    inputs: {
+      ...EVERY_SUBCOMMAND,
+      PR_NUMBER: REQUIRED,
+      BRANCH: REQUIRED,
+      PR_STATE: REQUIRED,
+      PR_MERGED: EMPTY,
+      POST_WAIT_SECONDS: { required: false, default: "600" },
+      POST_POLL_SECONDS: { required: false, default: "10" },
+    },
+    outputs: [...EVERY_SUBCOMMAND_OUTPUTS, "gate.json", WRITE_LOG],
+  },
+  "update-branch:merge": {
+    inputs: {
+      ...EVERY_SUBCOMMAND,
+      CHECKOUT: REQUIRED,
+      BRANCH: REQUIRED,
+      BASE_REF: REQUIRED,
+    },
+    outputs: [...EVERY_SUBCOMMAND_OUTPUTS, "merge.json"],
   },
 } as const satisfies Readonly<Record<string, CommandContract>>;
 

@@ -10,7 +10,17 @@
  * `workflow` is the job's own, which the loop recognises its reviews, comments
  * and statuses by (`docs/platform-spec.md` §4.1).
  */
-import { gitFetcher, gitReader, gitWrites, githubRemote, type GitFetcher, type GitReader, type GitRepository } from "../engine/git.js";
+import {
+  gitFetcher,
+  gitMerger,
+  gitReader,
+  gitWrites,
+  githubRemote,
+  type GitFetcher,
+  type GitMerger,
+  type GitReader,
+  type GitRepository,
+} from "../engine/git.js";
 import { fetchTransport } from "../engine/github.js";
 import { githubReader, type GitHubReader } from "../engine/read.js";
 import { createWriters, type Backend, type Limits, type WriteLog, type Writer } from "../engine/writer.js";
@@ -63,21 +73,30 @@ export interface FetchingIo<O extends Outputs> extends ReadingIo<O> {
   readonly fetcher: GitFetcher;
 }
 
+/**
+ * The same, and a merger in the checkout that fetches with that fetcher: a
+ * merge of the base branch changes the checkout and nothing on GitHub.
+ * `update-branch:merge` tries the gate's merge with it.
+ */
+export interface MergingIo<O extends Outputs> extends FetchingIo<O> {
+  readonly merger: GitMerger;
+}
+
 /** The real ones, for `repo` with the workflow's token. */
 export const liveReadingIo = <O extends Outputs>(
   tokens: { readonly GH_REPO: string; readonly GH_TOKEN: string },
   outputs: OutputWriters<O>,
 ): ReadingIo<O> => ({ github: githubReader(tokens.GH_REPO, fetchTransport(tokens.GH_TOKEN)), outputs });
 
-/** The real ones, for `repo` with the workflow's token, fetching into `checkout`. */
+/** The real ones, for `repo` with the workflow's token, fetching into and merging in `checkout`. */
 export const liveFetchingIo = <O extends Outputs>(
   tokens: { readonly GH_REPO: string; readonly GH_TOKEN: string },
   outputs: OutputWriters<O>,
   checkout: GitRepository,
-): FetchingIo<O> => ({
-  ...liveReadingIo(tokens, outputs),
-  fetcher: gitFetcher({ ...checkout, remote: githubRemote(tokens.GH_REPO) }, tokens.GH_TOKEN),
-});
+): MergingIo<O> => {
+  const fetcher = gitFetcher({ ...checkout, remote: githubRemote(tokens.GH_REPO) }, tokens.GH_TOKEN);
+  return { ...liveReadingIo(tokens, outputs), fetcher, merger: gitMerger(checkout, fetcher) };
+};
 
 /**
  * The real ones, for `repo` with the two tokens, each line of the write log

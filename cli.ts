@@ -3,7 +3,7 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import { fileURLToPath } from "node:url";
 import { commonWriters } from "./shared/common.js";
-import type { CheckoutIo, FetchingIo, OutputWriters, ReadingIo } from "./shared/command-io.js";
+import type { CheckoutIo, MergingIo, OutputWriters, ReadingIo } from "./shared/command-io.js";
 import { COMMANDS, type Command, type Runner } from "./shared/contract.js";
 import { fail, gitEnvironment, readInputs, writers, type InputValues } from "./shared/env.js";
 import { VERSION } from "./shared/manifest.js";
@@ -147,8 +147,9 @@ const readingCommand = <C extends ReadingCommand>(
 /**
  * A command that reads GitHub and fetches from it into a checkout, and writes
  * nothing to it: handed, besides its inputs, the reader and a fetcher, both
- * over its `GH_TOKEN`, the fetcher working in its `CHECKOUT`, and its
- * declared output files. No writer: a fetch changes the checkout alone.
+ * over its `GH_TOKEN`, the fetcher working in its `CHECKOUT`, a merger there
+ * that fetches with it, and its declared output files. No writer: a fetch
+ * and a merge change the checkout alone.
  */
 type FetchingCommand = {
   [C in ReadingCommand]: (typeof COMMANDS)[C]["inputs"] extends { readonly CHECKOUT: unknown } ? C : never;
@@ -156,7 +157,7 @@ type FetchingCommand = {
 
 const fetchingCommand = <C extends FetchingCommand>(
   name: C,
-  load: () => Promise<(inputs: InputValues<(typeof COMMANDS)[C]["inputs"]>, io: FetchingIo<(typeof COMMANDS)[C]["outputs"]>) => Promise<unknown>>,
+  load: () => Promise<(inputs: InputValues<(typeof COMMANDS)[C]["inputs"]>, io: MergingIo<(typeof COMMANDS)[C]["outputs"]>) => Promise<unknown>>,
   summary: string,
 ): Subcommand => ({
   kind: "command",
@@ -424,6 +425,16 @@ export const SUBCOMMANDS: Readonly<Record<string, Subcommand>> = {
     "Move a PRD PR's chain on after a review, or park it, and write its progress list (no model).",
   ),
   "update-branch": runner("update-branch", () => import("./update-branch/update-branch.js")),
+  "update-branch:gate": writingCommand(
+    "update-branch:gate",
+    async () => (await import("./update-branch/gate.js")).gate,
+    "Refuse a branch refresh on a closed pull request, or claim it and wait for a review's posting (no model).",
+  ),
+  "update-branch:merge": fetchingCommand(
+    "update-branch:merge",
+    async () => (await import("./update-branch/merge.js")).merge,
+    "Fetch a pull request's base branch and try merging it in: up to date, clean or conflicted (no model).",
+  ),
   worker: serviceProcess(
     "worker",
     async () => (await import("./service/serve.js")).serveWorker,

@@ -1,8 +1,9 @@
 /**
  * The engine's door to git, beside `github.ts`'s door to GitHub's API: the
  * write types git makes (`pushRef`, `deleteRef`); a fetch, which reads the
- * remote with a token and changes nothing there; and a bundle check, which
- * is a read and holds no token.
+ * remote with a token and changes nothing there; a merge of the base branch,
+ * which fetches it so and changes only the checkout; and a bundle check,
+ * which is a read and holds no token.
  *
  * Each runs `git` in a repository the backend is bound to, with the
  * environment it is handed and only two additions: `GIT_TERMINAL_PROMPT=0`,
@@ -212,6 +213,93 @@ export const gitReader = (repository: GitRepository): GitReader => {
           const [commit = "", ref = ""] = line.trim().split(/\s+/);
           return { ref, commit };
         });
+    },
+  };
+};
+
+/** Who a merge commit is made by: the name and email git writes into it. */
+export interface GitIdentity {
+  readonly name: string;
+  readonly email: string;
+}
+
+/**
+ * What a merge of the base into a branch came to, with the base commit it
+ * merged: the branch already contained it, it merged cleanly into `commit`, or
+ * it stopped on the conflicts in `conflicts`, left in the working tree.
+ */
+export type Merged =
+  | { readonly status: "uptodate"; readonly base: string }
+  | { readonly status: "clean"; readonly base: string; readonly commit: string }
+  | { readonly status: "conflicts"; readonly base: string; readonly conflicts: readonly string[] };
+
+/** A fetch that failed, as against a merge that did: the remote was not read. */
+export class FetchFailed extends GitError {
+  constructor(message: string) {
+    super(message);
+    this.name = "FetchFailed";
+  }
+}
+
+/** What git can do for a command in its checkout with a fetch: merge the base branch in. */
+export interface GitMerger {
+  /**
+   * The branch `base` fetched from the remote, to `refs/remotes/origin/<base>`,
+   * then the commit checked out as the branch `into`, and the base merged
+   * into it as `identity`. A fetch that fails throws `FetchFailed` and leaves
+   * the repository as it was; a merge that fails without a conflict throws
+   * `GitError`.
+   */
+  merge(options: { readonly base: string; readonly into: string; readonly identity: GitIdentity }): Promise<Merged>;
+}
+
+/**
+ * The merger in `repository`, fetching with `fetcher`. Its spawns start from
+ * the repository's environment, as the fetcher's do, and hold no token: only
+ * the fetch reaches the remote. The identity is written to the repository's
+ * config, as the shell steps before it did, so a commit made in the checkout
+ * after a conflicted merge, the resolution's, is made by the same account.
+ */
+export const gitMerger = (repository: GitRepository, fetcher: GitFetcher): GitMerger => {
+  const env = { ...repository.env, GIT_TERMINAL_PROMPT: "0" };
+  const git = async (args: readonly string[]): Promise<string> => {
+    try {
+      return (await run("git", args, { cwd: repository.dir, env, encoding: "utf8" })).stdout;
+    } catch (error) {
+      throw new GitError(lastLine(outputOf(error, "stderr")) || (error instanceof Error ? error.message : String(error)));
+    }
+  };
+  return {
+    merge: async ({ base, into, identity }) => {
+      const tracking = `refs/remotes/origin/${base}`;
+      let commit: string;
+      try {
+        commit = await fetcher.fetchRef(`refs/heads/${base}`, tracking);
+      } catch (error) {
+        throw new FetchFailed(error instanceof Error ? error.message : String(error));
+      }
+      await git(["config", "user.name", identity.name]);
+      await git(["config", "user.email", identity.email]);
+      await git(["checkout", "--quiet", "-B", into]);
+      try {
+        await run("git", ["merge-base", "--is-ancestor", commit, "HEAD"], { cwd: repository.dir, env, encoding: "utf8" });
+        return { status: "uptodate", base: commit };
+      } catch (error) {
+        // 1 is git's "not an ancestor"; anything else is a failure to answer.
+        if (!(typeof error === "object" && error !== null && (error as { code?: unknown }).code === 1)) {
+          throw new GitError(lastLine(outputOf(error, "stderr")) || (error instanceof Error ? error.message : String(error)));
+        }
+      }
+      try {
+        // By its remote-tracking name, so the message is the one a person's
+        // `git merge origin/<base>` makes.
+        await run("git", ["merge", "--no-edit", "--no-verify", `origin/${base}`], { cwd: repository.dir, env, encoding: "utf8" });
+      } catch (error) {
+        const conflicts = (await git(["diff", "--name-only", "-z", "--diff-filter=U"])).split("\0").filter((p) => p !== "");
+        if (conflicts.length > 0) return { status: "conflicts", base: commit, conflicts };
+        throw new GitError(lastLine(outputOf(error, "stderr")) || lastLine(outputOf(error, "stdout")) || (error instanceof Error ? error.message : String(error)));
+      }
+      return { status: "clean", base: commit, commit: (await git(["rev-parse", "--verify", "HEAD^{commit}"])).trim() };
     },
   };
 };

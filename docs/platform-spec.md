@@ -61,7 +61,8 @@ cannot check is one only an orchestrator's author will catch.
 - **Command.** A subcommand that does an orchestrator's work on the record and starts no agent,
   named `<workflow>:<step>`: `fix:gate`, `fix:prepare`, `fix:bundle`, `fix:publish`, `fix:conclude`, `follow-ups:file`, `review:gate`, `review:budget`,
   `review:collect-checks`, `review:red-check-place`, `review:red-check-classify`, `review:publish`,
-  `review:conclude` and `review:advance`. §2 says where it differs from a runner.
+  `review:conclude`, `review:advance`, `update-branch:gate` and `update-branch:merge`. §2 says where
+  it differs from a runner.
 - **Orchestrator.** Whatever invokes a runner and acts on its result: it decides when a runner runs,
   prepares the checkout, sets the inputs, and posts, pushes and labels with what comes back. The
   Actions orchestrator is a caller plus its reusable workflow, and `CONTEXT.md`'s *three parts*
@@ -134,7 +135,7 @@ The inputs every runner reads, set once for any of them:
 |---|---|---|---|
 | `OUTPUT_DIR` | required | | The directory the runner writes its files into (§2.3). |
 | `GH_REPO` | required | | The repository, `owner/name`. Required rather than left to whatever `gh` infers. |
-| `GH_TOKEN` | required | | The token `gh` reads. The runners only read with it, and `fix:prepare` reads and fetches the rescue branch with it; `follow-ups:file` files issues with it, and `review:publish` posts the review, the summary and the verdict with it, `review:conclude` its comments, its error verdict and the labels nothing fires on, `review:advance` a PRD PR's progress list and its notes there, `fix:gate` its refusals and its label transitions, `fix:publish` its thread replies, its comments and notes, and the rescue branch's deletion, and `fix:conclude` its failure comment, the rescue-set-aside note where `fix:publish` did not post it, and `agent:fix` off and `agent:blocked` on. |
+| `GH_TOKEN` | required | | The token `gh` reads. The runners only read with it, `fix:prepare` reads and fetches the rescue branch with it, and `update-branch:merge` fetches the base branch with it; `follow-ups:file` files issues with it, and `review:publish` posts the review, the summary and the verdict with it, `review:conclude` its comments, its error verdict and the labels nothing fires on, `review:advance` a PRD PR's progress list and its notes there, `fix:gate` its refusals and its label transitions, `fix:publish` its thread replies, its comments and notes, and the rescue branch's deletion, `fix:conclude` its failure comment, the rescue-set-aside note where `fix:publish` did not post it, and `agent:fix` off and `agent:blocked` on, and `update-branch:gate` its refusal and its label transitions. |
 
 A command that runs where no token is held, as the red check's two do beside the pull request's own
 code and `fix:bundle` does after the agent, reads `OUTPUT_DIR` alone of these: it reads no repository, so it declares neither `GH_REPO`
@@ -393,7 +394,8 @@ Chaining is each orchestrator's own and is described in each runner's section: r
 `agent:implement` back on the parent (§7, §8). Where a command makes the hand-off, it is package
 code every orchestrator runs rather than each one's own: review's fix round is `review:conclude`'s,
 and fix's re-review is `fix:publish`'s. So is taking a run's own label off however it ended:
-`review:conclude` takes `agent:review` off, and `fix:conclude` `agent:fix`, or `fix:gate` where it refused the run.
+`review:conclude` takes `agent:review` off, and `fix:conclude` `agent:fix`, or `fix:gate` where it refused the run;
+`update-branch:gate` takes `agent:update-branch` off where it refused the run.
 
 ### 4.3 Markers, status contexts, trailers and branch names
 
@@ -1726,6 +1728,112 @@ neither.
 > **Actions orchestrator:** a merge that does not conflict is pushed without the runner. Otherwise
 > a publish job pushes the resolution, posts `update_comment.md`, carries the earlier verdict over
 > to the merge commit or adds `agent:review`.
+
+### `update-branch:gate`
+
+Refuses or claims the pull request, before anything is checked out. It runs no model and needs no
+checkout. In order:
+
+- **The pre-flight.** A pull request whose `PR_STATE` is not `open`, or that is `PR_MERGED`, is
+  refused with `This PR is closed.`, and not blocked. That is the only refusal: unlike `fix:gate`
+  it reads no branch tip, so a deleted base or head fails at `update-branch:merge`'s fetch instead.
+- **A refusal** is said in the loop's one order: the comment, `` **`agent:update-branch` didn't
+  run:** `` and the sentence; then `agent:update-branch` off. Each is tolerated, so a comment that
+  fails still takes the label off.
+- **The permission probe.** On a run it claims, it adds `agent:update-branch`, which the pull
+  request already carries, so a token short of the write fails the command before the checkout.
+  Not tolerated.
+- **`agent:blocked` off**, tolerated: re-adding `agent:update-branch` is the retry after a block.
+- **The wait for a review's posting**, as `fix:gate`'s: while `agent:review` is on the pull
+  request, up to `POST_WAIT_SECONDS`, asking every `POST_POLL_SECONDS`, and on at the bound with a
+  warning. This run carries the review's verdict on to the merge commit, so it waits rather than
+  read it half posted.
+
+Every write is made with `GH_TOKEN`: none of them has to start a run. A refusal is a decision, and
+the command succeeds. `gate.json` is written as `fix:gate`'s is: the moment the run is refused or
+claimed, and again however the command ends, and not at all where it died before deciding.
+
+#### Inputs
+
+| Input | Kind | Default | What it is |
+|---|---|---|---|
+| `PR_NUMBER` | required | | The pull request. |
+| `BRANCH` | required | | Its head branch. |
+| `PR_STATE` | required | | The pull request's state as the event saw it: `open` or `closed`. |
+| `PR_MERGED` | optional | `""` | `true` where the event saw it merged. |
+| `POST_WAIT_SECONDS` | optional | `"600"` | How long it waits while a review is posting: a review's posting job's own time limit. |
+| `POST_POLL_SECONDS` | optional | `"10"` | How often it asks meanwhile. |
+
+#### Outputs
+
+| Output | When it is written |
+|---|---|
+| `gate.json` | Where it decided: `proceed`, `true` where the run goes ahead and `false` where it refused, as a string. |
+| `write_log.jsonl` | Every write as it lands, one JSON line each, and a last line for how the command ended, as `review:conclude`'s. Not written where it wrote nothing. |
+
+**`doctor` cannot check this.** These tables are the command's, for the reason §6 gives.
+
+#### What it reads from the record
+
+- The labels on the pull request `PR_NUMBER` names, for `agent:review`, while it waits.
+
+**`doctor` cannot check this.** The record is written by the orchestrator's posting code, for the reason §4.3 gives.
+
+> **Actions orchestrator:** the gate job's first work, after a Node set up for it, since nothing is
+> checked out yet; no adopter step runs in that job. `PR_STATE` and `PR_MERGED` are the label's
+> event's, and `GH_TOKEN` is the job's own, with `pull-requests: write`. `OUTPUT_DIR` is
+> `runner.temp`. A glue step copies `gate.json` into the step output `proceed`, `always()`, which
+> the checkout, `update-branch:merge` and the job's `refused` output read, `refused` with
+> `fix:gate`'s three values. The same step copies the command's `failure_reason.txt`, where it
+> wrote one, into the job's `failure-reason` output, which the publish job's failure comment reads
+> where it has no reason file of its own.
+
+### `update-branch:merge`
+
+Tries the merge, to decide whether there is anything for the runner to do. `BASE_REF` is fetched
+from the repository into `CHECKOUT` as `refs/remotes/origin/<BASE_REF>`, the commit checked out
+there is checked out as the branch `BRANCH`, and the base is merged into it, as the loop's
+committer, `sandcastle-agent[bot]`. It runs no model and writes nothing to the record: it fetches
+with `GH_TOKEN`, which reaches git in its environment, never on its argv or in the checkout's
+config, and is handed no writer.
+
+- **Up to date**, where the branch already holds the base commit: nothing is merged.
+- **Clean**, where the merge made a commit, or fast-forwarded, without a conflict.
+- **Conflicts**, where it stopped on one: the conflicted tree is left in the checkout.
+- **A fetch that fails**, a deleted base among its causes, fails the command with `` Couldn't fetch
+  `<BASE_REF>` to merge it, so the branch was left untouched: `` and git's reason. A merge that
+  fails on no conflict fails it too, naming the base and the branch.
+
+#### Inputs
+
+| Input | Kind | Default | What it is |
+|---|---|---|---|
+| `CHECKOUT` | required | | The checkout of the pull request's head, which the base is merged into. |
+| `BRANCH` | required | | The pull request's head branch, which the head is checked out as. |
+| `BASE_REF` | required | | The branch being merged in. |
+
+#### Outputs
+
+| Output | When it is written |
+|---|---|
+| `merge.json` | Where it fetched and merged: `status`, `uptodate`, `clean` or `conflicts`; `base`, the base commit it fetched; and `conflicts`, the conflicted paths, empty but on a conflict. |
+
+**`doctor` cannot check this.** These tables are the command's, for the reason §6 gives.
+
+#### What it reads from the record
+
+Nothing. It reads `BASE_REF`'s commits, and parses no record string.
+
+**`doctor` cannot check this.** The record is written by the orchestrator's posting code, for the reason §4.3 gives.
+
+> **Actions orchestrator:** the gate job, after the checkout of the head and only where
+> `update-branch:gate` claimed the run. It runs none of the pull request's code, and still runs
+> from `RUNNER_TEMP` with no registry token, from the install the gate's `npm exec` left. `GH_TOKEN`
+> is the job's, and `CHECKOUT` the workspace. `OUTPUT_DIR` is a directory of its own under
+> `runner.temp`. A glue step, `always()` where the gate went ahead, copies `merge.json` into the
+> job's `status`, `base` and `conflicts` outputs, the paths joined by spaces, and its
+> `failure_reason.txt`, where it wrote one, into the job's `failure-reason` output, which the
+> failure comment reads.
 
 ## 11. `follow-ups`
 

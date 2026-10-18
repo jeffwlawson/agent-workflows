@@ -20,9 +20,8 @@ import { REVIEW_LABEL } from "./record.js";
  * since "could not tell" must not read as "nothing is posting". It writes
  * nothing.
  *
- * `fix:gate` waits with it (#470), and `update-branch` will when its steps
- * move; until then `update-branch.yml` keeps a shell copy, and
- * `tests/post-wait-step.test.ts` runs the same scenarios over both.
+ * `fix:gate` waits with it (#470), and `update-branch:gate` (#481), which
+ * replaced the shell copy `update-branch.yml` kept.
  */
 export const waitForReviewPosting = async (
   github: Pick<GitHubReader, "pullRequest">,

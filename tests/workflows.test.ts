@@ -8518,7 +8518,7 @@ describe("a job that installs the package early runs it from that install", () =
    * installing early is added here in the same change, which is the point.
    */
   it("finds the jobs that install the package early", () => {
-    expect(withInstall.map(([label]) => label).sort()).toEqual(["fix.yml fix", "review.yml red-check", "update-branch.yml gate"]);
+    expect(withInstall.map(([label]) => label).sort()).toEqual(["fix.yml fix", "review.yml red-check", "update-branch.yml gate", "update-branch.yml update-branch"]);
   });
 
   it.each(withInstall)("%s: installs once, from RUNNER_TEMP, before the PR's code, the one step handed the token", (_, job) => {
@@ -10321,6 +10321,157 @@ describe("fix's agent job fetches the rescue branch with fix:prepare", () => {
     expect(job().permissions?.["contents"]).toBe("read");
     expect(Object.values(job().permissions ?? {})).not.toContain("write");
     expect(JSON.stringify(job())).not.toMatch(/AGENT_PAT|AGENT_APP_|loop-token/);
+  });
+});
+
+/**
+ * `update-branch:prepare` (#482): the gate's merge, made again in the agent's
+ * job, which was its last shell that decided. What it merges and when it
+ * refuses is held in `tests/update-branch/prepare.test.ts`; what is held here
+ * is what the YAML owns: the early install it runs from, where it runs, what
+ * it is handed, and the hand-over that carries its reason file.
+ */
+describe("update-branch's agent job repeats the conflicted merge with update-branch:prepare", () => {
+  const UPDATE = path.join(WORKFLOW_DIR, "update-branch.yml");
+  const job = (): Job => jobNamed(UPDATE, "update-branch");
+  const steps = (): readonly Step[] => job().steps ?? [];
+  const index = (name: string): number => {
+    const at = steps().findIndex((s) => s.name === name);
+    expect(at, `update-branch's agent job has no \`${name}\` step`).toBeGreaterThan(-1);
+    return at;
+  };
+  const PREPARE = "Repeat the conflicted merge";
+  const VERSION = PIN.slice(1);
+  const prepare = (): Step | undefined => steps()[index(PREPARE)];
+
+  it("runs update-branch:prepare in place of the shell merge", () => {
+    expect(prepare()?.run).toBe(
+      `npm exec --prefix "$RUNNER_TEMP" --yes --package=@jeffwlawson/agent-workflows@${VERSION} -- agent-workflows update-branch:prepare`,
+    );
+    const shell = steps().map((s) => s.run ?? "").join("\n");
+    expect(shell).not.toContain("git merge");
+    expect(shell).not.toContain("http.extraHeader");
+    expect(shell).not.toContain("failure_reason.txt");
+  });
+
+  /**
+   * **The install, once and early**, as fix's agent job's: after the
+   * checkout and before the adopter's *Install dependencies*, the one step of
+   * the job handed the registry token, so nothing after the PR's own code
+   * asks the registry with one, the runner included: it runs that install's
+   * binary by its path.
+   */
+  it("installs the package before Install dependencies, and hands no other step the registry token", () => {
+    const all = steps();
+    const install = index("Install the package");
+    const runner = all.findIndex((s) => subcommandRun(s) === "update-branch");
+
+    expect(all[install]?.run).toBe(`npm install --prefix "$RUNNER_TEMP" --no-save @jeffwlawson/agent-workflows@${VERSION}`);
+    expect(all[install]?.["working-directory"]).toBe("${{ runner.temp }}");
+    expect(all[install]?.env).toEqual({
+      NPM_CONFIG_USERCONFIG: "${{ steps.npmrc.outputs.userconfig }}",
+      NODE_AUTH_TOKEN: "${{ secrets.GITHUB_TOKEN }}",
+    });
+    expect(index("Keep the package's registry to the package's steps")).toBe(install - 1);
+    expect(index("Set up Node for the package")).toBe(install - 2);
+    expect(all[install - 2]?.with).toEqual({
+      "node-version": "24",
+      "registry-url": "https://npm.pkg.github.com",
+      scope: "@jeffwlawson",
+      "package-manager-cache": false,
+    });
+    expect(install).toBeGreaterThan(all.findIndex((s) => (s.uses ?? "").startsWith("actions/checkout@")));
+    expect(install).toBeLessThan(index("Install dependencies"));
+    expect(all[runner]?.run).toBe(`"$RUNNER_TEMP/node_modules/.bin/agent-workflows" update-branch`);
+    expect(install).toBeLessThan(runner);
+    expect(job().env ?? {}).not.toHaveProperty("NODE_AUTH_TOKEN");
+    expect(all.filter((s) => s.env?.["NODE_AUTH_TOKEN"] !== undefined).map((s) => s.name)).toEqual(["Install the package"]);
+  });
+
+  /**
+   * After the checkout, from the early install, and before anything of the
+   * PR's runs: the adopter's toolchain and *Install dependencies* can leave a
+   * git config entry or a hook behind for a later step, and this one holds
+   * the token.
+   */
+  it("runs after the checkout, from the early install, before Install dependencies", () => {
+    const all = steps();
+    const at = index(PREPARE);
+
+    expect(at).toBeGreaterThan(all.findIndex((s) => (s.uses ?? "").startsWith("actions/checkout@")));
+    expect(at).toBe(index("Install the package") + 1);
+    expect(at).toBeLessThan(index("Setup Node.js"));
+    expect(at).toBeLessThan(index("Install dependencies"));
+    expect(prepare()?.if).toBeUndefined();
+    expect(prepare()?.["working-directory"]).toBe("${{ runner.temp }}");
+    expect(prepare()?.env?.["NPM_CONFIG_USERCONFIG"]).toBe("${{ steps.npmrc.outputs.userconfig }}");
+  });
+
+  /** Its inputs, each set by the step or its job, `BASE_SHA` the gate's, and its reason file in a directory of its own. */
+  it("sets exactly its declared inputs, the base commit the gate's", () => {
+    const env = { ...job().env, ...prepare()?.env };
+
+    expect(prepare()?.env).toMatchObject({ OUTPUT_DIR: "${{ runner.temp }}/prepare", CHECKOUT: "${{ github.workspace }}" });
+    expect(env["BASE_SHA"]).toBe("${{ needs.gate.outputs.base }}");
+    expect(env["BASE_REF"]).toBe("${{ github.event.pull_request.base.ref || inputs.default-branch }}");
+    expect(env["BRANCH"]).toBe("${{ github.event.pull_request.head.ref }}");
+    expect(env["GH_TOKEN"]).toBe("${{ secrets.GITHUB_TOKEN }}");
+    for (const name of Object.keys(COMMANDS["update-branch:prepare"].inputs)) expect(env, name).toHaveProperty(name);
+    const set = Object.keys(prepare()?.env ?? {}).filter((name) => name !== "NPM_CONFIG_USERCONFIG");
+    for (const name of set) expect(COMMANDS["update-branch:prepare"].inputs, name).toHaveProperty(name);
+  });
+
+  /**
+   * The workflow token alone, read-only in this job, and no writer: it
+   * declares no loop token and keeps no write log. And the job names no PAT
+   * and no App anywhere (#307).
+   */
+  it("is handed the workflow token alone and no writer, in a job that names no PAT", () => {
+    const text = JSON.stringify(prepare());
+
+    for (const name of ["LOOP_TOKEN", "NODE_AUTH_TOKEN", "AGENT_PAT", "AGENT_APP", "steps.token"]) expect(text, name).not.toContain(name);
+    expect(COMMANDS["update-branch:prepare"].inputs).not.toHaveProperty("LOOP_TOKEN");
+    expect(COMMANDS["update-branch:prepare"].outputs).not.toContain("write_log.jsonl");
+    expect(job().permissions).toEqual({ contents: "read", packages: "read", "pull-requests": "read" });
+    expect(JSON.stringify(job())).not.toMatch(/AGENT_PAT|AGENT_APP_|loop-token/);
+  });
+
+  /**
+   * The artifact carries the runner's declared files at `runner.temp` and
+   * `update-branch:prepare`'s under `prepare/`, each set read off its
+   * declaration, and the branch's bundle, which a shell step still makes
+   * and no subcommand declares yet.
+   */
+  it("hands over exactly the runner's and update-branch:prepare's declared files, and the bundle", () => {
+    const upload = steps()[index("Hand the branch to the publish job")];
+    const declared = (producer: string, outputs: readonly string[]): DirectoryInput => ({
+      required: true,
+      producer,
+      files: Object.fromEntries(outputs.map((file) => [file, "sometimes" as const])),
+    });
+    const lines = String(upload?.with?.["path"] ?? "").split("\n");
+
+    expect(lines.map((line) => line.trim())).toContain("${{ runner.temp }}/branch.bundle");
+    expectHandsOver(
+      { ...upload, with: { ...upload?.with, path: lines.filter((line) => line.trim() !== "${{ runner.temp }}/branch.bundle").join("\n") } },
+      declared("update-branch", RUNNERS["update-branch"].outputs),
+      { prepare: declared("update-branch:prepare", COMMANDS["update-branch:prepare"].outputs) },
+    );
+  });
+
+  /**
+   * Until `update-branch:conclude` reads it as a directory input of its own,
+   * the publish job's failure step reads prepare's reason where the download
+   * puts it, ahead of the runner's.
+   */
+  it("has the failure step read prepare's reason where the download puts it", () => {
+    const publish = jobNamed(UPDATE, "publish").steps ?? [];
+    const download = publish.find((s) => s.name === "Fetch what the agent handed over");
+    const failure = publish.find((s) => s.name === "Mark blocked on failure")?.run ?? "";
+
+    expect(download?.with?.["path"]).toBe("${{ runner.temp }}");
+    expect(failure).toContain('"${RUNNER_TEMP}/prepare/failure_reason.txt"');
+    expect(failure.indexOf("/prepare/failure_reason.txt")).toBeLessThan(failure.indexOf('"${RUNNER_TEMP}/failure_reason.txt"'));
   });
 });
 

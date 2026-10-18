@@ -9,7 +9,7 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { FetchFailed, GitError, gitFetcher, gitMerger, gitReader, gitWrites, githubRemote, type GitEnvironment } from "../../engine/git.js";
+import { BaseMoved, FetchFailed, GitError, gitFetcher, gitMerger, gitReader, gitWrites, githubRemote, type GitEnvironment } from "../../engine/git.js";
 import { createWriters, WriteFailed, type LogEntry } from "../../engine/writer.js";
 import { SUBPROCESS_TIMEOUT } from "../../vitest.config.js";
 
@@ -379,11 +379,12 @@ describe("merge", { timeout: 20 * SUBPROCESS_TIMEOUT }, () => {
     git(clone, "checkout", "--quiet", "--detach", head);
   };
 
-  const mergeIn = (base = "main", spawnEnv: GitEnvironment = env) =>
+  const mergeIn = (base = "main", spawnEnv: GitEnvironment = env, commit?: string) =>
     gitMerger({ dir: clone, env: spawnEnv }, gitFetcher({ dir: clone, env: spawnEnv, remote: origin }, TOKEN)).merge({
       base,
       into: "feature",
       identity: IDENTITY,
+      ...(commit === undefined ? {} : { commit }),
     });
 
   beforeEach(() => {
@@ -450,6 +451,44 @@ describe("merge", { timeout: 20 * SUBPROCESS_TIMEOUT }, () => {
     expect(git(clone, "rev-parse", "HEAD")).toBe(head);
     expect(() => git(clone, "symbolic-ref", "--quiet", "HEAD")).toThrow();
     expect(() => git(clone, "config", "user.name")).toThrow();
+  });
+
+  /**
+   * A merge made again (#482): the base commit an earlier merge read, merged
+   * under the base's name though the base has moved on since, so the merge
+   * and its message are the earlier one's.
+   */
+  it("merges the base commit handed in, where the base has moved on from it, under the base's name", async () => {
+    const earlier = moveMain("main.txt", "main\n");
+    const later = moveMain("later.txt", "later\n");
+    checkOut();
+
+    const merged = await mergeIn("main", env, earlier);
+
+    expect(merged).toMatchObject({ status: "clean", base: earlier });
+    expect(git(clone, "rev-parse", "HEAD^2")).toBe(earlier);
+    expect(git(clone, "rev-parse", "refs/remotes/origin/main")).toBe(earlier);
+    expect(git(clone, "log", "-1", "--format=%s")).toBe("Merge remote-tracking branch 'origin/main' into feature");
+    expect(later).not.toBe(earlier);
+  });
+
+  it("throws BaseMoved where the base no longer holds the commit handed in, and merges nothing", async () => {
+    const earlier = moveMain("main.txt", "main\n");
+    // Cloned while the base held it, so the commit is in the repository: what moved is the base.
+    checkOut();
+    git(seed, "reset", "--quiet", "--hard", "HEAD~1");
+    write(seed, "rewritten.txt", "rewritten\n");
+    git(seed, "push", "--quiet", "--force", origin, "main");
+
+    await expect(mergeIn("main", env, earlier)).rejects.toBeInstanceOf(BaseMoved);
+    expect(git(clone, "rev-parse", "HEAD")).toBe(head);
+    expect(() => git(clone, "symbolic-ref", "--quiet", "HEAD")).toThrow();
+  });
+
+  it("throws BaseMoved where the repository holds no such commit at all", async () => {
+    checkOut();
+
+    await expect(mergeIn("main", env, "f".repeat(40))).rejects.toBeInstanceOf(BaseMoved);
   });
 
   it("fetches with the token in its environment, never on an argv or in a file under .git", async () => {

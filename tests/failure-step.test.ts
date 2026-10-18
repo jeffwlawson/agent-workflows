@@ -397,6 +397,32 @@ describe.skipIf(!CAN_RUN)("a failure step says whether the run failed, timed out
       expect(outcome.comment).not.toContain("Couldn't fetch");
     });
   });
+
+  /**
+   * `update-branch:prepare` (#482) refuses before the runner runs, and writes
+   * its reason under `prepare/` of the agent's hand-over, which this job
+   * downloads to its temp. Until `update-branch:conclude` reads it, the
+   * failure step does, and a reason there is a failure with a reason, not a
+   * run measured against the clock.
+   */
+  describe("update-branch, where update-branch:prepare refused", () => {
+    const update = CASES.find((c) => c.command === "update-branch") as Case;
+    const PREPARED = { "prepare/failure_reason.txt": "Merging `main` again didn't conflict, so there was nothing for the agent to resolve and the branch was left untouched.\n" };
+
+    it("names prepare's reason", () => {
+      const outcome = run(update, "failure", 120, String(update.minutes), "false", PREPARED);
+
+      expect(outcome.comment).toContain("**`agent:update-branch` stopped:** Merging `main` again didn't conflict, so there was nothing for the agent to resolve and the branch was left untouched.\n");
+      expect(outcome.gh.some((argv) => argv.includes("--add-label agent:blocked"))).toBe(true);
+    });
+
+    it("names it, not a timeout, where the agent's job failed at its limit", () => {
+      const outcome = run(update, "failure", update.minutes * 60, String(update.minutes), "false", PREPARED);
+
+      expect(outcome.comment).toContain("Merging `main` again didn't conflict");
+      expect(outcome.comment).not.toContain("timed out");
+    });
+  });
 });
 
 /**

@@ -692,6 +692,12 @@ const REVIEW_RED_CHECK_PLACE = {
  *   nothing to the record. `merge.json` is what it came to: `status`,
  *   `uptodate`, `clean` or `conflicts`; `base`, the base commit it fetched;
  *   and `conflicts`, the conflicted paths, empty but on a conflict.
+ * - `update-branch:prepare` makes the gate's merge again in the agent's job,
+ *   so the runner starts from the conflicted tree the gate found: it fetches
+ *   `BASE_REF` into `CHECKOUT` and merges `BASE_SHA`, the base commit the
+ *   gate merged, into `BRANCH`, as the loop's committer. It refuses where the
+ *   base no longer holds `BASE_SHA` and where the merge does not conflict,
+ *   and writes nothing to the record.
  */
 export const COMMANDS = {
   "fix:gate": {
@@ -881,6 +887,16 @@ export const COMMANDS = {
       BASE_REF: REQUIRED,
     },
     outputs: [...EVERY_SUBCOMMAND_OUTPUTS, "merge.json"],
+  },
+  "update-branch:prepare": {
+    inputs: {
+      ...EVERY_SUBCOMMAND,
+      CHECKOUT: REQUIRED,
+      BRANCH: REQUIRED,
+      BASE_REF: REQUIRED,
+      BASE_SHA: REQUIRED,
+    },
+    outputs: [...EVERY_SUBCOMMAND_OUTPUTS],
   },
 } as const satisfies Readonly<Record<string, CommandContract>>;
 

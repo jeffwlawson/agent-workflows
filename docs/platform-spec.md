@@ -61,8 +61,8 @@ cannot check is one only an orchestrator's author will catch.
 - **Command.** A subcommand that does an orchestrator's work on the record and starts no agent,
   named `<workflow>:<step>`: `fix:gate`, `fix:prepare`, `fix:bundle`, `fix:publish`, `fix:conclude`, `follow-ups:file`, `review:gate`, `review:budget`,
   `review:collect-checks`, `review:red-check-place`, `review:red-check-classify`, `review:publish`,
-  `review:conclude`, `review:advance`, `update-branch:gate` and `update-branch:merge`. §2 says where
-  it differs from a runner.
+  `review:conclude`, `review:advance`, `update-branch:gate`, `update-branch:merge` and
+  `update-branch:prepare`. §2 says where it differs from a runner.
 - **Orchestrator.** Whatever invokes a runner and acts on its result: it decides when a runner runs,
   prepares the checkout, sets the inputs, and posts, pushes and labels with what comes back. The
   Actions orchestrator is a caller plus its reusable workflow, and `CONTEXT.md`'s *three parts*
@@ -94,12 +94,12 @@ workflows, which the build reads.
 > **Actions orchestrator:** each reusable's runner step is
 > `npm exec --prefix "$RUNNER_TEMP" --yes --package=@jeffwlawson/agent-workflows@<version> -- agent-workflows <runner>`,
 > with the inputs in that step's `env:` and its job's, and each command step the same with the
-> command's name. The red check's job, fix's agent job and update-branch's gate job install the
-> package first, with `npm install --prefix "$RUNNER_TEMP"`, and run their commands from
-> `RUNNER_TEMP`, where that line finds the install without asking the registry (§8, §9). Fix's
-> runner works in the checkout, where `npm exec` finds no install under its `--prefix`, so it runs
-> that install's binary by its path, `"$RUNNER_TEMP/node_modules/.bin/agent-workflows" fix`, and is
-> handed no registry token.
+> command's name. The red check's job, fix's agent job, and update-branch's gate and agent jobs
+> install the package first, with `npm install --prefix "$RUNNER_TEMP"`, and run their commands
+> from `RUNNER_TEMP`, where that line finds the install without asking the registry (§8, §9, §10).
+> Fix's runner and update-branch's work in the checkout, where `npm exec` finds no install under its
+> `--prefix`, so each runs that install's binary by its path,
+> `"$RUNNER_TEMP/node_modules/.bin/agent-workflows" <runner>`, and is handed no registry token.
 
 ### 2.2 Inputs
 
@@ -138,7 +138,7 @@ The inputs every runner reads, set once for any of them:
 |---|---|---|---|
 | `OUTPUT_DIR` | required | | The directory the runner writes its files into (§2.3). |
 | `GH_REPO` | required | | The repository, `owner/name`. Required rather than left to whatever `gh` infers. |
-| `GH_TOKEN` | required | | The token `gh` reads. The runners only read with it, `fix:prepare` reads and fetches the rescue branch with it, and `update-branch:merge` fetches the base branch with it; `follow-ups:file` files issues with it, and `review:publish` posts the review, the summary and the verdict with it, `review:conclude` its comments, its error verdict and the labels nothing fires on, `review:advance` a PRD PR's progress list and its notes there, `fix:gate` its refusals and its label transitions, `fix:publish` its thread replies, its comments and notes, and the rescue branch's deletion, `fix:conclude` its failure comment, the rescue-set-aside note where `fix:publish` did not post it, and `agent:fix` off and `agent:blocked` on, and `update-branch:gate` its refusal and its label transitions. |
+| `GH_TOKEN` | required | | The token `gh` reads. The runners only read with it, `fix:prepare` reads and fetches the rescue branch with it, and `update-branch:merge` and `update-branch:prepare` fetch the base branch with it; `follow-ups:file` files issues with it, and `review:publish` posts the review, the summary and the verdict with it, `review:conclude` its comments, its error verdict and the labels nothing fires on, `review:advance` a PRD PR's progress list and its notes there, `fix:gate` its refusals and its label transitions, `fix:publish` its thread replies, its comments and notes, and the rescue branch's deletion, `fix:conclude` its failure comment, the rescue-set-aside note where `fix:publish` did not post it, and `agent:fix` off and `agent:blocked` on, and `update-branch:gate` its refusal and its label transitions. |
 
 A command that runs where no token is held, as the red check's two do beside the pull request's own
 code and `fix:bundle` does after the agent, reads `OUTPUT_DIR` alone of these: it reads no repository, so it declares neither `GH_REPO`
@@ -1699,7 +1699,8 @@ Trigger label: `agent:update-branch`, on a pull request. `doctor` checks that th
 
 Resolves the conflicts of a merge of the base branch into the pull request's branch. Preconditions:
 the head checked out as `BRANCH`, with `git merge origin/<BASE_REF>` already run and stopped on its
-conflicts. A merge that does not conflict needs no runner.
+conflicts, `origin/<BASE_REF>` at the base commit `update-branch:merge` read: `update-branch:prepare`
+leaves the checkout so, and refuses where it cannot. A merge that does not conflict needs no runner.
 
 ### Inputs
 
@@ -1730,6 +1731,9 @@ Nothing. It reads the pull request's title and body as context for the agent, an
 neither.
 
 > **Actions orchestrator:** a merge that does not conflict is pushed without the runner. Otherwise
+> the agent's job installs the package under `RUNNER_TEMP` after its checkout, the one step of the
+> job handed the registry token, runs `update-branch:prepare` from it before the adopter's toolchain
+> and `setup`, and runs the runner as that install's binary, by its path, from the checkout; and
 > a publish job pushes the resolution, posts `update_comment.md`, carries the earlier verdict over
 > to the merge commit or adds `agent:review`.
 
@@ -1840,6 +1844,58 @@ Nothing. It reads `BASE_REF`'s commits, and parses no record string.
 > job's `status`, `base` and `conflicts` outputs, the paths joined by spaces, and its
 > `failure_reason.txt`, where it wrote one, into the job's `failure-reason` output, which the
 > failure comment reads.
+
+### `update-branch:prepare`
+
+Makes the gate's merge again, so the runner starts from the conflicted tree `update-branch:merge`
+found. `BASE_REF` is fetched into `CHECKOUT` as `refs/remotes/origin/<BASE_REF>`, that ref is set
+back to `BASE_SHA`, the base commit `update-branch:merge` merged, the commit checked out there is
+checked out as the branch `BRANCH`, and the base is merged into it under its name, as the loop's
+committer: the same two commits and the same message as that merge. It runs no model and writes
+nothing to the record: it fetches with `GH_TOKEN`, and is handed no writer.
+
+- **Conflicts** are the one success: the conflicted tree is left in the checkout for the runner.
+- **The base moved.** Where `BASE_REF`, fetched, no longer contains `BASE_SHA`, it fails with ``
+  `<BASE_REF>` no longer holds the commit this run set out to merge, so the branch was left
+  untouched. ``, before anything is checked out.
+- **No conflict.** Where the merge is clean, or the branch already holds the base, it fails with
+  `` Merging `<BASE_REF>` again didn't conflict, so there was nothing for the agent to resolve and
+  the branch was left untouched. ``
+- **A fetch that fails** fails it with `` Couldn't fetch `<BASE_REF>` to merge it again for the
+  agent, so the branch was left untouched: `` and git's reason. A merge that fails on no conflict
+  fails it too, naming the base and the branch.
+
+#### Inputs
+
+| Input | Kind | Default | What it is |
+|---|---|---|---|
+| `CHECKOUT` | required | | The checkout of the pull request's head, which the base is merged into. |
+| `BRANCH` | required | | The pull request's head branch, which the head is checked out as. |
+| `BASE_REF` | required | | The branch being merged in. |
+| `BASE_SHA` | required | | The base commit `update-branch:merge` merged, its `merge.json`'s `base`: a gate fact. |
+
+#### Outputs
+
+| Output | When it is written |
+|---|---|
+| | Nothing beyond §2.4. The result is the conflicted tree it leaves in the checkout. |
+
+**`doctor` cannot check this.** These tables are the command's, for the reason §6 gives.
+
+#### What it reads from the record
+
+Nothing. It reads `BASE_REF`'s commits, and parses no record string.
+
+**`doctor` cannot check this.** The record is written by the orchestrator's posting code, for the reason §4.3 gives.
+
+> **Actions orchestrator:** the agent's job, after the checkout and before the adopter's toolchain
+> and `setup`, so nothing of the pull request's has run on the runner while it holds the token: the
+> pull request's own code can leave a git config entry or a hook behind for a later step. It runs
+> from the package install the job makes after its checkout, from `RUNNER_TEMP`, and is handed the
+> job's `GH_TOKEN`, which is read-only there. `BASE_SHA` is the gate job's `base` output and
+> `CHECKOUT` the workspace. `OUTPUT_DIR` is a directory of its own under `runner.temp`, which the
+> job's upload carries under `prepare/`; the publish job's failure comment reads its reason there,
+> ahead of the runner's.
 
 ## 11. `follow-ups`
 

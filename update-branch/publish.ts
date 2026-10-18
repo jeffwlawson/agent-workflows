@@ -25,8 +25,8 @@ type Io = MergingCheckoutIo<Declared["outputs"]>;
  * posted. Each path does one of the two hand-offs, never both: a clean merge
  * carries the old verdict forward because it is still true, and a resolution
  * carries nothing forward because it is not, so it asks for a review instead
- * (#96, decision 6). The failure comment and the trigger label stay the
- * publish job's shell steps until `update-branch:conclude`.
+ * (#96, decision 6). The failure comment and the trigger label are
+ * `update-branch:conclude`'s, which runs after it on every ending.
  *
  * **What is pushed is never the agent's job's word alone** (ADR 0006). A
  * clean merge is made here again, through the engine's merge, of `BASE_SHA`,
@@ -118,7 +118,7 @@ export const publish = async (inputs: Inputs, io: Io): Promise<void> => {
  * What `published.json` holds, written as each becomes true, so a later
  * failure still leaves it: whether the branch moved, which is what the
  * failure comment's remedy turns on; the head this run left; and whether it
- * asked for a review, so the trigger-label step asks for nothing more.
+ * asked for a review, so `update-branch:conclude` asks for nothing more.
  */
 interface Published {
   pushed: boolean;

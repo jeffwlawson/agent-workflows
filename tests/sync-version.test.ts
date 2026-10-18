@@ -192,8 +192,8 @@ const REF_COUNT = 2 * Object.values(CALLERS_PER_FILE).reduce((sum, n) => sum + n
  * resolves the loop's token names `loop-token` (#319, #320): implement's
  * publish job, implement-prd's catch-up and publish jobs, fix's and
  * update-branch's publish jobs, and review's `time-limit`, `post-review` and
- * `advance` jobs. Eight, beside the twenty-two `npm exec` pins, the four `npm
- * install`s and the twelve callers, so the release rewrites forty-six pins
+ * `advance` jobs. Eight, beside the twenty-three `npm exec` pins, the four `npm
+ * install`s and the twelve callers, so the release rewrites forty-seven pins
  * in ten files. Review's advance named `advance-prd` too, until it became
  * `review:advance` (#423).
  */
@@ -216,8 +216,8 @@ const ACTION_COUNT = Object.values(ACTION_SITES).reduce((sum, actions) => sum + 
  * and in `fix.yml` `fix:gate` (#470), `fix:prepare` (#471), `fix:bundle`
  * (#472), `fix:publish` (#468) and `fix:conclude` (#469), and in
  * `update-branch.yml` `update-branch:gate` and `update-branch:merge` (#481),
- * `update-branch:prepare` (#482), `update-branch:bundle` (#483) and
- * `update-branch:publish` (#484). Fix's runner and update-branch's are
+ * `update-branch:prepare` (#482), `update-branch:bundle` (#483),
+ * `update-branch:publish` (#484) and `update-branch:conclude` (#485). Fix's runner and update-branch's are
  * not: each runs its job's early install by path, whose pin is below.
  */
 const PACKAGE_SITES: Readonly<Record<string, number>> = {
@@ -226,7 +226,7 @@ const PACKAGE_SITES: Readonly<Record<string, number>> = {
   ".github/workflows/implement-prd.yml": 1,
   ".github/workflows/implement.yml": 1,
   ".github/workflows/review.yml": 9,
-  ".github/workflows/update-branch.yml": 5,
+  ".github/workflows/update-branch.yml": 6,
 };
 const PACKAGE_COUNT = Object.values(PACKAGE_SITES).reduce((sum, n) => sum + n, 0);
 

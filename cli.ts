@@ -451,6 +451,11 @@ export const SUBCOMMANDS: Readonly<Record<string, Subcommand>> = {
     async () => (await import("./update-branch/publish.js")).publish,
     "Push a refreshed pull request's branch, carry its verdict over or ask for a review, and say so (no model).",
   ),
+  "update-branch:conclude": writingCommand(
+    "update-branch:conclude",
+    async () => (await import("./update-branch/conclude.js")).conclude,
+    "End a branch refresh however it ended: its failure comment, its label and asking again (no model).",
+  ),
   worker: serviceProcess(
     "worker",
     async () => (await import("./service/serve.js")).serveWorker,

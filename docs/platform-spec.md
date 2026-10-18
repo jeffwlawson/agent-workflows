@@ -62,8 +62,8 @@ cannot check is one only an orchestrator's author will catch.
   named `<workflow>:<step>`: `fix:gate`, `fix:prepare`, `fix:bundle`, `fix:publish`, `fix:conclude`, `follow-ups:file`, `review:gate`, `review:budget`,
   `review:collect-checks`, `review:red-check-place`, `review:red-check-classify`, `review:publish`,
   `review:conclude`, `review:advance`, `update-branch:gate`, `update-branch:merge`,
-  `update-branch:prepare`, `update-branch:bundle` and `update-branch:publish`. §2 says where it
-  differs from a runner.
+  `update-branch:prepare`, `update-branch:bundle`, `update-branch:publish` and
+  `update-branch:conclude`. §2 says where it differs from a runner.
 - **Orchestrator.** Whatever invokes a runner and acts on its result: it decides when a runner runs,
   prepares the checkout, sets the inputs, and posts, pushes and labels with what comes back. The
   Actions orchestrator is a caller plus its reusable workflow, and `CONTEXT.md`'s *three parts*
@@ -139,7 +139,7 @@ The inputs every runner reads, set once for any of them:
 |---|---|---|---|
 | `OUTPUT_DIR` | required | | The directory the runner writes its files into (§2.3). |
 | `GH_REPO` | required | | The repository, `owner/name`. Required rather than left to whatever `gh` infers. |
-| `GH_TOKEN` | required | | The token `gh` reads. The runners only read with it, `fix:prepare` reads and fetches the rescue branch with it, and `update-branch:merge`, `update-branch:prepare` and `update-branch:publish` fetch the base branch with it; `follow-ups:file` files issues with it, and `review:publish` posts the review, the summary and the verdict with it, `review:conclude` its comments, its error verdict and the labels nothing fires on, `review:advance` a PRD PR's progress list and its notes there, `fix:gate` its refusals and its label transitions, `fix:publish` its thread replies, its comments and notes, and the rescue branch's deletion, `fix:conclude` its failure comment, the rescue-set-aside note where `fix:publish` did not post it, and `agent:fix` off and `agent:blocked` on, `update-branch:gate` its refusal and its label transitions, and `update-branch:publish` the verdict it carries over, its comment, and the comment that no review will start. |
+| `GH_TOKEN` | required | | The token `gh` reads. The runners only read with it, `fix:prepare` reads and fetches the rescue branch with it, and `update-branch:merge`, `update-branch:prepare` and `update-branch:publish` fetch the base branch with it; `follow-ups:file` files issues with it, and `review:publish` posts the review, the summary and the verdict with it, `review:conclude` its comments, its error verdict and the labels nothing fires on, `review:advance` a PRD PR's progress list and its notes there, `fix:gate` its refusals and its label transitions, `fix:publish` its thread replies, its comments and notes, and the rescue branch's deletion, `fix:conclude` its failure comment, the rescue-set-aside note where `fix:publish` did not post it, and `agent:fix` off and `agent:blocked` on, `update-branch:gate` its refusal and its label transitions, `update-branch:publish` the verdict it carries over, its comment, and the comment that no review will start, and `update-branch:conclude` its failure comment, `agent:update-branch` off and `agent:blocked` on, and the comment that no refresh of a moved head will start. |
 
 A command that runs where no token is held, as the red check's two do beside the pull request's own
 code and `fix:bundle` and `update-branch:bundle` do after the agent, reads `OUTPUT_DIR` alone of these: it reads no repository, so it declares neither `GH_REPO`
@@ -400,7 +400,9 @@ Chaining is each orchestrator's own and is described in each runner's section: r
 code every orchestrator runs rather than each one's own: review's fix round is `review:conclude`'s,
 and fix's re-review is `fix:publish`'s. So is taking a run's own label off however it ended:
 `review:conclude` takes `agent:review` off, and `fix:conclude` `agent:fix`, or `fix:gate` where it refused the run;
-`update-branch:gate` takes `agent:update-branch` off where it refused the run.
+`update-branch:conclude` takes `agent:update-branch` off, or `update-branch:gate` where it refused the run.
+Update-branch's re-review of a resolution is `update-branch:publish`'s, and its request for itself
+again where the head moved while it worked is `update-branch:conclude`'s.
 
 ### 4.3 Markers, status contexts, trailers and branch names
 
@@ -1736,9 +1738,13 @@ neither.
 > the agent's job installs the package under `RUNNER_TEMP` after its checkout, the one step of the
 > job handed the registry token, runs `update-branch:prepare` from it before the adopter's toolchain
 > and `setup`, runs the runner as that install's binary, by its path, from the checkout, and
-> `update-branch:bundle` from it after the runner; and a publish job runs `update-branch:publish`,
-> which pushes the clean merge or the resolution, carries the earlier verdict over to a clean merge,
-> posts the comment, `update_comment.md` on a resolution, and asks for the resolution's review.
+> `update-branch:bundle` from it after the runner, and measures in its last step whether it ran out
+> of time; and a publish job runs `update-branch:publish`, which pushes the clean merge or the
+> resolution, carries the earlier verdict over to a clean merge, posts the comment,
+> `update_comment.md` on a resolution, and asks for the resolution's review, then
+> `update-branch:conclude`, `always()`, which ends every run: the failure comment,
+> `agent:update-branch` off, `agent:blocked`, and the re-request where the head moved. No step of
+> the workflow decides anything in inline shell: what is left is glue and what only Actions can do.
 
 ### `update-branch:gate`
 
@@ -1798,8 +1804,8 @@ claimed, and again however the command ends, and not at all where it died before
 > `runner.temp`. A glue step copies `gate.json` into the step output `proceed`, `always()`, which
 > the checkout, `update-branch:merge` and the job's `refused` output read, `refused` with
 > `fix:gate`'s three values. The same step copies the command's `failure_reason.txt`, where it
-> wrote one, into the job's `failure-reason` output, which the publish job's failure comment reads
-> where it has no reason file of its own.
+> wrote one, into the job's `failure-reason` output, which `update-branch:conclude` reads as its
+> `GATE_REASON`.
 
 ### `update-branch:merge`
 
@@ -1845,8 +1851,8 @@ Nothing. It reads `BASE_REF`'s commits, and parses no record string.
 > is the job's, and `CHECKOUT` the workspace. `OUTPUT_DIR` is a directory of its own under
 > `runner.temp`. A glue step, `always()` where the gate went ahead, copies `merge.json` into the
 > job's `status`, `base` and `conflicts` outputs, the paths joined by spaces, and its
-> `failure_reason.txt`, where it wrote one, into the job's `failure-reason` output, which the
-> failure comment reads.
+> `failure_reason.txt`, where it wrote one, into the job's `failure-reason` output, which
+> `update-branch:conclude` reads as its `GATE_REASON`.
 
 ### `update-branch:prepare`
 
@@ -1897,8 +1903,8 @@ Nothing. It reads `BASE_REF`'s commits, and parses no record string.
 > from the package install the job makes after its checkout, from `RUNNER_TEMP`, and is handed the
 > job's `GH_TOKEN`, which is read-only there. `BASE_SHA` is the gate job's `base` output and
 > `CHECKOUT` the workspace. `OUTPUT_DIR` is a directory of its own under `runner.temp`, which the
-> job's upload carries under `prepare/`; the publish job's failure comment reads its reason there,
-> ahead of the runner's.
+> job's upload carries under `prepare/`; `update-branch:conclude` reads its reason there as its
+> `PREPARE_DIR`.
 
 ### `update-branch:bundle`
 
@@ -1942,8 +1948,8 @@ Nothing. Its inputs are the checkout, the head the event named and the base comm
 > the workspace, `BRANCH` and `HEAD_SHA` the label's event's, and `BASE_SHA` the gate job's `base`
 > output. `OUTPUT_DIR` is a directory of its own under `runner.temp`, which the job's upload
 > carries under `bundle/`; `update-branch:publish` reads the bundle there as its `BUNDLE_DIR` and
-> checks it before it pushes, and the publish job's failure comment reads the reason there, after
-> prepare's and ahead of the runner's.
+> checks it before it pushes, and `update-branch:conclude` reads the reason there as its
+> `BUNDLE_DIR`.
 
 ### `update-branch:publish`
 
@@ -2029,16 +2035,113 @@ the merge is pushed by then.
 
 > **Actions orchestrator:** the publish job mints the loop's token at its start, checks the head
 > out once, with no credential left in it, wherever the gate claimed the run, sets up Node, and
-> downloads the agent's artifact into `runner.temp` on a conflict. `update-branch:publish` runs
-> from `RUNNER_TEMP`, working in the checkout, where the gate claimed the run and, on a conflict,
-> the agent's job succeeded, on a mint that succeeded. It is handed the workflow's token as
-> `GH_TOKEN` and the loop's; the job sets none. `HEAD_SHA` is the label's event's, `STATUS` and
-> `BASE_SHA` the gate job's `status` and `base` outputs, `AGENT_RESULT` the agent's job's result,
-> `UPDATE_BRANCH_DIR` `runner.temp` and `BUNDLE_DIR` its `bundle/`, where the download puts them,
-> and `OUTPUT_DIR` a directory of its own under `runner.temp`. A glue step copies
-> `published.json`'s `pushed`, `head` and `requested` into step outputs, which the job's shell
-> failure and trigger-label steps read, and the failure comment reads its reason first. The write
-> log is uploaded `always()`.
+> downloads the agent's artifact into a directory of its own under `runner.temp` on a conflict.
+> `update-branch:publish` runs from `RUNNER_TEMP`, working in the checkout, where the gate claimed
+> the run and, on a conflict, the agent's job succeeded, on a mint that succeeded, and never on a
+> run being cancelled. It is handed the workflow's token as `GH_TOKEN` and the loop's; the job sets
+> none. `HEAD_SHA` is the label's event's, `STATUS` and `BASE_SHA` the gate job's `status` and
+> `base` outputs, `AGENT_RESULT` the agent's job's result, `UPDATE_BRANCH_DIR` the download's
+> directory and `BUNDLE_DIR` its `bundle/`, and `OUTPUT_DIR` a directory of its own under
+> `runner.temp`, which `update-branch:conclude` reads as its `PUBLISH_DIR`.
+
+### `update-branch:conclude`
+
+Ends every update-branch run, success included, in the loop's one order: every result posted, then
+`agent:update-branch` off, then the label that names the next step. It runs no model and needs no
+checkout. It is told how the run went rather than reading it off which steps ran: the gate's
+decision, result and merge, the agent's job's result, whether that job ran out of time, and the
+outcome of each step the orchestrator ran before it, and it works out the ending from them. Each is
+one of:
+
+- **A refusal** (`REFUSED` is `true`): nothing, since the gate said it and took the label off.
+- **A pre-flight that did not decide** (`REFUSED` is empty): `agent:update-branch` off, and nothing
+  else, since nothing is known to say.
+- **A run that finished**: the gate, the agent's job where `STATUS` is `conflicts` (skipped
+  otherwise, which is not a failure), and every step before this one. `agent:update-branch` off,
+  then the re-request, below. Every other word of it is `update-branch:publish`'s.
+- **A run that stopped**: the failure comment, `` **`agent:update-branch` stopped:** `` and the
+  reason as a sentence, the run's link, and the retry; then `agent:update-branch` off, then
+  `agent:blocked`. The reason is, where the gate and the agent's job finished, the first of the
+  mint, the download (on `conflicts` only) and `update-branch:publish` that did not succeed: a
+  fixed sentence for the mint and the download, `update-branch:publish`'s `failure_reason.txt`, or
+  a cancel where that step was cancelled or skipped. Otherwise, where the gate, the agent's job or
+  a step was cancelled, a cancel, or the time limit where `TIMED_OUT` is `true`; and failing that,
+  `GATE_REASON` where the gate failed, then `update-branch:prepare`'s `failure_reason.txt`, or
+  `update-branch:bundle`'s, or the runner's, or, where none was written, that it gave no reason, or
+  the time limit where the agent's job failed and `TIMED_OUT` is `true`. The retry is ``The merge
+  was pushed before it stopped, so running it again would do nothing. Fix the problem above.``
+  where `published.json` says it pushed, and to add `agent:update-branch` otherwise.
+
+**The re-request.** Only on a run that finished, and not where `published.json` says
+`update-branch:publish` asked for the resolution's review: the two are one hand-off or the other,
+never both. The head the run left is `published.json`'s `head` where it pushed, and `HEAD_SHA`
+otherwise. Where the pull request is open and its head is another commit, because somebody pushed
+while the run worked, `agent:update-branch` is added again with the loop's token; not while
+`agent:review`, `agent:fix` or `agent:update-branch` is on, which is a queued run a request would
+cancel (a notice); and, where `LOOP_TOKEN_SOURCE` is neither `app` nor `pat`, a warning and a
+comment saying no refresh of the new head will start, with the workflow token. A pull request
+that is gone (a 404) is said as gone, and one that could not be read as a read that failed: two
+sentences, and neither blocks, since the run finished.
+
+Each directory is read on its own, so a file that does not read is a warning and is read as not
+written, and costs the comment no reason another producer gave; a `published.json` that does not
+read asks for nothing again. Every write is tolerated: one GitHub refuses is a warning, so a run
+that cannot comment still takes its label off. The re-request is made with `LOOP_TOKEN`;
+everything else with `GH_TOKEN`.
+
+#### Inputs
+
+| Input | Kind | Default | What it is |
+|---|---|---|---|
+| `LOOP_TOKEN` | optional | `""` | The token whose writes start the loop's next workflow: the re-request. Empty where it was not minted, which is one of the endings this reports. |
+| `LOOP_TOKEN_SOURCE` | optional | `""` | Where `LOOP_TOKEN` came from: `app`, `pat` or `workflow`. |
+| `PR_NUMBER` | required | | The pull request. |
+| `HEAD_SHA` | required | | The head the run started from, as the event that asked for it saw it: the head it left where it pushed nothing. |
+| `REFUSED` | optional | `""` | Accepts `true` or `false`: `false` where the gate claimed the run, `true` where it refused. Empty is a gate that died before it decided. |
+| `GATE_RESULT` | required | | How the gate's job ended: `success`, `failure`, `cancelled` or `skipped`. |
+| `GATE_REASON` | optional | `""` | The sentence `update-branch:gate` or `update-branch:merge` failed with, where it failed after the run was claimed, such as at the permission probe or the base's fetch. |
+| `STATUS` | optional | `""` | Accepts `uptodate`, `clean` or `conflicts`: what `update-branch:merge` came to. Empty where it came to nothing. |
+| `AGENT_RESULT` | required | | How the agent's job ended: `success`, `failure`, `cancelled` or `skipped`. |
+| `TIMED_OUT` | optional | `""` | `true` where the agent's job ran its whole limit. |
+| `TIMEOUT_MINUTES` | optional | `""` | That limit, for the comment. |
+| `MINT_OUTCOME` | optional | `""` | The outcome of minting `LOOP_TOKEN`: `success`, `failure`, `cancelled` or `skipped`. Empty is not run. |
+| `DOWNLOAD_OUTCOME` | optional | `""` | The same, for fetching the agent's hand-over. Read only where `STATUS` is `conflicts`. |
+| `PUBLISH_OUTCOME` | optional | `""` | The same, for `update-branch:publish`. |
+| `PUBLISH_DIR` | directory | | `update-branch:publish`'s `OUTPUT_DIR`. Reads `published.json` (where written) and `failure_reason.txt` (where written). |
+| `PREPARE_DIR` | directory | | `update-branch:prepare`'s `OUTPUT_DIR`. Reads `failure_reason.txt` (where written). |
+| `UPDATE_BRANCH_DIR` | directory | | The `update-branch` runner's `OUTPUT_DIR`. Reads `failure_reason.txt` (where written). |
+| `BUNDLE_DIR` | directory | | `update-branch:bundle`'s `OUTPUT_DIR`. Reads `failure_reason.txt` (where written). |
+| `GITHUB_SERVER_URL` | optional | `""` | With the next two, the link to the run the failure comment names. |
+| `GITHUB_REPOSITORY` | optional | `""` | See `GITHUB_SERVER_URL`. |
+| `GITHUB_RUN_ID` | optional | `""` | See `GITHUB_SERVER_URL`. |
+
+#### Outputs
+
+| Output | When it is written |
+|---|---|
+| `write_log.jsonl` | Every write as it lands, one JSON line each, and a last line for how the command ended, as `review:conclude`'s. Not written where it wrote nothing. |
+
+**`doctor` cannot check this.** These tables are the command's, for the reason §6 gives.
+
+#### What it reads from the record
+
+- The pull request `PR_NUMBER` names, on a run that finished and asked for no review: its state,
+  its head and its labels, for whether to ask again. A 404 is a pull request that is gone.
+
+**`doctor` cannot check this.** The record is written by the orchestrator's posting code, for the reason §4.3 gives.
+
+> **Actions orchestrator:** the publish job's step after `update-branch:publish`, run `always()`,
+> from `RUNNER_TEMP`. It is told the gate's `refused` output, result, `status` output and
+> `failure-reason` output, which the gate job's glue steps copy from `update-branch:gate`'s and
+> `update-branch:merge`'s reason files, the agent's job's result and its `timed-out` output, the
+> limit as `AGENT_TIMEOUT_MINUTES` or 30, and the outcomes of the mint, the download and
+> `update-branch:publish`. `timed-out` is the agent's job's last step's, `always()`, which compares
+> the time since the gate's clock with the limit, less a minute, wherever that job did not succeed:
+> glue only Actions can do, and the one output that job declares. `PUBLISH_DIR` is
+> `update-branch:publish`'s `OUTPUT_DIR`, and `PREPARE_DIR`, `UPDATE_BRANCH_DIR` and `BUNDLE_DIR`
+> where the agent's artifact is downloaded. It is handed both tokens, the loop's empty where the
+> mint failed; with `update-branch:publish`, the only steps in the job that are. Both commands'
+> write logs are uploaded `always()`.
 
 ## 11. `follow-ups`
 

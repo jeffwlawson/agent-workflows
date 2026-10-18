@@ -422,9 +422,10 @@ const LOOP = {
 
 /**
  * The same two, for a command that has to run where the loop's token was
- * never minted: `review:conclude`, `review:advance` and `fix:conclude`, since a failed mint
- * is one of the endings each reports (ADR 0004). Empty is "no loop token", and the command makes no
- * write that needs one.
+ * never minted: `review:conclude`, `review:advance`, `fix:conclude` and
+ * `update-branch:conclude`, since a failed mint is one of the endings each
+ * reports (ADR 0004). Empty is "no loop token", and the command makes no write
+ * that needs one.
  */
 const LOOP_IF_MINTED = {
   LOOP_TOKEN: EMPTY,
@@ -548,6 +549,52 @@ const UPDATE_BRANCH_BUNDLE = {
     BASE_SHA: REQUIRED,
   },
   outputs: [...EVERY_SUBCOMMAND_OUTPUTS, "branch.bundle"],
+} as const satisfies CommandContract;
+
+/**
+ * `update-branch:prepare`, declared ahead of `COMMANDS` so that
+ * `update-branch:conclude` can read its outputs (`readsFromCommand`). See
+ * `COMMANDS`.
+ */
+const UPDATE_BRANCH_PREPARE = {
+  inputs: {
+    ...EVERY_SUBCOMMAND,
+    CHECKOUT: REQUIRED,
+    BRANCH: REQUIRED,
+    BASE_REF: REQUIRED,
+    BASE_SHA: REQUIRED,
+  },
+  outputs: [...EVERY_SUBCOMMAND_OUTPUTS],
+} as const satisfies CommandContract;
+
+/**
+ * `update-branch:publish`, declared ahead of `COMMANDS` so that
+ * `update-branch:conclude` can read its outputs (`readsFromCommand`). See
+ * `COMMANDS`.
+ */
+const UPDATE_BRANCH_PUBLISH = {
+  inputs: {
+    ...EVERY_SUBCOMMAND,
+    ...LOOP,
+    ...LOOP_ACCOUNTS,
+    PR_NUMBER: REQUIRED,
+    BRANCH: REQUIRED,
+    BASE_REF: REQUIRED,
+    HEAD_SHA: REQUIRED,
+    STATUS: { required: true, accepts: ["uptodate", "clean", "conflicts"] },
+    BASE_SHA: REQUIRED,
+    AGENT_RESULT: { required: true, accepts: RESULTS },
+    CHECKOUT: REQUIRED,
+    HEAD_WAIT_SECONDS: { required: false, default: "60" },
+    HEAD_POLL_SECONDS: { required: false, default: "5" },
+    UPDATE_BRANCH_DIR: readsFrom("update-branch", {
+      "update_comment.md": "sometimes",
+    }),
+    BUNDLE_DIR: readsFromCommand("update-branch:bundle", UPDATE_BRANCH_BUNDLE, {
+      "branch.bundle": "sometimes",
+    }),
+  },
+  outputs: [...EVERY_SUBCOMMAND_OUTPUTS, "published.json", WRITE_LOG],
 } as const satisfies CommandContract;
 
 /**
@@ -733,9 +780,24 @@ const REVIEW_RED_CHECK_PLACE = {
  *   shows the pushed head, bounded by `HEAD_WAIT_SECONDS` and polled every
  *   `HEAD_POLL_SECONDS`. `AGENT_RESULT` is how the agent's job ended: on a
  *   conflict it does nothing on any ending but `success`, since the rest is
- *   the failure step's. `AGENT_LOOP_LOGINS` is whose verdicts it copies.
- *   `published.json` is whether it pushed, the pushed head and whether it
- *   asked for the review, written as each becomes true.
+ *   `update-branch:conclude`'s. `AGENT_LOOP_LOGINS` is whose verdicts it
+ *   copies. `published.json` is whether it pushed, the pushed head and
+ *   whether it asked for the review, written as each becomes true.
+ * - `update-branch:conclude` ends every update-branch run, success included:
+ *   the failure comment, `agent:update-branch` off and `agent:blocked` where
+ *   the run stopped, and where it finished and the head moved on from the
+ *   one it left, `agent:update-branch` asked for again. It is told how the
+ *   gate and the agent's job ended (`REFUSED`, `GATE_RESULT`, the gate's
+ *   reason where it failed after claiming the run, `GATE_REASON`, `STATUS`,
+ *   what the gate's merge came to, `AGENT_RESULT`), whether the agent's job
+ *   ran out of time (`TIMED_OUT`, `TIMEOUT_MINUTES`), and the publish job's
+ *   steps' outcomes (`MINT_OUTCOME`, `DOWNLOAD_OUTCOME`, `PUBLISH_OUTCOME`),
+ *   and reads what each producer left from its own directory:
+ *   `update-branch:publish`'s through `PUBLISH_DIR`,
+ *   `update-branch:prepare`'s reason through `PREPARE_DIR`, the runner's
+ *   through `UPDATE_BRANCH_DIR`, and `update-branch:bundle`'s through
+ *   `BUNDLE_DIR`. `HEAD_SHA` is the head the run started from, as the
+ *   label's event saw it: the head it left where it pushed nothing.
  */
 export const COMMANDS = {
   "fix:gate": {
@@ -926,40 +988,41 @@ export const COMMANDS = {
     },
     outputs: [...EVERY_SUBCOMMAND_OUTPUTS, "merge.json"],
   },
-  "update-branch:prepare": {
-    inputs: {
-      ...EVERY_SUBCOMMAND,
-      CHECKOUT: REQUIRED,
-      BRANCH: REQUIRED,
-      BASE_REF: REQUIRED,
-      BASE_SHA: REQUIRED,
-    },
-    outputs: [...EVERY_SUBCOMMAND_OUTPUTS],
-  },
+  "update-branch:prepare": UPDATE_BRANCH_PREPARE,
   "update-branch:bundle": UPDATE_BRANCH_BUNDLE,
-  "update-branch:publish": {
+  "update-branch:publish": UPDATE_BRANCH_PUBLISH,
+  "update-branch:conclude": {
     inputs: {
       ...EVERY_SUBCOMMAND,
-      ...LOOP,
-      ...LOOP_ACCOUNTS,
+      ...LOOP_IF_MINTED,
       PR_NUMBER: REQUIRED,
-      BRANCH: REQUIRED,
-      BASE_REF: REQUIRED,
       HEAD_SHA: REQUIRED,
-      STATUS: { required: true, accepts: ["uptodate", "clean", "conflicts"] },
-      BASE_SHA: REQUIRED,
+      REFUSED: { required: false, default: "", accepts: ["true", "false"] },
+      GATE_RESULT: { required: true, accepts: RESULTS },
+      GATE_REASON: EMPTY,
+      STATUS: { required: false, default: "", accepts: ["uptodate", "clean", "conflicts"] },
       AGENT_RESULT: { required: true, accepts: RESULTS },
-      CHECKOUT: REQUIRED,
-      HEAD_WAIT_SECONDS: { required: false, default: "60" },
-      HEAD_POLL_SECONDS: { required: false, default: "5" },
+      TIMED_OUT: EMPTY,
+      TIMEOUT_MINUTES: EMPTY,
+      MINT_OUTCOME: EMPTY,
+      DOWNLOAD_OUTCOME: EMPTY,
+      PUBLISH_OUTCOME: EMPTY,
+      PUBLISH_DIR: readsFromCommand("update-branch:publish", UPDATE_BRANCH_PUBLISH, {
+        "published.json": "sometimes",
+        "failure_reason.txt": "sometimes",
+      }),
+      PREPARE_DIR: readsFromCommand("update-branch:prepare", UPDATE_BRANCH_PREPARE, {
+        "failure_reason.txt": "sometimes",
+      }),
       UPDATE_BRANCH_DIR: readsFrom("update-branch", {
-        "update_comment.md": "sometimes",
+        "failure_reason.txt": "sometimes",
       }),
       BUNDLE_DIR: readsFromCommand("update-branch:bundle", UPDATE_BRANCH_BUNDLE, {
-        "branch.bundle": "sometimes",
+        "failure_reason.txt": "sometimes",
       }),
+      ...RUN_LINK,
     },
-    outputs: [...EVERY_SUBCOMMAND_OUTPUTS, "published.json", WRITE_LOG],
+    outputs: [...EVERY_SUBCOMMAND_OUTPUTS, WRITE_LOG],
   },
 } as const satisfies Readonly<Record<string, CommandContract>>;
 

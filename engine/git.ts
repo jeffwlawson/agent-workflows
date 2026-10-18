@@ -1,11 +1,12 @@
 /**
  * The engine's door to git, beside `github.ts`'s door to GitHub's API: the
- * write types git makes (`pushRef`, `deleteRef`), and a bundle check, which
+ * write types git makes (`pushRef`, `deleteRef`); a fetch, which reads the
+ * remote with a token and changes nothing there; and a bundle check, which
  * is a read and holds no token.
  *
  * Each runs `git` in a repository the backend is bound to, with the
  * environment it is handed and only two additions: `GIT_TERMINAL_PROMPT=0`,
- * and, on a write, the token as an `http.extraHeader` set through
+ * and, on a write or a fetch, the token as an `http.extraHeader` set through
  * `GIT_CONFIG_*`. So the token is in no argument, where a process listing
  * would show it, and in no file, where whatever next runs in the repository
  * could read it. The environment is handed in rather than read, since the
@@ -75,24 +76,32 @@ const outputOf = (error: unknown, stream: "stdout" | "stderr"): string => {
 
 const leaseArgument = (ref: string, lease: Lease): string => `--force-with-lease=${ref}:${"tip" in lease ? lease.tip : ""}`;
 
+/** `env` with the token as git's `http.extraHeader`, through `GIT_CONFIG_*`. */
+const authorized = (env: GitEnvironment, token: string): GitEnvironment => ({
+  ...env,
+  GIT_TERMINAL_PROMPT: "0",
+  GIT_CONFIG_COUNT: "1",
+  GIT_CONFIG_KEY_0: "http.extraHeader",
+  GIT_CONFIG_VALUE_0: `AUTHORIZATION: basic ${Buffer.from(`x-access-token:${token}`).toString("base64")}`,
+});
+
+/** `ref`, refused where it is not a full ref name. */
+const fullRef = (ref: string): string => {
+  if (!ref.startsWith("refs/")) throw new GitError(`\`${ref}\` is not a full ref name; name it as \`refs/heads/${ref}\`.`);
+  return ref;
+};
+
 /**
  * The git writes, pushing to `remote` from `repository` with `token`. A ref is
  * a full ref name, since git takes a commit pushed to a bare name only where
  * the ref already exists.
  */
 export const gitWrites = (repository: GitRepository & { readonly remote: string }, token: string): Pick<Backend, GitWriteType> => {
-  const auth = Buffer.from(`x-access-token:${token}`).toString("base64");
-  const env = {
-    ...repository.env,
-    GIT_TERMINAL_PROMPT: "0",
-    GIT_CONFIG_COUNT: "1",
-    GIT_CONFIG_KEY_0: "http.extraHeader",
-    GIT_CONFIG_VALUE_0: `AUTHORIZATION: basic ${auth}`,
-  };
+  const env = authorized(repository.env, token);
 
   /** `git push` of `refspec` under `lease`: `applied`, or `unchanged` where the ref was already there. */
   const push = async (call: Call, ref: string, refspec: string, lease: Lease): Promise<{ readonly outcome: "applied" | "unchanged" }> => {
-    if (!ref.startsWith("refs/")) throw new GitError(`\`${ref}\` is not a full ref name; name it as \`refs/heads/${ref}\`.`);
+    fullRef(ref);
     const output = await call("git push", async () => {
       try {
         const { stdout } = await run(
@@ -115,6 +124,38 @@ export const gitWrites = (repository: GitRepository & { readonly remote: string 
   return {
     pushRef: (call, { ref, commit, lease }) => push(call, ref, `${commit}:${ref}`, lease),
     deleteRef: (call, { ref, lease }) => push(call, ref, `:${ref}`, lease),
+  };
+};
+
+/**
+ * What git can fetch for a command with a token: a read of the remote, which
+ * changes nothing there, so it is no write and goes through no writer. It
+ * changes only the repository it fetches into.
+ */
+export interface GitFetcher {
+  /**
+   * `ref` on the remote fetched to `into` in the repository, over whatever
+   * `into` held: the commit fetched. Both are full ref names. A ref the
+   * remote does not have throws, and leaves `into` as it was.
+   */
+  fetchRef(ref: string, into: string): Promise<string>;
+}
+
+/** The fetcher into `repository`, from `remote`, with `token`. */
+export const gitFetcher = (repository: GitRepository & { readonly remote: string }, token: string): GitFetcher => {
+  const env = authorized(repository.env, token);
+  const git = async (args: readonly string[]): Promise<string> => {
+    try {
+      return (await run("git", args, { cwd: repository.dir, env, encoding: "utf8" })).stdout;
+    } catch (error) {
+      throw new GitError(lastLine(outputOf(error, "stderr")) || (error instanceof Error ? error.message : String(error)));
+    }
+  };
+  return {
+    fetchRef: async (ref, into) => {
+      await git(["fetch", "--quiet", "--no-tags", repository.remote, `+${fullRef(ref)}:${fullRef(into)}`]);
+      return (await git(["rev-parse", "--verify", `${into}^{commit}`])).trim();
+    },
   };
 };
 

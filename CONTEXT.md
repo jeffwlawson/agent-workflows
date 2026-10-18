@@ -438,11 +438,11 @@ guards written as steps, such as the preflight refusals and the bundle check, an
 which token each write uses. [ADR 0003](./docs/adr/0003-reusable-keeps-what-only-actions-can-do.md)
 records the rule and why it replaced "every guard and every step" in the reusable. `review` has
 moved (PRD #409): every one of its steps that reads or changes the record or decides is a command.
-**Five reusables still run their steps as inline shell**: `implement`, `implement-prd`, `fix`,
-`update-branch` and `follow-ups`, whose filing alone is a command, `follow-ups:file`; `fix` is
-moving (PRD #466): its gate job's work is a command, `fix:gate`, its bundling is one,
-`fix:bundle`, and so are its publish job's success arm, `fix:publish`, and the ending after it,
-`fix:conclude`. Until a
+So has `fix` (PRD #466): its gate job's work is `fix:gate`, the rescue lookup in its agent's job
+`fix:prepare`, its bundling `fix:bundle`, its publish job's success arm `fix:publish` and the
+ending after it `fix:conclude`, and `fix.yml` runs no inline shell that decides. **Four
+reusables still run their steps as inline shell**: `implement`, `implement-prd`,
+`update-branch` and `follow-ups`, whose filing alone is a command, `follow-ups:file`. Until a
 reusable has moved, a fix to one of its steps still goes in its YAML.
 
 **A runner** is the part of the package that does an agent's work: TypeScript plus a prompt, invoked
@@ -454,10 +454,10 @@ an argument is refused rather than ignored. Its boundary with whatever invokes i
 that reads or changes the PR or issue, or decides anything, and starts no agent. It is invoked the
 way a runner is, as one subcommand with no arguments and its whole input in the environment, and
 fails the way a runner does. It is named `<workflow>:<step>`, such as `review:publish`, so a bare
-name is always a runner. `fix:gate`, `fix:bundle`, `fix:publish`, `fix:conclude`, `follow-ups:file`, `review:gate`,
+name is always a runner. `fix:gate`, `fix:prepare`, `fix:bundle`, `fix:publish`, `fix:conclude`, `follow-ups:file`, `review:gate`,
 `review:budget`, `review:collect-checks`, `review:red-check-place`, `review:red-check-classify`,
 `review:publish`, `review:conclude` and `review:advance` are the commands today; every other step a command will be still runs as YAML
-shell, in the five reusables that have not moved. A command that
+shell, in the four reusables that have not moved. A command that
 only decides or reads, as `review:gate` does before the review job's checkout (#420),
 `review:budget` does for the fix-round budget after it (#331) and `review:collect-checks` does
 for the CI wait (#421), is handed the GitHub reader and no writer, and what it settles leaves it

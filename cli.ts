@@ -3,7 +3,7 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import { fileURLToPath } from "node:url";
 import { commonWriters } from "./shared/common.js";
-import type { CheckoutIo, OutputWriters, ReadingIo } from "./shared/command-io.js";
+import type { CheckoutIo, FetchingIo, OutputWriters, ReadingIo } from "./shared/command-io.js";
 import { COMMANDS, type Command, type Runner } from "./shared/contract.js";
 import { fail, gitEnvironment, readInputs, writers, type InputValues } from "./shared/env.js";
 import { VERSION } from "./shared/manifest.js";
@@ -138,6 +138,38 @@ const readingCommand = <C extends ReadingCommand>(
     const inputs = readInputs(declared.inputs);
     try {
       await fn(inputs, liveReadingIo(inputs, writers<(typeof COMMANDS)[C]["outputs"]>(declared.outputs)));
+    } catch (error) {
+      fail(error instanceof Error ? error.message : String(error));
+    }
+  },
+});
+
+/**
+ * A command that reads GitHub and fetches from it into a checkout, and writes
+ * nothing to it: handed, besides its inputs, the reader and a fetcher, both
+ * over its `GH_TOKEN`, the fetcher working in its `CHECKOUT`, and its
+ * declared output files. No writer: a fetch changes the checkout alone.
+ */
+type FetchingCommand = {
+  [C in ReadingCommand]: (typeof COMMANDS)[C]["inputs"] extends { readonly CHECKOUT: unknown } ? C : never;
+}[ReadingCommand];
+
+const fetchingCommand = <C extends FetchingCommand>(
+  name: C,
+  load: () => Promise<(inputs: InputValues<(typeof COMMANDS)[C]["inputs"]>, io: FetchingIo<(typeof COMMANDS)[C]["outputs"]>) => Promise<unknown>>,
+  summary: string,
+): Subcommand => ({
+  kind: "command",
+  summary,
+  run: async (args) => {
+    refuseArguments(name, args);
+    const fn = await load();
+    const { liveFetchingIo } = await import("./shared/command-io.js");
+    const declared = COMMANDS[name];
+    const inputs = readInputs(declared.inputs);
+    const outputs = writers<(typeof COMMANDS)[C]["outputs"]>(declared.outputs);
+    try {
+      await fn(inputs, liveFetchingIo(inputs, outputs, { dir: inputs.CHECKOUT, env: gitEnvironment() }));
     } catch (error) {
       fail(error instanceof Error ? error.message : String(error));
     }
@@ -300,6 +332,11 @@ export const SUBCOMMANDS: Readonly<Record<string, Subcommand>> = {
     "fix:gate",
     async () => (await import("./fix/gate.js")).gate,
     "Refuse a fix run on a closed, moved or deleted pull request, or claim it and wait for a review's posting (no model).",
+  ),
+  "fix:prepare": fetchingCommand(
+    "fix:prepare",
+    async () => (await import("./fix/prepare.js")).prepare,
+    "Fetch the rescue branch an earlier stopped fix run left, for the runner to resume from (no model).",
   ),
   "fix:bundle": command(
     "fix:bundle",

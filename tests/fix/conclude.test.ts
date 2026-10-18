@@ -49,11 +49,11 @@ let git: ReturnType<typeof fakeGit>;
 let reader: GitHubReader;
 let logged: string[];
 
-const dirOf = (name: "publish" | "fix" | "bundle"): string => path.join(root, name);
+const dirOf = (name: "publish" | "prepare" | "fix" | "bundle"): string => path.join(root, name);
 
 beforeEach(() => {
   root = fs.mkdtempSync(path.join(os.tmpdir(), "fix-conclude-"));
-  for (const name of ["publish", "fix", "bundle"] as const) fs.mkdirSync(dirOf(name));
+  for (const name of ["publish", "prepare", "fix", "bundle"] as const) fs.mkdirSync(dirOf(name));
   github = fakeGitHub([{ number: PR, nodeId: "PR_node7", headSha: HEAD, draft: true, labels: [FIX_LABEL] }]);
   github.branches.set(BRANCH, HEAD);
   made = undefined;
@@ -76,7 +76,7 @@ const bundlePath = (): string => path.join(dirOf("bundle"), "branch.bundle");
 /** A checkout where the bundle, once handed over, carries `heads`, and the agent's commit builds on the head. */
 const holding = (heads: readonly BundleHead[]) => fakeGit({ bundles: { [bundlePath()]: heads }, history: { [TIP]: [HEAD, TIP] } });
 
-const put = (dir: "publish" | "fix" | "bundle", name: string, value: unknown): void =>
+const put = (dir: "publish" | "prepare" | "fix" | "bundle", name: string, value: unknown): void =>
   fs.writeFileSync(path.join(dirOf(dir), name), typeof value === "string" ? value : JSON.stringify(value));
 
 /** `fix:bundle`'s bundle: the agent made commits. */
@@ -108,6 +108,7 @@ const INPUTS = (over: Partial<Inputs> = {}): Inputs => ({
   DOWNLOAD_OUTCOME: "success",
   PUBLISH_OUTCOME: "success",
   PUBLISH_DIR: dirOf("publish"),
+  PREPARE_DIR: dirOf("prepare"),
   FIX_DIR: dirOf("fix"),
   BUNDLE_DIR: dirOf("bundle"),
   GITHUB_SERVER_URL: "https://github.com",
@@ -369,6 +370,16 @@ describe("fix:conclude gives the reason the ending calls for", () => {
 
     expect(comment()).toContain("Couldn't bundle the agent's commits");
     expect(comment()).not.toContain("timed out");
+  });
+
+  it("reads fix:prepare's reason where the agent's job stopped before the runner, ahead of fix:bundle's", async () => {
+    put("prepare", "failure_reason.txt", "Couldn't check whether an earlier run left commits on `agent/rescue/fix-7`, so this run stopped rather than start over without them.\n");
+    put("bundle", "failure_reason.txt", "Couldn't bundle the agent's commits.\n");
+
+    await run(INPUTS(AGENT_FAILED()));
+
+    expect(comment()).toContain("Couldn't check whether an earlier run left commits on `agent/rescue/fix-7`");
+    expect(comment()).not.toContain("bundle");
   });
 
   it("reads the runner's reason ahead of fix:bundle's", async () => {

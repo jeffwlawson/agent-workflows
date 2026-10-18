@@ -10,7 +10,7 @@
  * `workflow` is the job's own, which the loop recognises its reviews, comments
  * and statuses by (`docs/platform-spec.md` §4.1).
  */
-import { gitReader, gitWrites, githubRemote, type GitReader, type GitRepository } from "../engine/git.js";
+import { gitFetcher, gitReader, gitWrites, githubRemote, type GitFetcher, type GitReader, type GitRepository } from "../engine/git.js";
 import { fetchTransport } from "../engine/github.js";
 import { githubReader, type GitHubReader } from "../engine/read.js";
 import { createWriters, type Backend, type Limits, type WriteLog, type Writer } from "../engine/writer.js";
@@ -53,11 +53,31 @@ export interface CheckoutIo<O extends Outputs> extends CommandIo<O> {
   readonly git: GitReader;
 }
 
+/**
+ * What a command that reads GitHub and fetches into a checkout is handed,
+ * and still no writer: the reader, and a fetcher from the repository on
+ * GitHub with the same token. A fetch changes the checkout and nothing on
+ * GitHub. `fix:prepare` fetches the rescue branch with it.
+ */
+export interface FetchingIo<O extends Outputs> extends ReadingIo<O> {
+  readonly fetcher: GitFetcher;
+}
+
 /** The real ones, for `repo` with the workflow's token. */
 export const liveReadingIo = <O extends Outputs>(
   tokens: { readonly GH_REPO: string; readonly GH_TOKEN: string },
   outputs: OutputWriters<O>,
 ): ReadingIo<O> => ({ github: githubReader(tokens.GH_REPO, fetchTransport(tokens.GH_TOKEN)), outputs });
+
+/** The real ones, for `repo` with the workflow's token, fetching into `checkout`. */
+export const liveFetchingIo = <O extends Outputs>(
+  tokens: { readonly GH_REPO: string; readonly GH_TOKEN: string },
+  outputs: OutputWriters<O>,
+  checkout: GitRepository,
+): FetchingIo<O> => ({
+  ...liveReadingIo(tokens, outputs),
+  fetcher: gitFetcher({ ...checkout, remote: githubRemote(tokens.GH_REPO) }, tokens.GH_TOKEN),
+});
 
 /**
  * The real ones, for `repo` with the two tokens, each line of the write log

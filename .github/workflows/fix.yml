@@ -319,12 +319,8 @@ jobs:
       # run block is an "An expression was expected" startup failure. That is
       # what took this workflow down for two days; see tests/workflows.test.ts.
       #
-      # And the rescue branch an earlier run left (#303), where there is one,
-      # fetched to `refs/rescue/` for the runner to resume from. The runner
-      # decides whether it still builds on this head; this only fetches it.
-      # **An unreadable answer stops the run**, rather than reading as "no
-      # rescue": a run that started over without it, and succeeded, would
-      # delete it.
+      # Checkout plumbing only: the rescue branch an earlier run left is
+      # `fix:prepare`'s to look up and fetch (#471), below.
       - name: Prepare branch and make the PR base available for diffing
         run: |
           set -euo pipefail
@@ -334,25 +330,12 @@ jobs:
           echo "::add-mask::${auth}"
           git -c "http.extraHeader=AUTHORIZATION: basic ${auth}" fetch origin "+refs/heads/${BASE_REF}:refs/heads/${BASE_REF}"
           git checkout -B "$BRANCH"
-          found=0
-          git -c "http.extraHeader=AUTHORIZATION: basic ${auth}" ls-remote --exit-code origin "refs/heads/${RESCUE_BRANCH}" > /dev/null || found=$?
-          case "$found" in
-            0)
-              git -c "http.extraHeader=AUTHORIZATION: basic ${auth}" fetch --no-tags origin "+refs/heads/${RESCUE_BRANCH}:refs/rescue/${RESCUE_BRANCH}"
-              echo "Fetched ${RESCUE_BRANCH}, which an earlier run left, for the runner to resume from." ;;
-            2) echo "No ${RESCUE_BRANCH}, so there is nothing to resume from." ;;
-            *)
-              reason="Couldn't check whether an earlier run left commits on \`${RESCUE_BRANCH}\`, so this run stopped rather than start over without them."
-              printf '%s\n' "$reason" > "${RUNNER_TEMP}/failure_reason.txt"
-              echo "::error::${reason}"
-              exit 1 ;;
-          esac
           git config user.name "sandcastle-agent[bot]"
           git config user.email "sandcastle-agent[bot]@users.noreply.github.com"
 
       # The package, installed once and early, the way the red check installs
-      # it (#422), for the commands this job runs: `fix:bundle` after the
-      # agent. Node and the registry the package installs from, a version its
+      # it (#422), for the commands this job runs: `fix:prepare` before the
+      # PR's code, and `fix:bundle` after the agent. Node and the registry the package installs from, a version its
       # `engines.node` names, and no cache, since this job runs the PR's code
       # and a cache it saved would be restored on the base branch.
       - name: Set up Node for the package
@@ -388,6 +371,28 @@ jobs:
           NPM_CONFIG_USERCONFIG: ${{ steps.npmrc.outputs.userconfig }}
           NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: npm install --prefix "$RUNNER_TEMP" --no-save @jeffwlawson/agent-workflows@0.8.5
+
+      # The rescue branch an earlier run left (#303), where there is one,
+      # fetched to `refs/rescue/` for the runner to resume from (#471). The
+      # runner decides whether it still builds on this head; this only
+      # fetches it. **An unreadable answer stops the run**, rather than
+      # reading as "no rescue": a run that started over without it, and
+      # succeeded, would delete it. `fix/prepare.ts` says why.
+      #
+      # Here, before *Install dependencies*, so nothing of the PR's has run on
+      # this runner while it holds the token: the PR's own code can leave a
+      # git config entry or a hook behind for a later step. From the install
+      # above, and handed the workflow token, read-only in this job, and no
+      # writer. Its reason file goes in a directory of its own, which the
+      # hand-over below carries for `fix:conclude`'s failure comment.
+      - name: Fetch the rescue branch
+        working-directory: ${{ runner.temp }}
+        env:
+          NPM_CONFIG_USERCONFIG: ${{ steps.npmrc.outputs.userconfig }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          OUTPUT_DIR: ${{ runner.temp }}/prepare
+          CHECKOUT: ${{ github.workspace }}
+        run: npm exec --prefix "$RUNNER_TEMP" --yes --package=@jeffwlawson/agent-workflows@0.8.5 -- agent-workflows fix:prepare
 
       # Both setup steps are the adopter's toolchain, so both are skippable.
       # `npm install -g @anthropic-ai/claude-code` below is not: that is the
@@ -562,17 +567,18 @@ jobs:
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         run: npm exec --prefix "$RUNNER_TEMP" --yes --package=@jeffwlawson/agent-workflows@0.8.5 -- agent-workflows fix:bundle
 
+      # `fix:prepare`'s reason file on a failure, under `prepare/`;
       # `fix:bundle`'s files, the bundle and its reason file on a failure,
-      # under `bundle/`, and every file the runner wrote for the publish job:
+      # under `bundle/`; and every file the runner wrote for the publish job:
       # exactly the files `fix:publish` and `fix:conclude` declare they read
       # from each (the nothing-to-do note, the rescue it set aside, the round
       # header, the thread outcomes, the conversation outcomes, the top-level
       # comments and the out-of-scope notes, as data and with no marker, and
-      # the two reason files, which `fix:conclude`'s failure comment reads).
+      # the three reason files, which `fix:conclude`'s failure comment reads).
       # One artifact, `always()`, because a failed run is one of the outcomes
       # `publish` reports, and any of them may be missing.
-      # The paths' common directory is `runner.temp`, so `bundle/` stays
-      # `bundle/` in the artifact and where `publish` downloads it. Uploading
+      # The paths' common directory is `runner.temp`, so `prepare/` and
+      # `bundle/` stay as they are in the artifact and where `publish` downloads it. Uploading
       # needs no scope: the artifact service takes the runner's own token, so
       # this job stays read-only. `overwrite`, so a re-run replaces this
       # attempt's copy rather than failing on the name.
@@ -587,6 +593,7 @@ jobs:
         with:
           name: agent-fix
           path: |
+            ${{ runner.temp }}/prepare/failure_reason.txt
             ${{ runner.temp }}/bundle/branch.bundle
             ${{ runner.temp }}/bundle/failure_reason.txt
             ${{ runner.temp }}/failure_reason.txt
@@ -707,8 +714,9 @@ jobs:
           package-manager-cache: false
 
       # Into a directory of its own under `RUNNER_TEMP`, where both commands
-      # look for the runner's files, and for `fix:bundle`'s under `bundle/`,
-      # where it wrote them there. Its own, so nothing another step writes at
+      # look for the runner's files, for `fix:bundle`'s under `bundle/`, and
+      # `fix:conclude` for `fix:prepare`'s under `prepare/`, where each wrote
+      # them there. Its own, so nothing another step writes at
       # `RUNNER_TEMP`, the mint's reason file among them, reads as the
       # runner's. `always()`, so a run that stopped still hands its reason and
       # its commits to the rescue and the failure comment. Tolerated: an
@@ -777,8 +785,8 @@ jobs:
       # agent's job ran out of time and its limit, and the outcome of each
       # step above, so the package works out which ending this is. It reads
       # `fix:publish`'s `published.json` and reason from publish's directory,
-      # and the runner's and `fix:bundle`'s from the hand-over, each from its
-      # own producer's directory, and checks the bundle in the checkout before
+      # and `fix:prepare`'s, the runner's and `fix:bundle`'s from the
+      # hand-over, each from its own producer's directory, and checks the bundle in the checkout before
       # it rescues from it.
       #
       # Given both tokens, the loop's empty where it was not minted, which is
@@ -794,6 +802,7 @@ jobs:
           LOOP_TOKEN_SOURCE: ${{ steps.token.outputs.source }}
           OUTPUT_DIR: ${{ runner.temp }}/conclude
           PUBLISH_DIR: ${{ runner.temp }}/publish
+          PREPARE_DIR: ${{ runner.temp }}/agent-fix/prepare
           FIX_DIR: ${{ runner.temp }}/agent-fix
           BUNDLE_DIR: ${{ runner.temp }}/agent-fix/bundle
           CHECKOUT: ${{ github.workspace }}

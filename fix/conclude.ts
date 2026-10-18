@@ -30,10 +30,10 @@ type Io = CheckoutIo<Declared["outputs"]>;
  *
  * What ran and how it ended are inputs, each job's result and each step's
  * outcome as the adapter saw it, and this works out the ending from them.
- * What publish did, and the reasons the runner and `fix:bundle` stopped with,
- * it reads from each producer's own directory (ADR 0006), so which reason the
- * comment gives is decided here, in the order the publish job's failure step
- * read them.
+ * What publish did, and the reasons `fix:prepare`, the runner and
+ * `fix:bundle` stopped with, it reads from each producer's own directory
+ * (ADR 0006), so which reason the comment gives is decided here, in the order
+ * the publish job's failure step read them.
  *
  * Every write is tolerated, as the shell before it tolerated each with
  * `|| true`, `continue-on-error` or a warning: a run that cannot comment still
@@ -54,6 +54,9 @@ export const conclude = async (inputs: Inputs, io: Io): Promise<void> => {
     "published.json": json(
       object({ pushed: FLAG, head: optional(matching(/[0-9a-f]{40}/, "a full commit id")), notesPosted: FLAG, nothingToDo: FLAG }),
     ),
+    "failure_reason.txt": text,
+  });
+  const prepared = readDirectory(COMMANDS["fix:conclude"].inputs.PREPARE_DIR, inputs.PREPARE_DIR, {
     "failure_reason.txt": text,
   });
   const handOver = readRunner(inputs);
@@ -81,6 +84,7 @@ export const conclude = async (inputs: Inputs, io: Io): Promise<void> => {
   const state = published["published.json"];
   const pushed = state?.pushed === true;
   const reason = ending.reason({
+    prepare: prepared["failure_reason.txt"],
     runner: handOver["failure_reason.txt"],
     bundle: bundled["failure_reason.txt"],
     publish: published["failure_reason.txt"],
@@ -116,6 +120,7 @@ const readRunner = (
 
 /** The reasons a stopped run can give, each where its producer wrote one. */
 interface Reasons {
+  readonly prepare: string | undefined;
   readonly runner: string | undefined;
   readonly bundle: string | undefined;
   readonly publish: string | undefined;
@@ -173,10 +178,11 @@ const endingOf = (inputs: Inputs): Ending => {
     return stopped(() => measured(CANCELLED));
   }
   // The agent's job failed, or never ran behind a gate that failed after it
-  // claimed the run: the runner's reason, and failing that `fix:bundle`'s,
-  // for an agent's job that failed only at the bundle.
-  return stopped(({ runner, bundle }) => {
-    const reason = runner?.trim() || bundle?.trim();
+  // claimed the run: `fix:prepare`'s reason, for an agent's job that stopped
+  // before the runner started, then the runner's, and failing that
+  // `fix:bundle`'s, for an agent's job that failed only at the bundle.
+  return stopped(({ prepare, runner, bundle }) => {
+    const reason = prepare?.trim() || runner?.trim() || bundle?.trim();
     if (reason !== undefined && reason !== "") return reason;
     return inputs.AGENT_RESULT === "failure" ? measured(NO_REASON) : NO_REASON;
   });

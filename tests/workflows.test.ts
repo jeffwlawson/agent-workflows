@@ -9562,7 +9562,9 @@ describe("rescue and resume for fix and implement-prd", () => {
       file: path.join(WORKFLOW_DIR, "fix.yml"),
       agent: "fix",
       rescue: "agent/rescue/fix-${{ github.event.pull_request.number }}",
-      prepare: "Prepare branch and make the PR base available for diffing",
+      // `fix:prepare` (#471): `tests/fix/prepare.test.ts` holds the fetch.
+      prepare: "Fetch the rescue branch",
+      fetchedBy: "fix:prepare",
       // `fix:bundle` (#472).
       bundle: "Bundle the agent's commits",
       // `fix:conclude`'s (#469): `tests/fix/conclude.test.ts` holds when.
@@ -9579,6 +9581,7 @@ describe("rescue and resume for fix and implement-prd", () => {
       agent: "implement-prd",
       rescue: "agent/rescue/prd-${{ github.event.issue.number }}",
       prepare: "Prepare the PRD branch",
+      fetchedBy: "",
       bundle: "Bundle the branch",
       condition:
         "always() && needs.gate.outputs.refused == 'false' && needs.gate.outputs.build == 'true' && (cancelled() || failure() || needs.implement-prd.result == 'failure' || needs.implement-prd.result == 'cancelled') && steps.push.outputs.head == ''",
@@ -9642,7 +9645,12 @@ describe("rescue and resume for fix and implement-prd", () => {
 
     expect(steps.find((s) => s.name === c.bundle)?.if).toBe("always()");
     expect(upload?.with?.["path"]).toContain(`\${{ runner.temp }}/${c.ignored}`);
-    expect(code(steps[named(steps, c.prepare)])).toContain(`"+refs/heads/\${RESCUE_BRANCH}:${rescueRef("${RESCUE_BRANCH}")}"`);
+    const prepare = steps[named(steps, c.prepare)];
+    if (c.fetchedBy === "") {
+      expect(code(prepare)).toContain(`"+refs/heads/\${RESCUE_BRANCH}:${rescueRef("${RESCUE_BRANCH}")}"`);
+    } else {
+      expect((prepare?.run ?? "").trim().endsWith(` agent-workflows ${c.fetchedBy}`), c.prepare).toBe(true);
+    }
   });
 
   const SHELL = CASES.filter((c) => c.deleteIf !== "");
@@ -9947,10 +9955,11 @@ describe("fix's agent job bundles its commits with fix:bundle", () => {
 
   /**
    * Exactly the files `fix:publish` and `fix:conclude` declare they read
-   * (#468, #469), from each of the two directories the artifact carries: the
-   * runner's at `runner.temp`, and `fix:bundle`'s under `bundle/`.
+   * (#468, #469), from each of the three directories the artifact carries:
+   * the runner's at `runner.temp`, `fix:prepare`'s under `prepare/` (#471)
+   * and `fix:bundle`'s under `bundle/`.
    */
-  it("hands over exactly the files fix:publish and fix:conclude declare, from both directories", () => {
+  it("hands over exactly the files fix:publish and fix:conclude declare, from every directory", () => {
     const publish = COMMANDS["fix:publish"].inputs;
     const conclude = COMMANDS["fix:conclude"].inputs;
     const both = (a: DirectoryInput, b: DirectoryInput): DirectoryInput => {
@@ -9960,7 +9969,9 @@ describe("fix's agent job bundles its commits with fix:bundle", () => {
 
     expect(publish.FIX_DIR.producer).toBe("fix");
     expect(publish.BUNDLE_DIR.producer).toBe("fix:bundle");
+    expect(conclude.PREPARE_DIR.producer).toBe("fix:prepare");
     expectHandsOver(steps()[index("Hand the branch to the publish job")], both(publish.FIX_DIR, conclude.FIX_DIR), {
+      prepare: conclude.PREPARE_DIR,
       bundle: both(publish.BUNDLE_DIR, conclude.BUNDLE_DIR),
     });
   });
@@ -9982,6 +9993,90 @@ describe("fix's agent job bundles its commits with fix:bundle", () => {
       expect(command.env?.["FIX_DIR"], command.name).toBe("${{ runner.temp }}/agent-fix");
       expect(command.env?.["BUNDLE_DIR"], command.name).toBe("${{ runner.temp }}/agent-fix/bundle");
     }
+    expect(publish.find((s) => s.name === "Conclude the run")?.env?.["PREPARE_DIR"]).toBe("${{ runner.temp }}/agent-fix/prepare");
+  });
+});
+
+/**
+ * `fix:prepare` (#471): the rescue lookup, the last shell in the agent's job
+ * that decided. What it fetches and when it stops is held in
+ * `tests/fix/prepare.test.ts`; what is held here is what the YAML owns: where
+ * it runs, what it runs from, and what it is handed.
+ */
+describe("fix's agent job fetches the rescue branch with fix:prepare", () => {
+  const FIX = path.join(WORKFLOW_DIR, "fix.yml");
+  const job = (): Job => jobNamed(FIX, "fix");
+  const steps = (): readonly Step[] => job().steps ?? [];
+  const index = (name: string): number => {
+    const at = steps().findIndex((s) => s.name === name);
+    expect(at, `fix's agent job has no \`${name}\` step`).toBeGreaterThan(-1);
+    return at;
+  };
+  const PREPARE = "Fetch the rescue branch";
+  const VERSION = PIN.slice(1);
+  const prepare = (): Step | undefined => steps()[index(PREPARE)];
+
+  it("runs fix:prepare in place of the shell lookup, and the base fetch stays checkout plumbing", () => {
+    expect(prepare()?.run).toBe(
+      `npm exec --prefix "$RUNNER_TEMP" --yes --package=@jeffwlawson/agent-workflows@${VERSION} -- agent-workflows fix:prepare`,
+    );
+    const shell = steps().map((s) => s.run ?? "").join("\n");
+    expect(shell).not.toContain("ls-remote");
+    expect(shell).not.toContain("refs/rescue/");
+    expect(shell).not.toContain("failure_reason.txt");
+    const plumbing = steps()[index("Prepare branch and make the PR base available for diffing")]?.run ?? "";
+    expect(plumbing).toContain('fetch origin "+refs/heads/${BASE_REF}:refs/heads/${BASE_REF}"');
+    expect(plumbing).toContain('git checkout -B "$BRANCH"');
+  });
+
+  /**
+   * After the checkout and the base fetch, from the early install, and before
+   * anything of the PR's runs: the adopter's toolchain and *Install
+   * dependencies* can leave a git config entry or a hook behind for a later
+   * step, and this one holds the token.
+   */
+  it("runs after the checkout and the base fetch, from the early install, before Install dependencies", () => {
+    const all = steps();
+    const at = index(PREPARE);
+
+    expect(at).toBeGreaterThan(all.findIndex((s) => (s.uses ?? "").startsWith("actions/checkout@")));
+    expect(at).toBeGreaterThan(index("Prepare branch and make the PR base available for diffing"));
+    expect(at).toBe(index("Install the package") + 1);
+    expect(at).toBeLessThan(index("Setup Node.js"));
+    expect(at).toBeLessThan(index("Install dependencies"));
+    expect(prepare()?.if).toBeUndefined();
+    expect(prepare()?.["working-directory"]).toBe("${{ runner.temp }}");
+    expect(prepare()?.env?.["NPM_CONFIG_USERCONFIG"]).toBe("${{ steps.npmrc.outputs.userconfig }}");
+  });
+
+  /** Its inputs, each set by the step or its job, and its reason file in a directory of its own. */
+  it("sets exactly its declared inputs, its output in a directory of its own", () => {
+    const env = { ...job().env, ...prepare()?.env };
+
+    expect(prepare()?.env).toMatchObject({ OUTPUT_DIR: "${{ runner.temp }}/prepare", CHECKOUT: "${{ github.workspace }}" });
+    expect(env["RESCUE_BRANCH"]).toBe("agent/rescue/fix-${{ github.event.pull_request.number }}");
+    expect(env["GH_REPO"]).toBe("${{ github.repository }}");
+    for (const name of Object.keys(COMMANDS["fix:prepare"].inputs)) expect(env, name).toHaveProperty(name);
+    const set = Object.keys(prepare()?.env ?? {}).filter((name) => name !== "NPM_CONFIG_USERCONFIG");
+    for (const name of set) expect(COMMANDS["fix:prepare"].inputs, name).toHaveProperty(name);
+  });
+
+  /**
+   * The workflow token alone, read-only in this job, and no writer: it
+   * declares no loop token and keeps no write log, so the CLI can hand it
+   * none. And the job still names no PAT and no App (#307).
+   */
+  it("is handed the workflow token alone and no writer, in a job that names no PAT", () => {
+    const step = prepare();
+    const text = JSON.stringify(step);
+
+    expect(step?.env?.["GH_TOKEN"]).toBe("${{ secrets.GITHUB_TOKEN }}");
+    for (const name of ["LOOP_TOKEN", "NODE_AUTH_TOKEN", "AGENT_PAT", "AGENT_APP", "steps.token"]) expect(text, name).not.toContain(name);
+    expect(COMMANDS["fix:prepare"].inputs).not.toHaveProperty("LOOP_TOKEN");
+    expect(COMMANDS["fix:prepare"].outputs).not.toContain("write_log.jsonl");
+    expect(job().permissions?.["contents"]).toBe("read");
+    expect(Object.values(job().permissions ?? {})).not.toContain("write");
+    expect(JSON.stringify(job())).not.toMatch(/AGENT_PAT|AGENT_APP_|loop-token/);
   });
 });
 

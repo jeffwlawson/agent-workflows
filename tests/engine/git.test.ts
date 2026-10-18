@@ -9,7 +9,7 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { GitError, gitReader, gitWrites, githubRemote, type GitEnvironment } from "../../engine/git.js";
+import { GitError, gitFetcher, gitReader, gitWrites, githubRemote, type GitEnvironment } from "../../engine/git.js";
 import { createWriters, WriteFailed, type LogEntry } from "../../engine/writer.js";
 import { SUBPROCESS_TIMEOUT } from "../../vitest.config.js";
 
@@ -189,6 +189,28 @@ describe("deleteRef", () => {
   });
 });
 
+describe("fetchRef", () => {
+  it("fetches a ref on the remote to the ref it names, over whatever was there, and returns its commit", async () => {
+    git(work, "update-ref", "refs/rescue/feature", other);
+
+    expect(await gitFetcher({ dir: work, env, remote }, TOKEN).fetchRef(REF, "refs/rescue/feature")).toBe(base);
+
+    expect(git(work, "rev-parse", "refs/rescue/feature")).toBe(base);
+  });
+
+  it("throws where the remote has no such ref, and leaves the ref it names alone", async () => {
+    await expect(gitFetcher({ dir: work, env, remote }, TOKEN).fetchRef("refs/heads/gone", "refs/rescue/gone")).rejects.toBeInstanceOf(GitError);
+
+    expect(() => git(work, "rev-parse", "--verify", "--quiet", "refs/rescue/gone")).toThrow();
+  });
+
+  it("refuses a ref that is not a full ref name", async () => {
+    await expect(gitFetcher({ dir: work, env, remote }, TOKEN).fetchRef("feature", "refs/rescue/feature")).rejects.toThrow(
+      "`feature` is not a full ref name",
+    );
+  });
+});
+
 describe("the token", () => {
   it("never reaches the checkout's git config or any file under .git", async () => {
     const { writer, lines } = writersFor();
@@ -205,6 +227,19 @@ describe("the token", () => {
       expect(text, file).not.toContain(HEADER);
     }
     expect(lines.join("\n")).not.toContain(TOKEN);
+  });
+
+  it("is left in no file under .git by a fetch either", async () => {
+    await gitFetcher({ dir: work, env, remote }, TOKEN).fetchRef(REF, "refs/rescue/feature");
+
+    const files = fs.readdirSync(path.join(work, ".git"), { recursive: true, encoding: "utf8" });
+    for (const file of files) {
+      const full = path.join(work, ".git", file);
+      if (!fs.statSync(full).isFile()) continue;
+      const text = fs.readFileSync(full, "latin1");
+      expect(text, file).not.toContain(TOKEN);
+      expect(text, file).not.toContain(HEADER);
+    }
   });
 
   it("is passed to git in its environment, never on its argv, over the environment handed in", async () => {

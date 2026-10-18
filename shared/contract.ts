@@ -486,6 +486,19 @@ const FIX_BUNDLE = {
   outputs: [...EVERY_SUBCOMMAND_OUTPUTS, "branch.bundle"],
 } as const satisfies CommandContract;
 
+/**
+ * `fix:prepare`, declared ahead of `COMMANDS` so that `fix:conclude` can read
+ * its outputs (`readsFromCommand`). See `COMMANDS`.
+ */
+const FIX_PREPARE = {
+  inputs: {
+    ...EVERY_SUBCOMMAND,
+    CHECKOUT: REQUIRED,
+    RESCUE_BRANCH: REQUIRED,
+  },
+  outputs: [...EVERY_SUBCOMMAND_OUTPUTS],
+} as const satisfies CommandContract;
+
 /** How a job ended, as Actions' `needs.<job>.result` says it. */
 const RESULTS = ["success", "failure", "cancelled", "skipped"] as const satisfies Accepts;
 
@@ -623,6 +636,11 @@ const REVIEW_RED_CHECK_PLACE = {
  *   every write it makes is the workflow token's. `gate.json` is its
  *   decision, `proceed`, written as soon as it decides and however it ends, and absent where it died
  *   before deciding.
+ * - `fix:prepare` fetches `RESCUE_BRANCH`, where an earlier stopped run left
+ *   one, into `CHECKOUT` as `refs/rescue/<RESCUE_BRANCH>`, for the runner to
+ *   resume from, and fetches nothing where there is none. A tip it cannot
+ *   read stops the run rather than reading as no rescue. It reads with
+ *   `GH_TOKEN` and writes nothing to the record.
  * - `fix:bundle` bundles the commits on `BRANCH`, in `CHECKOUT`, ahead of
  *   `HEAD_SHA`, the head the run started from as the label's event saw it,
  *   into `branch.bundle`, and writes nothing where there are none. It reads
@@ -646,8 +664,9 @@ const REVIEW_RED_CHECK_PLACE = {
  *   `TIMEOUT_MINUTES`), and the publish job's steps' outcomes
  *   (`MINT_OUTCOME`, `DOWNLOAD_OUTCOME`, `PUBLISH_OUTCOME`), and reads what
  *   each producer left from its own directory: `fix:publish`'s through
- *   `PUBLISH_DIR`, the runner's reason and set-aside rescue through
- *   `FIX_DIR`, and `fix:bundle`'s bundle and reason through `BUNDLE_DIR`,
+ *   `PUBLISH_DIR`, `fix:prepare`'s reason through `PREPARE_DIR`, the
+ *   runner's reason and set-aside rescue through `FIX_DIR`, and
+ *   `fix:bundle`'s bundle and reason through `BUNDLE_DIR`,
  *   checked in `CHECKOUT` against `HEAD_SHA` before it is rescued.
  * - `review:advance` moves a PRD PR's chain on after a review, or parks it:
  *   the progress table and status line for how the round ended, then
@@ -672,6 +691,7 @@ export const COMMANDS = {
     },
     outputs: [...EVERY_SUBCOMMAND_OUTPUTS, "gate.json", WRITE_LOG],
   },
+  "fix:prepare": FIX_PREPARE,
   "fix:bundle": FIX_BUNDLE,
   "fix:publish": FIX_PUBLISH,
   "fix:conclude": {
@@ -693,6 +713,9 @@ export const COMMANDS = {
       PUBLISH_OUTCOME: EMPTY,
       PUBLISH_DIR: readsFromCommand("fix:publish", FIX_PUBLISH, {
         "published.json": "sometimes",
+        "failure_reason.txt": "sometimes",
+      }),
+      PREPARE_DIR: readsFromCommand("fix:prepare", FIX_PREPARE, {
         "failure_reason.txt": "sometimes",
       }),
       FIX_DIR: readsFrom("fix", {

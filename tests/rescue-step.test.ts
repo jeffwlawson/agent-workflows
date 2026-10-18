@@ -17,8 +17,10 @@ import { SUBPROCESS_TIMEOUT } from "../vitest.config.js";
  *   stopped run's commits to the rescue branch and nowhere else, overwrites
  *   an earlier rescue, and pushes nothing where there were none. Fix's is
  *   `fix:conclude`'s (#469), held in `tests/fix/conclude.test.ts`.
- * - The agent's job's prepare step: fetches the rescue branch to where the
- *   runner looks for it (`rescueRef`), and nothing where there is none.
+ * - The agent's job's prepare step, implement-prd's: fetches the rescue
+ *   branch to where the runner looks for it (`rescueRef`), and nothing where
+ *   there is none. Fix's is `fix:prepare`'s (#471), held in
+ *   `tests/fix/prepare.test.ts`.
  *
  * Skipped where `bash` or `git` is not on PATH.
  */
@@ -72,20 +74,11 @@ const commit = (cwd: string, file: string): string => {
 /**
  * Each workflow's names: the branch the agent works on, the variable the
  * rescue step reads it from, the variable holding the head it started from,
- * the rescue branch, and where under `RUNNER_TEMP` the bundle is handed over:
- * fix's in `fix:bundle`'s own directory (#472).
+ * and the rescue branch.
+ * Fix's steps are all commands now (#469, #471, #472), so only
+ * implement-prd's are run here.
  */
 const CASES = [
-  {
-    file: "fix.yml",
-    agent: "fix",
-    prepare: "Prepare branch and make the PR base available for diffing",
-    branch: "agent/issue-7-add-a-widget",
-    branchVar: "BRANCH",
-    startVar: "BRANCH_HEAD_SHA",
-    rescue: "agent/rescue/fix-12",
-    bundleDir: "bundle",
-  },
   {
     file: "implement-prd.yml",
     agent: "implement-prd",
@@ -94,7 +87,6 @@ const CASES = [
     branchVar: "PRD_BRANCH",
     startVar: "BASE_SHA",
     rescue: "agent/rescue/prd-9",
-    bundleDir: "",
   },
 ] as const;
 
@@ -132,14 +124,11 @@ const world = (c: Case): World => {
 };
 
 /** Where the publish job finds the agent's bundle. */
-const bundleFile = (w: World, c: Case): string => {
-  fs.mkdirSync(path.join(w.runner, c.bundleDir), { recursive: true });
-  return path.join(w.runner, c.bundleDir, "branch.bundle");
-};
+const bundleFile = (w: World): string => path.join(w.runner, "branch.bundle");
 
 /** The agent's job's bundle, as it is built: its branch, past the head it started from. */
 const bundle = (w: World, c: Case): void => {
-  git(w.agent, "bundle", "create", "--quiet", bundleFile(w, c), `refs/heads/${c.branch}`, `^${w.start}`);
+  git(w.agent, "bundle", "create", "--quiet", bundleFile(w), `refs/heads/${c.branch}`, `^${w.start}`);
 };
 
 interface Outcome {
@@ -187,11 +176,8 @@ const rescue = (w: World, c: Case): Outcome => {
   };
 };
 
-/** Where the rescue is still a shell step. */
-const RESCUING = CASES.filter((c) => c.file !== "fix.yml");
-
 describe.skipIf(!CAN_RUN)("a stopped run's commits are rescued to a side branch", () => {
-  it.each(RESCUING)(
+  it.each(CASES)(
     "$file: pushes the agent's commits to $rescue, names it, and leaves the work branch alone",
     (c) => {
       const w = world(c);
@@ -210,7 +196,7 @@ describe.skipIf(!CAN_RUN)("a stopped run's commits are rescued to a side branch"
     CEILING,
   );
 
-  it.each(RESCUING)(
+  it.each(CASES)(
     "$file: pushes nothing where the run made no commits",
     (c) => {
       const w = world(c);
@@ -228,7 +214,7 @@ describe.skipIf(!CAN_RUN)("a stopped run's commits are rescued to a side branch"
    * A run that resumed from a rescue and stopped again holds everything the
    * rescue held, so its own replaces it.
    */
-  it.each(RESCUING)(
+  it.each(CASES)(
     "$file: overwrites an earlier rescue",
     (c) => {
       const w = world(c);
@@ -247,7 +233,7 @@ describe.skipIf(!CAN_RUN)("a stopped run's commits are rescued to a side branch"
   );
 
   /** Checked as the push is, and a bundle that fails the check is not rescued, nor fails the run. */
-  it.each(RESCUING)(
+  it.each(CASES)(
     "$file: rescues nothing that does not build on the head the run started from",
     (c) => {
       const w = world(c);
@@ -255,7 +241,7 @@ describe.skipIf(!CAN_RUN)("a stopped run's commits are rescued to a side branch"
       commit(w.agent, "unrelated.txt");
       git(w.agent, "branch", "--quiet", "-D", c.branch);
       git(w.agent, "branch", "--quiet", "-m", c.branch);
-      git(w.agent, "bundle", "create", "--quiet", bundleFile(w, c), `refs/heads/${c.branch}`);
+      git(w.agent, "bundle", "create", "--quiet", bundleFile(w), `refs/heads/${c.branch}`);
 
       const outcome = rescue(w, c);
 

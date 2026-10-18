@@ -3,7 +3,7 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import { fileURLToPath } from "node:url";
 import { commonWriters } from "./shared/common.js";
-import type { CheckoutIo, FetchingIo, OutputWriters, ReadingIo } from "./shared/command-io.js";
+import type { MergingCheckoutIo, MergingIo, OutputWriters, ReadingIo } from "./shared/command-io.js";
 import { COMMANDS, type Command, type Runner } from "./shared/contract.js";
 import { fail, gitEnvironment, readInputs, writers, type InputValues } from "./shared/env.js";
 import { VERSION } from "./shared/manifest.js";
@@ -147,8 +147,9 @@ const readingCommand = <C extends ReadingCommand>(
 /**
  * A command that reads GitHub and fetches from it into a checkout, and writes
  * nothing to it: handed, besides its inputs, the reader and a fetcher, both
- * over its `GH_TOKEN`, the fetcher working in its `CHECKOUT`, and its
- * declared output files. No writer: a fetch changes the checkout alone.
+ * over its `GH_TOKEN`, the fetcher working in its `CHECKOUT`, a merger there
+ * that fetches with it, and its declared output files. No writer: a fetch
+ * and a merge change the checkout alone.
  */
 type FetchingCommand = {
   [C in ReadingCommand]: (typeof COMMANDS)[C]["inputs"] extends { readonly CHECKOUT: unknown } ? C : never;
@@ -156,7 +157,7 @@ type FetchingCommand = {
 
 const fetchingCommand = <C extends FetchingCommand>(
   name: C,
-  load: () => Promise<(inputs: InputValues<(typeof COMMANDS)[C]["inputs"]>, io: FetchingIo<(typeof COMMANDS)[C]["outputs"]>) => Promise<unknown>>,
+  load: () => Promise<(inputs: InputValues<(typeof COMMANDS)[C]["inputs"]>, io: MergingIo<(typeof COMMANDS)[C]["outputs"]>) => Promise<unknown>>,
   summary: string,
 ): Subcommand => ({
   kind: "command",
@@ -184,8 +185,9 @@ const fetchingCommand = <C extends FetchingCommand>(
  * its `loop` writer holds no token, as one whose optional loop token is
  * empty does. Every write it makes is appended to `write_log.jsonl` as it
  * lands, and the log's last line says how the command ended, whether it
- * returned or threw. Its git writes and reads are made in `CHECKOUT` where it
- * declares one, and in the directory it runs in otherwise.
+ * returned or threw. Its git writes and reads, and its fetches and merges, are
+ * made in `CHECKOUT` where it declares one, and in the directory it runs in
+ * otherwise.
  */
 type WritingCommand = {
   [C in Command]: "write_log.jsonl" extends (typeof COMMANDS)[C]["outputs"][number] ? C : never;
@@ -194,7 +196,7 @@ type WritingCommand = {
 const writingCommand = <C extends WritingCommand>(
   name: C,
   load: () => Promise<
-    (inputs: InputValues<(typeof COMMANDS)[C]["inputs"]>, io: CheckoutIo<(typeof COMMANDS)[C]["outputs"]>) => Promise<unknown>
+    (inputs: InputValues<(typeof COMMANDS)[C]["inputs"]>, io: MergingCheckoutIo<(typeof COMMANDS)[C]["outputs"]>) => Promise<unknown>
   >,
   summary: string,
 ): Subcommand => ({
@@ -424,6 +426,36 @@ export const SUBCOMMANDS: Readonly<Record<string, Subcommand>> = {
     "Move a PRD PR's chain on after a review, or park it, and write its progress list (no model).",
   ),
   "update-branch": runner("update-branch", () => import("./update-branch/update-branch.js")),
+  "update-branch:gate": writingCommand(
+    "update-branch:gate",
+    async () => (await import("./update-branch/gate.js")).gate,
+    "Refuse a branch refresh on a closed pull request, or claim it and wait for a review's posting (no model).",
+  ),
+  "update-branch:merge": fetchingCommand(
+    "update-branch:merge",
+    async () => (await import("./update-branch/merge.js")).merge,
+    "Fetch a pull request's base branch and try merging it in: up to date, clean or conflicted (no model).",
+  ),
+  "update-branch:prepare": fetchingCommand(
+    "update-branch:prepare",
+    async () => (await import("./update-branch/prepare.js")).prepare,
+    "Make the gate's conflicted merge again for the agent, refusing where it no longer conflicts (no model).",
+  ),
+  "update-branch:bundle": command(
+    "update-branch:bundle",
+    async () => (await import("./update-branch/bundle.js")).bundle,
+    "Bundle the agent's resolution of a pull request's conflicts for the publish job (no model).",
+  ),
+  "update-branch:publish": writingCommand(
+    "update-branch:publish",
+    async () => (await import("./update-branch/publish.js")).publish,
+    "Push a refreshed pull request's branch, carry its verdict over or ask for a review, and say so (no model).",
+  ),
+  "update-branch:conclude": writingCommand(
+    "update-branch:conclude",
+    async () => (await import("./update-branch/conclude.js")).conclude,
+    "End a branch refresh however it ended: its failure comment, its label and asking again (no model).",
+  ),
   worker: serviceProcess(
     "worker",
     async () => (await import("./service/serve.js")).serveWorker,

@@ -24,9 +24,11 @@ import { SUBPROCESS_TIMEOUT } from "../vitest.config.js";
  * Review's is no step any more: `review:conclude` says how its run ended
  * (#419), and `tests/review/conclude.test.ts` holds those scenarios. Nor is
  * fix's: `fix:conclude` says how its run ended (#469), and
- * `tests/fix/conclude.test.ts` holds those. What stays here of each is the
- * half that is still YAML, the agent's job's own measure of whether it ran
- * out of time, which only Actions' clock knows.
+ * `tests/fix/conclude.test.ts` holds those. Nor is update-branch's:
+ * `update-branch:conclude` says how its run ended (#485), and
+ * `tests/update-branch/conclude.test.ts` holds those. What stays here of each
+ * is the half that is still YAML, the agent's job's own measure of whether it
+ * ran out of time, which only Actions' clock knows.
  *
  * Skipped where `bash` is not on PATH.
  */
@@ -50,7 +52,6 @@ interface Workflow {
 const CASES = [
   { command: "implement", label: "agent:implement", step: "Mark blocked on failure", minutes: 30, blocks: true },
   { command: "implement-prd", label: "agent:implement", step: "Mark blocked on failure", minutes: 30, blocks: true },
-  { command: "update-branch", label: "agent:update-branch", step: "Mark blocked on failure", minutes: 30, blocks: true },
   // No `agent:blocked` on a merged pull request, on a failure or otherwise:
   // there is no pipeline left there to block (see the step's own note).
   { command: "follow-ups", label: "agent:follow-ups", step: "Report the failure on the PR", minutes: 10, blocks: false },
@@ -65,7 +66,6 @@ type Case = (typeof CASES)[number];
  */
 const JOB: Readonly<Record<string, string>> = {
   implement: "publish",
-  "update-branch": "publish",
   "implement-prd": "publish",
 };
 
@@ -285,7 +285,6 @@ describe.skipIf(!CAN_RUN)("a failure step says whether the run failed, timed out
   const TRIGGER: Readonly<Record<string, string>> = {
     implement: "issue edit 135 --remove-label agent:implement",
     "implement-prd": "issue edit 135 --remove-label agent:implement",
-    "update-branch": "pr edit 152 --remove-label agent:update-branch",
   };
 
   it.each(CASES.filter((c) => c.blocks))("$command: comments, then takes its label off, then blocks", (c: Case) => {
@@ -322,10 +321,9 @@ describe.skipIf(!CAN_RUN)("a failure step says whether the run failed, timed out
    * from its own status, and a job that reached its limit may read there as
    * failed. A runner that was killed wrote no reason, so a failure without
    * one is measured against the clock too; a failure with one never is.
-   * implement's since #307, and update-branch's and implement-prd's since
-   * #308.
+   * implement's since #307, and implement-prd's since #308.
    */
-  describe.each(["implement", "update-branch", "implement-prd"])("%s, reported from its publish job", (command) => {
+  describe.each(["implement", "implement-prd"])("%s, reported from its publish job", (command) => {
     const implement = CASES.find((c) => c.command === command) as Case;
 
     it("says a run that failed at its limit with no reason timed out", () => {
@@ -408,14 +406,15 @@ describe.skipIf(!CAN_RUN)("review hands over how its job ended", () => {
 });
 
 /**
- * Fix's agent's job's measure of whether it ran out of time (#469), read off
- * the gate's clock in its last step, which stays YAML for the same reason.
- * Unlike review's, a failure at the limit counts too: `needs` may read a job
- * that reached its limit as failed, and `fix:conclude` reads the answer only
- * where a cancel or a failure left no reason.
+ * Fix's agent's job's measure of whether it ran out of time (#469), and
+ * update-branch's (#485), read off the gate's clock in its last step, which
+ * stays YAML for the same reason. Unlike review's, a failure at the limit
+ * counts too: `needs` may read a job that reached its limit as failed, and
+ * `fix:conclude` and `update-branch:conclude` read the answer only where a
+ * cancel or a failure left no reason.
  */
-describe.skipIf(!CAN_RUN)("fix's agent job hands over whether it timed out", () => {
-  const FIX = ["fix", "fix", "Measure how the agent's job ended"] as const;
+describe.skipIf(!CAN_RUN).each(["fix", "update-branch"])("%s's agent job hands over whether it timed out", (command) => {
+  const FIX = [command, command, "Measure how the agent's job ended"] as const;
 
   it.each(["cancelled", "failure"] as const)("says a job that ended %s at its limit timed out", (status) => {
     expect(jobOutcome(status, 30 * 60, "30", {}, FIX)["timed-out"]).toBe("true");

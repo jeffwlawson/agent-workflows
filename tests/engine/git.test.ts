@@ -9,7 +9,7 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { GitError, gitFetcher, gitReader, gitWrites, githubRemote, type GitEnvironment } from "../../engine/git.js";
+import { BaseMoved, FetchFailed, GitError, gitFetcher, gitMerger, gitReader, gitWrites, githubRemote, type GitEnvironment } from "../../engine/git.js";
 import { createWriters, WriteFailed, type LogEntry } from "../../engine/writer.js";
 import { SUBPROCESS_TIMEOUT } from "../../vitest.config.js";
 
@@ -340,5 +340,179 @@ describe("isAncestor", () => {
 
   it("throws where the repository does not hold a commit, rather than reading it as not built on", async () => {
     await expect(gitReader({ dir: work, env }).isAncestor("f".repeat(40), next)).rejects.toBeInstanceOf(GitError);
+  });
+});
+
+/**
+ * The merge of a base branch into a pull request's (#481), against a real
+ * origin and a clone of it checked out at the pull request's head, as a
+ * workflow's checkout leaves it: detached. Each case spawns git about a
+ * dozen times.
+ */
+describe("merge", { timeout: 20 * SUBPROCESS_TIMEOUT }, () => {
+  const IDENTITY = { name: "loop[bot]", email: "loop[bot]@example.com" };
+  let origin: string;
+  let seed: string;
+  let clone: string;
+  let head: string;
+
+  const write = (dir: string, file: string, text: string): string => {
+    fs.mkdirSync(path.dirname(path.join(dir, file)), { recursive: true });
+    fs.writeFileSync(path.join(dir, file), text);
+    git(dir, "add", file);
+    git(dir, "commit", "--quiet", "-m", file);
+    return git(dir, "rev-parse", "HEAD");
+  };
+
+  /** `seed`'s `main` moved on, pushed to `origin`. */
+  const moveMain = (file: string, text: string): string => {
+    git(seed, "checkout", "--quiet", "main");
+    const moved = write(seed, file, text);
+    git(seed, "push", "--quiet", origin, "main");
+    return moved;
+  };
+
+  /** The clone checked out detached at the pull request's head, as `actions/checkout` leaves it. */
+  const checkOut = (): void => {
+    clone = path.join(scratch, "clone");
+    git(scratch, "clone", "--quiet", "--no-checkout", origin, clone);
+    git(clone, "checkout", "--quiet", "--detach", head);
+  };
+
+  const mergeIn = (base = "main", spawnEnv: GitEnvironment = env, commit?: string) =>
+    gitMerger({ dir: clone, env: spawnEnv }, gitFetcher({ dir: clone, env: spawnEnv, remote: origin }, TOKEN)).merge({
+      base,
+      into: "feature",
+      identity: IDENTITY,
+      ...(commit === undefined ? {} : { commit }),
+    });
+
+  beforeEach(() => {
+    origin = path.join(scratch, "origin.git");
+    seed = path.join(scratch, "seed");
+    git(scratch, "init", "--quiet", "--bare", "--initial-branch=main", origin);
+    git(scratch, "init", "--quiet", "--initial-branch=main", seed);
+    write(seed, "shared.txt", "one\n");
+    git(seed, "push", "--quiet", origin, "main");
+    git(seed, "checkout", "--quiet", "-b", "feature");
+    head = write(seed, "feature.txt", "feature\n");
+    git(seed, "push", "--quiet", origin, "feature");
+  }, 20 * SUBPROCESS_TIMEOUT);
+
+  it("is up to date where the branch already holds the base, and makes no commit", async () => {
+    checkOut();
+
+    expect(await mergeIn()).toEqual({ status: "uptodate", base: git(seed, "rev-parse", "main") });
+    expect(git(clone, "rev-parse", "HEAD")).toBe(head);
+    expect(git(clone, "symbolic-ref", "HEAD")).toBe("refs/heads/feature");
+  });
+
+  it("merges a base that moved on cleanly, as the identity handed in, and returns the commit", async () => {
+    const moved = moveMain("main.txt", "main\n");
+    checkOut();
+
+    const merged = await mergeIn();
+
+    const commit = git(clone, "rev-parse", "HEAD");
+    expect(merged).toEqual({ status: "clean", base: moved, commit });
+    expect(git(clone, "rev-parse", "HEAD^1", "HEAD^2").split("\n")).toEqual([head, moved]);
+    expect(git(clone, "log", "-1", "--format=%an <%ae>|%cn <%ce>|%s")).toBe(
+      "loop[bot] <loop[bot]@example.com>|loop[bot] <loop[bot]@example.com>|Merge remote-tracking branch 'origin/main' into feature",
+    );
+    expect(git(clone, "symbolic-ref", "HEAD")).toBe("refs/heads/feature");
+    expect(git(clone, "rev-parse", "refs/remotes/origin/main")).toBe(moved);
+  });
+
+  it("stops on a conflict, naming each conflicted path, and leaves the conflicted tree", async () => {
+    git(seed, "checkout", "--quiet", "feature");
+    write(seed, "shared.txt", "feature's\n");
+    write(seed, "a dir/with space.txt", "feature's\n");
+    head = git(seed, "rev-parse", "HEAD");
+    git(seed, "push", "--quiet", origin, "feature");
+    moveMain("shared.txt", "main's\n");
+    moveMain("a dir/with space.txt", "main's\n");
+    write(seed, "main-only.txt", "clean\n");
+    git(seed, "push", "--quiet", origin, "main");
+    checkOut();
+
+    const merged = await mergeIn();
+
+    expect(merged).toEqual({ status: "conflicts", base: git(seed, "rev-parse", "main"), conflicts: ["a dir/with space.txt", "shared.txt"] });
+    expect(git(clone, "rev-parse", "HEAD")).toBe(head);
+    expect(fs.readFileSync(path.join(clone, "shared.txt"), "utf8")).toContain("<<<<<<<");
+    expect(git(clone, "config", "user.name")).toBe(IDENTITY.name);
+  });
+
+  it("throws FetchFailed where the base cannot be fetched, and leaves the checkout as it was", async () => {
+    checkOut();
+
+    await expect(mergeIn("gone")).rejects.toBeInstanceOf(FetchFailed);
+
+    expect(git(clone, "rev-parse", "HEAD")).toBe(head);
+    expect(() => git(clone, "symbolic-ref", "--quiet", "HEAD")).toThrow();
+    expect(() => git(clone, "config", "user.name")).toThrow();
+  });
+
+  /**
+   * A merge made again (#482): the base commit an earlier merge read, merged
+   * under the base's name though the base has moved on since, so the merge
+   * and its message are the earlier one's.
+   */
+  it("merges the base commit handed in, where the base has moved on from it, under the base's name", async () => {
+    const earlier = moveMain("main.txt", "main\n");
+    const later = moveMain("later.txt", "later\n");
+    checkOut();
+
+    const merged = await mergeIn("main", env, earlier);
+
+    expect(merged).toMatchObject({ status: "clean", base: earlier });
+    expect(git(clone, "rev-parse", "HEAD^2")).toBe(earlier);
+    expect(git(clone, "rev-parse", "refs/remotes/origin/main")).toBe(earlier);
+    expect(git(clone, "log", "-1", "--format=%s")).toBe("Merge remote-tracking branch 'origin/main' into feature");
+    expect(later).not.toBe(earlier);
+  });
+
+  it("throws BaseMoved where the base no longer holds the commit handed in, and merges nothing", async () => {
+    const earlier = moveMain("main.txt", "main\n");
+    // Cloned while the base held it, so the commit is in the repository: what moved is the base.
+    checkOut();
+    git(seed, "reset", "--quiet", "--hard", "HEAD~1");
+    write(seed, "rewritten.txt", "rewritten\n");
+    git(seed, "push", "--quiet", "--force", origin, "main");
+
+    await expect(mergeIn("main", env, earlier)).rejects.toBeInstanceOf(BaseMoved);
+    expect(git(clone, "rev-parse", "HEAD")).toBe(head);
+    expect(() => git(clone, "symbolic-ref", "--quiet", "HEAD")).toThrow();
+  });
+
+  it("throws BaseMoved where the repository holds no such commit at all", async () => {
+    checkOut();
+
+    await expect(mergeIn("main", env, "f".repeat(40))).rejects.toBeInstanceOf(BaseMoved);
+  });
+
+  it("fetches with the token in its environment, never on an argv or in a file under .git", async () => {
+    moveMain("main.txt", "main\n");
+    checkOut();
+    const real = execFileSync("sh", ["-c", "command -v git"], { env, encoding: "utf8", timeout: SUBPROCESS_TIMEOUT }).trim();
+    const bin = path.join(scratch, "bin");
+    const record = path.join(scratch, "record");
+    fs.mkdirSync(bin);
+    fs.writeFileSync(path.join(bin, "git"), `#!/bin/sh\nprintf '%s\\n' "$@" >> "${record}.argv"\nexec "${real}" "$@"\n`, { mode: 0o755 });
+
+    expect((await mergeIn("main", { ...env, PATH: `${bin}:${env["PATH"] ?? ""}` })).status).toBe("clean");
+
+    const argv = fs.readFileSync(`${record}.argv`, "utf8");
+    expect(argv).toContain("fetch");
+    expect(argv).toContain("merge");
+    expect(argv).not.toContain(TOKEN);
+    expect(argv).not.toContain(HEADER);
+    for (const file of fs.readdirSync(path.join(clone, ".git"), { recursive: true, encoding: "utf8" })) {
+      const full = path.join(clone, ".git", file);
+      if (!fs.statSync(full).isFile()) continue;
+      const text = fs.readFileSync(full, "latin1");
+      expect(text, file).not.toContain(TOKEN);
+      expect(text, file).not.toContain(HEADER);
+    }
   });
 });

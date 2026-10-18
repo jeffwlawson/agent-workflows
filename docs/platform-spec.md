@@ -61,7 +61,9 @@ cannot check is one only an orchestrator's author will catch.
 - **Command.** A subcommand that does an orchestrator's work on the record and starts no agent,
   named `<workflow>:<step>`: `fix:gate`, `fix:prepare`, `fix:bundle`, `fix:publish`, `fix:conclude`, `follow-ups:file`, `review:gate`, `review:budget`,
   `review:collect-checks`, `review:red-check-place`, `review:red-check-classify`, `review:publish`,
-  `review:conclude` and `review:advance`. §2 says where it differs from a runner.
+  `review:conclude`, `review:advance`, `update-branch:gate`, `update-branch:merge`,
+  `update-branch:prepare`, `update-branch:bundle`, `update-branch:publish` and
+  `update-branch:conclude`. §2 says where it differs from a runner.
 - **Orchestrator.** Whatever invokes a runner and acts on its result: it decides when a runner runs,
   prepares the checkout, sets the inputs, and posts, pushes and labels with what comes back. The
   Actions orchestrator is a caller plus its reusable workflow, and `CONTEXT.md`'s *three parts*
@@ -93,11 +95,12 @@ workflows, which the build reads.
 > **Actions orchestrator:** each reusable's runner step is
 > `npm exec --prefix "$RUNNER_TEMP" --yes --package=@jeffwlawson/agent-workflows@<version> -- agent-workflows <runner>`,
 > with the inputs in that step's `env:` and its job's, and each command step the same with the
-> command's name. The red check's job and fix's agent job install the package first, with
-> `npm install --prefix "$RUNNER_TEMP"`, and run their commands from `RUNNER_TEMP`, where that
-> line finds the install without asking the registry (§8, §9). Fix's runner works in the checkout,
-> where `npm exec` finds no install under its `--prefix`, so it runs that install's binary by its
-> path, `"$RUNNER_TEMP/node_modules/.bin/agent-workflows" fix`, and is handed no registry token.
+> command's name. The red check's job, fix's agent job, and update-branch's gate and agent jobs
+> install the package first, with `npm install --prefix "$RUNNER_TEMP"`, and run their commands
+> from `RUNNER_TEMP`, where that line finds the install without asking the registry (§8, §9, §10).
+> Fix's runner and update-branch's work in the checkout, where `npm exec` finds no install under its
+> `--prefix`, so each runs that install's binary by its path,
+> `"$RUNNER_TEMP/node_modules/.bin/agent-workflows" <runner>`, and is handed no registry token.
 
 ### 2.2 Inputs
 
@@ -136,10 +139,10 @@ The inputs every runner reads, set once for any of them:
 |---|---|---|---|
 | `OUTPUT_DIR` | required | | The directory the runner writes its files into (§2.3). |
 | `GH_REPO` | required | | The repository, `owner/name`. Required rather than left to whatever `gh` infers. |
-| `GH_TOKEN` | required | | The token `gh` reads. The runners only read with it, and `fix:prepare` reads and fetches the rescue branch with it; `follow-ups:file` files issues with it, and `review:publish` posts the review, the summary and the verdict with it, `review:conclude` its comments, its error verdict and the labels nothing fires on, `review:advance` a PRD PR's progress list and its notes there, `fix:gate` its refusals and its label transitions, `fix:publish` its thread replies, its comments and notes, and the rescue branch's deletion, and `fix:conclude` its failure comment, the rescue-set-aside note where `fix:publish` did not post it, and `agent:fix` off and `agent:blocked` on. |
+| `GH_TOKEN` | required | | The token `gh` reads. The runners only read with it, `fix:prepare` reads and fetches the rescue branch with it, and `update-branch:merge`, `update-branch:prepare` and `update-branch:publish` fetch the base branch with it; `follow-ups:file` files issues with it, and `review:publish` posts the review, the summary and the verdict with it, `review:conclude` its comments, its error verdict and the labels nothing fires on, `review:advance` a PRD PR's progress list and its notes there, `fix:gate` its refusals and its label transitions, `fix:publish` its thread replies, its comments and notes, and the rescue branch's deletion, `fix:conclude` its failure comment, the rescue-set-aside note where `fix:publish` did not post it, and `agent:fix` off and `agent:blocked` on, `update-branch:gate` its refusal and its label transitions, `update-branch:publish` the verdict it carries over, its comment, and the comment that no review will start, and `update-branch:conclude` its failure comment, `agent:update-branch` off and `agent:blocked` on, and the comment that no refresh of a moved head will start. |
 
 A command that runs where no token is held, as the red check's two do beside the pull request's own
-code and `fix:bundle` does after the agent, reads `OUTPUT_DIR` alone of these: it reads no repository, so it declares neither `GH_REPO`
+code and `fix:bundle` and `update-branch:bundle` do after the agent, reads `OUTPUT_DIR` alone of these: it reads no repository, so it declares neither `GH_REPO`
 nor `GH_TOKEN`, and an orchestrator hands it neither.
 
 Every runner starts the agent, so every runner reads the inputs that choose its sandbox (§3). An
@@ -327,10 +330,11 @@ anything it does not control post as, an account it does not control.
 The same list, without the association half (`isWorkflowBot`), is what a runner or a command asks
 where the question is *did the loop post this* rather than *is this trusted*: the reviews it
 numbers rounds by, the verdict and fix-round statuses it counts (§4.3), the earlier findings it
-carries forward, and the review bodies `follow-ups:file` files from. `review:budget` and
-`review:conclude` match a status's creator against it in the REST spelling. Every runner and
-command that asks declares `AGENT_LOOP_LOGINS`; `update-branch`, which asks neither question, does
-not.
+carries forward, and the review bodies `follow-ups:file` files from. `review:budget`,
+`review:conclude` and `update-branch:publish`, which carries the newest verdict of these accounts
+over to a clean merge, match a status's creator against it in the REST spelling. Every runner and
+command that asks declares `AGENT_LOOP_LOGINS`; the `update-branch` runner, which asks neither
+question, does not.
 
 **`doctor` cannot check this.** The login is whichever account the orchestrator posts as, and the
 Actions reusable will work out its own App's login at run time (#305); nothing in a repository
@@ -395,7 +399,10 @@ Chaining is each orchestrator's own and is described in each runner's section: r
 `agent:implement` back on the parent (§7, §8). Where a command makes the hand-off, it is package
 code every orchestrator runs rather than each one's own: review's fix round is `review:conclude`'s,
 and fix's re-review is `fix:publish`'s. So is taking a run's own label off however it ended:
-`review:conclude` takes `agent:review` off, and `fix:conclude` `agent:fix`, or `fix:gate` where it refused the run.
+`review:conclude` takes `agent:review` off, and `fix:conclude` `agent:fix`, or `fix:gate` where it refused the run;
+`update-branch:conclude` takes `agent:update-branch` off, or `update-branch:gate` where it refused the run.
+Update-branch's re-review of a resolution is `update-branch:publish`'s, and its request for itself
+again where the head moved while it worked is `update-branch:conclude`'s.
 
 ### 4.3 Markers, status contexts, trailers and branch names
 
@@ -441,7 +448,7 @@ only a status whose creator is the loop's identity (§4.1).
 
 | Context | What it records | Written by | Read by |
 |---|---|---|---|
-| `agent-review` | The review's verdict on the commit. A state of `error` is no verdict. | `review:publish`, from `review`'s `verdict.json`; `error` by `review:conclude` | `review`, to know what changed since the last verdict |
+| `agent-review` | The review's verdict on the commit. A state of `error` is no verdict. | `review:publish`, from `review`'s `verdict.json`; `error` by `review:conclude`; copied unparsed from the old head on to a clean merge by `update-branch:publish` | `review`, to know what changed since the last verdict |
 | `agent-fix-round` | Beside a verdict, with the same target URL: that verdict started a fix round. | `review:publish`, from `review`'s `verdict.json` | `review`, to count fix rounds since the last verdict; `review:budget`, to count the rounds the budget has spent, on a PRD PR by the round its linked review's header names |
 
 **Commit trailers.** Read from the PRD branch's first-parent log.
@@ -1696,7 +1703,8 @@ Trigger label: `agent:update-branch`, on a pull request. `doctor` checks that th
 
 Resolves the conflicts of a merge of the base branch into the pull request's branch. Preconditions:
 the head checked out as `BRANCH`, with `git merge origin/<BASE_REF>` already run and stopped on its
-conflicts. A merge that does not conflict needs no runner.
+conflicts, `origin/<BASE_REF>` at the base commit `update-branch:merge` read: `update-branch:prepare`
+leaves the checkout so, and refuses where it cannot. A merge that does not conflict needs no runner.
 
 ### Inputs
 
@@ -1727,8 +1735,413 @@ Nothing. It reads the pull request's title and body as context for the agent, an
 neither.
 
 > **Actions orchestrator:** a merge that does not conflict is pushed without the runner. Otherwise
-> a publish job pushes the resolution, posts `update_comment.md`, carries the earlier verdict over
-> to the merge commit or adds `agent:review`.
+> the agent's job installs the package under `RUNNER_TEMP` after its checkout, the one step of the
+> job handed the registry token, runs `update-branch:prepare` from it before the adopter's toolchain
+> and `setup`, runs the runner as that install's binary, by its path, from the checkout, and
+> `update-branch:bundle` from it after the runner, and measures in its last step whether it ran out
+> of time; and a publish job runs `update-branch:publish`, which pushes the clean merge or the
+> resolution, carries the earlier verdict over to a clean merge, posts the comment,
+> `update_comment.md` on a resolution, and asks for the resolution's review, then
+> `update-branch:conclude`, `always()`, which ends every run: the failure comment,
+> `agent:update-branch` off, `agent:blocked`, and the re-request where the head moved. No step of
+> the workflow decides anything in inline shell: what is left is glue and what only Actions can do.
+
+### `update-branch:gate`
+
+Refuses or claims the pull request, before anything is checked out. It runs no model and needs no
+checkout. In order:
+
+- **The pre-flight.** A pull request whose `PR_STATE` is not `open`, or that is `PR_MERGED`, is
+  refused with `This PR is closed.`, and not blocked. That is the only refusal: unlike `fix:gate`
+  it reads no branch tip, so a deleted base or head fails at `update-branch:merge`'s fetch instead.
+- **A refusal** is said in the loop's one order: the comment, `` **`agent:update-branch` didn't
+  run:** `` and the sentence; then `agent:update-branch` off. Each is tolerated, so a comment that
+  fails still takes the label off.
+- **The permission probe.** On a run it claims, it adds `agent:update-branch`, which the pull
+  request already carries, so a token short of the write fails the command before the checkout.
+  Not tolerated.
+- **`agent:blocked` off**, tolerated: re-adding `agent:update-branch` is the retry after a block.
+- **The wait for a review's posting**, as `fix:gate`'s: while `agent:review` is on the pull
+  request, up to `POST_WAIT_SECONDS`, asking every `POST_POLL_SECONDS`, and on at the bound with a
+  warning. This run carries the review's verdict on to the merge commit, so it waits rather than
+  read it half posted.
+
+Every write is made with `GH_TOKEN`: none of them has to start a run. A refusal is a decision, and
+the command succeeds. `gate.json` is written as `fix:gate`'s is: the moment the run is refused or
+claimed, and again however the command ends, and not at all where it died before deciding.
+
+#### Inputs
+
+| Input | Kind | Default | What it is |
+|---|---|---|---|
+| `PR_NUMBER` | required | | The pull request. |
+| `BRANCH` | required | | Its head branch. |
+| `PR_STATE` | required | | The pull request's state as the event saw it: `open` or `closed`. |
+| `PR_MERGED` | optional | `""` | `true` where the event saw it merged. |
+| `POST_WAIT_SECONDS` | optional | `"600"` | How long it waits while a review is posting: a review's posting job's own time limit. |
+| `POST_POLL_SECONDS` | optional | `"10"` | How often it asks meanwhile. |
+
+#### Outputs
+
+| Output | When it is written |
+|---|---|
+| `gate.json` | Where it decided: `proceed`, `true` where the run goes ahead and `false` where it refused, as a string. |
+| `write_log.jsonl` | Every write as it lands, one JSON line each, and a last line for how the command ended, as `review:conclude`'s. Not written where it wrote nothing. |
+
+**`doctor` cannot check this.** These tables are the command's, for the reason §6 gives.
+
+#### What it reads from the record
+
+- The labels on the pull request `PR_NUMBER` names, for `agent:review`, while it waits.
+
+**`doctor` cannot check this.** The record is written by the orchestrator's posting code, for the reason §4.3 gives.
+
+> **Actions orchestrator:** the gate job's first work, after a Node set up for it, since nothing is
+> checked out yet, and the package installed under `RUNNER_TEMP` with the registry token, which
+> this command and `update-branch:merge` both run from; no adopter step runs in that job.
+> `PR_STATE` and `PR_MERGED` are the label's
+> event's, and `GH_TOKEN` is the job's own, with `pull-requests: write`. `OUTPUT_DIR` is
+> `runner.temp`. A glue step copies `gate.json` into the step output `proceed`, `always()`, which
+> the checkout, `update-branch:merge` and the job's `refused` output read, `refused` with
+> `fix:gate`'s three values. The same step copies the command's `failure_reason.txt`, where it
+> wrote one, into the job's `failure-reason` output, which `update-branch:conclude` reads as its
+> `GATE_REASON`.
+
+### `update-branch:merge`
+
+Tries the merge, to decide whether there is anything for the runner to do. `BASE_REF` is fetched
+from the repository into `CHECKOUT` as `refs/remotes/origin/<BASE_REF>`, the commit checked out
+there is checked out as the branch `BRANCH`, and the base is merged into it, as the loop's
+committer, `sandcastle-agent[bot]`. It runs no model and writes nothing to the record: it fetches
+with `GH_TOKEN`, which reaches git in its environment, never on its argv or in the checkout's
+config, and is handed no writer.
+
+- **Up to date**, where the branch already holds the base commit: nothing is merged.
+- **Clean**, where the merge made a commit, or fast-forwarded, without a conflict.
+- **Conflicts**, where it stopped on one: the conflicted tree is left in the checkout.
+- **A fetch that fails**, a deleted base among its causes, fails the command with `` Couldn't fetch
+  `<BASE_REF>` to merge it, so the branch was left untouched: `` and git's reason. A merge that
+  fails on no conflict fails it too, naming the base and the branch.
+
+#### Inputs
+
+| Input | Kind | Default | What it is |
+|---|---|---|---|
+| `CHECKOUT` | required | | The checkout of the pull request's head, which the base is merged into. |
+| `BRANCH` | required | | The pull request's head branch, which the head is checked out as. |
+| `BASE_REF` | required | | The branch being merged in. |
+
+#### Outputs
+
+| Output | When it is written |
+|---|---|
+| `merge.json` | Where it fetched and merged: `status`, `uptodate`, `clean` or `conflicts`; `base`, the base commit it fetched; and `conflicts`, the conflicted paths, empty but on a conflict. |
+
+**`doctor` cannot check this.** These tables are the command's, for the reason §6 gives.
+
+#### What it reads from the record
+
+Nothing. It reads `BASE_REF`'s commits, and parses no record string.
+
+**`doctor` cannot check this.** The record is written by the orchestrator's posting code, for the reason §4.3 gives.
+
+> **Actions orchestrator:** the gate job, after the checkout of the head and only where
+> `update-branch:gate` claimed the run. It runs none of the pull request's code, and still runs
+> from `RUNNER_TEMP` with no registry token, from the install the gate job made before its checkout. `GH_TOKEN`
+> is the job's, and `CHECKOUT` the workspace. `OUTPUT_DIR` is a directory of its own under
+> `runner.temp`. A glue step, `always()` where the gate went ahead, copies `merge.json` into the
+> job's `status`, `base` and `conflicts` outputs, the paths joined by spaces, and its
+> `failure_reason.txt`, where it wrote one, into the job's `failure-reason` output, which
+> `update-branch:conclude` reads as its `GATE_REASON`.
+
+### `update-branch:prepare`
+
+Makes the gate's merge again, so the runner starts from the conflicted tree `update-branch:merge`
+found. `BASE_REF` is fetched into `CHECKOUT` as `refs/remotes/origin/<BASE_REF>`, that ref is set
+back to `BASE_SHA`, the base commit `update-branch:merge` merged, the commit checked out there is
+checked out as the branch `BRANCH`, and the base is merged into it under its name, as the loop's
+committer: the same two commits and the same message as that merge. It runs no model and writes
+nothing to the record: it fetches with `GH_TOKEN`, and is handed no writer.
+
+- **Conflicts** are the one success: the conflicted tree is left in the checkout for the runner.
+- **The base moved.** Where `BASE_REF`, fetched, no longer contains `BASE_SHA`, it fails with ``
+  `<BASE_REF>` no longer holds the commit this run set out to merge, so the branch was left
+  untouched. ``, before anything is checked out.
+- **No conflict.** Where the merge is clean, or the branch already holds the base, it fails with
+  `` Merging `<BASE_REF>` again didn't conflict, so there was nothing for the agent to resolve and
+  the branch was left untouched. ``
+- **A fetch that fails** fails it with `` Couldn't fetch `<BASE_REF>` to merge it again for the
+  agent, so the branch was left untouched: `` and git's reason. A merge that fails on no conflict
+  fails it too, naming the base and the branch.
+
+#### Inputs
+
+| Input | Kind | Default | What it is |
+|---|---|---|---|
+| `CHECKOUT` | required | | The checkout of the pull request's head, which the base is merged into. |
+| `BRANCH` | required | | The pull request's head branch, which the head is checked out as. |
+| `BASE_REF` | required | | The branch being merged in. |
+| `BASE_SHA` | required | | The base commit `update-branch:merge` merged, its `merge.json`'s `base`: a gate fact. |
+
+#### Outputs
+
+| Output | When it is written |
+|---|---|
+| | Nothing beyond §2.4. The result is the conflicted tree it leaves in the checkout. |
+
+**`doctor` cannot check this.** These tables are the command's, for the reason §6 gives.
+
+#### What it reads from the record
+
+Nothing. It reads `BASE_REF`'s commits, and parses no record string.
+
+**`doctor` cannot check this.** The record is written by the orchestrator's posting code, for the reason §4.3 gives.
+
+> **Actions orchestrator:** the agent's job, after the checkout and before the adopter's toolchain
+> and `setup`, so nothing of the pull request's has run on the runner while it holds the token: the
+> pull request's own code can leave a git config entry or a hook behind for a later step. It runs
+> from the package install the job makes after its checkout, from `RUNNER_TEMP`, and is handed the
+> job's `GH_TOKEN`, which is read-only there. `BASE_SHA` is the gate job's `base` output and
+> `CHECKOUT` the workspace. `OUTPUT_DIR` is a directory of its own under `runner.temp`, which the
+> job's upload carries under `prepare/`; `update-branch:conclude` reads its reason there as its
+> `PREPARE_DIR`.
+
+### `update-branch:bundle`
+
+Bundles the agent's resolution for whatever pushes it, as `fix:bundle` bundles: the commits on
+`refs/heads/<BRANCH>` in the checkout that neither `HEAD_SHA`, the head the run started from, nor
+`BASE_SHA`, the base commit `update-branch:merge` merged, holds, as a thin bundle holding exactly
+that one ref, with those two commits its prerequisites. It runs no model, reads no repository,
+holds no token, and writes nothing to the record.
+
+- **Nothing to bundle** is a refusal, unlike `fix:bundle`'s: a run that resolved the conflicts
+  committed a merge of the two. No such commit fails it with `` The agent finished without
+  committing a merge of the base into `<BRANCH>`, so there was no resolution to push and the branch
+  was left untouched. ``, and no `refs/heads/<BRANCH>` at all with `` The agent's job has no
+  `<BRANCH>` to hand over, so the branch was left untouched. ``
+- **A failure of git.** Fails the command, naming the branch, with git's reason.
+
+#### Inputs
+
+| Input | Kind | Default | What it is |
+|---|---|---|---|
+| `CHECKOUT` | required | | The checkout the agent worked in, with its head branch as `BRANCH`. |
+| `BRANCH` | required | | The pull request's head branch. |
+| `HEAD_SHA` | required | | The head the run started from, as the event that asked for it saw it. |
+| `BASE_SHA` | required | | The base commit `update-branch:merge` merged, its `merge.json`'s `base`: a gate fact. |
+
+#### Outputs
+
+| Output | When it is written |
+|---|---|
+| `branch.bundle` | Where there are commits ahead of `HEAD_SHA` and `BASE_SHA`: the bundle. |
+
+**`doctor` cannot check this.** These tables are the command's, for the reason §6 gives.
+
+#### What it reads from the record
+
+Nothing. Its inputs are the checkout, the head the event named and the base commit the gate read.
+
+> **Actions orchestrator:** the agent's job, after the runner and the transcript, where the runner
+> succeeded. It runs from the package install the job makes after its checkout, from
+> `RUNNER_TEMP`, and is handed no token: the job's `GH_TOKEN` is set empty for it. `CHECKOUT` is
+> the workspace, `BRANCH` and `HEAD_SHA` the label's event's, and `BASE_SHA` the gate job's `base`
+> output. `OUTPUT_DIR` is a directory of its own under `runner.temp`, which the job's upload
+> carries under `bundle/`; `update-branch:publish` reads the bundle there as its `BUNDLE_DIR` and
+> checks it before it pushes, and `update-branch:conclude` reads the reason there as its
+> `BUNDLE_DIR`.
+
+### `update-branch:publish`
+
+Publishes the refresh: pushes what the gate's merge came to, carries the verdict over to a clean
+merge, says on the pull request what it did, and asks for a review of a resolution. It runs no
+model. Each path does one of the two hand-offs, never both: a clean merge changed nothing a review
+read, so the verdict on the old head still stands; a resolution is code an agent wrote that no
+review has read, so it asks for one. What is pushed is settled, and checked, before its first
+write:
+
+- **`uptodate`.** Nothing to push.
+- **`clean`.** The merge is made again in `CHECKOUT`, as the loop's committer, of `BASE_SHA` under
+  `BASE_REF`'s name: `update-branch:merge`'s merge, by construction. It fails the command with ``
+  `<BASE_REF>` no longer holds the commit this run set out to merge, so the branch was left
+  untouched. `` where the base fetched no longer holds `BASE_SHA`, and with `` Merging `<BASE_REF>`
+  again didn't go cleanly, though it did a moment before, so the branch was left untouched. ``
+  where the merge does not.
+- **`conflicts`.** `branch.bundle`, which has to be there, is checked as `fix:publish` checks its
+  own: it verifies in `CHECKOUT`, holds exactly `refs/heads/<BRANCH>`, and builds on `HEAD_SHA`.
+  `BASE_REF` is fetched first, the bundle's other prerequisite, and has to hold `BASE_SHA`, which
+  the bundle's tip has to hold too: a resolution is a merge of the two. On any ending of the agent's
+  job but `success` it does nothing.
+
+A check that fails fails the command, naming it, and nothing is written. A fetch that fails fails it
+too, with git's reason.
+
+The order: the push to `refs/heads/<BRANCH>`, leased on `HEAD_SHA`, with the loop's token. Then, on
+a clean merge, the verdict carried over (below). Then the comment, with the workflow token:
+`` `agent:update-branch`: already up to date with `<BASE_REF>`, so no merge was needed. ``, `` `agent:update-branch`: merged `<BASE_REF>` (`<BASE_SHA>`'s first seven) cleanly, with no conflicts. ``,
+or, on a resolution, the runner's `update_comment.md`, cleaned (§4.3: no HTML comment the agent
+wrote survives), or `` `agent:update-branch`: resolved conflicts merging `<BASE_REF>`. `` where it
+is missing or nothing is left of it. Last, on a resolution, its review: a bounded wait for the pull
+request to show the pushed head, then `agent:update-branch` off, `agent:review` off and on again
+with the loop's token, and, where `LOOP_TOKEN_SOURCE` is neither `app` nor `pat`, a comment saying
+no review will start. A failed push, comment or `agent:review` add stops the command; the label
+removals and the no-review comment are tolerated, a warning where GitHub refuses them.
+
+**The verdict carried over** is the newest `agent-review` status on `HEAD_SHA` posted by one of the
+loop's accounts (§4.1), never one another account posted under the same context. It is copied
+unparsed on to the pushed merge: its state, description and target URL, an `error` included, with
+the **workflow** token, since a status from any other account is not one a later round reads as
+the loop's. A read of the statuses that fails and a commit with no verdict of ours are two
+results: the first warns that whether a verdict stood could not be told, the second says there is
+nothing to carry over. Neither fails the command, and nor does a copy GitHub refuses, which warns:
+the merge is pushed by then.
+
+#### Inputs
+
+| Input | Kind | Default | What it is |
+|---|---|---|---|
+| `LOOP_TOKEN` | required | | The token whose writes start the loop's next workflow: the push and the labels. |
+| `LOOP_TOKEN_SOURCE` | required | | Where `LOOP_TOKEN` came from: `app`, `pat` or `workflow`. |
+| `AGENT_LOOP_LOGINS` | optional | `""` | The loop's accounts, a comma-separated list, recognised beside `github-actions[bot]` (§4.1). Empty is that one alone. This is trust. |
+| `PR_NUMBER` | required | | The pull request. |
+| `BRANCH` | required | | Its head branch, which the push moves and the bundle has to hold. |
+| `BASE_REF` | required | | The branch merged in. |
+| `HEAD_SHA` | required | | The head the run started from, as the event that asked for it saw it: what a resolution has to build on, the verdict is copied from, and the push's lease. |
+| `STATUS` | required | | Accepts `uptodate`, `clean` or `conflicts`: what `update-branch:merge` came to, its `merge.json`'s `status`. A gate fact. |
+| `BASE_SHA` | required | | The base commit `update-branch:merge` merged, its `merge.json`'s `base`: a gate fact. |
+| `AGENT_RESULT` | required | | How the agent's job ended: `success`, `failure`, `cancelled` or `skipped`. On `conflicts`, only `success` publishes. |
+| `CHECKOUT` | required | | A checkout of the repository, at `HEAD_SHA`, the merge is made in, the bundle checked in, and both pushed from. |
+| `HEAD_WAIT_SECONDS` | optional | `60` | How long to wait for the pull request to show the pushed head before the review is asked for anyway. |
+| `HEAD_POLL_SECONDS` | optional | `5` | How often to look while waiting. |
+| `UPDATE_BRANCH_DIR` | directory | | The `update-branch` runner's `OUTPUT_DIR`. Reads `update_comment.md` (where written). |
+| `BUNDLE_DIR` | directory | | `update-branch:bundle`'s `OUTPUT_DIR`. Reads `branch.bundle` (where written). |
+
+#### Outputs
+
+| Output | When it is written |
+|---|---|
+| `published.json` | At its start: `pushed`, whether it pushed, `head`, the pushed commit, where it did, and `requested`, whether it asked for the resolution's review, each written as it becomes true. |
+| `write_log.jsonl` | Every write as it lands, one JSON line each, and a last line for how the command ended, as `review:publish`'s. Not written where it wrote nothing. |
+
+**`doctor` cannot check this.** These tables are the command's, for the reason §6 gives.
+
+#### What it reads from the record
+
+- The statuses on `HEAD_SHA`, every page, for the newest `agent-review` of the loop's accounts.
+- The pull request `PR_NUMBER` names, after a resolution's push, for whether it shows the pushed
+  head yet.
+
+**`doctor` cannot check this.** The record is written by the orchestrator's posting code, for the reason §4.3 gives.
+
+> **Actions orchestrator:** the publish job mints the loop's token at its start, checks the head
+> out once, with no credential left in it, wherever the gate claimed the run, sets up Node, and
+> downloads the agent's artifact into a directory of its own under `runner.temp` on a conflict.
+> `update-branch:publish` runs from `RUNNER_TEMP`, working in the checkout, where the gate claimed
+> the run and, on a conflict, the agent's job succeeded, on a mint that succeeded, and never on a
+> run being cancelled. It is handed the workflow's token as `GH_TOKEN` and the loop's; the job sets
+> none. `HEAD_SHA` is the label's event's, `STATUS` and `BASE_SHA` the gate job's `status` and
+> `base` outputs, `AGENT_RESULT` the agent's job's result, `UPDATE_BRANCH_DIR` the download's
+> directory and `BUNDLE_DIR` its `bundle/`, and `OUTPUT_DIR` a directory of its own under
+> `runner.temp`, which `update-branch:conclude` reads as its `PUBLISH_DIR`.
+
+### `update-branch:conclude`
+
+Ends every update-branch run, success included, in the loop's one order: every result posted, then
+`agent:update-branch` off, then the label that names the next step. It runs no model and needs no
+checkout. It is told how the run went rather than reading it off which steps ran: the gate's
+decision, result and merge, the agent's job's result, whether that job ran out of time, and the
+outcome of each step the orchestrator ran before it, and it works out the ending from them. Each is
+one of:
+
+- **A refusal** (`REFUSED` is `true`): nothing, since the gate said it and took the label off.
+- **A pre-flight that did not decide** (`REFUSED` is empty): `agent:update-branch` off, and nothing
+  else, since nothing is known to say.
+- **A run that finished**: the gate, the agent's job where `STATUS` is `conflicts` (skipped
+  otherwise, which is not a failure), and every step before this one. `agent:update-branch` off,
+  then the re-request, below. Every other word of it is `update-branch:publish`'s.
+- **A run that stopped**: the failure comment, `` **`agent:update-branch` stopped:** `` and the
+  reason as a sentence, the run's link, and the retry; then `agent:update-branch` off, then
+  `agent:blocked`. The reason is, where the gate and the agent's job finished, the first of the
+  mint, the download (on `conflicts` only) and `update-branch:publish` that did not succeed: a
+  fixed sentence for the mint and the download, `update-branch:publish`'s `failure_reason.txt`, or
+  a cancel where that step was cancelled or skipped. Otherwise, where the gate, the agent's job or
+  a step was cancelled, a cancel, or the time limit where `TIMED_OUT` is `true`; and failing that,
+  `GATE_REASON` where the gate failed, then `update-branch:prepare`'s `failure_reason.txt`, or
+  `update-branch:bundle`'s, or the runner's, or, where none was written, that it gave no reason, or
+  the time limit where the agent's job failed and `TIMED_OUT` is `true`. The retry is ``The merge
+  was pushed before it stopped, so running it again would do nothing. Fix the problem above.``
+  where `published.json` says it pushed, and to add `agent:update-branch` otherwise.
+
+**The re-request.** Only on a run that finished, and not where `published.json` says
+`update-branch:publish` asked for the resolution's review: the two are one hand-off or the other,
+never both. The head the run left is `published.json`'s `head` where it pushed, and `HEAD_SHA`
+otherwise. Where the pull request is open and its head is another commit, because somebody pushed
+while the run worked, `agent:update-branch` is added again with the loop's token; not while
+`agent:review`, `agent:fix` or `agent:update-branch` is on, which is a queued run a request would
+cancel (a notice); and, where `LOOP_TOKEN_SOURCE` is neither `app` nor `pat`, a warning and a
+comment saying no refresh of the new head will start, with the workflow token. A pull request
+that is gone (a 404) is said as gone, and one that could not be read as a read that failed: two
+sentences, and neither blocks, since the run finished.
+
+Each directory is read on its own, so a file that does not read is a warning and is read as not
+written, and costs the comment no reason another producer gave; a `published.json` that does not
+read asks for nothing again. Every write is tolerated: one GitHub refuses is a warning, so a run
+that cannot comment still takes its label off. The re-request is made with `LOOP_TOKEN`;
+everything else with `GH_TOKEN`.
+
+#### Inputs
+
+| Input | Kind | Default | What it is |
+|---|---|---|---|
+| `LOOP_TOKEN` | optional | `""` | The token whose writes start the loop's next workflow: the re-request. Empty where it was not minted, which is one of the endings this reports. |
+| `LOOP_TOKEN_SOURCE` | optional | `""` | Where `LOOP_TOKEN` came from: `app`, `pat` or `workflow`. |
+| `PR_NUMBER` | required | | The pull request. |
+| `HEAD_SHA` | required | | The head the run started from, as the event that asked for it saw it: the head it left where it pushed nothing. |
+| `REFUSED` | optional | `""` | Accepts `true` or `false`: `false` where the gate claimed the run, `true` where it refused. Empty is a gate that died before it decided. |
+| `GATE_RESULT` | required | | How the gate's job ended: `success`, `failure`, `cancelled` or `skipped`. |
+| `GATE_REASON` | optional | `""` | The sentence `update-branch:gate` or `update-branch:merge` failed with, where it failed after the run was claimed, such as at the permission probe or the base's fetch. |
+| `STATUS` | optional | `""` | Accepts `uptodate`, `clean` or `conflicts`: what `update-branch:merge` came to. Empty where it came to nothing. |
+| `AGENT_RESULT` | required | | How the agent's job ended: `success`, `failure`, `cancelled` or `skipped`. |
+| `TIMED_OUT` | optional | `""` | `true` where the agent's job ran its whole limit. |
+| `TIMEOUT_MINUTES` | optional | `""` | That limit, for the comment. |
+| `MINT_OUTCOME` | optional | `""` | The outcome of minting `LOOP_TOKEN`: `success`, `failure`, `cancelled` or `skipped`. Empty is not run. |
+| `DOWNLOAD_OUTCOME` | optional | `""` | The same, for fetching the agent's hand-over. Read only where `STATUS` is `conflicts`. |
+| `PUBLISH_OUTCOME` | optional | `""` | The same, for `update-branch:publish`. |
+| `PUBLISH_DIR` | directory | | `update-branch:publish`'s `OUTPUT_DIR`. Reads `published.json` (where written) and `failure_reason.txt` (where written). |
+| `PREPARE_DIR` | directory | | `update-branch:prepare`'s `OUTPUT_DIR`. Reads `failure_reason.txt` (where written). |
+| `UPDATE_BRANCH_DIR` | directory | | The `update-branch` runner's `OUTPUT_DIR`. Reads `failure_reason.txt` (where written). |
+| `BUNDLE_DIR` | directory | | `update-branch:bundle`'s `OUTPUT_DIR`. Reads `failure_reason.txt` (where written). |
+| `GITHUB_SERVER_URL` | optional | `""` | With the next two, the link to the run the failure comment names. |
+| `GITHUB_REPOSITORY` | optional | `""` | See `GITHUB_SERVER_URL`. |
+| `GITHUB_RUN_ID` | optional | `""` | See `GITHUB_SERVER_URL`. |
+
+#### Outputs
+
+| Output | When it is written |
+|---|---|
+| `write_log.jsonl` | Every write as it lands, one JSON line each, and a last line for how the command ended, as `review:conclude`'s. Not written where it wrote nothing. |
+
+**`doctor` cannot check this.** These tables are the command's, for the reason §6 gives.
+
+#### What it reads from the record
+
+- The pull request `PR_NUMBER` names, on a run that finished and asked for no review: its state,
+  its head and its labels, for whether to ask again. A 404 is a pull request that is gone.
+
+**`doctor` cannot check this.** The record is written by the orchestrator's posting code, for the reason §4.3 gives.
+
+> **Actions orchestrator:** the publish job's step after `update-branch:publish`, run `always()`,
+> from `RUNNER_TEMP`. It is told the gate's `refused` output, result, `status` output and
+> `failure-reason` output, which the gate job's glue steps copy from `update-branch:gate`'s and
+> `update-branch:merge`'s reason files, the agent's job's result and its `timed-out` output, the
+> limit as `AGENT_TIMEOUT_MINUTES` or 30, and the outcomes of the mint, the download and
+> `update-branch:publish`. `timed-out` is the agent's job's last step's, `always()`, which compares
+> the time since the gate's clock with the limit, less a minute, wherever that job did not succeed:
+> glue only Actions can do, and the one output that job declares. `PUBLISH_DIR` is
+> `update-branch:publish`'s `OUTPUT_DIR`, and `PREPARE_DIR`, `UPDATE_BRANCH_DIR` and `BUNDLE_DIR`
+> where the agent's artifact is downloaded. It is handed both tokens, the loop's empty where the
+> mint failed; with `update-branch:publish`, the only steps in the job that are. Both commands'
+> write logs are uploaded `always()`.
 
 ## 11. `follow-ups`
 

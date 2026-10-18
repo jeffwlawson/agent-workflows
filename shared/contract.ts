@@ -422,9 +422,10 @@ const LOOP = {
 
 /**
  * The same two, for a command that has to run where the loop's token was
- * never minted: `review:conclude`, `review:advance` and `fix:conclude`, since a failed mint
- * is one of the endings each reports (ADR 0004). Empty is "no loop token", and the command makes no
- * write that needs one.
+ * never minted: `review:conclude`, `review:advance`, `fix:conclude` and
+ * `update-branch:conclude`, since a failed mint is one of the endings each
+ * reports (ADR 0004). Empty is "no loop token", and the command makes no write
+ * that needs one.
  */
 const LOOP_IF_MINTED = {
   LOOP_TOKEN: EMPTY,
@@ -466,7 +467,7 @@ const REVIEW_PUBLISH = {
  * `EVERY_SUBCOMMAND`: `OUTPUT_DIR`, and neither the repository nor the token,
  * since it reads no repository and is handed none. The red check's two
  * (#422), whose job runs the pull request's own code, and `fix:bundle`
- * (#472), which runs after the agent.
+ * (#472) and `update-branch:bundle` (#483), which run after the agent.
  */
 export const TOKENLESS = {
   OUTPUT_DIR: EVERY_SUBCOMMAND.OUTPUT_DIR,
@@ -528,6 +529,68 @@ const FIX_PUBLISH = {
       "out_of_scope_notes.json": "sometimes",
     }),
     BUNDLE_DIR: readsFromCommand("fix:bundle", FIX_BUNDLE, {
+      "branch.bundle": "sometimes",
+    }),
+  },
+  outputs: [...EVERY_SUBCOMMAND_OUTPUTS, "published.json", WRITE_LOG],
+} as const satisfies CommandContract;
+
+/**
+ * `update-branch:bundle`, declared ahead of `COMMANDS` so that
+ * `update-branch:publish` can read its outputs (`readsFromCommand`). See
+ * `COMMANDS`.
+ */
+const UPDATE_BRANCH_BUNDLE = {
+  inputs: {
+    ...TOKENLESS,
+    CHECKOUT: REQUIRED,
+    BRANCH: REQUIRED,
+    HEAD_SHA: REQUIRED,
+    BASE_SHA: REQUIRED,
+  },
+  outputs: [...EVERY_SUBCOMMAND_OUTPUTS, "branch.bundle"],
+} as const satisfies CommandContract;
+
+/**
+ * `update-branch:prepare`, declared ahead of `COMMANDS` so that
+ * `update-branch:conclude` can read its outputs (`readsFromCommand`). See
+ * `COMMANDS`.
+ */
+const UPDATE_BRANCH_PREPARE = {
+  inputs: {
+    ...EVERY_SUBCOMMAND,
+    CHECKOUT: REQUIRED,
+    BRANCH: REQUIRED,
+    BASE_REF: REQUIRED,
+    BASE_SHA: REQUIRED,
+  },
+  outputs: [...EVERY_SUBCOMMAND_OUTPUTS],
+} as const satisfies CommandContract;
+
+/**
+ * `update-branch:publish`, declared ahead of `COMMANDS` so that
+ * `update-branch:conclude` can read its outputs (`readsFromCommand`). See
+ * `COMMANDS`.
+ */
+const UPDATE_BRANCH_PUBLISH = {
+  inputs: {
+    ...EVERY_SUBCOMMAND,
+    ...LOOP,
+    ...LOOP_ACCOUNTS,
+    PR_NUMBER: REQUIRED,
+    BRANCH: REQUIRED,
+    BASE_REF: REQUIRED,
+    HEAD_SHA: REQUIRED,
+    STATUS: { required: true, accepts: ["uptodate", "clean", "conflicts"] },
+    BASE_SHA: REQUIRED,
+    AGENT_RESULT: { required: true, accepts: RESULTS },
+    CHECKOUT: REQUIRED,
+    HEAD_WAIT_SECONDS: { required: false, default: "60" },
+    HEAD_POLL_SECONDS: { required: false, default: "5" },
+    UPDATE_BRANCH_DIR: readsFrom("update-branch", {
+      "update_comment.md": "sometimes",
+    }),
+    BUNDLE_DIR: readsFromCommand("update-branch:bundle", UPDATE_BRANCH_BUNDLE, {
       "branch.bundle": "sometimes",
     }),
   },
@@ -678,6 +741,63 @@ const REVIEW_RED_CHECK_PLACE = {
  *   (`REVIEW_RESULT`, `POSTING_RESULT`), the review job's outputs, the
  *   posting job's (`MOVED`, `REVIEW_URL`) and the mint's outcome, and reads
  *   the runner's park hand-over through `PARK_DIR`.
+ * - `update-branch:gate` refuses or claims the pull request before the
+ *   checkout: a closed or merged one is refused on the pull request, and one
+ *   it claims has the permission probe, `agent:blocked` off and the wait,
+ *   bounded by `POST_WAIT_SECONDS` and polled every `POST_POLL_SECONDS`,
+ *   while a review is posting. `PR_STATE` and `PR_MERGED` are the pull
+ *   request as the label's event saw it, and `BRANCH` its head branch. It
+ *   declares no loop token, and reads no branch tip: it adds no refusal the
+ *   shell pre-flight it replaced lacked. `gate.json` is its decision,
+ *   `proceed`, as `fix:gate`'s is.
+ * - `update-branch:merge` fetches `BASE_REF` and merges it into `BRANCH`, the
+ *   commit checked out in `CHECKOUT`, as the loop's committer, and writes
+ *   nothing to the record. `merge.json` is what it came to: `status`,
+ *   `uptodate`, `clean` or `conflicts`; `base`, the base commit it fetched;
+ *   and `conflicts`, the conflicted paths, empty but on a conflict.
+ * - `update-branch:prepare` makes the gate's merge again in the agent's job,
+ *   so the runner starts from the conflicted tree the gate found: it fetches
+ *   `BASE_REF` into `CHECKOUT` and merges `BASE_SHA`, the base commit the
+ *   gate merged, into `BRANCH`, as the loop's committer. It refuses where the
+ *   base no longer holds `BASE_SHA` and where the merge does not conflict,
+ *   and writes nothing to the record.
+ * - `update-branch:bundle` bundles the agent's resolution on `BRANCH`, in
+ *   `CHECKOUT`, ahead of `HEAD_SHA`, the head the run started from, and
+ *   `BASE_SHA`, the base commit the gate merged, into `branch.bundle`, as
+ *   `fix:bundle` bundles. Where there is nothing to bundle it refuses: a run
+ *   that resolved the conflicts committed a merge. It reads no repository and
+ *   is handed no token.
+ * - `update-branch:publish` pushes what the merge came to, `STATUS`, the
+ *   gate's: nothing where the branch was `uptodate`; on `clean`, the merge of
+ *   `BASE_SHA`, the base commit the gate merged, made again in `CHECKOUT` as
+ *   the loop's committer, and the verdict standing on `HEAD_SHA` copied on to
+ *   it; on `conflicts`, the resolution `update-branch:bundle` wrote, read
+ *   through `BUNDLE_DIR` and checked in `CHECKOUT` against `HEAD_SHA` and
+ *   `BASE_SHA`. Each push is leased on `HEAD_SHA`, the head the run started
+ *   from as the label's event saw it. Then the comment, the runner's
+ *   `update_comment.md` on a resolution, read through `UPDATE_BRANCH_DIR`,
+ *   and on a resolution the review of it, asked for once the pull request
+ *   shows the pushed head, bounded by `HEAD_WAIT_SECONDS` and polled every
+ *   `HEAD_POLL_SECONDS`. `AGENT_RESULT` is how the agent's job ended: on a
+ *   conflict it does nothing on any ending but `success`, since the rest is
+ *   `update-branch:conclude`'s. `AGENT_LOOP_LOGINS` is whose verdicts it
+ *   copies. `published.json` is whether it pushed, the pushed head and
+ *   whether it asked for the review, written as each becomes true.
+ * - `update-branch:conclude` ends every update-branch run, success included:
+ *   the failure comment, `agent:update-branch` off and `agent:blocked` where
+ *   the run stopped, and where it finished and the head moved on from the
+ *   one it left, `agent:update-branch` asked for again. It is told how the
+ *   gate and the agent's job ended (`REFUSED`, `GATE_RESULT`, the gate's
+ *   reason where it failed after claiming the run, `GATE_REASON`, `STATUS`,
+ *   what the gate's merge came to, `AGENT_RESULT`), whether the agent's job
+ *   ran out of time (`TIMED_OUT`, `TIMEOUT_MINUTES`), and the publish job's
+ *   steps' outcomes (`MINT_OUTCOME`, `DOWNLOAD_OUTCOME`, `PUBLISH_OUTCOME`),
+ *   and reads what each producer left from its own directory:
+ *   `update-branch:publish`'s through `PUBLISH_DIR`,
+ *   `update-branch:prepare`'s reason through `PREPARE_DIR`, the runner's
+ *   through `UPDATE_BRANCH_DIR`, and `update-branch:bundle`'s through
+ *   `BUNDLE_DIR`. `HEAD_SHA` is the head the run started from, as the
+ *   label's event saw it: the head it left where it pushed nothing.
  */
 export const COMMANDS = {
   "fix:gate": {
@@ -842,6 +962,63 @@ export const COMMANDS = {
       PARK_DIR: readsFrom("review", {
         "park.json": "sometimes",
         "progress.json": "sometimes",
+      }),
+      ...RUN_LINK,
+    },
+    outputs: [...EVERY_SUBCOMMAND_OUTPUTS, WRITE_LOG],
+  },
+  "update-branch:gate": {
+    inputs: {
+      ...EVERY_SUBCOMMAND,
+      PR_NUMBER: REQUIRED,
+      BRANCH: REQUIRED,
+      PR_STATE: REQUIRED,
+      PR_MERGED: EMPTY,
+      POST_WAIT_SECONDS: { required: false, default: "600" },
+      POST_POLL_SECONDS: { required: false, default: "10" },
+    },
+    outputs: [...EVERY_SUBCOMMAND_OUTPUTS, "gate.json", WRITE_LOG],
+  },
+  "update-branch:merge": {
+    inputs: {
+      ...EVERY_SUBCOMMAND,
+      CHECKOUT: REQUIRED,
+      BRANCH: REQUIRED,
+      BASE_REF: REQUIRED,
+    },
+    outputs: [...EVERY_SUBCOMMAND_OUTPUTS, "merge.json"],
+  },
+  "update-branch:prepare": UPDATE_BRANCH_PREPARE,
+  "update-branch:bundle": UPDATE_BRANCH_BUNDLE,
+  "update-branch:publish": UPDATE_BRANCH_PUBLISH,
+  "update-branch:conclude": {
+    inputs: {
+      ...EVERY_SUBCOMMAND,
+      ...LOOP_IF_MINTED,
+      PR_NUMBER: REQUIRED,
+      HEAD_SHA: REQUIRED,
+      REFUSED: { required: false, default: "", accepts: ["true", "false"] },
+      GATE_RESULT: { required: true, accepts: RESULTS },
+      GATE_REASON: EMPTY,
+      STATUS: { required: false, default: "", accepts: ["uptodate", "clean", "conflicts"] },
+      AGENT_RESULT: { required: true, accepts: RESULTS },
+      TIMED_OUT: EMPTY,
+      TIMEOUT_MINUTES: EMPTY,
+      MINT_OUTCOME: EMPTY,
+      DOWNLOAD_OUTCOME: EMPTY,
+      PUBLISH_OUTCOME: EMPTY,
+      PUBLISH_DIR: readsFromCommand("update-branch:publish", UPDATE_BRANCH_PUBLISH, {
+        "published.json": "sometimes",
+        "failure_reason.txt": "sometimes",
+      }),
+      PREPARE_DIR: readsFromCommand("update-branch:prepare", UPDATE_BRANCH_PREPARE, {
+        "failure_reason.txt": "sometimes",
+      }),
+      UPDATE_BRANCH_DIR: readsFrom("update-branch", {
+        "failure_reason.txt": "sometimes",
+      }),
+      BUNDLE_DIR: readsFromCommand("update-branch:bundle", UPDATE_BRANCH_BUNDLE, {
+        "failure_reason.txt": "sometimes",
       }),
       ...RUN_LINK,
     },

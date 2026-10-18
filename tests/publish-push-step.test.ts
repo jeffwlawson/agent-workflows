@@ -250,7 +250,9 @@ describe.skipIf(!CAN_RUN)("implement's publish job pushes the agent's bundle onl
  * The same check in the runs split after implement's (#308), each
  * executed on the arms its own push differs on: what the bundle must build
  * on, and what the push leases against. Fix's is `fix:publish`'s since #468,
- * and its scenarios are `tests/fix/publish.test.ts`'s.
+ * and its scenarios are `tests/fix/publish.test.ts`'s; update-branch's is
+ * `update-branch:publish`'s since #484, and its scenarios are
+ * `tests/update-branch/publish.test.ts`'s.
  */
 const pushStepOf = (file: string): string => {
   const workflow = parse(fs.readFileSync(path.join(".github", "workflows", file), "utf8")) as Workflow;
@@ -332,81 +334,6 @@ describe.skipIf(!CAN_RUN)("implement-prd's publish job pushes the slice only onc
       bundle(w, `refs/heads/${BRANCH}`);
 
       refused(pushWith(w, "implement-prd.yml", env(w)), /don't build on `agent\/issue-7-add-a-widget` as this run left it/);
-    },
-    CEILING,
-  );
-});
-
-describe.skipIf(!CAN_RUN)("update-branch's publish job pushes a merge it made, or a resolution it checked", () => {
-  /**
-   * The pull request's branch on `origin` at a commit of its own, the agent's
-   * clone's widget, and `main` moved on past the base it was cut from: a
-   * refresh with something to merge. Returns the two commits the merge joins.
-   */
-  const diverged = (w: World): { readonly head: string; readonly merged: string } => {
-    const head = git(w.agent, "rev-parse", "HEAD");
-    git(w.agent, "push", "--quiet", "origin", `${head}:refs/heads/${BRANCH}`);
-    const seed = path.join(w.temp, "seed");
-    fs.writeFileSync(path.join(seed, "CHANGES.md"), "moved\n");
-    git(seed, "add", "CHANGES.md");
-    git(seed, "commit", "--quiet", "-m", "main moves on");
-    git(seed, "push", "--quiet", "origin", "HEAD:refs/heads/main");
-    git(w.publish, "fetch", "--quiet", "origin");
-    git(w.publish, "checkout", "--quiet", "--detach", head);
-    return { head, merged: git(seed, "rev-parse", "HEAD") };
-  };
-  const env = (head: string, merged: string, status: string): Record<string, string> => ({
-    BRANCH,
-    BRANCH_HEAD_SHA: head,
-    BASE_SHA: merged,
-    STATUS: status,
-  });
-
-  it(
-    "makes the clean merge again itself, of the base commit the gate merged, and pushes it",
-    () => {
-      const w = world();
-      const { head, merged } = diverged(w);
-      const outcome = pushWith(w, "update-branch.yml", env(head, merged, "clean"));
-
-      expect(outcome.status).toBe(0);
-      expect(outcome.reason).toBe("");
-      expect(outcome.head).toBe(outcome.pushed);
-      expect(git(w.origin, "rev-list", "--parents", "-n", "1", outcome.pushed).split(" ").slice(1)).toEqual([head, merged]);
-      expect(git(w.origin, "log", "-1", "--format=%s", outcome.pushed)).toBe(`Merge remote-tracking branch 'origin/main' into ${BRANCH}`);
-    },
-    CEILING,
-  );
-
-  it(
-    "pushes a resolution that merges the base into the pull request's head",
-    () => {
-      const w = world();
-      const { head, merged } = diverged(w);
-      git(w.agent, "fetch", "--quiet", "origin");
-      git(w.agent, "merge", "--quiet", "--no-edit", merged);
-      git(w.agent, "bundle", "create", "--quiet", path.join(w.runner, "branch.bundle"), `refs/heads/${BRANCH}`, `^${head}`, `^${merged}`);
-      const outcome = pushWith(w, "update-branch.yml", env(head, merged, "conflicts"));
-
-      expect(outcome.status).toBe(0);
-      expect(outcome.pushed).toBe(git(w.agent, "rev-parse", "HEAD"));
-    },
-    CEILING,
-  );
-
-  it(
-    "refuses a resolution that does not take the base in",
-    () => {
-      const w = world();
-      const { head, merged } = diverged(w);
-      fs.writeFileSync(path.join(w.agent, "widget.txt"), "resolved, without main\n");
-      git(w.agent, "commit", "--quiet", "-am", "Not a merge");
-      git(w.agent, "bundle", "create", "--quiet", path.join(w.runner, "branch.bundle"), `refs/heads/${BRANCH}`, `^${head}`);
-      const outcome = pushWith(w, "update-branch.yml", env(head, merged, "conflicts"));
-
-      expect(outcome.status).not.toBe(0);
-      expect(outcome.pushed).toBe(head);
-      expect(outcome.reason).toMatch(/isn't a merge of `main` into the PR's head as this run found them, so the branch was left untouched\.\n$/);
     },
     CEILING,
   );

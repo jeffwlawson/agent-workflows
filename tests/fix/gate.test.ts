@@ -17,8 +17,7 @@ import { fakeGitHub, fakeReader, fakeWriters, type FakeGitHub } from "../engine/
  * The scenarios are the retired step tests' (fix's half of the pre-flight's
  * assertions in `tests/workflows.test.ts`, and fix's half of
  * `tests/post-wait-step.test.ts`), carried over by behaviour. The wait
- * itself, `shared/review-posting.ts`, is held to `update-branch.yml`'s shell
- * copy in `tests/post-wait-step.test.ts`.
+ * itself, `shared/review-posting.ts`, is held in `tests/review-posting.test.ts`.
  */
 
 const PR = 7;

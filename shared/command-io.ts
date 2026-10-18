@@ -10,9 +10,10 @@
  * `workflow` is the job's own, which the loop recognises its reviews, comments
  * and statuses by (`docs/platform-spec.md` §4.1).
  */
+import { gitWrites, githubRemote, type GitRepository } from "../engine/git.js";
 import { fetchTransport } from "../engine/github.js";
 import { githubReader, type GitHubReader } from "../engine/read.js";
-import { createWriters, type Limits, type WriteLog, type Writer } from "../engine/writer.js";
+import { createWriters, type Backend, type Limits, type WriteLog, type Writer } from "../engine/writer.js";
 import { githubWrites } from "../engine/writes.js";
 import type { Outputs } from "./contract.js";
 import type { writers } from "./env.js";
@@ -51,7 +52,9 @@ export const liveReadingIo = <O extends Outputs>(
 
 /**
  * The real ones, for `repo` with the two tokens, each line of the write log
- * handed to `appendLine` as it is made. `end` writes the log's last line, how
+ * handed to `appendLine` as it is made. Each token's backend makes its GitHub
+ * writes over the API and its git writes in `checkout`, the repository the
+ * command runs in, pushing to the repository's remote on GitHub. `end` writes the log's last line, how
  * the command ended, and writes nothing where the command never asked for its
  * writers: a command that wrote nothing has no log, and its
  * `failure_reason.txt` says why.
@@ -60,17 +63,23 @@ export const liveCommandIo = <O extends Outputs>(
   tokens: { readonly GH_REPO: string; readonly GH_TOKEN: string; readonly LOOP_TOKEN: string },
   outputs: OutputWriters<O>,
   appendLine: (line: string) => void,
+  checkout: GitRepository,
 ): { readonly io: CommandIo<O>; readonly end: (error?: unknown) => void } => {
   let log: WriteLog | undefined;
   const workflow = fetchTransport(tokens.GH_TOKEN);
+  const remote = { ...checkout, remote: githubRemote(tokens.GH_REPO) };
+  const backend = (token: string, transport = fetchTransport(token)): Backend => ({
+    ...githubWrites(tokens.GH_REPO, transport),
+    ...gitWrites(remote, token),
+  });
   return {
     io: {
       writers: (limits) => {
         if (log !== undefined) throw new Error("A command asked for its writers twice; the second set would keep a second log.");
         const made = createWriters({
           backends: {
-            loop: githubWrites(tokens.GH_REPO, fetchTransport(tokens.LOOP_TOKEN)),
-            workflow: githubWrites(tokens.GH_REPO, workflow),
+            loop: backend(tokens.LOOP_TOKEN),
+            workflow: backend(tokens.GH_TOKEN, workflow),
           },
           limits,
           appendLine,

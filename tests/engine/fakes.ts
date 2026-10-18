@@ -8,11 +8,13 @@
  * GitHub. A write past its limit is recorded as received, and refused before
  * it reaches the fake.
  */
+import { GitError } from "../../engine/git.js";
 import { GitHubError } from "../../engine/github.js";
 import type { CheckRun, CommitStatus, GitHubReader, PullRequest, WorkflowRun } from "../../engine/read.js";
 import {
   createWriters,
   type Backend,
+  type Lease,
   type Limits,
   type LogEntry,
   type ReviewThread,
@@ -42,7 +44,11 @@ export interface FakeGitHub {
   readonly threads: Map<number, Map<string, { replies: string[]; resolved?: string }>>;
   /** Labels on issues that are not pull requests. */
   readonly issueLabels: Map<number, string[]>;
-  /** Each branch's tip, by name: what a push moves. A branch not here is not found. */
+  /**
+   * Each branch's tip, by name: what a push moves, and what `pushRef` and
+   * `deleteRef` lease against, a `refs/heads/` ref by its branch name and any
+   * other by its full name. A branch not here is not found.
+   */
   readonly branches: Map<string, string>;
   /** Per pull request, its commits, oldest first. */
   readonly commits: Map<number, string[]>;
@@ -227,6 +233,13 @@ const fakeBackend = (github: FakeGitHub, token: string): Backend => {
     }
     throw new GitHubError(`thread ${threadId}: not found`);
   };
+  /** `push`'s ref as `branches` keys it, once its lease is checked against it, as git's `--force-with-lease` would. */
+  const leased = (ref: string, lease: Lease): string => {
+    const name = ref.replace(/^refs\/heads\//, "");
+    const tip = github.branches.get(name);
+    if ("tip" in lease ? tip !== lease.tip : tip !== undefined) throw new GitError("rejected: [rejected] (stale info)", true);
+    return name;
+  };
   return {
     addLabel: async (call, issue, label) => {
       await call("POST labels", async () => {
@@ -306,6 +319,30 @@ const fakeBackend = (github: FakeGitHub, token: string): Backend => {
       await call("resolve", async () => {
         check("replyAndResolve", "resolve");
         thread.resolved = close.reason;
+      });
+      return { outcome: "applied" };
+    },
+    reply: async (call, reply) => {
+      const thread = threadOf(reply.threadId);
+      await call("reply", async () => {
+        check("reply", "reply");
+        thread.replies.push(reply.body);
+      });
+      return { outcome: "applied" };
+    },
+    pushRef: async (call, push) =>
+      call("git push", async () => {
+        const name = leased(push.ref, push.lease);
+        if (github.branches.get(name) === push.commit) return { outcome: "unchanged" as const };
+        check("pushRef", "git push");
+        github.branches.set(name, push.commit);
+        return { outcome: "applied" as const };
+      }),
+    deleteRef: async (call, remove) => {
+      await call("git push", async () => {
+        const name = leased(remove.ref, remove.lease);
+        check("deleteRef", "git push");
+        github.branches.delete(name);
       });
       return { outcome: "applied" };
     },

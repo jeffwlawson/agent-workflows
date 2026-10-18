@@ -11,12 +11,14 @@ import { EVERY_SUBCOMMAND, EVERY_SUBCOMMAND_OUTPUTS, type Input, type Inputs, ty
  * CLI, which reads them here. A read anywhere else would be an input the declaration does
  * not have, which is the quiet default the declarations exist to end.
  *
- * Four things here touch the environment besides the accessor, and each is
+ * Five things here touch the environment besides the accessor, and each is
  * here rather than exempted somewhere else: the writer, which finds
  * `OUTPUT_DIR` without the accessor so a missing one can still be reported;
  * `fail()`, which writes through it; `scrubGitHubTokens`, which deletes
- * rather than reads; and `hostEnvironment`, which the service's worker hands
- * on to its subcommands and reads nothing from itself.
+ * rather than reads; `hostEnvironment`, which the service's worker hands
+ * on to its subcommands and reads nothing from itself; and `gitEnvironment`,
+ * which a command hands the engine's git writes, and which reads only the
+ * variables `hostEnvironment` hands on.
  */
 
 /**
@@ -204,6 +206,22 @@ export const hostEnvironment = (proxy: string): HostEnvironment => ({
     ? {}
     : { HTTP_PROXY: proxy, HTTPS_PROXY: proxy, http_proxy: proxy, https_proxy: proxy, NODE_USE_ENV_PROXY: "1" }),
 });
+
+/**
+ * The environment a command's git spawns start from: the host variables and
+ * the proxy variables, as this process was given them. Under the service's
+ * worker those are what `hostEnvironment` handed on, `WORKER_PROXY`'s proxy
+ * among them (#462), so git leaves through the proxy the command's API calls
+ * do; an environment stripped of them would silently bypass it. Nothing else
+ * is handed on: no token, and no input of the command's.
+ */
+export const gitEnvironment = (): Readonly<Record<string, string>> =>
+  Object.fromEntries(
+    [...HOST_VARIABLES, ...PROXY_VARIABLES].flatMap((name) => {
+      const value = present(name);
+      return value === undefined ? [] : [[name, value]];
+    }),
+  );
 
 /**
  * Remove the GitHub tokens from this process's environment. The agent runs

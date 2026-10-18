@@ -122,6 +122,54 @@ describe("the writer", () => {
     expect(github.threads.get(7)?.get("T1")).toEqual({ replies: [] });
   });
 
+  it("replies and leaves the thread open, and a command limited to replies cannot close one", async () => {
+    const github = fakeGitHub();
+    github.threads.set(7, new Map([["T1", { replies: [] }]]));
+    const { writers, writes, entries } = fakeWriters(github, ["workflow"], { reply: 2 });
+
+    await writers.workflow.reply({ threadId: "T1", body: "fixed in the next push" });
+    await expect(writers.workflow.replyAndResolve({ threadId: "T1", reply: "x", reason: "ADDRESSED" })).rejects.toBeInstanceOf(LimitReached);
+
+    expect(entries[0]).toEqual({ seq: 1, token: "workflow", type: "reply", target: "T1", outcome: "applied", calls: ["reply ok"] });
+    expect(github.threads.get(7)?.get("T1")).toEqual({ replies: ["fixed in the next push"] });
+    expect(writes.map((w) => w.type)).toEqual(["reply", "replyAndResolve"]);
+  });
+
+  it("logs a failed reply as failed, and resolves nothing", async () => {
+    const github = fakeGitHub();
+    github.threads.set(7, new Map([["T1", { replies: [] }]]));
+    github.fails = (write) => write.type === "reply";
+    const { writers, entries } = fakeWriters(github, ["workflow"], { reply: 1 });
+
+    await expect(writers.workflow.reply({ threadId: "T1", body: "b" })).rejects.toBeInstanceOf(WriteFailed);
+
+    expect(entries[0]).toMatchObject({ outcome: "failed", calls: ["reply 422 refused by the fake"] });
+    expect(github.threads.get(7)?.get("T1")).toEqual({ replies: [] });
+  });
+
+  it("pushes and deletes a ref under its lease in the fake, logs a lost lease failed, and caps both", async () => {
+    const github = fakeGitHub();
+    github.branches.set("feature", SHA);
+    const next = "b".repeat(40);
+    const { writers, entries } = fakeWriters(github, ["loop"], { pushRef: 3, deleteRef: 1 });
+
+    await writers.loop.pushRef({ ref: "refs/heads/feature", commit: next, lease: { tip: SHA } });
+    await expect(writers.loop.pushRef({ ref: "refs/heads/feature", commit: SHA, lease: { tip: SHA } })).rejects.toBeInstanceOf(WriteFailed);
+    await writers.loop.pushRef({ ref: "refs/heads/rescue", commit: next, lease: { absent: true } });
+    await writers.loop.deleteRef({ ref: "refs/heads/rescue", lease: { tip: next } });
+    await expect(writers.loop.pushRef({ ref: "refs/heads/other", commit: next, lease: { absent: true } })).rejects.toBeInstanceOf(LimitReached);
+
+    expect(entries.map((e) => `${e.type} ${e.target} ${e.outcome}`)).toEqual([
+      "pushRef refs/heads/feature bbbbbbb over aaaaaaa applied",
+      "pushRef refs/heads/feature aaaaaaa over aaaaaaa failed",
+      "pushRef refs/heads/rescue bbbbbbb new applied",
+      "deleteRef refs/heads/rescue at bbbbbbb applied",
+      "pushRef refs/heads/other bbbbbbb new refused",
+    ]);
+    expect(entries[1]?.calls).toEqual(["git push rejected: [rejected] (stale info)"]);
+    expect([...github.branches]).toEqual([["feature", next]]);
+  });
+
   it("resolves alone a thread that already carries its reply", async () => {
     const github = fakeGitHub();
     github.threads.set(7, new Map([["T1", { replies: ["earlier"] }]]));

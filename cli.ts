@@ -5,7 +5,7 @@ import { fileURLToPath } from "node:url";
 import { commonWriters } from "./shared/common.js";
 import type { CommandIo, OutputWriters, ReadingIo } from "./shared/command-io.js";
 import { COMMANDS, type Command, type Runner } from "./shared/contract.js";
-import { fail, readInputs, writers, type InputValues } from "./shared/env.js";
+import { fail, gitEnvironment, readInputs, writers, type InputValues } from "./shared/env.js";
 import { VERSION } from "./shared/manifest.js";
 import { SERVICE, type ServiceProcess } from "./service/settings.js";
 
@@ -176,7 +176,10 @@ const writingCommand = <C extends WritingCommand>(
     const declared = COMMANDS[name];
     const inputs = readInputs(declared.inputs);
     const outputs = writers<(typeof COMMANDS)[C]["outputs"]>(declared.outputs);
-    const { io, end } = liveCommandIo(inputs, outputs, (line) => outputs.appendLine("write_log.jsonl", line));
+    const { io, end } = liveCommandIo(inputs, outputs, (line) => outputs.appendLine("write_log.jsonl", line), {
+      dir: process.cwd(),
+      env: gitEnvironment(),
+    });
     try {
       await fn(inputs, io);
       end();

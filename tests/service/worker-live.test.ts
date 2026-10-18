@@ -5,7 +5,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { installCli, liveTokens, routeThroughProxy } from "../../service/worker-live.js";
-import { hostEnvironment, PROXY_VARIABLES } from "../../shared/env.js";
+import { gitEnvironment, hostEnvironment, PROXY_VARIABLES } from "../../shared/env.js";
 import { SUBPROCESS_TIMEOUT } from "../../vitest.config.js";
 
 /**
@@ -88,6 +88,15 @@ describe("the host's environment a subcommand gets", () => {
       https_proxy: "http://127.0.0.1:8888",
       NODE_USE_ENV_PROXY: "1",
     });
+  });
+
+  it("is what a command hands its git spawns, the proxy kept and nothing else of its environment", () => {
+    const host = hostEnvironment("http://127.0.0.1:8888");
+    for (const [name, value] of Object.entries(host)) vi.stubEnv(name, value);
+    vi.stubEnv("GH_TOKEN", "not-for-git");
+    vi.stubEnv("NO_PROXY", "*");
+
+    expect(gitEnvironment()).toEqual(host);
   });
 });
 

@@ -4,6 +4,7 @@
  * sends, with the mutations the engine owns.
  */
 import { describe, expect, it } from "vitest";
+import { gitWrites } from "../../engine/git.js";
 import { GitHubError, isServerError, type RestRequest, type Transport } from "../../engine/github.js";
 import { githubReader } from "../../engine/read.js";
 import { ADD_REVIEW, githubWrites, MARK_READY, REPLY_TO_THREAD, RESOLVE_THREAD } from "../../engine/writes.js";
@@ -46,7 +47,7 @@ const rawPull = (fields: { draft?: boolean; body?: string | null; title?: string
 
 const writerOver = (transport: Transport) =>
   createWriters({
-    backends: { workflow: githubWrites(REPO, transport) },
+    backends: { workflow: { ...githubWrites(REPO, transport), ...gitWrites({ dir: ".", env: {}, remote: "" }, "unused") } },
     limits: {
       addLabel: 9,
       removeLabel: 9,
@@ -55,6 +56,7 @@ const writerOver = (transport: Transport) =>
       markReadyForReview: 9,
       postReview: 9,
       replyAndResolve: 9,
+      reply: 9,
       editPullRequest: 9,
     },
     appendLine: () => undefined,
@@ -90,6 +92,16 @@ describe("githubWrites", () => {
       { query: RESOLVE_THREAD, variables: { threadId: "T1", reason: "WONT_FIX" } },
       { query: RESOLVE_THREAD, variables: { threadId: "T2", reason: "ADDRESSED" } },
     ]);
+  });
+
+  it("replies with the reply mutation alone, and never resolves", async () => {
+    const { transport, sent } = recording();
+    const { writers, log } = writerOver(transport);
+
+    expect(await writers.workflow.reply({ threadId: "T1", body: "why" })).toEqual({ outcome: "applied" });
+
+    expect(sent).toEqual([{ query: REPLY_TO_THREAD, variables: { threadId: "T1", body: "why" } }]);
+    expect(log.entries[0]).toMatchObject({ type: "reply", target: "T1", outcome: "applied", calls: ["reply ok"] });
   });
 
   it("logs a label that is not there as unchanged, and throws any other refusal", async () => {

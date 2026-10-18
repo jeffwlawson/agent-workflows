@@ -18,7 +18,8 @@ import { SUBPROCESS_TIMEOUT } from "../vitest.config.js";
  *
  * Review's is no step any more: `review:conclude` takes `agent:review` off
  * and asks for it again (#419), and `tests/review/conclude.test.ts` holds
- * those scenarios.
+ * those scenarios. Nor is fix's: `fix:conclude` takes `agent:fix` off (#469),
+ * and `tests/fix/conclude.test.ts` holds those.
  *
  * Skipped where `bash` is not on PATH.
  */
@@ -43,7 +44,6 @@ const STEP = "Always remove the trigger label";
  */
 const JOB: Readonly<Record<string, string>> = {
   implement: "publish",
-  fix: "publish",
   "update-branch": "publish",
   "implement-prd": "publish",
 };
@@ -130,7 +130,6 @@ const run = (
 const TRIGGERS = [
   ["implement", "agent:implement", "issue edit 135"],
   ["implement-prd", "agent:implement", "issue edit 135"],
-  ["fix", "agent:fix", "pr edit 152"],
   ["update-branch", "agent:update-branch", "pr edit 152"],
 ] as const;
 

@@ -59,7 +59,7 @@ cannot check is one only an orchestrator's author will catch.
   `review`, `fix` and `update-branch`. It reads its inputs from the environment, starts the agent,
   and writes files and commits. It is not the agent.
 - **Command.** A subcommand that does an orchestrator's work on the record and starts no agent,
-  named `<workflow>:<step>`: `fix:bundle`, `fix:publish`, `follow-ups:file`, `review:gate`, `review:budget`,
+  named `<workflow>:<step>`: `fix:bundle`, `fix:publish`, `fix:conclude`, `follow-ups:file`, `review:gate`, `review:budget`,
   `review:collect-checks`, `review:red-check-place`, `review:red-check-classify`, `review:publish`,
   `review:conclude` and `review:advance`. §2 says where it differs from a runner.
 - **Orchestrator.** Whatever invokes a runner and acts on its result: it decides when a runner runs,
@@ -134,7 +134,7 @@ The inputs every runner reads, set once for any of them:
 |---|---|---|---|
 | `OUTPUT_DIR` | required | | The directory the runner writes its files into (§2.3). |
 | `GH_REPO` | required | | The repository, `owner/name`. Required rather than left to whatever `gh` infers. |
-| `GH_TOKEN` | required | | The token `gh` reads. The runners only read with it; `follow-ups:file` files issues with it, and `review:publish` posts the review, the summary and the verdict with it, `review:conclude` its comments, its error verdict and the labels nothing fires on, `review:advance` a PRD PR's progress list and its notes there, and `fix:publish` its thread replies, its comments and notes, and the rescue branch's deletion. |
+| `GH_TOKEN` | required | | The token `gh` reads. The runners only read with it; `follow-ups:file` files issues with it, and `review:publish` posts the review, the summary and the verdict with it, `review:conclude` its comments, its error verdict and the labels nothing fires on, `review:advance` a PRD PR's progress list and its notes there, `fix:publish` its thread replies, its comments and notes, and the rescue branch's deletion, and `fix:conclude` its failure comment, the rescue-set-aside note where `fix:publish` did not post it, and `agent:fix` off and `agent:blocked` on. |
 
 A command that runs where no token is held, as the red check's two do beside the pull request's own
 code and `fix:bundle` does after the agent, reads `OUTPUT_DIR` alone of these: it reads no repository, so it declares neither `GH_REPO`
@@ -392,7 +392,8 @@ Chaining is each orchestrator's own and is described in each runner's section: r
 `agent:fix` (§8), fix asking for the next review (§9), and the PRD advance that puts
 `agent:implement` back on the parent (§7, §8). Where a command makes the hand-off, it is package
 code every orchestrator runs rather than each one's own: review's fix round is `review:conclude`'s,
-and fix's re-review is `fix:publish`'s.
+and fix's re-review is `fix:publish`'s. So is taking a run's own label off however it ended:
+`review:conclude` takes `agent:review` off, and `fix:conclude` `agent:fix`.
 
 ### 4.3 Markers, status contexts, trailers and branch names
 
@@ -450,10 +451,11 @@ only a status whose creator is the loop's identity (§4.1).
 
 **Branch names and refs.**
 
-| Name | What it means | Read by |
-|---|---|---|
-| `agent/prd-<parent>-<slug>` | A PRD branch, and so a PRD PR, of parent issue `<parent>`. A pull request whose head does not match is an ordinary one. | `review`, `fix` |
-| `refs/rescue/<RESCUE_BRANCH>` | An earlier stopped run's commits, fetched for the runner to resume from (§7, §9). | `implement-prd`, `fix` |
+| Name | What it means | Written by | Read by |
+|---|---|---|---|
+| `agent/prd-<parent>-<slug>` | A PRD branch, and so a PRD PR, of parent issue `<parent>`. A pull request whose head does not match is an ordinary one. | the orchestrator | `review`, `fix` |
+| `agent/rescue/fix-<n>` | An earlier stopped fix run's commits on pull request `<n>`, its `RESCUE_BRANCH` (§9). Deleted, under a lease, by a run that succeeds. | `fix:conclude`, from `fix:bundle`'s `branch.bundle`; deleted by `fix:publish` | `fix`'s prepare step (`fix:prepare`, once it moves), which fetches it for the runner as `refs/rescue/…` |
+| `refs/rescue/<RESCUE_BRANCH>` | An earlier stopped run's commits, fetched for the runner to resume from (§7, §9). | the orchestrator, from the rescue branch | `implement-prd`, `fix` |
 
 **Label events.**
 
@@ -1346,8 +1348,10 @@ diffing, and `RESCUE_BRANCH` fetched to `refs/rescue/<RESCUE_BRANCH>` where it e
 > and in a publish job `fix:publish` pushes the branch, replies to every thread and closes none,
 > posts the conversation outcomes, the comments and the notes, then adds `agent:review` where it
 > pushed or left a note, or marks the pull request ready where it did neither. On a PRD PR it always
-> asks for the review. The rescue of a stopped run's commits and the failure comment are the
-> publish job's shell steps after it.
+> asks for the review. Then `fix:conclude`, however the run ended, rescues a stopped run's commits
+> to `RESCUE_BRANCH` where nothing was pushed, posts the failure comment, and takes `agent:fix`
+> off, then adds `agent:blocked` where the run stopped. The publish job holds no shell step that
+> writes.
 
 > **Service orchestrator:** the re-review request is `fix:publish`'s, package code every
 > orchestrator runs, as `review:conclude`'s fix round is: an orchestrator that runs the command has
@@ -1463,17 +1467,103 @@ the command; every other write is tolerated, a warning where GitHub refuses it.
 
 **`doctor` cannot check this.** The record is written by the orchestrator's posting code, for the reason §4.3 gives.
 
-> **Actions orchestrator:** the publish job checks the head out once, at its start, with no
-> credential left in it, then mints the loop's token and sets up Node. `fix:publish` runs from
+> **Actions orchestrator:** the publish job mints the loop's token at its start, then checks the
+> head out once, with no credential left in it, and sets up Node. `fix:publish` runs from
 > `RUNNER_TEMP`, working in the checkout, on a mint that succeeded wherever the agent's job ran, and
 > never on a finished agent's run being cancelled. It is the one step of the success arm handed a
-> token, the workflow's as `GH_TOKEN` and the loop's; the job sets none. `HEAD_SHA` is the label's
+> token, the workflow's as `GH_TOKEN` and the loop's, beside `fix:conclude`; the job sets none. `HEAD_SHA` is the label's
 > event's, `AGENT_RESULT` the agent's job's result, `FIX_DIR` and `BUNDLE_DIR` where the agent's
-> artifact is downloaded, and `OUTPUT_DIR` a directory of its own under `runner.temp`. A glue step
-> copies `published.json`'s `pushed` and `notesPosted` into the step outputs the rescue and the
-> failure comment read. That comment reads, on a finished agent's run, the command's
-> `failure_reason.txt`, or failing it the loop token's mint's; otherwise the runner's, or failing
-> it `fix:bundle`'s.
+> artifact is downloaded, and `OUTPUT_DIR` a directory of its own under `runner.temp`, which
+> `fix:conclude` reads as its `PUBLISH_DIR`.
+
+### `fix:conclude`
+
+Ends every fix run, success included, in the loop's one order: every result posted, then
+`agent:fix` off, then `agent:blocked` where the run stopped. It runs no model. It is told how the
+run went rather than reading it off which steps ran: the gate's decision and result, the agent's
+job's result, whether that job ran out of time, and the outcome of each step the orchestrator ran
+before it, and it works out the ending from them. Each is one of:
+
+- **A refusal** (`REFUSED` is `true`): nothing, since the gate said it and took the label off.
+- **A pre-flight that did not decide** (`REFUSED` is empty): `agent:fix` off, and nothing else,
+  since nothing is known to say.
+- **A run that finished**, the agent's job and every step before this one: `agent:fix` off.
+  Every other word of it is `fix:publish`'s.
+- **A run that stopped**: the rescue, below; then the failure comment, `` **`agent:fix` stopped:** ``
+  and the reason as a sentence, the run's link, and the retry; then `agent:fix` off, then
+  `agent:blocked`. The reason is, where the agent's job finished, the first of the mint, the
+  download and `fix:publish` that did not succeed: a fixed sentence for the mint and the download,
+  `fix:publish`'s `failure_reason.txt`, or a cancel where that step was cancelled or skipped.
+  Otherwise, where the gate, the agent's job or a step was cancelled, a cancel, or the time limit
+  where `TIMED_OUT` is `true`; and failing that, the runner's `failure_reason.txt`, or
+  `fix:bundle`'s, or, where neither was written, that it gave no reason, or the time limit where
+  the agent's job failed and `TIMED_OUT` is `true`. The retry is to add `agent:review` where
+  `published.json` says it pushed, or posted a note, and to add `agent:fix` otherwise; a rescue is
+  named beside it, and is the retry where nothing else was.
+
+**The rescue.** Only on a run that stopped, where `published.json` does not say it pushed, and
+where there is a `branch.bundle`. The bundle is checked as `fix:publish` checks it: it verifies in
+`CHECKOUT`, holds exactly `refs/heads/<BRANCH>`, and builds on `HEAD_SHA`. Its tip is pushed to
+`refs/heads/<RESCUE_BRANCH>` with the loop's token, leased on the rescue's tip as read, or on there
+being none. A bundle that fails a check, a rescue that cannot be read and a push GitHub refuses
+are each a warning, and nothing is rescued. With no loop token (`LOOP_TOKEN` empty, or
+`MINT_OUTCOME` not `success`) it pushes nothing, and the comment says the commits were not saved.
+
+Before any of these, the rescue-set-aside note, where the runner set a rescue aside and
+`fix:publish` did not run (`PUBLISH_OUTCOME` empty or `skipped`) to say it. Every write is
+tolerated: one GitHub refuses is a warning, so a run that cannot comment still takes its label
+off. The rescue is made with `LOOP_TOKEN`; everything else with `GH_TOKEN`.
+
+#### Inputs
+
+| Input | Kind | Default | What it is |
+|---|---|---|---|
+| `LOOP_TOKEN` | optional | `""` | The token whose writes start the loop's next workflow: the rescue's push. Empty where it was not minted, which is one of the endings this reports. |
+| `LOOP_TOKEN_SOURCE` | optional | `""` | Where `LOOP_TOKEN` came from: `app`, `pat` or `workflow`. |
+| `PR_NUMBER` | required | | The pull request. |
+| `BRANCH` | required | | Its head branch, which the bundle has to hold. |
+| `HEAD_SHA` | required | | The head the run started from, as the event that asked for it saw it: what the bundle has to build on. |
+| `RESCUE_BRANCH` | required | | Where a stopped run's commits are rescued to, and the only branch a rescue-set-aside note may name. |
+| `CHECKOUT` | required | | A checkout of the repository, at `HEAD_SHA`, the bundle is checked in and rescued from. |
+| `REFUSED` | optional | `""` | Accepts `true` or `false`: `false` where the gate claimed the run, `true` where it refused. Empty is a gate that died before it decided. |
+| `GATE_RESULT` | required | | How the gate's job ended: `success`, `failure`, `cancelled` or `skipped`. |
+| `AGENT_RESULT` | required | | How the agent's job ended: `success`, `failure`, `cancelled` or `skipped`. |
+| `TIMED_OUT` | optional | `""` | `true` where the agent's job ran its whole limit. |
+| `TIMEOUT_MINUTES` | optional | `""` | That limit, for the comment. |
+| `MINT_OUTCOME` | optional | `""` | The outcome of minting `LOOP_TOKEN`: `success`, `failure`, `cancelled` or `skipped`. Empty is not run. |
+| `DOWNLOAD_OUTCOME` | optional | `""` | The same, for fetching the agent's hand-over. |
+| `PUBLISH_OUTCOME` | optional | `""` | The same, for `fix:publish`. |
+| `PUBLISH_DIR` | directory | | `fix:publish`'s `OUTPUT_DIR`. Reads `published.json` (where written) and `failure_reason.txt` (where written). |
+| `FIX_DIR` | directory | | The `fix` runner's `OUTPUT_DIR`. Reads `failure_reason.txt` (where written) and `rescue_ignored.json` (where written). |
+| `BUNDLE_DIR` | directory | | `fix:bundle`'s `OUTPUT_DIR`. Reads `branch.bundle` (where written) and `failure_reason.txt` (where written). |
+| `GITHUB_SERVER_URL` | optional | `""` | With the next two, the link to the run the failure comment names. |
+| `GITHUB_REPOSITORY` | optional | `""` | See `GITHUB_SERVER_URL`. |
+| `GITHUB_RUN_ID` | optional | `""` | See `GITHUB_SERVER_URL`. |
+
+#### Outputs
+
+| Output | When it is written |
+|---|---|
+| `write_log.jsonl` | Every write as it lands, one JSON line each, and a last line for how the command ended, as `review:conclude`'s. Not written where it wrote nothing. |
+
+**`doctor` cannot check this.** These tables are the command's, for the reason §6 gives.
+
+#### What it reads from the record
+
+- `RESCUE_BRANCH`'s tip, where it rescues, which the push is leased on; a 404 is no rescue yet.
+
+**`doctor` cannot check this.** The record is written by the orchestrator's posting code, for the reason §4.3 gives.
+
+> **Actions orchestrator:** the publish job's step after `fix:publish`, run `always()`, from
+> `RUNNER_TEMP` and working in the job's one checkout. It is told the gate's `refused` output and
+> result, the agent's job's result and its `timed-out` output, the limit as
+> `AGENT_TIMEOUT_MINUTES` or 30, and the outcomes of the mint, the download and `fix:publish`.
+> `timed-out` is the agent's job's last step's, `always()`, which compares the time since the
+> gate's clock with the limit, less a minute, wherever that job did not succeed: glue only
+> Actions can do, and the one output that job declares. `PUBLISH_DIR` is `fix:publish`'s
+> `OUTPUT_DIR`, and `FIX_DIR` and `BUNDLE_DIR` where the agent's artifact is downloaded, a
+> directory of its own under `runner.temp`. It is handed both tokens, the loop's empty where the
+> mint failed; with `fix:publish`, the only steps in the job that are.
 
 ## 10. `update-branch`
 

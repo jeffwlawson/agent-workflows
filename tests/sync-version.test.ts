@@ -213,10 +213,11 @@ const ACTION_COUNT = Object.values(ACTION_SITES).reduce((sum, actions) => sum + 
  * `review:collect-checks` (#421), `review:red-check-place` and
  * `review:red-check-classify` (#422), `review:publish` (#417),
  * `review:conclude` (#419) and `review:advance` (#423) beside the runner,
- * and in `fix.yml` `fix:bundle` (#472) and `fix:publish` (#468).
+ * and in `fix.yml` `fix:bundle` (#472), `fix:publish` (#468) and
+ * `fix:conclude` (#469).
  */
 const PACKAGE_SITES: Readonly<Record<string, number>> = {
-  ".github/workflows/fix.yml": 3,
+  ".github/workflows/fix.yml": 4,
   ".github/workflows/follow-ups.yml": 1,
   ".github/workflows/implement-prd.yml": 1,
   ".github/workflows/implement.yml": 1,

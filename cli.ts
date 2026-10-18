@@ -306,6 +306,11 @@ export const SUBCOMMANDS: Readonly<Record<string, Subcommand>> = {
     async () => (await import("./fix/publish.js")).publish,
     "Push a fix run's commits and post its replies, comments and notes, then hand it on (no model).",
   ),
+  "fix:conclude": writingCommand(
+    "fix:conclude",
+    async () => (await import("./fix/conclude.js")).conclude,
+    "End a fix run however it ended: its rescue, its failure comment and its label (no model).",
+  ),
   "follow-ups:file": command(
     "follow-ups:file",
     async () => (await import("./follow-ups/file.js")).file,

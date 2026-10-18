@@ -13,9 +13,10 @@ import { SUBPROCESS_TIMEOUT } from "../vitest.config.js";
  * `origin`, a clone as the publish job's checkout, and a second clone standing
  * in for the agent's runner, which hands over a bundle.
  *
- * - `Rescue the agent's commits`, in fix's and implement-prd's publish jobs:
- *   pushes a stopped run's commits to the rescue branch and nowhere else,
- *   overwrites an earlier rescue, and pushes nothing where there were none.
+ * - `Rescue the agent's commits`, in implement-prd's publish job: pushes a
+ *   stopped run's commits to the rescue branch and nowhere else, overwrites
+ *   an earlier rescue, and pushes nothing where there were none. Fix's is
+ *   `fix:conclude`'s (#469), held in `tests/fix/conclude.test.ts`.
  * - The agent's job's prepare step: fetches the rescue branch to where the
  *   runner looks for it (`rescueRef`), and nothing where there is none.
  *
@@ -186,8 +187,11 @@ const rescue = (w: World, c: Case): Outcome => {
   };
 };
 
+/** Where the rescue is still a shell step. */
+const RESCUING = CASES.filter((c) => c.file !== "fix.yml");
+
 describe.skipIf(!CAN_RUN)("a stopped run's commits are rescued to a side branch", () => {
-  it.each(CASES)(
+  it.each(RESCUING)(
     "$file: pushes the agent's commits to $rescue, names it, and leaves the work branch alone",
     (c) => {
       const w = world(c);
@@ -206,7 +210,7 @@ describe.skipIf(!CAN_RUN)("a stopped run's commits are rescued to a side branch"
     CEILING,
   );
 
-  it.each(CASES)(
+  it.each(RESCUING)(
     "$file: pushes nothing where the run made no commits",
     (c) => {
       const w = world(c);
@@ -224,7 +228,7 @@ describe.skipIf(!CAN_RUN)("a stopped run's commits are rescued to a side branch"
    * A run that resumed from a rescue and stopped again holds everything the
    * rescue held, so its own replaces it.
    */
-  it.each(CASES)(
+  it.each(RESCUING)(
     "$file: overwrites an earlier rescue",
     (c) => {
       const w = world(c);
@@ -243,7 +247,7 @@ describe.skipIf(!CAN_RUN)("a stopped run's commits are rescued to a side branch"
   );
 
   /** Checked as the push is, and a bundle that fails the check is not rescued, nor fails the run. */
-  it.each(CASES)(
+  it.each(RESCUING)(
     "$file: rescues nothing that does not build on the head the run started from",
     (c) => {
       const w = world(c);

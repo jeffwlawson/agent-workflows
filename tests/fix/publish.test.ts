@@ -666,14 +666,15 @@ describe("fix's record strings are written from fix/ alone", () => {
   });
 
   it.each([
-    ["renderConversationOutcomes(", []],
-    ["renderTopLevelComment(", []],
-    ["renderOutOfScopeNote(", []],
-    // `implement-prd` keeps its own note until it moves.
-    ["ignoredNote(", [path.join("implement-prd", "implement-prd.ts")]],
-  ] as const)("calls %s only from fix/", (call, besides) => {
-    const callers = SOURCES.filter((file) => text(file).includes(call) && !text(file).includes(`export const ${call.slice(0, -1)} =`));
+    ["renderConversationOutcomes(", [path.join("fix", "publish.ts")]],
+    ["renderTopLevelComment(", [path.join("fix", "publish.ts")]],
+    ["renderOutOfScopeNote(", [path.join("fix", "publish.ts")]],
+    // Fix's through the note both its commands post (#469), and
+    // `implement-prd` keeps its own until it moves.
+    ["ignoredNote(", [path.join("fix", "hand-over.ts"), path.join("implement-prd", "implement-prd.ts")]],
+  ] as const)("calls %s only from fix/", (call, callers) => {
+    const calling = SOURCES.filter((file) => text(file).includes(call) && !text(file).includes(`export const ${call.slice(0, -1)} =`));
 
-    expect(callers.sort()).toEqual([path.join("fix", "publish.ts"), ...besides].sort());
+    expect(calling.sort()).toEqual([...callers].sort());
   });
 });

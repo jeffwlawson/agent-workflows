@@ -422,7 +422,7 @@ const LOOP = {
 
 /**
  * The same two, for a command that has to run where the loop's token was
- * never minted: `review:conclude` and `review:advance`, since a failed mint
+ * never minted: `review:conclude`, `review:advance` and `fix:conclude`, since a failed mint
  * is one of the endings each reports (ADR 0004). Empty is "no loop token", and the command makes no
  * write that needs one.
  */
@@ -484,6 +484,41 @@ const FIX_BUNDLE = {
     HEAD_SHA: REQUIRED,
   },
   outputs: [...EVERY_SUBCOMMAND_OUTPUTS, "branch.bundle"],
+} as const satisfies CommandContract;
+
+/** How a job ended, as Actions' `needs.<job>.result` says it. */
+const RESULTS = ["success", "failure", "cancelled", "skipped"] as const satisfies Accepts;
+
+/**
+ * `fix:publish`, declared ahead of `COMMANDS` so that `fix:conclude` can read
+ * its outputs (`readsFromCommand`). See `COMMANDS`.
+ */
+const FIX_PUBLISH = {
+  inputs: {
+    ...EVERY_SUBCOMMAND,
+    ...LOOP,
+    PR_NUMBER: REQUIRED,
+    BRANCH: REQUIRED,
+    HEAD_SHA: REQUIRED,
+    RESCUE_BRANCH: REQUIRED,
+    AGENT_RESULT: { required: true, accepts: RESULTS },
+    CHECKOUT: REQUIRED,
+    HEAD_WAIT_SECONDS: { required: false, default: "60" },
+    HEAD_POLL_SECONDS: { required: false, default: "5" },
+    FIX_DIR: readsFrom("fix", {
+      "nothing_to_do.txt": "sometimes",
+      "rescue_ignored.json": "sometimes",
+      "round_header.txt": "sometimes",
+      "thread_outcomes.json": "sometimes",
+      "conversation_outcomes.json": "sometimes",
+      "top_level_comments.json": "sometimes",
+      "out_of_scope_notes.json": "sometimes",
+    }),
+    BUNDLE_DIR: readsFromCommand("fix:bundle", FIX_BUNDLE, {
+      "branch.bundle": "sometimes",
+    }),
+  },
+  outputs: [...EVERY_SUBCOMMAND_OUTPUTS, "published.json", WRITE_LOG],
 } as const satisfies CommandContract;
 
 /**
@@ -588,11 +623,22 @@ const REVIEW_RED_CHECK_PLACE = {
  *   run started from as the label's event saw it, never a file the agent's
  *   job wrote. `AGENT_RESULT` is how the agent's job ended: on any ending but
  *   `success` it says only that the rescue was set aside, where the runner
- *   set one aside, since the rest is the failure arm's. `HEAD_WAIT_SECONDS`
+ *   set one aside, since the rest is `fix:conclude`'s. `HEAD_WAIT_SECONDS`
  *   and `HEAD_POLL_SECONDS` bound the wait for the pull request to show the
  *   pushed head before the re-review is asked for. `published.json` is
  *   whether it pushed, the pushed head, whether a note went up and whether
  *   there was nothing to do, written as each becomes true.
+ * - `fix:conclude` ends every fix run, success included: a stopped run's
+ *   commits rescued to `RESCUE_BRANCH` where nothing was pushed, the
+ *   failure comment, `agent:fix` off and `agent:blocked`. It is told how the
+ *   gate and the agent's job ended (`REFUSED`, `GATE_RESULT`,
+ *   `AGENT_RESULT`), whether the agent's job ran out of time (`TIMED_OUT`,
+ *   `TIMEOUT_MINUTES`), and the publish job's steps' outcomes
+ *   (`MINT_OUTCOME`, `DOWNLOAD_OUTCOME`, `PUBLISH_OUTCOME`), and reads what
+ *   each producer left from its own directory: `fix:publish`'s through
+ *   `PUBLISH_DIR`, the runner's reason and set-aside rescue through
+ *   `FIX_DIR`, and `fix:bundle`'s bundle and reason through `BUNDLE_DIR`,
+ *   checked in `CHECKOUT` against `HEAD_SHA` before it is rescued.
  * - `review:advance` moves a PRD PR's chain on after a review, or parks it:
  *   the progress table and status line for how the round ended, then
  *   `agent:implement` back on the parent on a slice round's approval, or the
@@ -604,32 +650,39 @@ const REVIEW_RED_CHECK_PLACE = {
  */
 export const COMMANDS = {
   "fix:bundle": FIX_BUNDLE,
-  "fix:publish": {
+  "fix:publish": FIX_PUBLISH,
+  "fix:conclude": {
     inputs: {
       ...EVERY_SUBCOMMAND,
-      ...LOOP,
+      ...LOOP_IF_MINTED,
       PR_NUMBER: REQUIRED,
       BRANCH: REQUIRED,
       HEAD_SHA: REQUIRED,
       RESCUE_BRANCH: REQUIRED,
-      AGENT_RESULT: { required: true, accepts: ["success", "failure", "cancelled", "skipped"] },
       CHECKOUT: REQUIRED,
-      HEAD_WAIT_SECONDS: { required: false, default: "60" },
-      HEAD_POLL_SECONDS: { required: false, default: "5" },
+      REFUSED: { required: false, default: "", accepts: ["true", "false"] },
+      GATE_RESULT: { required: true, accepts: RESULTS },
+      AGENT_RESULT: { required: true, accepts: RESULTS },
+      TIMED_OUT: EMPTY,
+      TIMEOUT_MINUTES: EMPTY,
+      MINT_OUTCOME: EMPTY,
+      DOWNLOAD_OUTCOME: EMPTY,
+      PUBLISH_OUTCOME: EMPTY,
+      PUBLISH_DIR: readsFromCommand("fix:publish", FIX_PUBLISH, {
+        "published.json": "sometimes",
+        "failure_reason.txt": "sometimes",
+      }),
       FIX_DIR: readsFrom("fix", {
-        "nothing_to_do.txt": "sometimes",
+        "failure_reason.txt": "sometimes",
         "rescue_ignored.json": "sometimes",
-        "round_header.txt": "sometimes",
-        "thread_outcomes.json": "sometimes",
-        "conversation_outcomes.json": "sometimes",
-        "top_level_comments.json": "sometimes",
-        "out_of_scope_notes.json": "sometimes",
       }),
       BUNDLE_DIR: readsFromCommand("fix:bundle", FIX_BUNDLE, {
         "branch.bundle": "sometimes",
+        "failure_reason.txt": "sometimes",
       }),
+      ...RUN_LINK,
     },
-    outputs: [...EVERY_SUBCOMMAND_OUTPUTS, "published.json", WRITE_LOG],
+    outputs: [...EVERY_SUBCOMMAND_OUTPUTS, WRITE_LOG],
   },
   "follow-ups:file": {
     inputs: {

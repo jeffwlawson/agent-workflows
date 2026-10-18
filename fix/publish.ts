@@ -9,8 +9,8 @@ import { MAX_OUT_OF_SCOPE_NOTES, renderOutOfScopeNote } from "../shared/fix-note
 import { MAX_TOP_LEVEL_COMMENTS, renderConversationOutcomes, renderTopLevelComment } from "../shared/fix-output.js";
 import { choice, json, list, matching, object, optional, readDirectory, target, text, type Parser } from "../shared/hand-over.js";
 import { FIX_LABEL, PRD_BRANCH_PREFIX, REVIEW_LABEL } from "../shared/record.js";
-import { ignoredNote } from "../shared/rescue.js";
 import { headed, ROUND_HEADER } from "../shared/round-header.js";
+import { checkBundle, present, rescueIgnored, setAsideNote } from "./hand-over.js";
 
 type Declared = (typeof COMMANDS)["fix:publish"];
 type Inputs = InputValues<Declared["inputs"]>;
@@ -22,8 +22,8 @@ type Io = CheckoutIo<Declared["outputs"]>;
  * threads, posts the conversation record, the top-level comments and the
  * out-of-scope notes, and then asks for the re-review or marks the pull
  * request ready, in that order and with the text the loop has always posted.
- * What happens after it, the rescue and the failure comment, is still the
- * publish job's YAML.
+ * What happens after it, the rescue, the failure comment and the label, is
+ * `fix:conclude`'s (#469).
  *
  * **It writes every final string itself** (ADR 0007). The runner hands over
  * decisions and raw text: each outcome's id, status and reply, each comment's
@@ -79,7 +79,7 @@ export const publish = async (inputs: Inputs, io: Io): Promise<void> => {
   // agent's to write and the review's to judge, and what it is is ours.
   const tip =
     finished && !nothing && bundled["branch.bundle"] !== undefined
-      ? await checkBundle(io, path.join(inputs.BUNDLE_DIR, "branch.bundle"), branch, started)
+      ? await checkBundle(io.git, path.join(inputs.BUNDLE_DIR, "branch.bundle"), branch, started, "pushed")
       : undefined;
 
   const { loop, workflow } = io.writers(limits(threads.size));
@@ -92,12 +92,11 @@ export const publish = async (inputs: Inputs, io: Io): Promise<void> => {
   // nobody built on is not dropped silently.
   if (rescue !== undefined) {
     await tolerated(
-      () => workflow.comment(pr, ignoredNote(FIX_LABEL, rescue.branch, "this pull request's head")),
+      () => workflow.comment(pr, setAsideNote(rescue.branch)),
       `Could not say on PR #${pr} that ${rescue.branch} was set aside.`,
     );
   }
-  // Every other ending is the failure arm's, which is still the publish
-  // job's YAML.
+  // Every other ending is `fix:conclude`'s.
   if (!finished) {
     console.log(`The agent's job ended ${inputs.AGENT_RESULT}, so nothing is pushed or posted here.`);
     return;
@@ -231,9 +230,6 @@ const NO_REVIEW_STARTS =
 
 const STATUSES = ["addressed", "declined"] as const;
 
-/** A file whose presence is the whole of it. */
-const present: Parser<true> = () => true;
-
 /**
  * The runner's files, each read strictly: an id has to be one the command
  * read for itself, a status one of its two, the header of the round header's
@@ -247,12 +243,7 @@ const handOverParsers = (known: {
   readonly rescueBranch: string;
 }) => ({
   "nothing_to_do.txt": present,
-  "rescue_ignored.json": json(
-    object({
-      branch: target(new Set([known.rescueBranch]), `this pull request's rescue branch, \`${known.rescueBranch}\``),
-      movedPast: matching(/[0-9a-f]{40}/, "a full commit id"),
-    }),
-  ),
+  "rescue_ignored.json": rescueIgnored(known.rescueBranch),
   "round_header.txt": ((value, at) => matching(ROUND_HEADER, "a round header")(String(value).trim(), at)) satisfies Parser<string>,
   "thread_outcomes.json": json(
     list(
@@ -273,35 +264,6 @@ const handOverParsers = (known: {
   "top_level_comments.json": json(list(object({ body: text }), { max: MAX_TOP_LEVEL_COMMENTS })),
   "out_of_scope_notes.json": json(list(object({ title: text, body: text, location: optional(text) }), { max: MAX_OUT_OF_SCOPE_NOTES })),
 });
-
-/**
- * The bundle's one tip, where it is intact, holds exactly the pull request's
- * branch and nothing else, and builds on the head this run was started for.
- * Each failure is its own sentence, and nothing has been written yet.
- */
-const checkBundle = async (io: Io, bundle: string, branch: string, started: string): Promise<string> => {
-  let heads;
-  try {
-    heads = await io.git.verifyBundle(bundle);
-  } catch (error) {
-    throw new Error("The agent's commits arrived damaged or incomplete, so nothing was pushed.", { cause: error });
-  }
-  const [head, ...others] = heads;
-  if (head === undefined || others.length > 0 || head.ref !== `refs/heads/${branch}`) {
-    throw new Error(`The agent's commits arrived on a branch other than \`${branch}\`, or beside other branches, so nothing was pushed.`);
-  }
-  let builds: boolean;
-  try {
-    builds = await io.git.isAncestor(started, head.commit);
-  } catch (error) {
-    throw new Error(
-      `Couldn't tell whether the agent's commits build on the PR's head as this run found it, so nothing was pushed: ${describe(error)}`,
-      { cause: error },
-    );
-  }
-  if (!builds) throw new Error("The agent's commits don't build on the PR's head as this run found it, so nothing was pushed.");
-  return head.commit;
-};
 
 /**
  * The rescue branch, deleted under a lease on its tip as read here, so one

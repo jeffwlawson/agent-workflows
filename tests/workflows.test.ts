@@ -9990,7 +9990,7 @@ describe("fix's publish job posts the round with fix:publish", () => {
       "always() && steps.token.outcome == 'success' && needs.fix.result != 'skipped' && (needs.fix.result != 'success' || !cancelled())",
     );
     expect(command()?.env?.["OUTPUT_DIR"]).toBe("${{ runner.temp }}/publish");
-    expect(blocked).toContain('reason_file="${RUNNER_TEMP}/publish/failure_reason.txt"');
+    expect(blocked).toContain('candidates=("${RUNNER_TEMP}/publish/failure_reason.txt" "${RUNNER_TEMP}/failure_reason.txt")');
   });
 
   /** Every write it made, kept for whoever audits the run, by the path it declares. */

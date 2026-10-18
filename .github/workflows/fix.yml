@@ -913,12 +913,25 @@ jobs:
           RESCUED: ${{ steps.rescue.outputs.branch }}
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          # The runner's reason, or on a finished agent's run the reason
-          # `fix:publish` stopped with, in its own directory.
-          reason_file="${RUNNER_TEMP}/failure_reason.txt"
+          # The first reason there is, of the ones this ending can have. On a
+          # finished agent's run, the one `fix:publish` stopped with, in its
+          # own directory, and failing that the loop token's mint's, which
+          # `loop-token` writes at `RUNNER_TEMP` where nothing is there yet:
+          # a runner that finished wrote none, so that file is the mint's.
+          # Otherwise the runner's, and failing that `fix:bundle`'s, in its
+          # own directory, for an agent's job that failed only at the bundle.
           if [ "$AGENT_RESULT" = "success" ]; then
-            reason_file="${RUNNER_TEMP}/publish/failure_reason.txt"
+            candidates=("${RUNNER_TEMP}/publish/failure_reason.txt" "${RUNNER_TEMP}/failure_reason.txt")
+          else
+            candidates=("${RUNNER_TEMP}/failure_reason.txt" "${RUNNER_TEMP}/bundle/failure_reason.txt")
           fi
+          reason_file="${candidates[0]}"
+          for candidate in "${candidates[@]}"; do
+            if [ -f "$candidate" ]; then
+              reason_file="$candidate"
+              break
+            fi
+          done
           reason="It stopped without giving a reason. The workflow run's log has the details."
           if [ -f "$reason_file" ]; then
             reason=$(cat "$reason_file")

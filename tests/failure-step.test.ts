@@ -162,7 +162,10 @@ const run = (
 
   fs.mkdirSync(bin);
   fs.writeFileSync(path.join(bin, "gh"), '#!/bin/sh\nprintf \'%s\\n\' "$*" >> "$GH_LOG"\n', { mode: 0o755 });
-  for (const [name, text] of Object.entries(files)) fs.writeFileSync(path.join(temp, name), text);
+  for (const [name, text] of Object.entries(files)) {
+    fs.mkdirSync(path.dirname(path.join(temp, name)), { recursive: true });
+    fs.writeFileSync(path.join(temp, name), text);
+  }
   fs.writeFileSync(script, runOf(c));
 
   const result = spawnSync("bash", ["-e", script], {
@@ -355,6 +358,54 @@ describe.skipIf(!CAN_RUN)("a failure step says whether the run failed, timed out
       expect(outcome.comment).toContain("cancelled");
       expect(outcome.comment).not.toContain("timed out");
     });
+
+    /**
+     * Fix's reason files each sit where their producer wrote them (#468):
+     * `fix:publish`'s under `publish/`, `fix:bundle`'s under `bundle/`, and
+     * the loop token's mint's at `RUNNER_TEMP`. Each ending reads the first
+     * of the ones it can have, so none of them is dropped for "no reason".
+     */
+    if (command === "fix") {
+      const MINT = "Couldn't mint a token for the loop's GitHub App, so nothing was written with it.\n";
+
+      it("reads fix:publish's reason on a finished agent's run, ahead of any other", () => {
+        const outcome = run(implement, "failure", 120, String(implement.minutes), "false", {
+          "publish/failure_reason.txt": "Couldn't add `agent:review` after this run, so no re-review was requested.\n",
+          "failure_reason.txt": MINT,
+        }, { AGENT_RESULT: "success" });
+
+        expect(outcome.comment).toContain("Couldn't add `agent:review` after this run");
+        expect(outcome.comment).not.toContain("mint");
+      });
+
+      it("reads the mint's reason on a finished agent's run where fix:publish never ran", () => {
+        const outcome = run(implement, "failure", 120, String(implement.minutes), "false", { "failure_reason.txt": MINT }, {
+          AGENT_RESULT: "success",
+        });
+
+        expect(outcome.comment).toContain("Couldn't mint a token for the loop's GitHub App");
+        expect(outcome.comment).not.toContain("without giving a reason");
+      });
+
+      it("reads fix:bundle's reason where the agent's job failed only at the bundle", () => {
+        const outcome = run(implement, "failure", implement.minutes * 60, String(implement.minutes), "false", {
+          "bundle/failure_reason.txt": "Couldn't bundle the agent's commits on `x` ahead of y.\n",
+        });
+
+        expect(outcome.comment).toContain("Couldn't bundle the agent's commits");
+        expect(outcome.comment).not.toContain("timed out");
+      });
+
+      it("reads the runner's reason ahead of fix:bundle's", () => {
+        const outcome = run(implement, "failure", 120, String(implement.minutes), "false", {
+          "failure_reason.txt": "The runner wrote this.\n",
+          "bundle/failure_reason.txt": "Couldn't bundle the agent's commits.\n",
+        });
+
+        expect(outcome.comment).toContain("The runner wrote this.");
+        expect(outcome.comment).not.toContain("bundle");
+      });
+    }
 
     /** implement-prd's catch-up, between its gate and its agent's job. */
     if (command === "implement-prd") {

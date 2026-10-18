@@ -1471,7 +1471,9 @@ the command; every other write is tolerated, a warning where GitHub refuses it.
 > event's, `AGENT_RESULT` the agent's job's result, `FIX_DIR` and `BUNDLE_DIR` where the agent's
 > artifact is downloaded, and `OUTPUT_DIR` a directory of its own under `runner.temp`. A glue step
 > copies `published.json`'s `pushed` and `notesPosted` into the step outputs the rescue and the
-> failure comment read, which reads the command's `failure_reason.txt` on a finished agent's run.
+> failure comment read. That comment reads, on a finished agent's run, the command's
+> `failure_reason.txt`, or failing it the loop token's mint's; otherwise the runner's, or failing
+> it `fix:bundle`'s.
 
 ## 10. `update-branch`
 

@@ -100,23 +100,31 @@ export const conclude = async (inputs: Inputs, io: Io): Promise<void> => {
 };
 
 /**
- * The runner's two files, which the agent's runner can write anything into.
- * One that does not read is said and skipped rather than stopping this: a
- * hand-over nobody can trust must not keep the run's label on. On a finished
- * agent's run `fix:publish` refuses the same file, and the comment gives its
- * reason.
+ * The runner's two files, which the agent's runner can write anything into,
+ * each read on its own. The reason is text, which always reads. The
+ * set-aside note is checked against this pull request's rescue branch, and
+ * one that does not read is said and skipped rather than stopping this: a
+ * hand-over nobody can trust must not keep the run's label on, nor cost the
+ * comment the reason the runner gave beside it. On a finished agent's run
+ * `fix:publish` refuses the same note, and the comment gives its reason.
  */
 const readRunner = (
   inputs: Inputs,
 ): { readonly "failure_reason.txt"?: string | undefined; readonly "rescue_ignored.json"?: { readonly branch: string } | undefined } => {
+  const declared = COMMANDS["fix:conclude"].inputs.FIX_DIR;
+  const skipped = () => undefined;
+  const reason = readDirectory(declared, inputs.FIX_DIR, { "failure_reason.txt": text, "rescue_ignored.json": skipped })[
+    "failure_reason.txt"
+  ];
   try {
-    return readDirectory(COMMANDS["fix:conclude"].inputs.FIX_DIR, inputs.FIX_DIR, {
-      "failure_reason.txt": text,
+    const note = readDirectory(declared, inputs.FIX_DIR, {
+      "failure_reason.txt": skipped,
       "rescue_ignored.json": rescueIgnored(inputs.RESCUE_BRANCH),
-    });
+    })["rescue_ignored.json"];
+    return { "failure_reason.txt": reason, "rescue_ignored.json": note };
   } catch (error) {
-    console.log(`::warning::${describe(error)} So nothing the runner handed over is read here.`);
-    return {};
+    console.log(`::warning::${describe(error)} So no rescue is said to have been set aside here.`);
+    return { "failure_reason.txt": reason };
   }
 };
 

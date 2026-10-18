@@ -698,9 +698,24 @@ describe("fix:conclude says a rescue was set aside where fix:publish did not", (
   });
 
   /** The runner's files are the agent's to write: one that does not read is said, and the run still ends. */
+  it.each([
+    ["naming another branch", { branch: "main", movedPast: EARLIER }, /rescue_ignored\.json `branch` is "main"/],
+    ["with a movedPast that is not a commit", { branch: RESCUE, movedPast: "HEAD~1" }, /rescue_ignored\.json `movedPast` is "HEAD~1"/],
+    ["with a field it does not declare", { branch: RESCUE, movedPast: EARLIER, extra: 1 }, /rescue_ignored\.json has `extra`/],
+    ["that is not JSON", "{not json", /rescue_ignored\.json is not JSON/],
+  ] as const)("posts no note %s, and still gives the runner's reason", async (_, note, warned) => {
+    put("fix", "rescue_ignored.json", note);
+    put("fix", "failure_reason.txt", "The runner wrote this.\n");
+
+    await run(INPUTS(AGENT_FAILED({ PUBLISH_OUTCOME: "skipped" })));
+
+    expect(writes()).toEqual(STOPPED_WRITES);
+    expect(comment()).toContain("stopped:** The runner wrote this.\n");
+    expect(warnings().some((line) => warned.test(line))).toBe(true);
+  });
+
   it("posts no note naming another branch, and still ends the run", async () => {
     put("fix", "rescue_ignored.json", { branch: "main", movedPast: EARLIER });
-    put("fix", "failure_reason.txt", "The runner wrote this.\n");
 
     await run(INPUTS(AGENT_FAILED({ PUBLISH_OUTCOME: "skipped" })));
 

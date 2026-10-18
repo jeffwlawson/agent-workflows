@@ -5,6 +5,7 @@ import {
   type FollowUp,
   type NoteRuling,
 } from "./review-output.js";
+import { OUT_OF_SCOPE_NOTE_MARKER } from "./record.js";
 import { DEFAULT_SEVERITY } from "./review-findings.js";
 
 /**
@@ -36,17 +37,17 @@ export interface OutOfScopeNote {
   readonly location?: string;
 }
 
-/**
- * The selector a posted note carries, followed by the note itself as JSON. A
- * **selector, not a control**, exactly as `FOLLOW_UPS_MARKER` is: anyone who
- * can comment can type it, so the review reads a note only from a comment the
- * workflow bot posted (`isWorkflowBot`), never on the marker alone.
+/*
+ * `OUT_OF_SCOPE_NOTE_MARKER` (`shared/record.ts`) is the selector a posted
+ * note carries, followed by the note itself as JSON. A **selector, not a
+ * control**, exactly as `FOLLOW_UPS_MARKER` is: anyone who can comment can
+ * type it, so the review reads a note only from a comment the workflow bot
+ * posted (`isWorkflowBot`), never on the marker alone.
  *
  * A different string from `TOP_LEVEL_COMMENT_MARKER`, because the two are not
  * the same kind of thing to anything that reads them: a top-level comment is
  * said and done, and a note is owed a ruling.
  */
-export const OUT_OF_SCOPE_NOTE_MARKER = "agent-fix:out-of-scope";
 
 /**
  * Opens every posted note, so it stands out from the other comments the loop
@@ -102,8 +103,8 @@ export const parseOutOfScopeNotes = (value: unknown): OutOfScopeNote[] => {
 };
 
 /**
- * The comment the workflow posts for one note: the heading and the note for a
- * reader, then the note again as the payload the next review reads it from.
+ * The comment `fix:publish` posts for one note: the heading and the note for
+ * a reader, then the note again as the payload the next review reads it from.
  * Read back from the payload rather than from the prose, so nothing parses
  * Markdown to recover a title.
  */
@@ -146,19 +147,20 @@ const sameNote = (a: OutOfScopeNote, b: OutOfScopeNote): boolean =>
   a.title === b.title && a.body === b.body && a.location === b.location;
 
 /**
- * The comments to post, capped and deduped against the notes earlier runs
+ * The notes to post, capped and deduped against the notes earlier runs
  * already posted on this pull request, in the spirit of `filterTopLevelComments`:
  * the prompt says one or none is usual, and model behaviour is not taken on
- * trust. A note posted twice would be ruled on, and filed, twice.
+ * trust. A note posted twice would be ruled on, and filed, twice. Kept as
+ * data: `fix:publish` renders each (`renderOutOfScopeNote`).
  */
 export const filterOutOfScopeNotes = (
   notes: readonly OutOfScopeNote[],
   alreadyPosted: readonly string[] = [],
-): string[] => {
+): OutOfScopeNote[] => {
   const seen = alreadyPosted
     .map(readOutOfScopeNote)
     .filter((note): note is OutOfScopeNote => note !== undefined);
-  const kept: string[] = [];
+  const kept: OutOfScopeNote[] = [];
   let overCap = 0;
   for (const note of notes) {
     if (seen.some((prior) => sameNote(prior, note))) {
@@ -170,7 +172,7 @@ export const filterOutOfScopeNotes = (
       overCap += 1;
       continue;
     }
-    kept.push(renderOutOfScopeNote(note));
+    kept.push(note);
   }
   if (overCap > 0) {
     console.warn(

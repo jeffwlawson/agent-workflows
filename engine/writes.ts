@@ -5,7 +5,7 @@
  */
 import { GitHubError, type Transport } from "./github.js";
 import { toPullRequest, type RawPullRequest } from "./read.js";
-import type { Backend, Call, Tolerated } from "./writer.js";
+import type { Backend, Call, GitWriteType, Tolerated } from "./writer.js";
 
 /** A label that is not there to remove: the write is already done. */
 const LABEL_ABSENT: Tolerated = {
@@ -29,8 +29,11 @@ export const MARK_READY = `mutation($id:ID!){
   markPullRequestReadyForReview(input:{pullRequestId:$id}){clientMutationId}
 }`;
 
-/** The writes for `repo` (`owner/name`), over `transport`, which holds the token. */
-export const githubWrites = (repo: string, transport: Transport): Backend => {
+/**
+ * The writes for `repo` (`owner/name`), over `transport`, which holds the
+ * token: every write type but the git ones, which `gitWrites` makes.
+ */
+export const githubWrites = (repo: string, transport: Transport): Omit<Backend, GitWriteType> => {
   const issue = (number: number): string => `/repos/${repo}/issues/${number}`;
   const pull = (number: number): string => `/repos/${repo}/pulls/${number}`;
   const livePull = async (call: Call, number: number) =>
@@ -102,6 +105,10 @@ export const githubWrites = (repo: string, transport: Transport): Backend => {
         await call("reply", () => transport.graphql(REPLY_TO_THREAD, { threadId: thread.threadId, body: reply }));
       }
       await call("resolve", () => transport.graphql(RESOLVE_THREAD, { threadId: thread.threadId, reason: thread.reason }));
+      return { outcome: "applied" };
+    },
+    reply: async (call, reply) => {
+      await call("reply", () => transport.graphql(REPLY_TO_THREAD, { threadId: reply.threadId, body: reply.body }));
       return { outcome: "applied" };
     },
     editPullRequest: async (call, number, edit) => {

@@ -3,9 +3,9 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import { fileURLToPath } from "node:url";
 import { commonWriters } from "./shared/common.js";
-import type { CommandIo, OutputWriters, ReadingIo } from "./shared/command-io.js";
+import type { CheckoutIo, FetchingIo, OutputWriters, ReadingIo } from "./shared/command-io.js";
 import { COMMANDS, type Command, type Runner } from "./shared/contract.js";
-import { fail, readInputs, writers, type InputValues } from "./shared/env.js";
+import { fail, gitEnvironment, readInputs, writers, type InputValues } from "./shared/env.js";
 import { VERSION } from "./shared/manifest.js";
 import { SERVICE, type ServiceProcess } from "./service/settings.js";
 
@@ -145,25 +145,56 @@ const readingCommand = <C extends ReadingCommand>(
 });
 
 /**
+ * A command that reads GitHub and fetches from it into a checkout, and writes
+ * nothing to it: handed, besides its inputs, the reader and a fetcher, both
+ * over its `GH_TOKEN`, the fetcher working in its `CHECKOUT`, and its
+ * declared output files. No writer: a fetch changes the checkout alone.
+ */
+type FetchingCommand = {
+  [C in ReadingCommand]: (typeof COMMANDS)[C]["inputs"] extends { readonly CHECKOUT: unknown } ? C : never;
+}[ReadingCommand];
+
+const fetchingCommand = <C extends FetchingCommand>(
+  name: C,
+  load: () => Promise<(inputs: InputValues<(typeof COMMANDS)[C]["inputs"]>, io: FetchingIo<(typeof COMMANDS)[C]["outputs"]>) => Promise<unknown>>,
+  summary: string,
+): Subcommand => ({
+  kind: "command",
+  summary,
+  run: async (args) => {
+    refuseArguments(name, args);
+    const fn = await load();
+    const { liveFetchingIo } = await import("./shared/command-io.js");
+    const declared = COMMANDS[name];
+    const inputs = readInputs(declared.inputs);
+    const outputs = writers<(typeof COMMANDS)[C]["outputs"]>(declared.outputs);
+    try {
+      await fn(inputs, liveFetchingIo(inputs, outputs, { dir: inputs.CHECKOUT, env: gitEnvironment() }));
+    } catch (error) {
+      fail(error instanceof Error ? error.message : String(error));
+    }
+  },
+});
+
+/**
  * A command that writes through the engine's writer (ADR 0005): one that
- * declares the loop's token and a write log, and is handed, besides its
- * inputs, the real writers over both tokens and the reader, built here from
- * those inputs. Every write it makes is appended to `write_log.jsonl` as it
+ * declares a write log, and is handed, besides its inputs, the real writers
+ * over both tokens and the reader, built here from those inputs. One that
+ * declares no loop token, `fix:gate`, writes with the workflow's alone, and
+ * its `loop` writer holds no token, as one whose optional loop token is
+ * empty does. Every write it makes is appended to `write_log.jsonl` as it
  * lands, and the log's last line says how the command ended, whether it
- * returned or threw.
+ * returned or threw. Its git writes and reads are made in `CHECKOUT` where it
+ * declares one, and in the directory it runs in otherwise.
  */
 type WritingCommand = {
-  [C in Command]: (typeof COMMANDS)[C]["inputs"] extends { readonly LOOP_TOKEN: unknown }
-    ? "write_log.jsonl" extends (typeof COMMANDS)[C]["outputs"][number]
-      ? C
-      : never
-    : never;
+  [C in Command]: "write_log.jsonl" extends (typeof COMMANDS)[C]["outputs"][number] ? C : never;
 }[Command];
 
 const writingCommand = <C extends WritingCommand>(
   name: C,
   load: () => Promise<
-    (inputs: InputValues<(typeof COMMANDS)[C]["inputs"]>, io: CommandIo<(typeof COMMANDS)[C]["outputs"]>) => Promise<unknown>
+    (inputs: InputValues<(typeof COMMANDS)[C]["inputs"]>, io: CheckoutIo<(typeof COMMANDS)[C]["outputs"]>) => Promise<unknown>
   >,
   summary: string,
 ): Subcommand => ({
@@ -176,7 +207,13 @@ const writingCommand = <C extends WritingCommand>(
     const declared = COMMANDS[name];
     const inputs = readInputs(declared.inputs);
     const outputs = writers<(typeof COMMANDS)[C]["outputs"]>(declared.outputs);
-    const { io, end } = liveCommandIo(inputs, outputs, (line) => outputs.appendLine("write_log.jsonl", line));
+    const declaredValues = inputs as Readonly<Record<string, string>>;
+    const checkout = declaredValues["CHECKOUT"];
+    const tokens = { GH_REPO: inputs.GH_REPO, GH_TOKEN: inputs.GH_TOKEN, LOOP_TOKEN: declaredValues["LOOP_TOKEN"] ?? "" };
+    const { io, end } = liveCommandIo(tokens, outputs, (line) => outputs.appendLine("write_log.jsonl", line), {
+      dir: checkout ?? process.cwd(),
+      env: gitEnvironment(),
+    });
     try {
       await fn(inputs, io);
       end();
@@ -291,6 +328,31 @@ export const SUBCOMMANDS: Readonly<Record<string, Subcommand>> = {
     },
   },
   fix: runner("fix", () => import("./fix/fix.js")),
+  "fix:gate": writingCommand(
+    "fix:gate",
+    async () => (await import("./fix/gate.js")).gate,
+    "Refuse a fix run on a closed, moved or deleted pull request, or claim it and wait for a review's posting (no model).",
+  ),
+  "fix:prepare": fetchingCommand(
+    "fix:prepare",
+    async () => (await import("./fix/prepare.js")).prepare,
+    "Fetch the rescue branch an earlier stopped fix run left, for the runner to resume from (no model).",
+  ),
+  "fix:bundle": command(
+    "fix:bundle",
+    async () => (await import("./fix/bundle.js")).bundle,
+    "Bundle the agent's commits on a pull request's branch for the publish job (no model).",
+  ),
+  "fix:publish": writingCommand(
+    "fix:publish",
+    async () => (await import("./fix/publish.js")).publish,
+    "Push a fix run's commits and post its replies, comments and notes, then hand it on (no model).",
+  ),
+  "fix:conclude": writingCommand(
+    "fix:conclude",
+    async () => (await import("./fix/conclude.js")).conclude,
+    "End a fix run however it ended: its rescue, its failure comment and its label (no model).",
+  ),
   "follow-ups:file": command(
     "follow-ups:file",
     async () => (await import("./follow-ups/file.js")).file,

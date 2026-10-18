@@ -150,6 +150,7 @@ const collect = async (
     outputs: {
       writeJson: (name, value) => files.set(name, JSON.stringify(value)),
       writeText: (name, value) => files.set(name, value),
+      writeBytes: () => {},
       appendLine: () => {},
     },
   };

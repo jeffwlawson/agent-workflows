@@ -211,6 +211,7 @@ const run = async (inputs: Inputs = INPUTS()): Promise<void> => {
     outputs: {
       writeJson: (name, value) => files.set(name, value),
       writeText: (name, value) => files.set(name, value),
+      writeBytes: () => {},
       appendLine: () => {},
     },
   };
@@ -708,7 +709,7 @@ describe("review:publish when GitHub refuses or fails the review", () => {
     const io: CommandIo<(typeof COMMANDS)["review:publish"]["outputs"]> = {
       writers: (limits) => fakeWriters(github, ["loop", "workflow"] as const, limits).writers,
       github: { ...reader, reviews: () => Promise.reject(new Error("502 Bad Gateway")) },
-      outputs: { writeJson: () => {}, writeText: () => {}, appendLine: () => {} },
+      outputs: { writeJson: () => {}, writeText: () => {}, writeBytes: () => {}, appendLine: () => {} },
     };
 
     await expect(publish(INPUTS(), io)).rejects.toThrow(/whether it was posted anyway could not be read back \(502 Bad Gateway\)/);
@@ -732,7 +733,7 @@ describe("review:publish's writes are its own", () => {
         return fake.writers as Readonly<Record<Token, Writer>>;
       },
       github: reader,
-      outputs: { writeJson: () => {}, writeText: () => {}, appendLine: () => {} },
+      outputs: { writeJson: () => {}, writeText: () => {}, writeBytes: () => {}, appendLine: () => {} },
     };
 
     await publish(INPUTS(), io);

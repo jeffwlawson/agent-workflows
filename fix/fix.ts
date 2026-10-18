@@ -13,13 +13,7 @@ import {
 import { agentSandbox, claudeAgent, runWithExtraction } from "../shared/agent.js";
 import { RUNNERS } from "../shared/contract.js";
 import { filterOutOfScopeNotes } from "../shared/fix-notes.js";
-import {
-  filterConversationOutcomes,
-  filterOutcomes,
-  filterTopLevelComments,
-  fixOutputSchema,
-  renderConversationOutcomes,
-} from "../shared/fix-output.js";
+import { filterConversationOutcomes, filterOutcomes, filterTopLevelComments, fixOutputSchema } from "../shared/fix-output.js";
 import {
   describeUnreadable,
   fetchPullRequestFeedback,
@@ -28,8 +22,8 @@ import {
   surfaceText,
 } from "../shared/pr-feedback.js";
 import { firstLine, readPrdBranch } from "../shared/prd-round.js";
-import { fixHeader, fixScope, readRoundRecord, roundCounts, withHeader } from "../shared/round-header.js";
-import { ignoredNote, resumeFromRescue, resumeSection } from "../shared/rescue.js";
+import { fixHeader, fixScope, readRoundRecord, roundCounts } from "../shared/round-header.js";
+import { rescueRef, resumeFromRescue, resumeSection } from "../shared/rescue.js";
 import type { SliceRanges } from "../shared/slice-ranges.js";
 
 const INPUTS = readInputs(RUNNERS["fix"].inputs);
@@ -50,6 +44,10 @@ const RESCUE_BRANCH = INPUTS.RESCUE_BRANCH;
  * which fix round, numbered off the pull request's record, or which fix round
  * of a regular pull request. Undefined where the record cannot be read, and
  * the comments go out without one rather than with a number guessed.
+ *
+ * Handed over as plain text, `round_header.txt`, for `fix:publish` to put on
+ * each comment, which checks it has the header's shape. Nothing reads a fix
+ * comment's header back to count rounds, so the runner's text is safe there.
  */
 const readFixHeader = (): string | undefined => {
   try {
@@ -72,10 +70,6 @@ const readFixHeader = (): string | undefined => {
     return undefined;
   }
 };
-
-/** `body` under this run's header, where it has one. */
-const headed = (header: string | undefined, body: string): string =>
-  header === undefined || body === "" ? body : withHeader(header, body);
 
 try {
   const feedback = fetchPullRequestFeedback(INPUTS.GH_REPO, PR_NUMBER, INPUTS.BASE_REF, LOOP_ACCOUNTS);
@@ -107,6 +101,7 @@ try {
 
   const header = readFixHeader();
   console.log(`Header: ${header ?? "none, since the rounds could not be read"}.`);
+  if (header !== undefined) writeText("round_header.txt", header);
 
   // Context is gathered; the agent must not hold the GitHub token. This matters
   // more here than anywhere else — this workflow can push.
@@ -116,13 +111,14 @@ try {
 
   // An earlier run's unpushed commits (#303), where they still build on the
   // head this run was started for. Set aside, and said so on the pull
-  // request, where the head moved since they were saved.
+  // request by `fix:publish`, where the head moved since they were saved:
+  // handed over as the branch and its tip, the commit this run moved past.
   const resume = resumeFromRescue(RESCUE_BRANCH);
   if (resume.kind === "resumed") {
     console.log(`Resuming from ${resume.commits} commit(s) an earlier run saved on ${RESCUE_BRANCH}.`);
   } else if (resume.kind === "ignored") {
     console.log(`::warning::${RESCUE_BRANCH} was saved on an older head of ${BRANCH}, so this run starts fresh.`);
-    writeText("rescue_ignored.md", ignoredNote("agent:fix", RESCUE_BRANCH, "this pull request's head"));
+    writeJson("rescue_ignored.json", { branch: RESCUE_BRANCH, movedPast: git(["rev-parse", rescueRef(RESCUE_BRANCH)]).trim() });
   }
 
   const result = await runWithExtraction({
@@ -151,42 +147,34 @@ try {
   writeJson("thread_outcomes.json", outcomes);
 
   // The same report for the surface with no threads to reply into (#104). One
-  // comment per run rather than one per outcome, rendered here and posted by the
-  // workflow — and written unconditionally, empty when there is nothing to
-  // record, which is what the workflow's `-s` test reads.
+  // comment per run rather than one per outcome, rendered and posted by
+  // `fix:publish`, which reads each comment's author and link from GitHub
+  // itself. Written unconditionally, an empty list when there is nothing to
+  // record.
   const conversationOutcomes = filterConversationOutcomes(
     result.output.conversationOutcomes,
     feedback.conversationComments.map((comment) => comment.commentId),
   );
-  writeText(
-    "conversation_outcomes.md",
-    headed(header, renderConversationOutcomes(conversationOutcomes, feedback.conversationComments)),
-  );
+  writeJson("conversation_outcomes.json", conversationOutcomes);
 
   // Findings that belong to no thread, capped and deduped against what earlier
-  // runs already posted. Written unconditionally — an empty file is the normal
-  // case, and the workflow posts nothing for it.
+  // runs already posted, as their text alone. Written unconditionally: an
+  // empty list is the normal case, and `fix:publish` posts nothing for it.
   const topLevelComments = filterTopLevelComments(
     result.output.topLevelComments,
     feedback.priorTopLevelComments,
   );
-  writeJson(
-    "top_level_comments.json",
-    topLevelComments.map((comment) => ({ ...comment, body: headed(header, comment.body) })),
-  );
+  writeJson("top_level_comments.json", topLevelComments);
 
-  // What the run noticed outside this pull request's scope (#213), rendered
-  // for posting and deduped against the notes earlier runs posted. Written
-  // unconditionally like the comments above. The workflow posts them, and a
-  // run that posted one asks for the review that rules on it.
+  // What the run noticed outside this pull request's scope (#213), capped and
+  // deduped against the notes earlier runs posted, as each note's fields.
+  // Written unconditionally like the comments above. `fix:publish` renders and
+  // posts them, and a run that posted one asks for the review that rules on it.
   const outOfScopeNotes = filterOutOfScopeNotes(
     result.output.outOfScopeNotes,
     feedback.priorOutOfScopeNotes,
   );
-  writeJson(
-    "out_of_scope_notes.json",
-    outOfScopeNotes.map((body) => ({ body: headed(header, body) })),
-  );
+  writeJson("out_of_scope_notes.json", outOfScopeNotes);
 
   const after = sh("git rev-parse HEAD").trim();
   if (before === after) {

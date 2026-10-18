@@ -267,6 +267,13 @@ export interface CommandContract {
  *   `review:advance` parks the chain and writes the progress table from, as
  *   data (ADR 0007): written before the agent runs, and again once the
  *   review knows what it leaves open.
+ * - `fix`'s files are what `fix:publish` posts from, as data and raw text
+ *   with no marker and no finished comment (ADR 0006, ADR 0007): each thread
+ *   outcome's id, status and reply, each conversation outcome's comment id,
+ *   status and reply, each top-level comment's text, each out-of-scope note's
+ *   fields, the rescue it set aside (`rescue_ignored.json`), and the round
+ *   header the comments open with, as plain text (`round_header.txt`), where
+ *   the rounds could be read.
  */
 export const RUNNERS = {
   implement: {
@@ -353,9 +360,10 @@ export const RUNNERS = {
     outputs: [
       ...EVERY_SUBCOMMAND_OUTPUTS,
       "nothing_to_do.txt",
-      "rescue_ignored.md",
+      "rescue_ignored.json",
+      "round_header.txt",
       "thread_outcomes.json",
-      "conversation_outcomes.md",
+      "conversation_outcomes.json",
       "top_level_comments.json",
       "out_of_scope_notes.json",
     ],
@@ -414,7 +422,7 @@ const LOOP = {
 
 /**
  * The same two, for a command that has to run where the loop's token was
- * never minted: `review:conclude` and `review:advance`, since a failed mint
+ * never minted: `review:conclude`, `review:advance` and `fix:conclude`, since a failed mint
  * is one of the endings each reports (ADR 0004). Empty is "no loop token", and the command makes no
  * write that needs one.
  */
@@ -457,11 +465,74 @@ const REVIEW_PUBLISH = {
  * What a command that runs where no token is held reads of
  * `EVERY_SUBCOMMAND`: `OUTPUT_DIR`, and neither the repository nor the token,
  * since it reads no repository and is handed none. The red check's two
- * (#422), whose job runs the pull request's own code.
+ * (#422), whose job runs the pull request's own code, and `fix:bundle`
+ * (#472), which runs after the agent.
  */
 export const TOKENLESS = {
   OUTPUT_DIR: EVERY_SUBCOMMAND.OUTPUT_DIR,
 } as const satisfies Inputs;
+
+/**
+ * `fix:bundle`, declared ahead of `COMMANDS` so that `fix:publish` can read
+ * its outputs (`readsFromCommand`). See `COMMANDS`.
+ */
+const FIX_BUNDLE = {
+  inputs: {
+    ...TOKENLESS,
+    CHECKOUT: REQUIRED,
+    BRANCH: REQUIRED,
+    HEAD_SHA: REQUIRED,
+  },
+  outputs: [...EVERY_SUBCOMMAND_OUTPUTS, "branch.bundle"],
+} as const satisfies CommandContract;
+
+/**
+ * `fix:prepare`, declared ahead of `COMMANDS` so that `fix:conclude` can read
+ * its outputs (`readsFromCommand`). See `COMMANDS`.
+ */
+const FIX_PREPARE = {
+  inputs: {
+    ...EVERY_SUBCOMMAND,
+    CHECKOUT: REQUIRED,
+    RESCUE_BRANCH: REQUIRED,
+  },
+  outputs: [...EVERY_SUBCOMMAND_OUTPUTS],
+} as const satisfies CommandContract;
+
+/** How a job ended, as Actions' `needs.<job>.result` says it. */
+const RESULTS = ["success", "failure", "cancelled", "skipped"] as const satisfies Accepts;
+
+/**
+ * `fix:publish`, declared ahead of `COMMANDS` so that `fix:conclude` can read
+ * its outputs (`readsFromCommand`). See `COMMANDS`.
+ */
+const FIX_PUBLISH = {
+  inputs: {
+    ...EVERY_SUBCOMMAND,
+    ...LOOP,
+    PR_NUMBER: REQUIRED,
+    BRANCH: REQUIRED,
+    HEAD_SHA: REQUIRED,
+    RESCUE_BRANCH: REQUIRED,
+    AGENT_RESULT: { required: true, accepts: RESULTS },
+    CHECKOUT: REQUIRED,
+    HEAD_WAIT_SECONDS: { required: false, default: "60" },
+    HEAD_POLL_SECONDS: { required: false, default: "5" },
+    FIX_DIR: readsFrom("fix", {
+      "nothing_to_do.txt": "sometimes",
+      "rescue_ignored.json": "sometimes",
+      "round_header.txt": "sometimes",
+      "thread_outcomes.json": "sometimes",
+      "conversation_outcomes.json": "sometimes",
+      "top_level_comments.json": "sometimes",
+      "out_of_scope_notes.json": "sometimes",
+    }),
+    BUNDLE_DIR: readsFromCommand("fix:bundle", FIX_BUNDLE, {
+      "branch.bundle": "sometimes",
+    }),
+  },
+  outputs: [...EVERY_SUBCOMMAND_OUTPUTS, "published.json", WRITE_LOG],
+} as const satisfies CommandContract;
 
 /**
  * What the red check's two commands read beside their own: `TOKENLESS`, and
@@ -555,6 +626,50 @@ const REVIEW_RED_CHECK_PLACE = {
  *   they could not be counted: what it says no round is starting with
  *   (#425). `ended.json` is whether the head moved while the review ran, and
  *   the posted review's URL.
+ * - `fix:gate` refuses or claims the pull request before the agent's job:
+ *   a closed or merged one, or one whose `BRANCH` tip cannot be read, is
+ *   gone or is not `HEAD_SHA`, is refused on the pull request, and one it
+ *   claims has the permission probe, `agent:blocked` off and the wait,
+ *   bounded by `POST_WAIT_SECONDS` and polled every `POST_POLL_SECONDS`,
+ *   while a review is posting. `HEAD_SHA`, `PR_STATE` and `PR_MERGED` are
+ *   the pull request as the label's event saw it. It declares no loop token:
+ *   every write it makes is the workflow token's. `gate.json` is its
+ *   decision, `proceed`, written as soon as it decides and however it ends, and absent where it died
+ *   before deciding.
+ * - `fix:prepare` fetches `RESCUE_BRANCH`, where an earlier stopped run left
+ *   one, into `CHECKOUT` as `refs/rescue/<RESCUE_BRANCH>`, for the runner to
+ *   resume from, and fetches nothing where there is none. A tip it cannot
+ *   read stops the run rather than reading as no rescue. It reads with
+ *   `GH_TOKEN` and writes nothing to the record.
+ * - `fix:bundle` bundles the commits on `BRANCH`, in `CHECKOUT`, ahead of
+ *   `HEAD_SHA`, the head the run started from as the label's event saw it,
+ *   into `branch.bundle`, and writes nothing where there are none. It reads
+ *   no repository and is handed no token.
+ * - `fix:publish` posts a fix round from the runner's hand-over, read through
+ *   `FIX_DIR`, and pushes the bundle `fix:bundle` wrote, read through
+ *   `BUNDLE_DIR` and checked in `CHECKOUT` against `HEAD_SHA`, the head the
+ *   run started from as the label's event saw it, never a file the agent's
+ *   job wrote. `AGENT_RESULT` is how the agent's job ended: on any ending but
+ *   `success` it says only that the rescue was set aside, where the runner
+ *   set one aside, since the rest is `fix:conclude`'s. `HEAD_WAIT_SECONDS`
+ *   and `HEAD_POLL_SECONDS` bound the wait for the pull request to show the
+ *   pushed head before the re-review is asked for. `published.json` is
+ *   whether it pushed, the pushed head, whether a note went up and whether
+ *   there was nothing to do, and whether the rescue-set-aside note went up,
+ *   written as each becomes true.
+ * - `fix:conclude` ends every fix run, success included: a stopped run's
+ *   commits rescued to `RESCUE_BRANCH` where nothing was pushed, the
+ *   failure comment, `agent:fix` off and `agent:blocked`. It is told how the
+ *   gate and the agent's job ended (`REFUSED`, `GATE_RESULT`, the gate's
+ *   reason where it failed after claiming the run, `GATE_REASON`,
+ *   `AGENT_RESULT`), whether the agent's job ran out of time (`TIMED_OUT`,
+ *   `TIMEOUT_MINUTES`), and the publish job's steps' outcomes
+ *   (`MINT_OUTCOME`, `DOWNLOAD_OUTCOME`, `PUBLISH_OUTCOME`), and reads what
+ *   each producer left from its own directory: `fix:publish`'s through
+ *   `PUBLISH_DIR`, `fix:prepare`'s reason through `PREPARE_DIR`, the
+ *   runner's reason and set-aside rescue through `FIX_DIR`, and
+ *   `fix:bundle`'s bundle and reason through `BUNDLE_DIR`,
+ *   checked in `CHECKOUT` against `HEAD_SHA` before it is rescued.
  * - `review:advance` moves a PRD PR's chain on after a review, or parks it:
  *   the progress table and status line for how the round ended, then
  *   `agent:implement` back on the parent on a slice round's approval, or the
@@ -565,6 +680,59 @@ const REVIEW_RED_CHECK_PLACE = {
  *   the runner's park hand-over through `PARK_DIR`.
  */
 export const COMMANDS = {
+  "fix:gate": {
+    inputs: {
+      ...EVERY_SUBCOMMAND,
+      PR_NUMBER: REQUIRED,
+      BRANCH: REQUIRED,
+      HEAD_SHA: REQUIRED,
+      PR_STATE: REQUIRED,
+      PR_MERGED: EMPTY,
+      POST_WAIT_SECONDS: { required: false, default: "600" },
+      POST_POLL_SECONDS: { required: false, default: "10" },
+    },
+    outputs: [...EVERY_SUBCOMMAND_OUTPUTS, "gate.json", WRITE_LOG],
+  },
+  "fix:prepare": FIX_PREPARE,
+  "fix:bundle": FIX_BUNDLE,
+  "fix:publish": FIX_PUBLISH,
+  "fix:conclude": {
+    inputs: {
+      ...EVERY_SUBCOMMAND,
+      ...LOOP_IF_MINTED,
+      PR_NUMBER: REQUIRED,
+      BRANCH: REQUIRED,
+      HEAD_SHA: REQUIRED,
+      RESCUE_BRANCH: REQUIRED,
+      CHECKOUT: REQUIRED,
+      REFUSED: { required: false, default: "", accepts: ["true", "false"] },
+      GATE_RESULT: { required: true, accepts: RESULTS },
+      GATE_REASON: EMPTY,
+      AGENT_RESULT: { required: true, accepts: RESULTS },
+      TIMED_OUT: EMPTY,
+      TIMEOUT_MINUTES: EMPTY,
+      MINT_OUTCOME: EMPTY,
+      DOWNLOAD_OUTCOME: EMPTY,
+      PUBLISH_OUTCOME: EMPTY,
+      PUBLISH_DIR: readsFromCommand("fix:publish", FIX_PUBLISH, {
+        "published.json": "sometimes",
+        "failure_reason.txt": "sometimes",
+      }),
+      PREPARE_DIR: readsFromCommand("fix:prepare", FIX_PREPARE, {
+        "failure_reason.txt": "sometimes",
+      }),
+      FIX_DIR: readsFrom("fix", {
+        "failure_reason.txt": "sometimes",
+        "rescue_ignored.json": "sometimes",
+      }),
+      BUNDLE_DIR: readsFromCommand("fix:bundle", FIX_BUNDLE, {
+        "branch.bundle": "sometimes",
+        "failure_reason.txt": "sometimes",
+      }),
+      ...RUN_LINK,
+    },
+    outputs: [...EVERY_SUBCOMMAND_OUTPUTS, WRITE_LOG],
+  },
   "follow-ups:file": {
     inputs: {
       ...EVERY_SUBCOMMAND,

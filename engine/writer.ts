@@ -9,9 +9,9 @@
  * throws, and whether the command stops is whether the loop caught the throw.
  * Only the loop knows which writes it can live without.
  *
- * What a write does on GitHub is a `Backend`: `githubWrites` in
- * `engine/writes.ts` for a run, a fake for a test. Limits, the log and the
- * throw are this module's, so a test exercises the same ones a run does.
+ * What a write does is a `Backend`: `githubWrites` in `engine/writes.ts` and
+ * `gitWrites` in `engine/git.ts` for a run, a fake for a test. Limits, the log
+ * and the throw are this module's, so a test exercises the same ones a run does.
  */
 import { GitHubError } from "./github.js";
 
@@ -80,6 +80,32 @@ export interface ThreadClose {
   readonly reason: ResolutionReason;
 }
 
+/** A reply to a review thread, which leaves the thread as it was: open, if it was open. */
+export interface ThreadReply {
+  readonly threadId: string;
+  readonly body: string;
+}
+
+/**
+ * What a ref must hold on the remote for a push to it to go ahead, as git's
+ * `--force-with-lease` checks it: the commit the caller read it at, or no
+ * such ref at all.
+ */
+export type Lease = { readonly tip: string } | { readonly absent: true };
+
+/** `commit` pushed to `ref`, a full ref name such as `refs/heads/x`, under `lease`. */
+export interface RefPush {
+  readonly ref: string;
+  readonly commit: string;
+  readonly lease: Lease;
+}
+
+/** `ref` deleted on the remote, leased against the tip the caller read. */
+export interface RefDelete {
+  readonly ref: string;
+  readonly lease: { readonly tip: string };
+}
+
 /**
  * A pull request's title and body. `body` is handed the body as it is now and
  * returns the new one, or `undefined` to leave it, so a splice is made against
@@ -106,13 +132,25 @@ export interface Writer {
    * where the reply landed and the resolve did not.
    */
   replyAndResolve(thread: ThreadClose): Promise<Done>;
+  /** A reply alone: the thread is never resolved by it. */
+  reply(reply: ThreadReply): Promise<Done>;
   /** Nothing to change, by title or by what `body` returns for the live body, is `unchanged`. */
   editPullRequest(pr: number, edit: PullRequestEdit): Promise<Done>;
+  /**
+   * A push of a commit to a ref, forced where the lease holds and failed where
+   * it does not. A ref already at the commit is `unchanged`.
+   */
+  pushRef(push: RefPush): Promise<Done>;
+  /** A ref deleted, where the lease holds, and failed where it does not. */
+  deleteRef(remove: RefDelete): Promise<Done>;
 }
 
 export type WriteType = keyof Writer;
 
-/** What each write does on GitHub, handed a `Call` for every GitHub call it makes so the log can list them. */
+/** The write types made over git rather than GitHub's API: `gitWrites` in `engine/git.ts`. */
+export type GitWriteType = "pushRef" | "deleteRef";
+
+/** What each write does, handed a `Call` for every call it makes, to GitHub or to git, so the log can list them. */
 export type Backend = {
   readonly [K in WriteType]: (call: Call, ...args: Parameters<Writer[K]>) => ReturnType<Writer[K]>;
 };
@@ -211,7 +249,10 @@ const TARGETS: { readonly [K in WriteType]: (...args: Parameters<Writer[K]>) => 
   markReadyForReview: (pr) => `#${pr}`,
   postReview: (variables) => `${variables.pullRequestId} ${variables.commitOID.slice(0, 7)}`,
   replyAndResolve: (thread) => `${thread.threadId} ${thread.reason}${thread.reply === undefined ? " (already replied)" : ""}`,
+  reply: (reply) => reply.threadId,
   editPullRequest: (pr, edit) => `#${pr}${edit.title === undefined ? "" : " title"}${edit.body === undefined ? "" : " body"}`,
+  pushRef: (push) => `${push.ref} ${push.commit.slice(0, 7)} ${"tip" in push.lease ? `over ${push.lease.tip.slice(0, 7)}` : "new"}`,
+  deleteRef: (remove) => `${remove.ref} at ${remove.lease.tip.slice(0, 7)}`,
 };
 
 export interface WriteLog {
@@ -301,7 +342,10 @@ export const createWriters = <T extends string>(options: {
       markReadyForReview: bound("markReadyForReview"),
       postReview: bound("postReview"),
       replyAndResolve: bound("replyAndResolve"),
+      reply: bound("reply"),
       editPullRequest: bound("editPullRequest"),
+      pushRef: bound("pushRef"),
+      deleteRef: bound("deleteRef"),
     };
   };
 

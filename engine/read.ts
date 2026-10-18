@@ -59,6 +59,16 @@ export interface WorkflowRun {
   readonly referencedWorkflows: readonly string[];
 }
 
+/** A comment on a pull request's conversation, as far as a record naming it needs it. */
+export interface ConversationComment {
+  /** Its node id. */
+  readonly id: string;
+  /** The login that posted it, as GitHub's GraphQL API spells it. */
+  readonly author: string;
+  /** Its permalink. */
+  readonly url: string;
+}
+
 export interface GitHubReader {
   pullRequest(number: number): Promise<PullRequest>;
   /** Every status set on `sha`, newest first, as the endpoint documents. */
@@ -67,6 +77,12 @@ export interface GitHubReader {
   reviewThreadIds(number: number): Promise<ReadonlySet<string>>;
   /** Every review on the pull request, oldest first, as the endpoint documents. */
   reviews(number: number): Promise<readonly Review[]>;
+  /**
+   * Every comment on the pull request's conversation, oldest first: what a
+   * conversation comment target is checked against, and where its author and
+   * link are read from (#468).
+   */
+  conversationComments(number: number): Promise<readonly ConversationComment[]>;
   /** Every commit on the pull request, oldest first, by sha. */
   pullRequestCommits(number: number): Promise<readonly string[]>;
   /**
@@ -154,6 +170,28 @@ const THREAD_IDS = `query($owner:String!,$name:String!,$number:Int!,$after:Strin
   }}
 }`;
 
+interface CommentPage {
+  readonly repository: {
+    readonly pullRequest: {
+      readonly comments: {
+        readonly nodes: readonly { readonly id: string; readonly url: string; readonly author: { readonly login: string } | null }[];
+        readonly pageInfo: { readonly hasNextPage: boolean; readonly endCursor: string | null };
+      };
+    };
+  };
+}
+
+/**
+ * GraphQL rather than REST, so an id and a login are spelled as the fix
+ * runner's feedback fetch spells them: the node id it offers an outcome on,
+ * and a bot's login without `[bot]`.
+ */
+const CONVERSATION_COMMENTS = `query($owner:String!,$name:String!,$number:Int!,$after:String){
+  repository(owner:$owner,name:$name){pullRequest(number:$number){
+    comments(first:100,after:$after){nodes{id url author{login}} pageInfo{hasNextPage endCursor}}
+  }}
+}`;
+
 /** The reader over `transport`, for `repo` (`owner/name`). */
 export const githubReader = (repo: string, transport: Transport): GitHubReader => {
   const [owner = "", name = ""] = repo.split("/");
@@ -210,6 +248,16 @@ export const githubReader = (repo: string, transport: Transport): GitHubReader =
           ...raw.map((r) => ({ url: r.html_url, commit: r.commit_id ?? "", body: r.body ?? "", author: r.user?.login ?? "" })),
         );
         if (raw.length < 100) return reviews;
+      }
+    },
+    conversationComments: async (number) => {
+      const comments: ConversationComment[] = [];
+      for (let after: string | null = null; ; ) {
+        const data = (await transport.graphql(CONVERSATION_COMMENTS, { owner, name, number, after })) as CommentPage;
+        const page = data.repository.pullRequest.comments;
+        comments.push(...page.nodes.map((node) => ({ id: node.id, author: node.author?.login ?? "unknown", url: node.url })));
+        if (!page.pageInfo.hasNextPage || page.pageInfo.endCursor === null) return comments;
+        after = page.pageInfo.endCursor;
       }
     },
     pullRequestCommits: async (number) => {

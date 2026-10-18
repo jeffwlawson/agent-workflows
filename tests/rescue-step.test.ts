@@ -13,11 +13,14 @@ import { SUBPROCESS_TIMEOUT } from "../vitest.config.js";
  * `origin`, a clone as the publish job's checkout, and a second clone standing
  * in for the agent's runner, which hands over a bundle.
  *
- * - `Rescue the agent's commits`, in fix's and implement-prd's publish jobs:
- *   pushes a stopped run's commits to the rescue branch and nowhere else,
- *   overwrites an earlier rescue, and pushes nothing where there were none.
- * - The agent's job's prepare step: fetches the rescue branch to where the
- *   runner looks for it (`rescueRef`), and nothing where there is none.
+ * - `Rescue the agent's commits`, in implement-prd's publish job: pushes a
+ *   stopped run's commits to the rescue branch and nowhere else, overwrites
+ *   an earlier rescue, and pushes nothing where there were none. Fix's is
+ *   `fix:conclude`'s (#469), held in `tests/fix/conclude.test.ts`.
+ * - The agent's job's prepare step, implement-prd's: fetches the rescue
+ *   branch to where the runner looks for it (`rescueRef`), and nothing where
+ *   there is none. Fix's is `fix:prepare`'s (#471), held in
+ *   `tests/fix/prepare.test.ts`.
  *
  * Skipped where `bash` or `git` is not on PATH.
  */
@@ -72,17 +75,10 @@ const commit = (cwd: string, file: string): string => {
  * Each workflow's names: the branch the agent works on, the variable the
  * rescue step reads it from, the variable holding the head it started from,
  * and the rescue branch.
+ * Fix's steps are all commands now (#469, #471, #472), so only
+ * implement-prd's are run here.
  */
 const CASES = [
-  {
-    file: "fix.yml",
-    agent: "fix",
-    prepare: "Prepare branch and make the PR base available for diffing",
-    branch: "agent/issue-7-add-a-widget",
-    branchVar: "BRANCH",
-    startVar: "BRANCH_HEAD_SHA",
-    rescue: "agent/rescue/fix-12",
-  },
   {
     file: "implement-prd.yml",
     agent: "implement-prd",
@@ -127,9 +123,12 @@ const world = (c: Case): World => {
   return { temp, origin, publish, agent, runner, start };
 };
 
-/** The agent's job's bundle, as `Bundle the branch` builds it: its branch, past the head it started from. */
+/** Where the publish job finds the agent's bundle. */
+const bundleFile = (w: World): string => path.join(w.runner, "branch.bundle");
+
+/** The agent's job's bundle, as it is built: its branch, past the head it started from. */
 const bundle = (w: World, c: Case): void => {
-  git(w.agent, "bundle", "create", "--quiet", path.join(w.runner, "branch.bundle"), `refs/heads/${c.branch}`, `^${w.start}`);
+  git(w.agent, "bundle", "create", "--quiet", bundleFile(w), `refs/heads/${c.branch}`, `^${w.start}`);
 };
 
 interface Outcome {
@@ -242,7 +241,7 @@ describe.skipIf(!CAN_RUN)("a stopped run's commits are rescued to a side branch"
       commit(w.agent, "unrelated.txt");
       git(w.agent, "branch", "--quiet", "-D", c.branch);
       git(w.agent, "branch", "--quiet", "-m", c.branch);
-      git(w.agent, "bundle", "create", "--quiet", path.join(w.runner, "branch.bundle"), `refs/heads/${c.branch}`);
+      git(w.agent, "bundle", "create", "--quiet", bundleFile(w), `refs/heads/${c.branch}`);
 
       const outcome = rescue(w, c);
 

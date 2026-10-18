@@ -192,9 +192,9 @@ const REF_COUNT = 2 * Object.values(CALLERS_PER_FILE).reduce((sum, n) => sum + n
  * resolves the loop's token names `loop-token` (#319, #320): implement's
  * publish job, implement-prd's catch-up and publish jobs, fix's and
  * update-branch's publish jobs, and review's `time-limit`, `post-review` and
- * `advance` jobs. Eight, beside the fourteen `npm exec` pins, the one `npm
- * install` and the twelve callers, so the release rewrites thirty-five pins in
- * ten files. Review's advance named `advance-prd` too, until it became
+ * `advance` jobs. Eight, beside the nineteen `npm exec` pins, the two `npm
+ * install`s and the twelve callers, so the release rewrites forty-one pins
+ * in ten files. Review's advance named `advance-prd` too, until it became
  * `review:advance` (#423).
  */
 const ACTION_SITES: Readonly<Record<string, readonly string[]>> = {
@@ -212,10 +212,12 @@ const ACTION_COUNT = Object.values(ACTION_SITES).reduce((sum, actions) => sum + 
  * and in `review.yml` `review:gate` (#420), `review:budget` (#331),
  * `review:collect-checks` (#421), `review:red-check-place` and
  * `review:red-check-classify` (#422), `review:publish` (#417),
- * `review:conclude` (#419) and `review:advance` (#423) beside the runner.
+ * `review:conclude` (#419) and `review:advance` (#423) beside the runner,
+ * and in `fix.yml` `fix:gate` (#470), `fix:prepare` (#471), `fix:bundle`
+ * (#472), `fix:publish` (#468) and `fix:conclude` (#469).
  */
 const PACKAGE_SITES: Readonly<Record<string, number>> = {
-  ".github/workflows/fix.yml": 1,
+  ".github/workflows/fix.yml": 6,
   ".github/workflows/follow-ups.yml": 1,
   ".github/workflows/implement-prd.yml": 1,
   ".github/workflows/implement.yml": 1,
@@ -227,9 +229,11 @@ const PACKAGE_COUNT = Object.values(PACKAGE_SITES).reduce((sum, n) => sum + n, 0
 /**
  * The steps that install the package ahead of the steps that run it,
  * `npm install … @jeffwlawson/agent-workflows@<version>`: the red check's
- * (#422), the one step of its job handed the registry token.
+ * (#422) and fix's agent job's (#472), each the one step of its job handed
+ * the registry token for an install.
  */
 const INSTALL_SITES: Readonly<Record<string, number>> = {
+  ".github/workflows/fix.yml": 1,
   ".github/workflows/review.yml": 1,
 };
 const INSTALL_COUNT = Object.values(INSTALL_SITES).reduce((sum, n) => sum + n, 0);

@@ -22,9 +22,11 @@ import { SUBPROCESS_TIMEOUT } from "../vitest.config.js";
  * `**\`agent:X\` stopped:** <Reason>.`, then the run and what to do.
  *
  * Review's is no step any more: `review:conclude` says how its run ended
- * (#419), and `tests/review/conclude.test.ts` holds those scenarios. What
- * stays here of review is the half that is still YAML, the review job's own
- * measure of how it ended, which only that job's clock knows.
+ * (#419), and `tests/review/conclude.test.ts` holds those scenarios. Nor is
+ * fix's: `fix:conclude` says how its run ended (#469), and
+ * `tests/fix/conclude.test.ts` holds those. What stays here of each is the
+ * half that is still YAML, the agent's job's own measure of whether it ran
+ * out of time, which only Actions' clock knows.
  *
  * Skipped where `bash` is not on PATH.
  */
@@ -48,7 +50,6 @@ interface Workflow {
 const CASES = [
   { command: "implement", label: "agent:implement", step: "Mark blocked on failure", minutes: 30, blocks: true },
   { command: "implement-prd", label: "agent:implement", step: "Mark blocked on failure", minutes: 30, blocks: true },
-  { command: "fix", label: "agent:fix", step: "Mark blocked on failure", minutes: 30, blocks: true },
   { command: "update-branch", label: "agent:update-branch", step: "Mark blocked on failure", minutes: 30, blocks: true },
   // No `agent:blocked` on a merged pull request, on a failure or otherwise:
   // there is no pipeline left there to block (see the step's own note).
@@ -64,7 +65,6 @@ type Case = (typeof CASES)[number];
  */
 const JOB: Readonly<Record<string, string>> = {
   implement: "publish",
-  fix: "publish",
   "update-branch": "publish",
   "implement-prd": "publish",
 };
@@ -99,21 +99,23 @@ const outputsOf = (text: string): Record<string, string> => {
 };
 
 /**
- * The review job's half (#257): *Hand the outcome to the posting job*, run as
- * the job ended `status`, `elapsed` seconds after its clock started, with the
- * reason files `files` in its temp. What it hands over is what
- * `review:conclude` is told: its outputs.
+ * An agent's job's half: review's *Hand the outcome to the posting job*
+ * (#257), or the `step` named, run as the job ended `status`, `elapsed`
+ * seconds after its clock started, with the reason files `files` in its
+ * temp. What it hands over is what the concluding command is told: its
+ * outputs.
  */
-const reviewOutcome = (
+const jobOutcome = (
   status: "success" | "failure" | "cancelled",
   elapsed: number,
   minutes: string,
   files: Readonly<Record<string, string>> = {},
+  step: readonly [command: string, job: string, name: string] = ["review", "review", "Hand the outcome to the posting job"],
 ): Record<string, string> => {
   const temp = fs.mkdtempSync(path.join(os.tmpdir(), "agent-review-outcome-"));
   const script = path.join(temp, "outcome.sh");
   const output = path.join(temp, "outcome.out");
-  fs.writeFileSync(script, stepOf("review", "review", "Hand the outcome to the posting job"));
+  fs.writeFileSync(script, stepOf(...step));
   fs.writeFileSync(output, "");
   for (const [name, text] of Object.entries(files)) fs.writeFileSync(path.join(temp, name), text);
   const result = spawnSync("bash", ["-e", script], {
@@ -162,7 +164,10 @@ const run = (
 
   fs.mkdirSync(bin);
   fs.writeFileSync(path.join(bin, "gh"), '#!/bin/sh\nprintf \'%s\\n\' "$*" >> "$GH_LOG"\n', { mode: 0o755 });
-  for (const [name, text] of Object.entries(files)) fs.writeFileSync(path.join(temp, name), text);
+  for (const [name, text] of Object.entries(files)) {
+    fs.mkdirSync(path.dirname(path.join(temp, name)), { recursive: true });
+    fs.writeFileSync(path.join(temp, name), text);
+  }
   fs.writeFileSync(script, runOf(c));
 
   const result = spawnSync("bash", ["-e", script], {
@@ -280,7 +285,6 @@ describe.skipIf(!CAN_RUN)("a failure step says whether the run failed, timed out
   const TRIGGER: Readonly<Record<string, string>> = {
     implement: "issue edit 135 --remove-label agent:implement",
     "implement-prd": "issue edit 135 --remove-label agent:implement",
-    fix: "pr edit 152 --remove-label agent:fix",
     "update-branch": "pr edit 152 --remove-label agent:update-branch",
   };
 
@@ -318,10 +322,10 @@ describe.skipIf(!CAN_RUN)("a failure step says whether the run failed, timed out
    * from its own status, and a job that reached its limit may read there as
    * failed. A runner that was killed wrote no reason, so a failure without
    * one is measured against the clock too; a failure with one never is.
-   * implement's since #307, and fix's, update-branch's and implement-prd's
-   * since #308.
+   * implement's since #307, and update-branch's and implement-prd's since
+   * #308.
    */
-  describe.each(["implement", "fix", "update-branch", "implement-prd"])("%s, reported from its publish job", (command) => {
+  describe.each(["implement", "update-branch", "implement-prd"])("%s, reported from its publish job", (command) => {
     const implement = CASES.find((c) => c.command === command) as Case;
 
     it("says a run that failed at its limit with no reason timed out", () => {
@@ -379,27 +383,52 @@ describe.skipIf(!CAN_RUN)("a failure step says whether the run failed, timed out
  */
 describe.skipIf(!CAN_RUN)("review hands over how its job ended", () => {
   it("says a job cancelled at its limit timed out", () => {
-    expect(reviewOutcome("cancelled", 20 * 60, "20")["timed-out"]).toBe("true");
+    expect(jobOutcome("cancelled", 20 * 60, "20")["timed-out"]).toBe("true");
   });
 
   it("says a job cancelled early, or one that failed at its limit, did not time out", () => {
-    expect(reviewOutcome("cancelled", 120, "20")["timed-out"]).toBe("false");
-    expect(reviewOutcome("failure", 20 * 60, "20")["timed-out"]).toBe("false");
+    expect(jobOutcome("cancelled", 120, "20")["timed-out"]).toBe("false");
+    expect(jobOutcome("failure", 20 * 60, "20")["timed-out"]).toBe("false");
   }, 2 * SUBPROCESS_TIMEOUT);
 
   /** `fromJSON` reads each as a number, which bash arithmetic does not: not compared, it reads as a cancel. */
   it.each(["1.5", "1e1", "1.0", "0", "-5"])("reads a limit of %s it cannot compare as no timeout", (minutes) => {
-    expect(reviewOutcome("cancelled", 20 * 60, minutes)["timed-out"]).toBe("false");
+    expect(jobOutcome("cancelled", 20 * 60, minutes)["timed-out"]).toBe("false");
   });
 
   it("hands over the reason and the refusal the runner wrote, whole", () => {
-    const outputs = reviewOutcome("failure", 120, "20", {
+    const outputs = jobOutcome("failure", 120, "20", {
       "failure_reason.txt": "The agent stopped.\nOn a second line.\n",
       "refusal_reason.txt": "The repository variable `AGENT_MAX_FIX_ROUNDS` is `abc`.\n",
     });
 
     expect(outputs["failure-reason"]).toBe("The agent stopped.\nOn a second line.");
     expect(outputs["refusal-reason"]).toBe("The repository variable `AGENT_MAX_FIX_ROUNDS` is `abc`.");
+  });
+});
+
+/**
+ * Fix's agent's job's measure of whether it ran out of time (#469), read off
+ * the gate's clock in its last step, which stays YAML for the same reason.
+ * Unlike review's, a failure at the limit counts too: `needs` may read a job
+ * that reached its limit as failed, and `fix:conclude` reads the answer only
+ * where a cancel or a failure left no reason.
+ */
+describe.skipIf(!CAN_RUN)("fix's agent job hands over whether it timed out", () => {
+  const FIX = ["fix", "fix", "Measure how the agent's job ended"] as const;
+
+  it.each(["cancelled", "failure"] as const)("says a job that ended %s at its limit timed out", (status) => {
+    expect(jobOutcome(status, 30 * 60, "30", {}, FIX)["timed-out"]).toBe("true");
+  });
+
+  it("says a job that ended early, or one that succeeded at its limit, did not time out", () => {
+    expect(jobOutcome("cancelled", 120, "30", {}, FIX)["timed-out"]).toBe("false");
+    expect(jobOutcome("success", 30 * 60, "30", {}, FIX)["timed-out"]).toBe("false");
+  }, 2 * SUBPROCESS_TIMEOUT);
+
+  /** `fromJSON` reads each as a number, which bash arithmetic does not: not compared, it reads as no timeout. */
+  it.each(["1.5", "1e1", "1.0", "0", "-5"])("reads a limit of %s it cannot compare as no timeout", (minutes) => {
+    expect(jobOutcome("cancelled", 30 * 60, minutes, {}, FIX)["timed-out"]).toBe("false");
   });
 });
 
@@ -448,17 +477,10 @@ describe.skipIf(!CAN_RUN)("implement-prd's failure step after the default branch
  * A run that stopped with commits keeps them on its rescue branch (#303), and
  * the comment names it: as the retry where nothing else was, since adding the
  * label resumes from it, and beside whatever else the retry says otherwise.
+ * Fix's is `fix:conclude`'s (#469), held in `tests/fix/conclude.test.ts`.
  */
 describe.skipIf(!CAN_RUN)("a failure step names the rescue branch", () => {
-  const fix = CASES.find((c) => c.command === "fix") as Case;
   const prd = CASES.find((c) => c.command === "implement-prd") as Case;
-
-  it("fix: names the branch, and that adding the label resumes from it", () => {
-    const outcome = run(fix, "cancelled", 30 * 60, "30", "false", {}, { RESCUED: "agent/rescue/fix-152" });
-
-    expect(outcome.comment).toContain("It timed out after 30 minutes.");
-    expect(outcome.comment).toContain("Its commits so far are saved on `agent/rescue/fix-152`. To resume from them, add `agent:fix`.\n");
-  });
 
   it("implement-prd: names the branch, and that adding the label resumes from it", () => {
     const outcome = run(prd, "cancelled", 30 * 60, "30", "false", {}, { RESCUED: "agent/rescue/prd-135", SUB: "246" });
@@ -480,7 +502,7 @@ describe.skipIf(!CAN_RUN)("a failure step names the rescue branch", () => {
     expect(outcome.comment).toContain("Its commits so far are saved on `agent/rescue/prd-135`, and the next `agent:implement` run resumes from them.\n");
   });
 
-  it.each([fix, prd])("$command: says nothing of a rescue where none was made", (c: Case) => {
-    expect(run(c, "cancelled", 30 * 60).comment).not.toContain("agent/rescue/");
+  it("implement-prd: says nothing of a rescue where none was made", () => {
+    expect(run(prd, "cancelled", 30 * 60).comment).not.toContain("agent/rescue/");
   });
 });

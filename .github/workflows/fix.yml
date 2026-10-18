@@ -414,6 +414,45 @@ jobs:
           git config user.name "sandcastle-agent[bot]"
           git config user.email "sandcastle-agent[bot]@users.noreply.github.com"
 
+      # The package, installed once and early, the way the red check installs
+      # it (#422), for the commands this job runs: `fix:bundle` after the
+      # agent. Node and the registry the package installs from, a version its
+      # `engines.node` names, and no cache, since this job runs the PR's code
+      # and a cache it saved would be restored on the base branch.
+      - name: Set up Node for the package
+        uses: actions/setup-node@v7
+        with:
+          node-version: "24"
+          registry-url: https://npm.pkg.github.com
+          scope: "@jeffwlawson"
+          package-manager-cache: false
+
+      # That step points `NPM_CONFIG_USERCONFIG` at the `.npmrc` it wrote, for
+      # every later step in the job (#429), the adopter's *Install dependencies*
+      # included. So the job's setting goes back to npm's default here, and the
+      # path comes out as `userconfig`, handed in `env:` to each step that
+      # installs or runs the package from this install. The file `setup-node`
+      # wrote, never a second copy.
+      - name: Keep the package's registry to the package's steps
+        id: npmrc
+        run: |
+          echo "userconfig=${NPM_CONFIG_USERCONFIG}" >> "$GITHUB_OUTPUT"
+          echo "NPM_CONFIG_USERCONFIG=${HOME}/.npmrc" >> "$GITHUB_ENV"
+
+      # Into `RUNNER_TEMP` while nothing of the PR's has run, so a command
+      # after the agent finds it there and never asks the registry: `npm exec`
+      # takes a package already installed under its `--prefix` at the exact
+      # version it names without a request. The agent and the PR's own code
+      # (`inputs.setup`) can leave things behind on this runner, so nothing
+      # after them is handed the registry token for an install. From
+      # `RUNNER_TEMP` too, so no `.npmrc` of the checkout is read.
+      - name: Install the package
+        working-directory: ${{ runner.temp }}
+        env:
+          NPM_CONFIG_USERCONFIG: ${{ steps.npmrc.outputs.userconfig }}
+          NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: npm install --prefix "$RUNNER_TEMP" --no-save @jeffwlawson/agent-workflows@0.8.5
+
       # Both setup steps are the adopter's toolchain, so both are skippable.
       # `npm install -g @anthropic-ai/claude-code` below is not: that is the
       # agent's own runtime, and every runner image already has the Node it
@@ -564,30 +603,37 @@ jobs:
           retention-days: ${{ inputs.transcript-retention-days }}
           overwrite: true
 
-      # The agent's commits, as the one thing `publish` pushes. A bundle rather
-      # than a push from here: this job holds no token that can write, and the
-      # runner that ran the agent is not one to spend a token on. Thin, the
-      # head this run checked out being its prerequisite, which `publish` has
-      # from its own checkout, and holding exactly the pull request's branch.
-      # No commits is no bundle, which `publish` reads as nothing to push.
+      # The agent's commits, as the one thing `publish` pushes: `fix:bundle`
+      # bundles the branch ahead of the head the run started from, as the
+      # label's event saw it, and writes nothing where there are none, which
+      # `publish` reads as nothing to push. Into a directory of its own, which
+      # the hand-over below carries beside the runner's files.
       #
       # `always()` (#303): a run that failed, was cancelled or timed out hands
       # its commits over too, for `publish` to rescue to a side branch rather
-      # than push. Commits it resumed from count, so a rescue holds all of them.
-      - name: Bundle the branch
+      # than push. From the install above, run from `RUNNER_TEMP` and working
+      # in the checkout, and **with no token**: the agent and the PR's code
+      # have run, and the job's `GH_TOKEN` is set empty for it.
+      - name: Bundle the agent's commits
         if: always()
-        run: |
-          if [ -z "$(git rev-list -n 1 "${BRANCH_HEAD_SHA}..refs/heads/${BRANCH}")" ]; then
-            echo "No new commits, so there is nothing to bundle."
-            exit 0
-          fi
-          git bundle create "${RUNNER_TEMP}/branch.bundle" "refs/heads/${BRANCH}" "^${BRANCH_HEAD_SHA}"
+        working-directory: ${{ runner.temp }}
+        env:
+          NPM_CONFIG_USERCONFIG: ${{ steps.npmrc.outputs.userconfig }}
+          GH_TOKEN: ""
+          OUTPUT_DIR: ${{ runner.temp }}/bundle
+          CHECKOUT: ${{ github.workspace }}
+          BRANCH: ${{ github.event.pull_request.head.ref }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: npm exec --prefix "$RUNNER_TEMP" --yes --package=@jeffwlawson/agent-workflows@0.8.5 -- agent-workflows fix:bundle
 
-      # The bundle, and every file the runner wrote for a step that posts: the
-      # reason file on a failure, the nothing-to-do note, the thread replies,
-      # the conversation record, the top-level comments and the out-of-scope
-      # notes. One artifact, `always()`, because a failed run is one of the
-      # outcomes `publish` reports, and any of them may be missing. Uploading
+      # `fix:bundle`'s files, the bundle and its reason file on a failure,
+      # under `bundle/`, and every file the runner wrote for a step that posts:
+      # the reason file on a failure, the nothing-to-do note, the thread
+      # replies, the conversation record, the top-level comments and the
+      # out-of-scope notes. One artifact, `always()`, because a failed run is
+      # one of the outcomes `publish` reports, and any of them may be missing.
+      # The paths' common directory is `runner.temp`, so `bundle/` stays
+      # `bundle/` in the artifact and where `publish` downloads it. Uploading
       # needs no scope: the artifact service takes the runner's own token, so
       # this job stays read-only. `overwrite`, so a re-run replaces this
       # attempt's copy rather than failing on the name.
@@ -601,7 +647,8 @@ jobs:
         with:
           name: agent-fix
           path: |
-            ${{ runner.temp }}/branch.bundle
+            ${{ runner.temp }}/bundle/branch.bundle
+            ${{ runner.temp }}/bundle/failure_reason.txt
             ${{ runner.temp }}/failure_reason.txt
             ${{ runner.temp }}/nothing_to_do.txt
             ${{ runner.temp }}/thread_outcomes.json
@@ -639,9 +686,10 @@ jobs:
 
     steps:
       # Into `RUNNER_TEMP`, where every step below looks for the runner's files
-      # as it did when the agent ran in this job. Tolerated: an agent's job
-      # that was killed before its upload leaves nothing to fetch, and the
-      # failure step still has to run.
+      # as it did when the agent ran in this job, and for `fix:bundle`'s under
+      # `bundle/`, where it wrote them there. Tolerated: an agent's job that
+      # was killed before its upload leaves nothing to fetch, and the failure
+      # step still has to run.
       - name: Fetch what the agent handed over
         continue-on-error: true
         uses: actions/download-artifact@v8
@@ -744,7 +792,7 @@ jobs:
           PUSH_TOKEN: ${{ steps.token.outputs.token }}
         run: |
           set -euo pipefail
-          bundle="${RUNNER_TEMP}/branch.bundle"
+          bundle="${RUNNER_TEMP}/bundle/branch.bundle"
 
           block() {
             printf '%s\n' "$1" > "${RUNNER_TEMP}/failure_reason.txt"
@@ -1150,7 +1198,7 @@ jobs:
           PUSH_TOKEN: ${{ steps.token.outputs.token }}
         run: |
           set -euo pipefail
-          bundle="${RUNNER_TEMP}/branch.bundle"
+          bundle="${RUNNER_TEMP}/bundle/branch.bundle"
 
           skip() {
             echo "::warning::$1 Nothing was rescued."

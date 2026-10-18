@@ -294,6 +294,11 @@ export const SUBCOMMANDS: Readonly<Record<string, Subcommand>> = {
     },
   },
   fix: runner("fix", () => import("./fix/fix.js")),
+  "fix:bundle": command(
+    "fix:bundle",
+    async () => (await import("./fix/bundle.js")).bundle,
+    "Bundle the agent's commits on a pull request's branch for the publish job (no model).",
+  ),
   "follow-ups:file": command(
     "follow-ups:file",
     async () => (await import("./follow-ups/file.js")).file,

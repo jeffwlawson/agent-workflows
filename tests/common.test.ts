@@ -1123,6 +1123,18 @@ describe("readInputs and input: a subcommand's declared inputs, read loudly", ()
 
     expect(fs.readFileSync(reasonFile(), "utf8")).toBe("first\nsecond\n");
   });
+
+  /** A file that is not text, `fix:bundle`'s bundle (#472): its bytes as they are. */
+  it("writes bytes as they are to a declared file, and refuses an undeclared one at typecheck", () => {
+    const { writeBytes } = writers(COMMANDS["fix:bundle"].outputs);
+    const bytes = Uint8Array.from([0, 0xff, 0x0a, 0xc3, 0x28]);
+
+    writeBytes("branch.bundle", bytes);
+    // @ts-expect-error: `fix:bundle` declares no `branch.zip`, so it may not write one.
+    writeBytes("branch.zip", bytes);
+
+    expect(new Uint8Array(fs.readFileSync(path.join(scratch, "branch.bundle")))).toEqual(bytes);
+  });
 });
 
 /**

@@ -59,9 +59,9 @@ cannot check is one only an orchestrator's author will catch.
   `review`, `fix` and `update-branch`. It reads its inputs from the environment, starts the agent,
   and writes files and commits. It is not the agent.
 - **Command.** A subcommand that does an orchestrator's work on the record and starts no agent,
-  named `<workflow>:<step>`: `follow-ups:file`, `review:gate`, `review:budget`, `review:collect-checks`,
-  `review:red-check-place`, `review:red-check-classify`, `review:publish`, `review:conclude` and
-  `review:advance`. §2 says where it differs from a runner.
+  named `<workflow>:<step>`: `fix:bundle`, `follow-ups:file`, `review:gate`, `review:budget`,
+  `review:collect-checks`, `review:red-check-place`, `review:red-check-classify`, `review:publish`,
+  `review:conclude` and `review:advance`. §2 says where it differs from a runner.
 - **Orchestrator.** Whatever invokes a runner and acts on its result: it decides when a runner runs,
   prepares the checkout, sets the inputs, and posts, pushes and labels with what comes back. The
   Actions orchestrator is a caller plus its reusable workflow, and `CONTEXT.md`'s *three parts*
@@ -137,7 +137,7 @@ The inputs every runner reads, set once for any of them:
 | `GH_TOKEN` | required | | The token `gh` reads. The runners only read with it; `follow-ups:file` files issues with it, and `review:publish` posts the review, the summary and the verdict with it, `review:conclude` its comments, its error verdict and the labels nothing fires on, and `review:advance` a PRD PR's progress list and its notes there. |
 
 A command that runs where no token is held, as the red check's two do beside the pull request's own
-code, reads `OUTPUT_DIR` alone of these: it reads no repository, so it declares neither `GH_REPO`
+code and `fix:bundle` does after the agent, reads `OUTPUT_DIR` alone of these: it reads no repository, so it declares neither `GH_REPO`
 nor `GH_TOKEN`, and an orchestrator hands it neither.
 
 Every runner starts the agent, so every runner reads the inputs that choose its sandbox (§3). An
@@ -1339,13 +1339,53 @@ diffing, and `RESCUE_BRANCH` fetched to `refs/rescue/<RESCUE_BRANCH>` where it e
 
 **`doctor` cannot check this.** The record is written by the orchestrator's posting code, for the reason §4.3 gives.
 
-> **Actions orchestrator:** a publish job pushes the branch, replies to every thread and closes
-> none, posts the conversation outcomes, the comments and the notes, then adds `agent:review` where
+> **Actions orchestrator:** `fix:bundle` bundles the agent's commits, however the runner ended,
+> and a publish job pushes the branch, replies to every thread and closes none, posts the conversation outcomes, the comments and the notes, then adds `agent:review` where
 > it pushed or left a note, or marks the pull request ready where it did neither. On a PRD PR it
 > always asks for the review.
 
 > **Service orchestrator:** the re-review request is chaining, and each orchestrator's. Without it
 > the round ends on the fix, with its findings open.
+
+### `fix:bundle`
+
+Bundles the agent's commits for whatever pushes them: the commits on `refs/heads/<BRANCH>` in the
+checkout ahead of `HEAD_SHA`, the head the run started from, as a thin bundle holding exactly that
+one ref, with `HEAD_SHA` its prerequisite. It runs no model, reads no repository, holds no token,
+and writes nothing to the record.
+
+- **Nothing to bundle.** No commits ahead of `HEAD_SHA`, or no `refs/heads/<BRANCH>` at all, writes
+  nothing, which whatever reads the bundle reads as nothing to push.
+- **A failure of git.** Fails the command, naming the branch and the head.
+
+#### Inputs
+
+| Input | Kind | Default | What it is |
+|---|---|---|---|
+| `CHECKOUT` | required | | The checkout the agent worked in, with its head branch as `BRANCH`. |
+| `BRANCH` | required | | The pull request's head branch. |
+| `HEAD_SHA` | required | | The head the run started from, as the event that asked for it saw it. |
+
+#### Outputs
+
+| Output | When it is written |
+|---|---|
+| `branch.bundle` | Where there are commits ahead of `HEAD_SHA`: the bundle. |
+
+**`doctor` cannot check this.** These tables are the command's, for the reason §6 gives.
+
+#### What it reads from the record
+
+Nothing. Its inputs are the checkout and the head the event named.
+
+> **Actions orchestrator:** the agent's job, `always()` after the runner and the transcript, so a
+> failed, cancelled or timed-out run hands its commits over too. The package is installed early in
+> that job, before the adopter's `setup`, by the one step there handed the registry token, `npm
+> install --prefix "$RUNNER_TEMP"`, and this command runs from `RUNNER_TEMP`, where `npm exec` finds
+> that install without asking the registry. It is handed no token: the job's `GH_TOKEN` is set empty
+> for it. `CHECKOUT` is the workspace, and `BRANCH` and `HEAD_SHA` the label's event's. `OUTPUT_DIR`
+> is a directory of its own under `runner.temp`, which the job's upload carries beside the runner's
+> files; the publish job checks the bundle before it pushes or rescues anything from it.
 
 ## 10. `update-branch`
 

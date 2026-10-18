@@ -439,7 +439,8 @@ which token each write uses. [ADR 0003](./docs/adr/0003-reusable-keeps-what-only
 records the rule and why it replaced "every guard and every step" in the reusable. `review` has
 moved (PRD #409): every one of its steps that reads or changes the record or decides is a command.
 **Five reusables still run their steps as inline shell**: `implement`, `implement-prd`, `fix`,
-`update-branch` and `follow-ups`, whose filing alone is a command, `follow-ups:file`. Until a
+`update-branch` and `follow-ups`, whose filing alone is a command, `follow-ups:file`; `fix` is
+moving (PRD #466), and its bundling is a command, `fix:bundle`. Until a
 reusable has moved, a fix to one of its steps still goes in its YAML.
 
 **A runner** is the part of the package that does an agent's work: TypeScript plus a prompt, invoked

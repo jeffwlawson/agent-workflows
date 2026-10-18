@@ -98,6 +98,12 @@ const bundle = (w: World, ...refs: string[]): void => {
   git(w.agent, "bundle", "create", "--quiet", path.join(w.runner, "branch.bundle"), ...refs, "^refs/heads/main");
 };
 
+/** The same, where fix's agent job hands it over: in `fix:bundle`'s own directory, `bundle/` (#472). */
+const fixBundle = (w: World, ...refs: string[]): void => {
+  fs.mkdirSync(path.join(w.runner, "bundle"), { recursive: true });
+  git(w.agent, "bundle", "create", "--quiet", path.join(w.runner, "bundle", "branch.bundle"), ...refs, "^refs/heads/main");
+};
+
 interface Outcome {
   readonly status: number | null;
   readonly reason: string;
@@ -344,7 +350,7 @@ describe.skipIf(!CAN_RUN)("fix's publish job pushes the agent's commits only onc
     () => {
       const w = world();
       prBranch(w);
-      bundle(w, `refs/heads/${BRANCH}`);
+      fixBundle(w, `refs/heads/${BRANCH}`);
       const outcome = pushWith(w, "fix.yml", env(w));
       const commit = git(w.agent, "rev-parse", "HEAD");
 
@@ -378,7 +384,7 @@ describe.skipIf(!CAN_RUN)("fix's publish job pushes the agent's commits only onc
       git(w.agent, "commit", "--quiet", "-m", "unrelated history");
       git(w.agent, "branch", "--quiet", "-D", BRANCH);
       git(w.agent, "branch", "--quiet", "-m", BRANCH);
-      bundle(w, `refs/heads/${BRANCH}`);
+      fixBundle(w, `refs/heads/${BRANCH}`);
       const outcome = pushWith(w, "fix.yml", env(w));
 
       expect(outcome.status).not.toBe(0);

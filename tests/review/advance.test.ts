@@ -138,7 +138,7 @@ const run = async (inputs: Inputs = INPUTS()): Promise<void> => {
       return made.writers;
     },
     github: fakeReader(github).reader,
-    outputs: { writeJson: () => {}, writeText: () => {}, appendLine: () => {} },
+    outputs: { writeJson: () => {}, writeText: () => {}, writeBytes: () => {}, appendLine: () => {} },
   };
   try {
     await advance(inputs, io);

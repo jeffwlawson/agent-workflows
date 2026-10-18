@@ -306,7 +306,7 @@ describe("review:red-check-classify says why there is nothing to classify", () =
       fs.writeFileSync(path.join(dir, "place.json"), JSON.stringify(placed));
       classify(
         { OUTPUT_DIR: "/out", CHECKOUT: "/", REPORT_PATH: "r.xml", SETUP_OUTCOME: "", EXIT_CODE: "0", PLACE_DIR: dir },
-        { writeJson: (name, value) => written.set(name, value), writeText: () => {}, appendLine: () => {} },
+        { writeJson: (name, value) => written.set(name, value), writeText: () => {}, writeBytes: () => {}, appendLine: () => {} },
       );
     };
 

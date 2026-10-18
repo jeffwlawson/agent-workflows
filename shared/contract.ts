@@ -457,7 +457,8 @@ const REVIEW_PUBLISH = {
  * What a command that runs where no token is held reads of
  * `EVERY_SUBCOMMAND`: `OUTPUT_DIR`, and neither the repository nor the token,
  * since it reads no repository and is handed none. The red check's two
- * (#422), whose job runs the pull request's own code.
+ * (#422), whose job runs the pull request's own code, and `fix:bundle`
+ * (#472), which runs after the agent.
  */
 export const TOKENLESS = {
   OUTPUT_DIR: EVERY_SUBCOMMAND.OUTPUT_DIR,
@@ -555,6 +556,10 @@ const REVIEW_RED_CHECK_PLACE = {
  *   they could not be counted: what it says no round is starting with
  *   (#425). `ended.json` is whether the head moved while the review ran, and
  *   the posted review's URL.
+ * - `fix:bundle` bundles the commits on `BRANCH`, in `CHECKOUT`, ahead of
+ *   `HEAD_SHA`, the head the run started from as the label's event saw it,
+ *   into `branch.bundle`, and writes nothing where there are none. It reads
+ *   no repository and is handed no token.
  * - `review:advance` moves a PRD PR's chain on after a review, or parks it:
  *   the progress table and status line for how the round ended, then
  *   `agent:implement` back on the parent on a slice round's approval, or the
@@ -565,6 +570,15 @@ const REVIEW_RED_CHECK_PLACE = {
  *   the runner's park hand-over through `PARK_DIR`.
  */
 export const COMMANDS = {
+  "fix:bundle": {
+    inputs: {
+      ...TOKENLESS,
+      CHECKOUT: REQUIRED,
+      BRANCH: REQUIRED,
+      HEAD_SHA: REQUIRED,
+    },
+    outputs: [...EVERY_SUBCOMMAND_OUTPUTS, "branch.bundle"],
+  },
   "follow-ups:file": {
     inputs: {
       ...EVERY_SUBCOMMAND,

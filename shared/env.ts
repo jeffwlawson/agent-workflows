@@ -57,7 +57,7 @@ const present = (name: string): string | undefined => process.env[name] || undef
  * through `input` itself, which is what keeps a missing `OUTPUT_DIR` reportable
  * at all: `input` reports through `fail()`, and `fail()` writes through here.
  */
-const writeOutput = (filename: string, value: string): void => {
+const writeOutput = (filename: string, value: string | Uint8Array): void => {
   const dir = present("OUTPUT_DIR");
   if (dir === undefined) return;
   fs.mkdirSync(dir, { recursive: true });
@@ -73,6 +73,8 @@ const writeOutput = (filename: string, value: string): void => {
 export const writers = <D extends Outputs>(declared: D) => ({
   writeText: (filename: D[number], value: string): void => writeOutput(filename, value),
   writeJson: (filename: D[number], value: unknown): void => writeOutput(filename, JSON.stringify(value, null, 2)),
+  /** Bytes as they are, for a file that is not text: `fix:bundle`'s bundle. */
+  writeBytes: (filename: D[number], value: Uint8Array): void => writeOutput(filename, value),
   /**
    * One line added to the end of the file, for a log kept as it happens: the
    * engine's write log, so a command cancelled half way leaves every write it

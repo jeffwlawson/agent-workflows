@@ -459,11 +459,22 @@ const artifactFiles = (step: Step | undefined): readonly string[] =>
  * reads, and a file a command reads and the step never hands over, each fail
  * by name. So the list is the declaration's, and the YAML is checked against
  * it rather than kept beside it by hand.
+ *
+ * `beside` is the files of producers whose `OUTPUT_DIR` is a directory of its
+ * own under `runner.temp`, by that directory, which the same artifact carries
+ * (#472): each is handed over at `${{ runner.temp }}/<dir>/<name>`.
  */
-const expectHandsOver = (step: Step | undefined, declared: DirectoryInput): void => {
+const expectHandsOver = (
+  step: Step | undefined,
+  declared: DirectoryInput,
+  beside: Readonly<Record<string, DirectoryInput>> = {},
+): void => {
   expect(step, "no such artifact step").toBeDefined();
   const handed = artifactFiles(step);
-  const files = Object.keys(declared.files);
+  const files = [
+    ...Object.keys(declared.files),
+    ...Object.entries(beside).flatMap(([dir, input]) => Object.keys(input.files).map((file) => `\${{ runner.temp }}/${dir}/${file}`)),
+  ];
   const undeclared = handed.filter((file) => !files.includes(file));
   const missing = files.filter((file) => !handed.includes(file));
   expect(
@@ -6727,13 +6738,19 @@ describe("the runner package is installed from GitHub Packages", () => {
   /**
    * The hand-over step. Matches `npm exec` as well as `npx`, because the
    * invocation moved to `npm exec --prefix` to stop npx reusing this
-   * repository's own checkout as the package (#8).
+   * repository's own checkout as the package (#8). The runner's, by the
+   * subcommand it names, where the workflow has one: a command its job runs
+   * after it from an early install, as fix's `fix:bundle` does (#472), is not
+   * the runner. `follow-ups` has none, and its one step runs its command.
    */
-  const runnerStepIndex = (file: string): number =>
-    stepsOf(file).findLastIndex((s) => {
+  const runnerStepIndex = (file: string): number => {
+    const workflow = path.basename(file, ".yml");
+    return stepsOf(file).findLastIndex((s) => {
       const run = (s.run ?? "").trim();
-      return run.startsWith("npm exec") || run.startsWith("npx ");
+      const runs = run.startsWith("npm exec") || run.startsWith("npx ");
+      return runs && (!(workflow in RUNNERS) || run.endsWith(` agent-workflows ${workflow}`));
     });
+  };
 
   /**
    * Scoped, so a caller's own `npm ci` still resolves everything else from
@@ -8729,7 +8746,8 @@ describe("a split run keeps every write off the agent's runner", () => {
         readonly agentPermissions: Readonly<Record<string, string>>;
         readonly gateWrites: readonly string[];
         readonly group: string;
-        readonly bundle: string;
+        /** The agent's job's `git bundle create`, where a shell step bundles: fix's is `fix:bundle` (#472). */
+        readonly bundle?: string;
         readonly bundleIf: string;
         readonly branch: string;
         readonly ancestors: readonly string[];
@@ -8758,7 +8776,6 @@ describe("a split run keeps every write off the agent's runner", () => {
       agentPermissions: { contents: "read", issues: "read", packages: "read", "pull-requests": "read" },
       gateWrites: ["pull-requests"],
       group: `agent-pr-\${{ github.event.pull_request.number }}${otherLabel("agent:fix")}`,
-      bundle: 'git bundle create "${RUNNER_TEMP}/branch.bundle" "refs/heads/${BRANCH}" "^${BRANCH_HEAD_SHA}"',
       // However the job ended (#303): a stopped run's commits are rescued.
       bundleIf: "always()",
       branch: "BRANCH",
@@ -8885,20 +8902,23 @@ describe("a split run keeps every write off the agent's runner", () => {
     for (const job of jobsOf(file)) expect(job.concurrency).toBeUndefined();
   });
 
-  it.each(splits)("%s: hands the agent's commits over as a bundle of the one branch, however the job ended", (name, file) => {
-    const steps = jobNamed(file, rolesOf(file).agent).steps ?? [];
-    const names = steps.map((s) => s.name);
-    const bundle = steps.find((s) => s.name === "Bundle the branch");
-    const upload = steps.find((s) => s.name === "Hand the branch to the publish job");
+  it.each(splits.filter(([name]) => specOf(name).bundle !== undefined))(
+    "%s: hands the agent's commits over as a bundle of the one branch, however the job ended",
+    (name, file) => {
+      const steps = jobNamed(file, rolesOf(file).agent).steps ?? [];
+      const names = steps.map((s) => s.name);
+      const bundle = steps.find((s) => s.name === "Bundle the branch");
+      const upload = steps.find((s) => s.name === "Hand the branch to the publish job");
 
-    expect(bundle?.run ?? "").toContain(specOf(name).bundle);
-    expect(bundle?.if).toBe(specOf(name).bundleIf);
-    // Last, so it carries a reason file however the agent's run ended.
-    expect(names.slice(-2)).toEqual(["Bundle the branch", "Hand the branch to the publish job"]);
-    expect(upload?.if).toBe("always()");
-    expect(upload?.with?.["path"]).toContain("${{ runner.temp }}/branch.bundle");
-    expect(upload?.with?.["path"]).toContain("${{ runner.temp }}/failure_reason.txt");
-  });
+      expect(bundle?.run ?? "").toContain(specOf(name).bundle);
+      expect(bundle?.if).toBe(specOf(name).bundleIf);
+      // Last, so it carries a reason file however the agent's run ended.
+      expect(names.slice(-2)).toEqual(["Bundle the branch", "Hand the branch to the publish job"]);
+      expect(upload?.if).toBe("always()");
+      expect(upload?.with?.["path"]).toContain("${{ runner.temp }}/branch.bundle");
+      expect(upload?.with?.["path"]).toContain("${{ runner.temp }}/failure_reason.txt");
+    },
+  );
 
   /**
    * The bundle's content is the agent's, as the pushed branch always was; what
@@ -9128,8 +9148,9 @@ describe("the loop resolves its token in the jobs that write", () => {
         if (step.env?.["TOKEN_SOURCE"] !== undefined && id !== "review") {
           expect(step.env["TOKEN_SOURCE"], `${id}: ${step.name}`).toBe(SOURCE);
         }
+        // Or none at all, `""`, for a command after the agent (#472).
         const token = step.env?.["GH_TOKEN"];
-        if (token !== undefined) expect([TOKEN, "${{ secrets.GITHUB_TOKEN }}"], `${id}: ${step.name}`).toContain(token);
+        if (token !== undefined) expect([TOKEN, "${{ secrets.GITHUB_TOKEN }}", ""], `${id}: ${step.name}`).toContain(token);
       }
     }
   });
@@ -9669,6 +9690,8 @@ describe("rescue and resume for fix and implement-prd", () => {
       agent: "fix",
       rescue: "agent/rescue/fix-${{ github.event.pull_request.number }}",
       prepare: "Prepare branch and make the PR base available for diffing",
+      // `fix:bundle` (#472).
+      bundle: "Bundle the agent's commits",
       condition:
         "always() && needs.gate.outputs.refused == 'false' && (cancelled() || failure() || needs.fix.result == 'failure' || needs.fix.result == 'cancelled') && steps.push.outputs.pushed != 'true'",
       // Not on a nothing-to-do run, which exits before it reads the rescue.
@@ -9680,6 +9703,7 @@ describe("rescue and resume for fix and implement-prd", () => {
       agent: "implement-prd",
       rescue: "agent/rescue/prd-${{ github.event.issue.number }}",
       prepare: "Prepare the PRD branch",
+      bundle: "Bundle the branch",
       condition:
         "always() && needs.gate.outputs.refused == 'false' && needs.gate.outputs.build == 'true' && (cancelled() || failure() || needs.implement-prd.result == 'failure' || needs.implement-prd.result == 'cancelled') && steps.push.outputs.head == ''",
       deleteIf: "needs.implement-prd.result == 'success' && success()",
@@ -9736,7 +9760,7 @@ describe("rescue and resume for fix and implement-prd", () => {
     const steps = jobNamed(c.file, c.agent).steps ?? [];
     const upload = steps.find((s) => s.name === "Hand the branch to the publish job");
 
-    expect(steps.find((s) => s.name === "Bundle the branch")?.if).toBe("always()");
+    expect(steps.find((s) => s.name === c.bundle)?.if).toBe("always()");
     expect(upload?.with?.["path"]).toContain("${{ runner.temp }}/rescue_ignored.md");
     expect(code(steps[named(steps, c.prepare)])).toContain(`"+refs/heads/\${RESCUE_BRANCH}:${rescueRef("${RESCUE_BRANCH}")}"`);
   });
@@ -9901,6 +9925,139 @@ describe("an artifact step hands over exactly the files a command declares", () 
       "${{ runner.temp }}/sub/b.json",
       "c.json",
     ]);
+  });
+});
+
+/**
+ * `fix:bundle` (#472): the agent's commits, bundled by a command in the
+ * agent's job however the agent ended, from the package installed early in
+ * that job, with no token, into a directory of its own the job's upload
+ * carries beside the runner's files.
+ */
+describe("fix's agent job bundles its commits with fix:bundle", () => {
+  const FIX = path.join(WORKFLOW_DIR, "fix.yml");
+  const steps = (): readonly Step[] => jobNamed(FIX, "fix").steps ?? [];
+  const index = (name: string): number => {
+    const at = steps().findIndex((s) => s.name === name);
+    expect(at, `fix's agent job has no \`${name}\` step`).toBeGreaterThan(-1);
+    return at;
+  };
+  const BUNDLE = "Bundle the agent's commits";
+  /** The npm spec's version: `PIN` without its `v`. */
+  const VERSION = PIN.slice(1);
+  const bundle = (): Step | undefined => steps()[index(BUNDLE)];
+  const runsPackage = (s: Step): boolean => /^npm (exec|install) .*@jeffwlawson\/agent-workflows@/.test((s.run ?? "").trim());
+
+  it("runs fix:bundle in place of the shell step", () => {
+    expect(bundle()?.run).toBe(
+      `npm exec --prefix "$RUNNER_TEMP" --yes --package=@jeffwlawson/agent-workflows@${VERSION} -- agent-workflows fix:bundle`,
+    );
+    expect(COMMANDS["fix:bundle"].outputs).toContain("branch.bundle");
+    expect(steps().some((s) => (s.run ?? "").includes("git bundle"))).toBe(false);
+  });
+
+  it("runs always(), after the runner and the transcript, and before the hand-over", () => {
+    const runner = steps().findIndex((s) => (s.run ?? "").trim().endsWith(" agent-workflows fix"));
+
+    expect(bundle()?.if).toBe("always()");
+    expect(runner).toBeGreaterThan(-1);
+    expect(index(BUNDLE)).toBeGreaterThan(runner);
+    expect(index(BUNDLE)).toBeGreaterThan(index("Redact the session transcript"));
+    expect(index(BUNDLE)).toBeGreaterThan(index("Upload the session transcript"));
+    expect(index(BUNDLE)).toBe(index("Hand the branch to the publish job") - 1);
+  });
+
+  /**
+   * Its inputs, each set by the step, the start head from the label's event
+   * and never from a file the agent's job wrote (ADR 0006), and nothing else
+   * but the registry's `.npmrc` and the empty token.
+   */
+  it("sets exactly its declared inputs, the start head from the event", () => {
+    const env = bundle()?.env ?? {};
+
+    expect(env).toMatchObject({
+      OUTPUT_DIR: "${{ runner.temp }}/bundle",
+      CHECKOUT: "${{ github.workspace }}",
+      BRANCH: "${{ github.event.pull_request.head.ref }}",
+      HEAD_SHA: "${{ github.event.pull_request.head.sha }}",
+    });
+    const set = Object.keys(env).filter((name) => name !== "NPM_CONFIG_USERCONFIG" && name !== "GH_TOKEN");
+    expect(set.sort()).toEqual(Object.keys(COMMANDS["fix:bundle"].inputs).sort());
+    expect(bundle()?.["working-directory"]).toBe("${{ runner.temp }}");
+    expect(env["NPM_CONFIG_USERCONFIG"]).toBe("${{ steps.npmrc.outputs.userconfig }}");
+  });
+
+  it("is handed no token and no writer", () => {
+    const step = bundle();
+    const text = JSON.stringify(step);
+
+    expect(step?.env?.["GH_TOKEN"]).toBe("");
+    for (const name of ["LOOP_TOKEN", "NODE_AUTH_TOKEN", "AGENT_PAT", "secrets.", "steps.token"]) {
+      expect(text, name).not.toContain(name);
+    }
+    expect(COMMANDS["fix:bundle"].inputs).not.toHaveProperty("GH_TOKEN");
+    expect(COMMANDS["fix:bundle"].inputs).not.toHaveProperty("GH_REPO");
+  });
+
+  /**
+   * **The install, once and early** (#422's shape): after the checkout and
+   * before the adopter's *Install dependencies*, the one step there handed
+   * the registry token for it, so nothing after the agent and the PR's own
+   * code asks the registry with one.
+   */
+  it("installs the package early, and hands no step after the runner the registry token", () => {
+    const all = steps();
+    const install = index("Install the package");
+    const runner = all.findIndex((s) => (s.run ?? "").trim().endsWith(" agent-workflows fix"));
+
+    expect(all[install]?.run).toBe(`npm install --prefix "$RUNNER_TEMP" --no-save @jeffwlawson/agent-workflows@${VERSION}`);
+    expect(all[install]?.["working-directory"]).toBe("${{ runner.temp }}");
+    expect(all[install]?.env?.["NODE_AUTH_TOKEN"]).toBe("${{ secrets.GITHUB_TOKEN }}");
+    expect(all[install]?.env?.["NPM_CONFIG_USERCONFIG"]).toBe("${{ steps.npmrc.outputs.userconfig }}");
+    expect(index("Keep the package's registry to the package's steps")).toBe(install - 1);
+    expect(index("Set up Node for the package")).toBe(install - 2);
+    expect(all[install - 2]?.with).toMatchObject({
+      "node-version": "24",
+      "registry-url": "https://npm.pkg.github.com",
+      scope: "@jeffwlawson",
+      "package-manager-cache": false,
+    });
+    expect(install).toBeGreaterThan(all.findIndex((s) => (s.uses ?? "").startsWith("actions/checkout@")));
+    expect(install).toBeLessThan(index("Install dependencies"));
+    for (const step of all.slice(runner + 1)) expect(step.env ?? {}, step.name).not.toHaveProperty("NODE_AUTH_TOKEN");
+    for (const step of all.slice(runner + 1).filter(runsPackage)) expect((step.run ?? "").startsWith("npm exec"), step.name).toBe(true);
+  });
+
+  /**
+   * The runner's declared files and `fix:bundle`'s, under `bundle/`, and no
+   * others: until `fix:publish` declares what it reads (#468), the hand-over
+   * is held to everything its two producers declare.
+   */
+  it("hands over exactly the runner's declared files and fix:bundle's", () => {
+    const every = (producer: string, outputs: readonly string[]): DirectoryInput => ({
+      required: true,
+      producer,
+      files: Object.fromEntries(outputs.map((file) => [file, "sometimes"] as const)),
+    });
+
+    expectHandsOver(steps()[index("Hand the branch to the publish job")], every("fix", RUNNERS.fix.outputs), {
+      bundle: every("fix:bundle", COMMANDS["fix:bundle"].outputs),
+    });
+  });
+
+  /**
+   * The download puts the artifact in `runner.temp`, so the publish job's
+   * push and rescue read the bundle where `fix:bundle` wrote it, under
+   * `bundle/`, until `fix:publish` and `fix:conclude` replace them.
+   */
+  it("has the publish job's push and rescue read the bundle where the download puts it", () => {
+    const publish = jobNamed(FIX, "publish").steps ?? [];
+    const download = publish.find((s) => s.name === "Fetch what the agent handed over");
+
+    expect(download?.with?.["path"]).toBe("${{ runner.temp }}");
+    for (const id of ["push", "rescue"]) {
+      expect(publish.find((s) => s.id === id)?.run ?? "", id).toContain('bundle="${RUNNER_TEMP}/bundle/branch.bundle"');
+    }
   });
 });
 

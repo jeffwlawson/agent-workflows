@@ -71,7 +71,8 @@ const commit = (cwd: string, file: string): string => {
 /**
  * Each workflow's names: the branch the agent works on, the variable the
  * rescue step reads it from, the variable holding the head it started from,
- * and the rescue branch.
+ * the rescue branch, and where under `RUNNER_TEMP` the bundle is handed over:
+ * fix's in `fix:bundle`'s own directory (#472).
  */
 const CASES = [
   {
@@ -82,6 +83,7 @@ const CASES = [
     branchVar: "BRANCH",
     startVar: "BRANCH_HEAD_SHA",
     rescue: "agent/rescue/fix-12",
+    bundleDir: "bundle",
   },
   {
     file: "implement-prd.yml",
@@ -91,6 +93,7 @@ const CASES = [
     branchVar: "PRD_BRANCH",
     startVar: "BASE_SHA",
     rescue: "agent/rescue/prd-9",
+    bundleDir: "",
   },
 ] as const;
 
@@ -127,9 +130,15 @@ const world = (c: Case): World => {
   return { temp, origin, publish, agent, runner, start };
 };
 
-/** The agent's job's bundle, as `Bundle the branch` builds it: its branch, past the head it started from. */
+/** Where the publish job finds the agent's bundle. */
+const bundleFile = (w: World, c: Case): string => {
+  fs.mkdirSync(path.join(w.runner, c.bundleDir), { recursive: true });
+  return path.join(w.runner, c.bundleDir, "branch.bundle");
+};
+
+/** The agent's job's bundle, as it is built: its branch, past the head it started from. */
 const bundle = (w: World, c: Case): void => {
-  git(w.agent, "bundle", "create", "--quiet", path.join(w.runner, "branch.bundle"), `refs/heads/${c.branch}`, `^${w.start}`);
+  git(w.agent, "bundle", "create", "--quiet", bundleFile(w, c), `refs/heads/${c.branch}`, `^${w.start}`);
 };
 
 interface Outcome {
@@ -242,7 +251,7 @@ describe.skipIf(!CAN_RUN)("a stopped run's commits are rescued to a side branch"
       commit(w.agent, "unrelated.txt");
       git(w.agent, "branch", "--quiet", "-D", c.branch);
       git(w.agent, "branch", "--quiet", "-m", c.branch);
-      git(w.agent, "bundle", "create", "--quiet", path.join(w.runner, "branch.bundle"), `refs/heads/${c.branch}`);
+      git(w.agent, "bundle", "create", "--quiet", bundleFile(w, c), `refs/heads/${c.branch}`);
 
       const outcome = rescue(w, c);
 

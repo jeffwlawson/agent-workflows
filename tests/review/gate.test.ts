@@ -91,6 +91,7 @@ const run = async (
     outputs: {
       writeJson: (name, value) => files.set(name, value),
       writeText: (name, value) => files.set(name, value),
+      writeBytes: () => {},
       appendLine: () => {},
     },
   };

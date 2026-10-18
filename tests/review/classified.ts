@@ -45,6 +45,7 @@ export const classified = (
     {
       writeJson: (name, value) => written.set(name, value),
       writeText: (name, value) => written.set(name, value),
+      writeBytes: () => {},
       appendLine: () => {},
     },
   );

@@ -151,6 +151,7 @@ const placed = (inputs: Inputs): Placed => {
   place(inputs, {
     writeJson: (name, value) => written.set(name, value),
     writeText: (name, value) => written.set(name, value),
+    writeBytes: () => {},
     appendLine: () => {},
   });
   return written.get("place.json") as Placed;

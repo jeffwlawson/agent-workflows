@@ -54,7 +54,7 @@ on:
         description: >-
           User PAT. Three things need it and each fails differently without it:
           the push (CI on the resulting PR waits for a maintainer's approval),
-          `gh pr create` (the Actions bot is forbidden from creating PRs), and the `agent:review` label add
+          opening the PR (the Actions bot is forbidden from creating PRs), and the `agent:review` label add
           (a label added with `GITHUB_TOKEN` triggers no workflow, so the
           cascade dies silently). See docs/ADOPTING.md §1. Optional, and every
           site warns rather than failing. The loop's App, where it is set up,
@@ -605,6 +605,10 @@ jobs:
       contents: write
       issues: write
       pull-requests: write
+      # The package `implement:publish` runs from, installed by `npm exec`.
+      # GitHub Packages has no anonymous install, and the caller already
+      # grants it.
+      packages: read
 
     env:
       ISSUE_NUMBER: ${{ github.event.issue.number }}
@@ -615,22 +619,11 @@ jobs:
       RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
 
     steps:
-      # Into `RUNNER_TEMP`, where the failure step looks for the runner's
-      # reason file as it did when the agent ran in this job, and the bundle
-      # and the commands' reason files under `prepare/` and `bundle/`. Tolerated: an agent's job that
-      # was killed before its upload leaves nothing to fetch, and the failure
-      # step still has to run.
-      - name: Fetch what the agent handed over
-        continue-on-error: true
-        uses: actions/download-artifact@v8
-        with:
-          name: agent-implement
-          path: ${{ runner.temp }}
-
       # The token every write below that the workflow token cannot make is
       # made with: the loop's App's, `AGENT_PAT`, or the workflow token, in
-      # that order, and `source` says which. Minted here, before the first
-      # write and after the agent finished, and in no other job.
+      # that order, and `source` says which. Minted here, at the job's start
+      # (ADR 0005), before the first write and after the agent finished, and
+      # in no other job.
       - name: Resolve the loop's token
         id: token
         if: always()
@@ -641,188 +634,86 @@ jobs:
           agent-pat: ${{ secrets.AGENT_PAT }}
           github-token: ${{ secrets.GITHUB_TOKEN }}
 
+      # **The one checkout**, of the base branch, wherever the gate claimed
+      # the run: what `implement:publish` checks the bundle in and pushes
+      # from. Nothing the agent touched is on this runner, and no credential
+      # is left in it: the push passes its token itself. `always()`, so the
+      # ending that reads the bundle once `implement:conclude` takes the
+      # failure step's place (#489) never checks it in an empty workspace.
       - name: Checkout the base branch
-        if: needs.implement.result == 'success'
+        if: always() && needs.gate.outputs.refused == 'false'
         uses: actions/checkout@v7
         with:
           ref: ${{ inputs.default-branch }}
           fetch-depth: 0
-          # Nothing the agent touched is on this runner, and the push below
-          # passes its token on its own command, as everywhere else.
           persist-credentials: false
 
-      # `head` is the commit `Request review` waits for the new PR to show.
+      # The Node `implement:publish` runs on, and the registry it installs
+      # from. A version rather than a version file, since nothing of the
+      # adopter's runs here: the one the package's `engines.node` names, which
+      # `tests/workflows.test.ts` holds it to.
+      - name: Set up Node for the package
+        if: always()
+        uses: actions/setup-node@v7
+        with:
+          node-version: "24"
+          registry-url: https://npm.pkg.github.com
+          scope: "@jeffwlawson"
+          package-manager-cache: false
+
+      # Into `RUNNER_TEMP`, where the failure step looks for the runner's
+      # reason file as it did when the agent ran in this job, and the bundle
+      # and the commands' reason files under `prepare/` and `bundle/`.
+      # `always()`, so a mint that failed still hands the failure step the
+      # runner's reason. Tolerated: an agent's job that was killed before its
+      # upload leaves nothing to fetch, and the failure step still has to run.
+      - name: Fetch what the agent handed over
+        id: fetch
+        if: always() && needs.gate.outputs.refused == 'false'
+        continue-on-error: true
+        uses: actions/download-artifact@v8
+        with:
+          name: agent-implement
+          path: ${{ runner.temp }}
+
+      # The success path (#492): the bundle checked, the push, the draft PR
+      # with its frame, the link on the issue, and the review request, in that
+      # order. `implement/publish.ts` says why each is as it is.
       #
       # **The bundle is checked before anything is pushed from it**, against
-      # facts `gate` established and the agent could not reach: it is intact
-      # and its prerequisites are here, it holds exactly the branch `gate`
-      # named and nothing else, and that branch builds on the base `gate`
-      # read. Its *content* is the agent's to write and the review's to judge,
-      # as it always was; what this rules out is a bundle that is not the
-      # branch this run was for. Unbundled rather than fetched: no remote, no
-      # hooks, and no git configuration from anywhere but this fresh checkout.
+      # facts `gate` established and the agent could not reach: it is intact,
+      # holds exactly the branch `gate` named and nothing else, and builds on
+      # the base `gate` read. The push is leased on the branch's tip as `gate`
+      # read it, or on there being none, so a retry replaces what an earlier
+      # failed run left and a push someone made during the run is refused. A
+      # server error opening the PR is read back, by this head and this base,
+      # before it is called a failure (#329).
       #
-      # The loop's App and AGENT_PAT are both optional. With neither, this
-      # pushes with GITHUB_TOKEN, which works, except that CI on the resulting
-      # PR waits for a maintainer to approve it: since 2026-06-11 a push made
-      # with it starts `pull_request` runs that require approval (#221). Set
-      # either later and this starts using it with no change to the workflow.
-      - name: Push branch
-        id: push
+      # Given both tokens: `GH_TOKEN`, the workflow's, which it reads and
+      # links the PR on the issue with, and the loop's, which it pushes, opens
+      # the PR and labels with: the Actions bot is forbidden from opening one,
+      # a push made with the workflow token starts CI that waits for a
+      # maintainer's approval (#221), and a label it adds triggers nothing.
+      # Where the loop's token is the workflow's, the label still goes on and
+      # it warns. From `RUNNER_TEMP`, so no `.npmrc` of the checkout is read,
+      # and working in the checkout. Its reason file goes in a directory of
+      # its own, which the failure step reads.
+      - name: Publish the PR
+        id: publish
         if: needs.implement.result == 'success' && success()
+        working-directory: ${{ runner.temp }}
         env:
+          NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          LOOP_TOKEN: ${{ steps.token.outputs.token }}
+          LOOP_TOKEN_SOURCE: ${{ steps.token.outputs.source }}
+          OUTPUT_DIR: ${{ runner.temp }}/publish
+          BUNDLE_DIR: ${{ runner.temp }}/bundle
+          CHECKOUT: ${{ github.workspace }}
           BRANCH: ${{ needs.gate.outputs.branch }}
           BASE_SHA: ${{ needs.gate.outputs.base }}
-          PUSH_TOKEN: ${{ steps.token.outputs.token }}
-        run: |
-          set -euo pipefail
-          bundle="${RUNNER_TEMP}/bundle/branch.bundle"
-
-          block() {
-            printf '%s\n' "$1" > "${RUNNER_TEMP}/failure_reason.txt"
-            echo "::error::$1"
-            exit 1
-          }
-
-          [ -f "$bundle" ] || block "The agent's job finished without handing over its commits, so nothing was pushed."
-          git bundle verify --quiet "$bundle" \
-            || block "The agent's commits arrived damaged or incomplete, so nothing was pushed."
-          # `verify` checks the prerequisites and little else: a bundle cut
-          # short, in its header or its commits, can pass it. Unbundling reads
-          # and indexes the whole of it, which is where that shows, and writes
-          # objects only, never a ref.
-          git bundle unbundle "$bundle" > /dev/null \
-            || block "The agent's commits arrived damaged or incomplete, so nothing was pushed."
-          heads=$(git bundle list-heads "$bundle")
-          if [ "$(wc -l <<< "$heads")" -ne 1 ] || [ "$(cut -d' ' -f2 <<< "$heads")" != "refs/heads/${BRANCH}" ]; then
-            block "The agent's commits arrived on a branch other than \`${BRANCH}\`, or beside other branches, so nothing was pushed."
-          fi
-          git update-ref "refs/heads/${BRANCH}" "$(cut -d' ' -f1 <<< "$heads")"
-          git merge-base --is-ancestor "$BASE_SHA" "refs/heads/${BRANCH}" \
-            || block "The agent's commits don't build on \`${BASE_REF}\` as this run found it, so nothing was pushed."
-
-          auth=$(printf 'x-access-token:%s' "$PUSH_TOKEN" | base64 | tr -d '\n')
-          echo "::add-mask::${auth}"
-          git -c "http.extraHeader=AUTHORIZATION: basic ${auth}" push --force origin "$BRANCH"
-          echo "head=$(git rev-parse "refs/heads/${BRANCH}")" >> "$GITHUB_OUTPUT"
-
-      # The body is the **frame** (#218), written here once and never
-      # rewritten, in the order #298 settled: a note on what the loop does with
-      # the pull request and how to steer it, linking this run and opening with
-      # a status line between its own markers, which every review rewrites; a
-      # `---` rule, outside every marker pair and with a blank line above it,
-      # without which GitHub reads that line as a setext heading (#353);
-      # `## Summary` and the summary block the review writes and keeps current;
-      # and `Closes #N` at the bottom, where GitHub reads it as well as at the
-      # top. The review owns the two blocks and nothing else, so a maintainer's
-      # notes outside them survive every round. The title is the issue's until
-      # the first review writes one true of the change.
-      - name: Open draft PR
-        if: needs.implement.result == 'success' && success()
-        id: open_pr
-        env:
-          BRANCH: ${{ needs.gate.outputs.branch }}
-          # gh reads GH_TOKEN from the env. The job-level GH_TOKEN is the
-          # built-in GITHUB_TOKEN, and the Actions bot is forbidden from
-          # creating PRs ("GitHub Actions is not permitted to create or approve
-          # pull requests"). The loop's App and a user PAT are not the Actions
-          # bot, so they bypass that restriction. The resolver falls back to
-          # GITHUB_TOKEN so the step still runs in setups with neither: it
-          # will fail the same way, but the workflow shape stays identical.
-          GH_TOKEN: ${{ steps.token.outputs.token }}
-          # The status line the note opens with until the first review rewrites
-          # it (#298): `OPENING_STATUS` in `shared/progress-list.ts`, held equal
-          # by a test.
-          OPENING_STATUS: "**🔍 In review:** waiting for its first review."
-        run: |
-          title="Fix #${ISSUE_NUMBER}: ${ISSUE_TITLE}"
-          body_file="${RUNNER_TEMP}/pr-body.md"
-          cat > "$body_file" <<FRAME
-          > [!NOTE]
-          > <!-- agent:status -->
-          > ${OPENING_STATUS}
-          > <!-- /agent:status -->
-          >
-          > Opened by the agent loop from #${ISSUE_NUMBER} ([Workflow run](${RUN_URL})). Comment here to steer it; your notes outside the loop's blocks are never edited.
-
-          ---
-
-          ## Summary
-
-          <!-- agent:summary -->
-          _The review will summarize this change here after its first pass._
-          <!-- /agent:summary -->
-
-          Closes #${ISSUE_NUMBER}
-          FRAME
-          pr_url=$(gh pr create --draft --base "$BASE_REF" --head "$BRANCH" \
-            --title "${title:0:256}" --body-file "$body_file" | tail -n1)
-          echo "number=$(basename "$pr_url")" >> "$GITHUB_OUTPUT"
-          echo "Opened $pr_url"
-
-      # The success outcome, said on the issue with the run link (#205), so
-      # every comment a run leaves there links it. Before the review is asked
-      # for, and a warning where it cannot be posted: the PR is open either
-      # way, and the review must still be requested.
-      - name: Link the PR on the issue
-        if: needs.implement.result == 'success' && success()
-        env:
-          NEW_PR: ${{ steps.open_pr.outputs.number }}
-        run: |
-          gh issue comment "$ISSUE_NUMBER" --body "**\`agent:implement\` opened PR #${NEW_PR}:** [Workflow run](${RUN_URL})" || echo "::warning::Could not comment PR #${NEW_PR} on #${ISSUE_NUMBER}."
-
-      # Cascade: every agent PR gets reviewed without a human labelling it.
-      #
-      # Safe because the hop it starts is bounded at the other end. Since #102
-      # agent-review can add `agent:fix` back: only within the pull request's
-      # fix-round budget (#201), and never after a fix round that closed none
-      # of the findings it was given (#202). The invariant that records the
-      # old rule and both amendments is docs/parity.md §10; a return leg
-      # without those bounds closes the loop with no human gate.
-      #
-      # MUST use the loop's App or AGENT_PAT: a label added with GITHUB_TOKEN
-      # does not trigger further workflows, so the label would appear and
-      # nothing would happen, a silent no-op. Warn loudly rather than pretend
-      # it worked.
-      - name: Request review
-        if: needs.implement.result == 'success' && success()
-        env:
-          NEW_PR: ${{ steps.open_pr.outputs.number }}
-          TOKEN_SOURCE: ${{ steps.token.outputs.source }}
-          GH_TOKEN: ${{ steps.token.outputs.token }}
-          # The commit this run pushed, and how long the PR gets to show it as
-          # its head before the label goes on anyway (#229).
-          PUSHED_SHA: ${{ steps.push.outputs.head }}
-          HEAD_WAIT_SECONDS: "60"
-        run: |
-          set -uo pipefail
-          # Wait for the pull request to show the pushed commit as its head
-          # before asking for the review (#229). GitHub moves a PR's head
-          # asynchronously after a push, and a label added before it has would
-          # carry the commit before the push in its payload. Bounded: past it,
-          # the label goes on anyway with a warning, since review reads the
-          # branch tip itself and refuses by name where it cannot settle on it.
-          head=""
-          deadline=$((SECONDS + HEAD_WAIT_SECONDS))
-          until head=$(gh pr view "$NEW_PR" --json headRefOid --jq .headRefOid 2>/dev/null) && [ "$head" = "$PUSHED_SHA" ]; do
-            if [ "$SECONDS" -ge "$deadline" ]; then
-              echo "::warning::PR #${NEW_PR} still shows ${head:-an unreadable head} as its head ${HEAD_WAIT_SECONDS}s after ${PUSHED_SHA} was pushed. Asking for the review anyway: it reads the branch tip itself, and refuses by name if it cannot settle on ${PUSHED_SHA}."
-              break
-            fi
-            sleep 5
-          done
-          # This run's own label comes off before the next step's goes on
-          # (#236): every result is posted by now, the PR link included, so
-          # what is left is the hand-off. The last step removes it again, which
-          # is nothing where it is already off.
-          gh issue edit "$ISSUE_NUMBER" --remove-label "agent:implement" || true
-          # Removed first, as every trigger label the loop adds (#236): an add
-          # on a label that is somehow already there fires nothing.
-          gh pr edit "$NEW_PR" --remove-label "agent:review" || true
-          gh pr edit "$NEW_PR" --add-label "agent:review"
-          if [ "$TOKEN_SOURCE" != "app" ] && [ "$TOKEN_SOURCE" != "pat" ]; then
-            echo "::warning::Neither the loop's App nor AGENT_PAT is set, so this label was added with GITHUB_TOKEN and will NOT trigger agent-review. Add agent:review by hand on PR #${NEW_PR}."
-          fi
+          BRANCH_TIP: ${{ needs.gate.outputs.tip }}
+        run: npm exec --prefix "$RUNNER_TEMP" --yes --package=@jeffwlawson/agent-workflows@0.8.8 -- agent-workflows implement:publish
 
       # Any of the three jobs: `gate` failing (this job's own `if:` lets a
       # failed gate through, since its `refused` is `!= 'true'` there), the
@@ -859,10 +750,10 @@ jobs:
           reason="It stopped without giving a reason. The workflow run's log has the details."
           # Each producer's reason file, where the download put it: at the
           # top, this job's own or the runner's, then `implement:prepare`'s
-          # and `implement:bundle`'s, each in a directory of its own. The
-          # first found is the reason.
+          # and `implement:bundle`'s, each in a directory of its own, and
+          # `implement:publish`'s in its own. The first found is the reason.
           reason_file=""
-          for file in "${RUNNER_TEMP}/failure_reason.txt" "${RUNNER_TEMP}/prepare/failure_reason.txt" "${RUNNER_TEMP}/bundle/failure_reason.txt"; do
+          for file in "${RUNNER_TEMP}/failure_reason.txt" "${RUNNER_TEMP}/prepare/failure_reason.txt" "${RUNNER_TEMP}/bundle/failure_reason.txt" "${RUNNER_TEMP}/publish/failure_reason.txt"; do
             if [ -z "$reason_file" ] && [ -f "$file" ]; then reason_file="$file"; fi
           done
           if [ -n "$reason_file" ]; then
@@ -929,3 +820,17 @@ jobs:
       - name: Always remove the trigger label
         if: always() && needs.gate.outputs.refused == 'false'
         run: gh issue edit "$ISSUE_NUMBER" --remove-label "agent:implement" || true
+
+      # Every write `implement:publish` made, one line each as it landed, and
+      # a last line for how it ended (ADR 0005), kept for whoever audits the
+      # run, by the path it declares. `always()`, since a run that stopped is
+      # the one a log is read for, and nothing of a command that never ran.
+      - name: Keep the write log
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: agent-implement-write-log
+          path: ${{ runner.temp }}/publish/write_log.jsonl
+          if-no-files-found: ignore
+          retention-days: 7
+          overwrite: true

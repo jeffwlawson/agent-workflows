@@ -599,6 +599,21 @@ const UPDATE_BRANCH_PUBLISH = {
 } as const satisfies CommandContract;
 
 /**
+ * `implement:bundle`, declared ahead of `COMMANDS` so that
+ * `implement:publish` can read its outputs (`readsFromCommand`). See
+ * `COMMANDS`.
+ */
+const IMPLEMENT_BUNDLE = {
+  inputs: {
+    ...TOKENLESS,
+    CHECKOUT: REQUIRED,
+    BRANCH: REQUIRED,
+    BASE_SHA: REQUIRED,
+  },
+  outputs: [...EVERY_SUBCOMMAND_OUTPUTS, "branch.bundle"],
+} as const satisfies CommandContract;
+
+/**
  * What the red check's two commands read beside their own: `TOKENLESS`, and
  * the pull request's checkout, which they work in.
  */
@@ -756,6 +771,19 @@ const REVIEW_RED_CHECK_PLACE = {
  *   `branch.bundle`. Where there is nothing to bundle it refuses: it runs
  *   only where the agent succeeded. It reads no repository and is handed no
  *   token.
+ * - `implement:publish` checks the bundle `implement:bundle` wrote, read
+ *   through `BUNDLE_DIR`, in `CHECKOUT`: there, intact, holding exactly
+ *   `BRANCH`, and building on `BASE_SHA`, the gate's base commit. Then it
+ *   pushes it with the loop's token, leased on `BRANCH_TIP`, the gate's tip,
+ *   or on the branch not existing where that is empty; opens the draft pull
+ *   request from `BRANCH` into `BASE_REF`, titled from `ISSUE_NUMBER` and
+ *   `ISSUE_TITLE`, its frame linking `RUN_URL`, reading it back on a server
+ *   error; links it on the issue; waits, bounded by `HEAD_WAIT_SECONDS` and
+ *   polled every `HEAD_POLL_SECONDS`, for it to show the pushed head; and
+ *   takes `agent:implement` off and puts `agent:review` on, removed first,
+ *   with the loop's token. `published.json` is whether it pushed, the pushed
+ *   head, the pull request's number and whether the review was requested,
+ *   written as each becomes true.
  * - `review:advance` moves a PRD PR's chain on after a review, or parks it:
  *   the progress table and status line for how the round ended, then
  *   `agent:implement` back on the parent on a slice round's approval, or the
@@ -905,14 +933,26 @@ export const COMMANDS = {
     },
     outputs: [...EVERY_SUBCOMMAND_OUTPUTS],
   },
-  "implement:bundle": {
+  "implement:bundle": IMPLEMENT_BUNDLE,
+  "implement:publish": {
     inputs: {
-      ...TOKENLESS,
-      CHECKOUT: REQUIRED,
+      ...EVERY_SUBCOMMAND,
+      ...LOOP,
+      ISSUE_NUMBER: REQUIRED,
+      ISSUE_TITLE: REQUIRED,
+      BASE_REF: REQUIRED,
       BRANCH: REQUIRED,
       BASE_SHA: REQUIRED,
+      BRANCH_TIP: EMPTY,
+      RUN_URL: REQUIRED,
+      CHECKOUT: REQUIRED,
+      HEAD_WAIT_SECONDS: { required: false, default: "60" },
+      HEAD_POLL_SECONDS: { required: false, default: "5" },
+      BUNDLE_DIR: readsFromCommand("implement:bundle", IMPLEMENT_BUNDLE, {
+        "branch.bundle": "sometimes",
+      }),
     },
-    outputs: [...EVERY_SUBCOMMAND_OUTPUTS, "branch.bundle"],
+    outputs: [...EVERY_SUBCOMMAND_OUTPUTS, "published.json", WRITE_LOG],
   },
   "review:gate": {
     inputs: {

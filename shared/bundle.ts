@@ -1,8 +1,9 @@
 /**
  * A branch handed from the job that ran the agent to the job that pushes it,
  * as a `git bundle`, described once, here, for every workflow that hands one
- * over (PRD #466, #483): made by `fix:bundle` and `update-branch:bundle`, and
- * checked the one way before anything is pushed or rescued from it.
+ * over (PRD #466, #483): made by `fix:bundle`, `update-branch:bundle` and
+ * `implement:bundle`, and checked the one way before anything is pushed or
+ * rescued from it.
  */
 import { execFileSync } from "node:child_process";
 import type { GitReader } from "../engine/git.js";
@@ -56,7 +57,9 @@ export const bundleBranch = (checkout: string, branch: string, prerequisites: re
  * The bundle's one tip, where it is intact, holds exactly the pull request's
  * branch and nothing else, and builds on the head this run was started for.
  * Each failure is its own sentence, ending in what was not done because of
- * it: `pushed` for a push, `rescued` for a rescue.
+ * it: `pushed` for a push, `rescued` for a rescue. `on` is what the sentence
+ * calls `started`: the PR's head where a pull request's run started from it,
+ * and the base branch, named, where `implement` cut a new branch from it.
  */
 export const checkBundle = async (
   git: GitReader,
@@ -64,6 +67,7 @@ export const checkBundle = async (
   branch: string,
   started: string,
   unless: "pushed" | "rescued",
+  on = "the PR's head",
 ): Promise<string> => {
   let heads;
   try {
@@ -80,10 +84,10 @@ export const checkBundle = async (
     builds = await git.isAncestor(started, head.commit);
   } catch (error) {
     throw new Error(
-      `Couldn't tell whether the agent's commits build on the PR's head as this run found it, so nothing was ${unless}: ${error instanceof Error ? error.message : String(error)}`,
+      `Couldn't tell whether the agent's commits build on ${on} as this run found it, so nothing was ${unless}: ${error instanceof Error ? error.message : String(error)}`,
       { cause: error },
     );
   }
-  if (!builds) throw new Error(`The agent's commits don't build on the PR's head as this run found it, so nothing was ${unless}.`);
+  if (!builds) throw new Error(`The agent's commits don't build on ${on} as this run found it, so nothing was ${unless}.`);
   return head.commit;
 };

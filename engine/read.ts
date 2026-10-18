@@ -78,6 +78,12 @@ export interface IssueShape {
   readonly labels: readonly string[];
 }
 
+/** A pull request as far as a link to it needs it. */
+export interface PullRequestLink {
+  readonly number: number;
+  readonly url: string;
+}
+
 export interface GitHubReader {
   pullRequest(number: number): Promise<PullRequest>;
   /**
@@ -95,6 +101,13 @@ export interface GitHubReader {
    * words close an issue is one.
    */
   openPullRequestsClosing(pattern: RegExp): Promise<readonly number[]>;
+  /**
+   * The open pull request from exactly `head`, a branch of this repository,
+   * into exactly `base`, where there is one: GitHub allows one open pull
+   * request per head and base, so the pair identifies it. What the
+   * `openPullRequest` write reads back on a server error.
+   */
+  openPullRequest(head: string, base: string): Promise<PullRequestLink | undefined>;
   /** Every status set on `sha`, newest first, as the endpoint documents. */
   commitStatuses(sha: string): Promise<readonly CommitStatus[]>;
   /** The node id of every review thread on the pull request: what a thread target is checked against (#403). */
@@ -277,6 +290,22 @@ export const githubReader = (repo: string, transport: Transport): GitHubReader =
       )
         .filter((pr) => pattern.test(pr.body ?? ""))
         .map((pr) => pr.number),
+    openPullRequest: async (head, base) => {
+      const query = `state=open&head=${encodeURIComponent(`${owner}:${head}`)}&base=${encodeURIComponent(base)}`;
+      const found = (
+        await paged(
+          `/repos/${repo}/pulls?${query}`,
+          (page) =>
+            page as readonly {
+              readonly number: number;
+              readonly html_url: string;
+              readonly head: { readonly ref: string; readonly repo: { readonly full_name: string } | null };
+              readonly base: { readonly ref: string };
+            }[],
+        )
+      ).find((pr) => pr.head.ref === head && pr.head.repo?.full_name === repo && pr.base.ref === base);
+      return found === undefined ? undefined : { number: found.number, url: found.html_url };
+    },
     commitStatuses: async (sha) => {
       const statuses: CommitStatus[] = [];
       for (let page = 1; ; page++) {

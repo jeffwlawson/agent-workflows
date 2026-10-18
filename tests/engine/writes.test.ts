@@ -8,7 +8,7 @@ import { gitWrites } from "../../engine/git.js";
 import { GitHubError, isServerError, type RestRequest, type Transport } from "../../engine/github.js";
 import { githubReader } from "../../engine/read.js";
 import { ADD_REVIEW, githubWrites, MARK_READY, REPLY_TO_THREAD, RESOLVE_THREAD } from "../../engine/writes.js";
-import { createWriters, WriteFailed, type PullRequestEdit } from "../../engine/writer.js";
+import { createWriters, ReadBackFailed, WriteFailed, type PullRequestEdit } from "../../engine/writer.js";
 import { fakeGitHub, fakeWriters } from "./fakes.js";
 
 const REPO = "o/r";
@@ -58,6 +58,7 @@ const writerOver = (transport: Transport) =>
       replyAndResolve: 9,
       reply: 9,
       editPullRequest: 9,
+      openPullRequest: 9,
     },
     appendLine: () => undefined,
   });
@@ -204,6 +205,101 @@ describe("githubWrites", () => {
 
     expect(await real.writers.workflow.editPullRequest(7, edit)).toEqual(await fake.writers.workflow.editPullRequest(7, edit));
     expect(real.log.entries).toEqual(fake.entries);
+  });
+});
+
+/**
+ * `openPullRequest` (#492): a server error is read back before it is called a
+ * failure, by exactly this head and base and never by the body, since an
+ * adopter's own PR can close the same issue (#329).
+ */
+describe("openPullRequest", () => {
+  const OPEN = { base: "main", head: "agent/issue-9-x", title: "Fix #9: x", body: "Closes #9", draft: true };
+  const listed = (head: string, base: string, number = 31, repo = REPO) => ({
+    number,
+    html_url: `https://github.com/o/r/pull/${number}`,
+    head: { ref: head, repo: { full_name: repo } },
+    base: { ref: base },
+    body: "Closes #9",
+  });
+  /** A transport whose POST answers `post`, and whose listing answers `list`. */
+  const answering = (post: () => unknown, list: () => unknown) =>
+    recording((s) => ("rest" in s && s.rest.method === "POST" ? post() : list()));
+  const serverError = () => {
+    throw new GitHubError("POST /repos/o/r/pulls: 502 Bad Gateway", 502, { reason: "Bad Gateway" });
+  };
+
+  it("opens the pull request with the fields it is given, and returns its number and link", async () => {
+    const { transport, sent } = answering(() => ({ number: 31, html_url: "https://github.com/o/r/pull/31" }), () => []);
+    const { writers, log } = writerOver(transport);
+
+    expect(await writers.workflow.openPullRequest(OPEN)).toEqual({ outcome: "applied", number: 31, url: "https://github.com/o/r/pull/31" });
+    expect(sent).toEqual([{ rest: { method: "POST", path: "/repos/o/r/pulls", body: OPEN } }]);
+    expect(log.entries[0]).toMatchObject({ type: "openPullRequest", target: "agent/issue-9-x into main draft", url: "https://github.com/o/r/pull/31" });
+  });
+
+  it("carries on with the pull request from this head into this base where GitHub errored but opened it", async () => {
+    const { transport, sent } = answering(serverError, () => [listed("other", "main", 30), listed(OPEN.head, OPEN.base)]);
+    const { writers, log } = writerOver(transport);
+
+    const opened = await writers.workflow.openPullRequest(OPEN);
+
+    expect(opened).toEqual({ outcome: "applied", number: 31, url: "https://github.com/o/r/pull/31", readBack: "POST /repos/o/r/pulls: 502 Bad Gateway" });
+    expect(sent[1]).toEqual({
+      rest: { method: "GET", path: "/repos/o/r/pulls?state=open&head=o%3Aagent%2Fissue-9-x&base=main&per_page=100&page=1" },
+    });
+    expect(log.entries[0]?.calls).toEqual(["POST pulls 502 Bad Gateway", "GET pulls ok"]);
+  });
+
+  it.each([
+    ["from another head", [listed("someone/else", "main")]],
+    ["into another base", [listed("agent/issue-9-x", "develop")]],
+    ["from a fork's branch of the same name", [listed("agent/issue-9-x", "main", 31, "fork/r")]],
+    ["that only closes the same issue", [{ ...listed("feature", "main"), body: "Closes #9" }]],
+  ])("fails a server error where the only open pull request is one %s", async (_name, open) => {
+    const { transport } = answering(serverError, () => open);
+    const { writers } = writerOver(transport);
+
+    const failed = await writers.workflow.openPullRequest(OPEN).catch((error: unknown) => error);
+
+    expect(failed).toBeInstanceOf(WriteFailed);
+    expect((failed as WriteFailed).cause).toBeInstanceOf(GitHubError);
+    expect((failed as WriteFailed).entry.outcome).toBe("failed");
+  });
+
+  it("fails a refusal without reading back", async () => {
+    const { transport, sent } = answering(() => {
+      throw new GitHubError("POST /repos/o/r/pulls: 422 A pull request already exists", 422);
+    }, () => [listed(OPEN.head, OPEN.base)]);
+
+    await expect(writerOver(transport).writers.workflow.openPullRequest(OPEN)).rejects.toBeInstanceOf(WriteFailed);
+    expect(sent).toHaveLength(1);
+  });
+
+  it("fails a server error whose read-back fails too, naming both", async () => {
+    const { transport } = answering(serverError, () => {
+      throw new GitHubError("GET /repos/o/r/pulls: 503 Unavailable", 503);
+    });
+
+    const failed = (await writerOver(transport).writers.workflow.openPullRequest(OPEN).catch((error: unknown) => error)) as WriteFailed;
+
+    expect(failed.cause).toBeInstanceOf(ReadBackFailed);
+    expect((failed.cause as Error).message).toContain("502 Bad Gateway");
+    expect((failed.cause as Error).message).toContain("503 Unavailable");
+  });
+
+  /** The fake a command's test stands on opens, and reads back, as a run does. */
+  it("is logged by the fake as a run logs it, opened and read back", async () => {
+    const real = writerOver(answering(serverError, () => [listed(OPEN.head, OPEN.base)]).transport);
+    const github = fakeGitHub([{ number: 31, headRef: OPEN.head, baseRef: OPEN.base }]);
+    github.fails = (_write, call) => (call === "POST pulls" ? { status: 502, landed: false } : false);
+    const fake = fakeWriters(github, ["workflow"], { openPullRequest: 1 });
+
+    const [a, b] = [await real.writers.workflow.openPullRequest(OPEN), await fake.writers.workflow.openPullRequest(OPEN)];
+    expect({ ...a, readBack: "" }).toEqual({ ...b, readBack: "" });
+    expect(real.log.entries.map((e) => [e.type, e.target, e.outcome, e.calls.map((c) => c.split(" ").slice(0, 3).join(" "))])).toEqual(
+      fake.entries.map((e) => [e.type, e.target, e.outcome, e.calls.map((c) => c.split(" ").slice(0, 3).join(" "))]),
+    );
   });
 });
 
@@ -380,6 +476,19 @@ describe("githubReader", () => {
 
     expect(await githubReader(REPO, transport).openPullRequestsClosing(/closes|fixes/i)).toEqual([12, 10]);
     expect(paths(sent)).toEqual(["/repos/o/r/pulls?state=open&per_page=100&page=1"]);
+  });
+
+  it("reads the open pull request from exactly a head into exactly a base, and none where there is none", async () => {
+    const pr = (number: number, head: string, base: string) => ({
+      number,
+      html_url: `https://github.com/o/r/pull/${number}`,
+      head: { ref: head, repo: { full_name: REPO } },
+      base: { ref: base },
+    });
+    const { transport } = recording(() => [pr(4, "agent/x-y", "develop"), pr(5, "agent/x", "main")]);
+
+    expect(await githubReader(REPO, transport).openPullRequest("agent/x", "main")).toEqual({ number: 5, url: "https://github.com/o/r/pull/5" });
+    expect(await githubReader(REPO, transport).openPullRequest("agent/x", "develop")).toBeUndefined();
   });
 
   it("reads how one commit relates to another", async () => {

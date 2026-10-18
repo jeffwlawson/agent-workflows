@@ -106,6 +106,27 @@ export interface RefDelete {
   readonly lease: { readonly tip: string };
 }
 
+/** A pull request to open, from `head` into `base`, both branch names. */
+export interface PullRequestOpen {
+  readonly base: string;
+  readonly head: string;
+  readonly title: string;
+  readonly body: string;
+  readonly draft: boolean;
+}
+
+/**
+ * A pull request opened: its number and link. `readBack` is the server error
+ * GitHub answered the open with, where it did and the read-back found the
+ * pull request open all the same, so the caller can say so.
+ */
+export interface Opened {
+  readonly outcome: "applied";
+  readonly number: number;
+  readonly url: string;
+  readonly readBack?: string;
+}
+
 /**
  * A pull request's title and body. `body` is handed the body as it is now and
  * returns the new one, or `undefined` to leave it, so a splice is made against
@@ -136,6 +157,15 @@ export interface Writer {
   reply(reply: ThreadReply): Promise<Done>;
   /** Nothing to change, by title or by what `body` returns for the live body, is `unchanged`. */
   editPullRequest(pr: number, edit: PullRequestEdit): Promise<Done>;
+  /**
+   * A pull request opened. **A server error is not "not opened"**: GitHub
+   * allows one open pull request per head and base, so on one the open pull
+   * requests from exactly this head into exactly this base are read back, and
+   * the one found is the result. Never matched on anything the body says, and
+   * never retried. A read-back that fails too throws `ReadBackFailed`, naming
+   * both errors.
+   */
+  openPullRequest(open: PullRequestOpen): Promise<Opened>;
   /**
    * A push of a commit to a ref, forced where the lease holds and failed where
    * it does not. A ref already at the commit is `unchanged`.
@@ -208,6 +238,23 @@ export class WriteFailed extends Error {
   }
 }
 
+/**
+ * A write GitHub answered with a server error, whose read-back, of whether it
+ * landed anyway, failed too: neither "done" nor "not done" is known. Thrown by
+ * the write type, as the `cause` of its `WriteFailed`.
+ */
+export class ReadBackFailed extends Error {
+  constructor(
+    readonly written: unknown,
+    readonly read: unknown,
+  ) {
+    super(`GitHub answered with a server error (${describe(written)}), and reading back whether the write landed failed too (${describe(read)})`, {
+      cause: written,
+    });
+    this.name = "ReadBackFailed";
+  }
+}
+
 /** A write past its type's limit, refused before any call: our own code's bug, so never trimmed. */
 export class LimitReached extends Error {
   constructor(
@@ -251,6 +298,7 @@ const TARGETS: { readonly [K in WriteType]: (...args: Parameters<Writer[K]>) => 
   replyAndResolve: (thread) => `${thread.threadId} ${thread.reason}${thread.reply === undefined ? " (already replied)" : ""}`,
   reply: (reply) => reply.threadId,
   editPullRequest: (pr, edit) => `#${pr}${edit.title === undefined ? "" : " title"}${edit.body === undefined ? "" : " body"}`,
+  openPullRequest: (open) => `${open.head} into ${open.base}${open.draft ? " draft" : ""}`,
   pushRef: (push) => `${push.ref} ${push.commit.slice(0, 7)} ${"tip" in push.lease ? `over ${push.lease.tip.slice(0, 7)}` : "new"}`,
   deleteRef: (remove) => `${remove.ref} at ${remove.lease.tip.slice(0, 7)}`,
 };
@@ -326,7 +374,7 @@ export const createWriters = <T extends string>(options: {
         error,
       );
     }
-    const result = done as Done | Posted;
+    const result = done as Done | Posted | Opened;
     record({ token, type, target, outcome: result.outcome, calls, ...("url" in result ? { url: result.url } : {}) });
     return done;
   };
@@ -344,6 +392,7 @@ export const createWriters = <T extends string>(options: {
       replyAndResolve: bound("replyAndResolve"),
       reply: bound("reply"),
       editPullRequest: bound("editPullRequest"),
+      openPullRequest: bound("openPullRequest"),
       pushRef: bound("pushRef"),
       deleteRef: bound("deleteRef"),
     };

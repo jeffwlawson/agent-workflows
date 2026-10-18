@@ -9,10 +9,11 @@
  * it reaches the fake.
  */
 import { GitError, type BundleHead, type GitReader } from "../../engine/git.js";
-import { GitHubError } from "../../engine/github.js";
+import { GitHubError, isServerError } from "../../engine/github.js";
 import type { CheckRun, CommitStatus, ConversationComment, GitHubReader, PullRequest, WorkflowRun } from "../../engine/read.js";
 import {
   createWriters,
+  ReadBackFailed,
   type Backend,
   type Lease,
   type Limits,
@@ -33,6 +34,9 @@ export interface FakePullRequest {
   title: string;
   body: string;
   labels: string[];
+  /** The branch it is from, and the branch it is into, where a test names them. */
+  headRef?: string;
+  baseRef?: string;
 }
 
 /**
@@ -160,6 +164,12 @@ const labelsOf = (github: FakeGitHub, issue: number): string[] => {
   return labels;
 };
 
+/** The open pull request from exactly `head` into exactly `base`, as the reader and the open's read-back find it. */
+const openFrom = (github: FakeGitHub, head: string, base: string) => {
+  const pr = [...github.pullRequests.values()].find((p) => p.state === "open" && p.headRef === head && p.baseRef === base);
+  return pr === undefined ? undefined : { number: pr.number, url: `https://github.com/o/r/pull/${pr.number}` };
+};
+
 /** A read the fake reader received: the method and its arguments. */
 export interface ReceivedRead {
   readonly method: keyof GitHubReader;
@@ -193,6 +203,10 @@ export const fakeReader = (github: FakeGitHub): { readonly reader: GitHubReader;
         .filter((pr) => pr.state === "open" && pattern.test(pr.body))
         .map((pr) => pr.number)
         .sort((a, b) => b - a);
+    },
+    openPullRequest: async (head, base) => {
+      reads.push({ method: "openPullRequest", args: [head, base] });
+      return openFrom(github, head, base);
     },
     commitStatuses: async (sha) => {
       reads.push({ method: "commitStatuses", args: [sha] });
@@ -396,6 +410,39 @@ const fakeBackend = (github: FakeGitHub, token: string): Backend => {
         github.branches.delete(name);
       });
       return { outcome: "applied" };
+    },
+    openPullRequest: async (call, open) => {
+      try {
+        return await call("POST pulls", async () =>
+          attempt("openPullRequest", "POST pulls", () => {
+            const number = Math.max(0, ...github.pullRequests.keys()) + 1;
+            github.pullRequests.set(number, {
+              number,
+              nodeId: `PR_${number}`,
+              state: "open",
+              draft: open.draft,
+              headSha: github.branches.get(open.head) ?? "",
+              title: open.title,
+              body: open.body,
+              labels: [],
+              headRef: open.head,
+              baseRef: open.base,
+            });
+            return { outcome: "applied" as const, number, url: `https://github.com/o/r/pull/${number}` };
+          }),
+        );
+      } catch (error) {
+        // The read-back the engine's own makes, on a server error alone, by head and base alone.
+        if (!isServerError(error)) throw error;
+        let found;
+        try {
+          found = await call("GET pulls", async () => attempt("openPullRequest", "GET pulls", () => openFrom(github, open.head, open.base)), "read");
+        } catch (readError) {
+          throw new ReadBackFailed(error, readError);
+        }
+        if (found === undefined) throw error;
+        return { outcome: "applied", ...found, readBack: (error as Error).message };
+      }
     },
     editPullRequest: async (call, number, edit) => {
       const pr = await call("GET pull", async () => pullRequestOf(github, number), "read");

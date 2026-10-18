@@ -59,7 +59,7 @@ cannot check is one only an orchestrator's author will catch.
   `review`, `fix` and `update-branch`. It reads its inputs from the environment, starts the agent,
   and writes files and commits. It is not the agent.
 - **Command.** A subcommand that does an orchestrator's work on the record and starts no agent,
-  named `<workflow>:<step>`: `fix:gate`, `fix:prepare`, `fix:bundle`, `fix:publish`, `fix:conclude`, `follow-ups:file`, `implement:gate`, `implement:prepare`, `implement:bundle`, `review:gate`, `review:budget`,
+  named `<workflow>:<step>`: `fix:gate`, `fix:prepare`, `fix:bundle`, `fix:publish`, `fix:conclude`, `follow-ups:file`, `implement:gate`, `implement:prepare`, `implement:bundle`, `implement:publish`, `review:gate`, `review:budget`,
   `review:collect-checks`, `review:red-check-place`, `review:red-check-classify`, `review:publish`,
   `review:conclude`, `review:advance`, `update-branch:gate`, `update-branch:merge`,
   `update-branch:prepare`, `update-branch:bundle`, `update-branch:publish` and
@@ -139,7 +139,7 @@ The inputs every runner reads, set once for any of them:
 |---|---|---|---|
 | `OUTPUT_DIR` | required | | The directory the runner writes its files into (§2.3). |
 | `GH_REPO` | required | | The repository, `owner/name`. Required rather than left to whatever `gh` infers. |
-| `GH_TOKEN` | required | | The token `gh` reads. The runners only read with it, `fix:prepare` reads and fetches the rescue branch with it, and `update-branch:merge`, `update-branch:prepare` and `update-branch:publish` fetch the base branch with it; `follow-ups:file` files issues with it, `implement:gate` makes its refusals, its start comment and its label transitions with it, and `review:publish` posts the review, the summary and the verdict with it, `review:conclude` its comments, its error verdict and the labels nothing fires on, `review:advance` a PRD PR's progress list and its notes there, `fix:gate` its refusals and its label transitions, `fix:publish` its thread replies, its comments and notes, and the rescue branch's deletion, `fix:conclude` its failure comment, the rescue-set-aside note where `fix:publish` did not post it, and `agent:fix` off and `agent:blocked` on, `update-branch:gate` its refusal and its label transitions, `update-branch:publish` the verdict it carries over, its comment, and the comment that no review will start, and `update-branch:conclude` its failure comment, `agent:update-branch` off and `agent:blocked` on, and the comment that no refresh of a moved head will start. |
+| `GH_TOKEN` | required | | The token `gh` reads. The runners only read with it, `fix:prepare` reads and fetches the rescue branch with it, and `update-branch:merge`, `update-branch:prepare` and `update-branch:publish` fetch the base branch with it; `follow-ups:file` files issues with it, `implement:gate` makes its refusals, its start comment and its label transitions with it, `implement:publish` the link on the issue with it, and `review:publish` posts the review, the summary and the verdict with it, `review:conclude` its comments, its error verdict and the labels nothing fires on, `review:advance` a PRD PR's progress list and its notes there, `fix:gate` its refusals and its label transitions, `fix:publish` its thread replies, its comments and notes, and the rescue branch's deletion, `fix:conclude` its failure comment, the rescue-set-aside note where `fix:publish` did not post it, and `agent:fix` off and `agent:blocked` on, `update-branch:gate` its refusal and its label transitions, `update-branch:publish` the verdict it carries over, its comment, and the comment that no review will start, and `update-branch:conclude` its failure comment, `agent:update-branch` off and `agent:blocked` on, and the comment that no refresh of a moved head will start. |
 
 A command that runs where no token is held, as the red check's two do beside the pull request's own
 code, `fix:bundle`, `update-branch:bundle` and `implement:bundle` do after the agent and
@@ -431,7 +431,10 @@ string the agent wrote, so the agent cannot forge one of those through a review.
 | `<summary><b>Acceptance criteria</b>` | A review body's criteria group, its `- **Changed:**` and `- **Unmet:**` lines. | `review:publish`, from `review`'s `review_body.json` | `review`, on later rounds of the same slice |
 | `<!--{"version",…,"location","pr","seq"}-->` | The body of a filed follow-up issue. | `follow-ups:file`, which files it | `follow-ups:file`, to not file one twice |
 
-**Markers in a pull request's body.** The orchestrator writes the body; `review:publish` writes
+**Markers in a pull request's body.** The orchestrator writes the body, and a regular pull
+request's is written by `implement:publish`, as `renderPullRequestFrame` in `shared/pr-frame.ts`
+spells it: the note with the status line between its markers, the run link, the `---` rule, the
+summary block with its placeholder, and `Closes #<n>`. `review:publish` writes
 the summary block, its marks and a regular pull request's status line from `review`'s hand-over,
 `review:advance` a PRD PR's progress list and status line from `review`'s park hand-over, and the
 other blocks are written from a runner's output files. A runner reads them back from the
@@ -463,7 +466,7 @@ only a status whose creator is the loop's identity (§4.1).
 
 | Name | What it means | Written by | Read by |
 |---|---|---|---|
-| `agent/issue-<n>-<slug>` | The branch, and so the pull request's head, an `implement` run builds issue `<n>` on. `<slug>` is the issue's title, lowercased in ASCII alone, every run of anything but `[a-z0-9]` one `-`, the ends trimmed, then cut to 50, which can leave a trailing `-`. A retry lands on the branch an earlier run named. | named by `implement:gate`, as `ISSUE_BRANCH_PREFIX` and `issueBranch` in `shared/record.ts` spell it; pushed by the orchestrator | `implement:gate`, for its tip |
+| `agent/issue-<n>-<slug>` | The branch, and so the pull request's head, an `implement` run builds issue `<n>` on. `<slug>` is the issue's title, lowercased in ASCII alone, every run of anything but `[a-z0-9]` one `-`, the ends trimmed, then cut to 50, which can leave a trailing `-`. A retry lands on the branch an earlier run named. | named by `implement:gate`, as `ISSUE_BRANCH_PREFIX` and `issueBranch` in `shared/record.ts` spell it; pushed by `implement:publish`, from `implement:bundle`'s `branch.bundle`, leased on the tip the gate read | `implement:gate`, for its tip |
 | `agent/prd-<parent>-<slug>` | A PRD branch, and so a PRD PR, of parent issue `<parent>`. A pull request whose head does not match is an ordinary one. | the orchestrator | `review`, `fix` |
 | `agent/rescue/fix-<n>` | An earlier stopped fix run's commits on pull request `<n>`, its `RESCUE_BRANCH` (§9). Deleted, under a lease, by a run that succeeds. | `fix:conclude`, from `fix:bundle`'s `branch.bundle`; deleted by `fix:publish` | `fix:prepare`, which fetches it for the runner as `refs/rescue/…` |
 | `refs/rescue/<RESCUE_BRANCH>` | An earlier stopped run's commits, fetched for the runner to resume from (§7, §9). | `fix:prepare` for `fix`, and the orchestrator for `implement-prd`, from the rescue branch | `implement-prd`, `fix` |
@@ -566,9 +569,11 @@ it does not trust is left out of what the agent is shown. Nothing else of the re
 > `implement:prepare`, which creates `BRANCH` at the gate's base commit, then the runner, by the
 > install's path, and on its success `implement:bundle`; it hands the bundle and every reason file
 > to the publish job as one artifact, and its last step measures whether it ran out of time, as its
-> `timed-out` output. A publish job pushes `BRANCH`, opens a draft pull request into the default branch, links it on the
-> issue, and adds `agent:review` to it; its failure step, where the gate failed after claiming the
-> run, posts the sentence the gate failed with.
+> `timed-out` output. A publish job mints the loop's token, checks the default branch out and runs
+> `implement:publish`, which checks the bundle, pushes `BRANCH`, opens a draft pull request into
+> the default branch, links it on the issue, and adds `agent:review` to it; its failure step, where
+> the gate failed after claiming the run, posts the sentence the gate failed with, and otherwise the
+> first reason file it finds, `implement:publish`'s among them.
 
 ### `implement:gate`
 
@@ -723,6 +728,85 @@ Nothing. Its inputs are the checkout and the gate's facts.
 > job's `branch` and `base` outputs. `OUTPUT_DIR` is a directory of its own under `runner.temp`,
 > which the job's upload carries beside the runner's reason file; the publish job checks the bundle
 > before it pushes anything from it.
+
+### `implement:publish`
+
+Checks the agent's bundle, pushes it, opens the draft pull request and hands it to the review. It
+runs no model. It writes the pull request's title and frame itself: the title `Fix #<n>: <title>`,
+cut at 256 characters, and the frame §4.3 describes, linking `RUN_URL`. Before its first write it
+checks `branch.bundle`:
+
+- that it is there, or `The agent's job finished without handing over its commits, so nothing was
+  pushed.`;
+- that it verifies in `CHECKOUT`, or `The agent's commits arrived damaged or incomplete, so nothing
+  was pushed.`;
+- that it holds exactly `refs/heads/<BRANCH>`, or `` The agent's commits arrived on a branch other
+  than `<BRANCH>`, or beside other branches, so nothing was pushed. ``;
+- and that its tip builds on `BASE_SHA`, or `` The agent's commits don't build on `<BASE_REF>` as
+  this run found it, so nothing was pushed. ``
+
+A check that fails fails the command, and nothing is written.
+
+The order: the push of the bundle's tip to `refs/heads/<BRANCH>` with the loop's token, leased on
+`BRANCH_TIP`, or on the branch not existing where it is empty, so a retry replaces a branch an
+earlier run left and a branch someone pushed to during the run is refused; the draft pull request
+from `BRANCH` into `BASE_REF`, with the loop's token; `` **`agent:implement` opened PR #<pr>:** ``
+and a link to `RUN_URL` on the issue, with `GH_TOKEN`, tolerated; a bounded wait for the pull
+request to show the pushed head; `agent:implement` off the issue, tolerated; and `agent:review` off
+the pull request, tolerated, and on, with the loop's token, warning where `LOOP_TOKEN_SOURCE` is
+neither `app` nor `pat`, since the label then starts nothing. A failed push, open or `agent:review`
+add fails the command, naming it.
+
+- **A server error opening the pull request is read back.** GitHub has answered an open with an
+  error and opened it all the same (#329). On a 5xx, or GraphQL's internal error, the open pull
+  requests from exactly `BRANCH` into exactly `BASE_REF` are read: one found is this run's, and the
+  command goes on with it, with a warning. A pull request from another head, or into another base,
+  is never taken for it, nor one whose body only closes the same issue. None found fails the
+  command; a read-back that fails too fails it with a sentence saying to look for a pull request
+  from `BRANCH` before adding `agent:implement` again.
+
+#### Inputs
+
+| Input | Kind | Default | What it is |
+|---|---|---|---|
+| `LOOP_TOKEN` | required | | The token whose writes start the loop's next workflow: the push, the pull request and the labels. |
+| `LOOP_TOKEN_SOURCE` | required | | Where `LOOP_TOKEN` came from: `app`, `pat` or `workflow`. |
+| `ISSUE_NUMBER` | required | | The issue. |
+| `ISSUE_TITLE` | required | | Its title, which the pull request's is made from. |
+| `BASE_REF` | required | | The branch the pull request is opened into, named in the bundle's refusal. |
+| `BRANCH` | required | | The agent's branch: `implement:gate`'s `branch`, which the bundle has to hold and the push moves. |
+| `BASE_SHA` | required | | The commit `implement:gate` read `BASE_REF` at, which the bundle has to build on. |
+| `BRANCH_TIP` | optional | `""` | `implement:gate`'s `tip`, which the push is leased on. Empty is a branch that did not exist, and the push is leased on its still not existing. |
+| `RUN_URL` | required | | The run's page, which the frame and the link on the issue name. |
+| `CHECKOUT` | required | | A checkout of the repository holding `BASE_SHA`, the bundle is checked in and pushed from. |
+| `HEAD_WAIT_SECONDS` | optional | `60` | How long to wait for the pull request to show the pushed head before the review is asked for anyway. |
+| `HEAD_POLL_SECONDS` | optional | `5` | How often to look while waiting. |
+| `BUNDLE_DIR` | directory | | `implement:bundle`'s `OUTPUT_DIR`. Reads `branch.bundle` (where written). |
+
+#### Outputs
+
+| Output | When it is written |
+|---|---|
+| `published.json` | From its first write: `pushed`, whether it pushed, `head`, the pushed commit, where it did, `pr`, the pull request's number, where one opened, and `requested`, whether `agent:review` went on, each written as it becomes true. |
+| `write_log.jsonl` | Every write as it lands, one JSON line each, and a last line for how the command ended, as `review:publish`'s. Not written where it wrote nothing. |
+
+**`doctor` cannot check this.** These tables are the command's, for the reason §6 gives.
+
+#### What it reads from the record
+
+- The open pull requests from `BRANCH` into `BASE_REF`, on a server error opening one.
+- The pull request it opened, for whether it shows the pushed head yet.
+
+**`doctor` cannot check this.** The record is written by the orchestrator's posting code, for the reason §4.3 gives.
+
+> **Actions orchestrator:** the publish job mints the loop's token at its start, then checks the
+> default branch out, with no credential left in it, `always()` where the gate claimed the run,
+> and sets up Node. `implement:publish` runs from `RUNNER_TEMP`, working in the checkout, where the
+> agent's job succeeded and every step before it did. It is handed the workflow token as
+> `GH_TOKEN` and the loop's. `BRANCH`, `BASE_SHA` and `BRANCH_TIP` are the gate job's `branch`,
+> `base` and `tip` outputs, never a file the agent's job wrote; `BUNDLE_DIR` is where the agent's
+> artifact puts `implement:bundle`'s directory, and `OUTPUT_DIR` a directory of its own under
+> `runner.temp`, whose reason file the failure step reads and whose write log the job keeps.
 
 ## 7. `implement-prd`
 

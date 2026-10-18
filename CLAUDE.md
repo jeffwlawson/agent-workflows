@@ -157,9 +157,9 @@ commit, and no-ops if the version is already on the registry.
 
 **That first command is the whole release.** The version appears in twelve files and `npm
 version` bumps two of them; `scripts/sync-version.ts` writes the other ten — the `npm exec`
-pin of each step that runs the package (twenty-five: the runner's or the filing command's in each of
+pin of each step that runs the package (twenty-six: the runner's or the filing command's in each of
 six reusable workflows but `fix.yml`, `update-branch.yml` and `implement.yml`, `implement:gate`,
-`implement:prepare` and `implement:bundle` in `implement.yml`, and
+`implement:prepare`, `implement:bundle` and `implement:publish` in `implement.yml`, and
 `review:gate`, `review:budget`, `review:collect-checks`, `review:red-check-place`, `review:red-check-classify`,
 `review:publish`, `review:conclude` and `review:advance` beside the runner in `review.yml`,
 `fix:gate`, `fix:prepare`, `fix:bundle`, `fix:publish` and `fix:conclude` in `fix.yml`, and
@@ -175,7 +175,7 @@ each caller in the two caller files
 of each of the two caller sets, and the `uses:` ref a reusable's step names a composite action in
 `.github/actions/` with (eight of those: `loop-token` once in each of `implement.yml`, `fix.yml`
 and `update-branch.yml`, twice in `implement-prd.yml` and three times in `review.yml`, so
-fifty pins in the ten files). Fix's runner, update-branch's and implement's carry no pin of their own: each
+fifty-one pins in the ten files). Fix's runner, update-branch's and implement's carry no pin of their own: each
 runs its job's early install's binary by its path, from the checkout, because `npm exec` finds an install under its `--prefix`
 only from that directory (#486's fix round). It
 runs from the `version` lifecycle script, which npm fires *after* the manifest is bumped and

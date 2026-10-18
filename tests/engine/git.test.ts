@@ -74,6 +74,7 @@ const unusedGitHubHalf = {
   replyAndResolve: unused,
   reply: unused,
   editPullRequest: unused,
+  openPullRequest: unused,
 };
 
 beforeEach(() => {

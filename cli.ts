@@ -3,7 +3,7 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import { fileURLToPath } from "node:url";
 import { commonWriters } from "./shared/common.js";
-import type { MergingCheckoutIo, MergingIo, OutputWriters, ReadingIo } from "./shared/command-io.js";
+import type { MergingIo, OutputWriters, ReadingIo, RewritingCheckoutIo } from "./shared/command-io.js";
 import { COMMANDS, type Command, type Runner } from "./shared/contract.js";
 import { fail, gitEnvironment, readInputs, writers, type InputValues } from "./shared/env.js";
 import { VERSION } from "./shared/manifest.js";
@@ -196,7 +196,7 @@ type WritingCommand = {
 const writingCommand = <C extends WritingCommand>(
   name: C,
   load: () => Promise<
-    (inputs: InputValues<(typeof COMMANDS)[C]["inputs"]>, io: MergingCheckoutIo<(typeof COMMANDS)[C]["outputs"]>) => Promise<unknown>
+    (inputs: InputValues<(typeof COMMANDS)[C]["inputs"]>, io: RewritingCheckoutIo<(typeof COMMANDS)[C]["outputs"]>) => Promise<unknown>
   >,
   summary: string,
 ): Subcommand => ({
@@ -370,6 +370,26 @@ export const SUBCOMMANDS: Readonly<Record<string, Subcommand>> = {
     "implement-prd:gate",
     async () => (await import("./implement-prd/gate.js")).gate,
     "Refuse or defer an implement-prd run on a PRD parent, or claim it and decide its slice (no model).",
+  ),
+  "implement-prd:prepare": fetchingCommand(
+    "implement-prd:prepare",
+    async () => (await import("./implement-prd/prepare.js")).prepare,
+    "Check the PRD branch out at the tip the catch-up left, and fetch an earlier stopped run's rescue (no model).",
+  ),
+  "implement-prd:bundle": command(
+    "implement-prd:bundle",
+    async () => (await import("./implement-prd/bundle.js")).bundle,
+    "Bundle the agent's commits on a PRD branch for the publish job (no model).",
+  ),
+  "implement-prd:publish": writingCommand(
+    "implement-prd:publish",
+    async () => (await import("./implement-prd/publish.js")).publish,
+    "Mark a built slice's commits with its Agent-Slice trailer and push them, then open or reuse the PRD PR and ask for its review (no model).",
+  ),
+  "implement-prd:conclude": writingCommand(
+    "implement-prd:conclude",
+    async () => (await import("./implement-prd/conclude.js")).conclude,
+    "End an implement-prd run however it ended: its rescue, its failure comment, its labels and the stopped slice's row (no model).",
   ),
   "implement-prd:catch-up": writingCommand(
     "implement-prd:catch-up",

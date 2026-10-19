@@ -86,6 +86,8 @@ export interface FakeGitHub {
   readonly comments: { readonly token: string; readonly issue: number; readonly body: string }[];
   /** Every review posted, in order, with the pull request's node id and the commit it was posted on. */
   readonly reviews: FakeReview[];
+  /** Per issue or pull request, each label added to it and when, oldest first. */
+  readonly labelled: Map<number, { readonly label: string; readonly at: string }[]>;
   /**
    * Whether the GitHub call `call` (such as `resolve`, `POST labels`) made by
    * the write `write` fails, and how. `true` refuses it with a 422 and changes
@@ -104,6 +106,8 @@ export interface FakeReview {
   readonly body: string;
   readonly threads: readonly ReviewThread[];
   readonly url: string;
+  /** When it was submitted, where a test says. */
+  readonly submittedAt?: string;
 }
 
 /** GitHub failing on a call: a 500, or GraphQL's internal error where `status` is absent. */
@@ -147,6 +151,7 @@ export const fakeGitHub = (pullRequests: readonly Partial<FakePullRequest>[] = [
   jobLogs: new Map(),
   comments: [],
   reviews: [],
+  labelled: new Map(),
   fails: () => false,
 });
 
@@ -259,7 +264,17 @@ export const fakeReader = (github: FakeGitHub): { readonly reader: GitHubReader;
       const nodeId = pullRequestOf(github, number).nodeId;
       return github.reviews
         .filter((review) => review.pullRequestId === nodeId)
-        .map((review) => ({ url: review.url, commit: review.commit, body: review.body, author: review.token }));
+        .map((review) => ({
+          url: review.url,
+          commit: review.commit,
+          body: review.body,
+          author: review.token,
+          ...(review.submittedAt === undefined ? {} : { submittedAt: review.submittedAt }),
+        }));
+    },
+    labelledAt: async (number, label) => {
+      reads.push({ method: "labelledAt", args: [number, label] });
+      return (github.labelled.get(number) ?? []).filter((event) => event.label === label).map((event) => event.at);
     },
     conversationComments: async (number) => {
       reads.push({ method: "conversationComments", args: [number] });
@@ -581,6 +596,10 @@ export const fakeGit = (holds: {
       },
       changedPaths: async (from, to, under) => {
         calls.push(`changedPaths ${from} ${to} ${under}`);
+        return [];
+      },
+      firstParentLog: async (base, head) => {
+        calls.push(`firstParentLog ${base} ${head}`);
         return [];
       },
     },

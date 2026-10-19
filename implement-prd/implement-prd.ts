@@ -13,15 +13,11 @@ import {
 import { agentSandbox, claudeAgent } from "../shared/agent.js";
 import { RUNNERS } from "../shared/contract.js";
 import { staleFailure, staleReason } from "../shared/stale.js";
-import { firstLine, readPrdBranch } from "../shared/prd-round.js";
-import { ignoredNote, resumeFromRescue, resumeSection } from "../shared/rescue.js";
-import { renderPrdStatus, renderProgressList, statusBlock, type ProgressInputs } from "../shared/progress-list.js";
-import { readRoundRecord, roundCounts, type RoundCounts } from "../shared/round-header.js";
-import { sliceRanges } from "../shared/slice-ranges.js";
+import { rescueRef, resumeFromRescue, resumeSection } from "../shared/rescue.js";
 
 const INPUTS = readInputs(RUNNERS["implement-prd"].inputs);
 const LOOP_ACCOUNTS = readLoopAccounts(INPUTS.AGENT_LOOP_LOGINS);
-const { writeText } = writers(RUNNERS["implement-prd"].outputs);
+const { writeJson } = writers(RUNNERS["implement-prd"].outputs);
 
 /** The parent PRD. Context only — the work is the sub-issue below. */
 const ISSUE_NUMBER = INPUTS.ISSUE_NUMBER;
@@ -52,71 +48,6 @@ const BASE_REF = INPUTS.BASE_REF;
  */
 const RESCUE_BRANCH = INPUTS.RESCUE_BRANCH;
 
-/** The PRD PR, or "" on the first slice, which opens it once this exits. */
-const PRD_PR = INPUTS.PRD_PR;
-
-/**
- * The merge of the default branch the run pushed before this started (#245),
- * or "": the PRD PR's head is then that merge, which no review has seen.
- */
-const MERGED = INPUTS.MERGED;
-
-/**
- * The PRD PR's progress list (#246), a table since #298 with the status line
- * beside it, rendered from the PRD branch as it stands, the parent's
- * sub-issues and the rounds on the PRD PR: with this slice **in review**, left
- * in `progress.md` for the step that asks for its round once the slice is
- * pushed, with its status line in `status.md`. That one is rendered over the
- * branch with this slice's commits on it, which is what the push puts there;
- * they are not made yet, so its row links no diff until its round ends.
- *
- * And for a run that stops, two more, for `Show the stopped slice in the
- * progress list` to write over the list the gate showed this slice building
- * in (#312): `progress_stopped.md` with nothing pushed, this slice not started
- * and the head's verdict as it now stands, and `progress_stopped_pushed.md`
- * with this slice pushed and parked, since no round of it is running, each
- * with its `status_` twin.
- *
- * Nothing here writes the PRD PR's body: this job's token reads only (#308),
- * and the gate wrote the building list before the agent's job started. Never
- * fails the run: the list is a view of the chain, and a slice is worth more
- * than it. A list that cannot be rendered says so.
- */
-const writeProgress = (): void => {
-  try {
-    const sub = Number(SUB_NUMBER);
-    const { subIssues, log, ranges } = readPrdBranch(INPUTS.GH_REPO, ISSUE_NUMBER, BASE_REF);
-    const pushed = sliceRanges(
-      [{ sha: "(this slice)", parents: [git(["rev-parse", "HEAD"]).trim()], slice: sub }, ...log],
-      subIssues,
-    );
-    // Each slice's reviews and fix rounds so far (#298), off the PRD PR; none
-    // before it is open. Left out where they cannot be read, and the table
-    // says so in each cell.
-    let rounds: RoundCounts | undefined;
-    if (PRD_PR !== "") {
-      try {
-        rounds = roundCounts(readRoundRecord(INPUTS.GH_REPO, PRD_PR), LOOP_ACCOUNTS, ranges);
-      } catch (error) {
-        console.log(`::warning::The PRD PR's rounds could not be read, so the progress table does not count them: ${firstLine(error)}`);
-      }
-    }
-    const { GITHUB_SERVER_URL: server, GITHUB_REPOSITORY: repo } = INPUTS;
-    const prUrl = PRD_PR !== "" && server && repo ? `${server}/${repo}/pull/${PRD_PR}` : undefined;
-    const common = { subIssues, finalReview: "not requested" as const, prUrl, rounds };
-    // Over a fixed set, so each name is one the declaration lists.
-    const write = (name: "" | "_stopped" | "_stopped_pushed", inputs: ProgressInputs): void => {
-      writeText(`progress${name}.md`, renderProgressList(inputs));
-      writeText(`status${name}.md`, statusBlock(renderPrdStatus(inputs)));
-    };
-    write("", { ...common, ranges: pushed, verdict: "none", running: { kind: "review" } });
-    write("_stopped", { ...common, ranges, verdict: MERGED === "" ? "approval" : "none", running: null });
-    write("_stopped_pushed", { ...common, ranges: pushed, verdict: "none", running: null });
-  } catch (error) {
-    console.log(`::warning::The PRD PR's progress list could not be rendered: ${firstLine(error)}`);
-  }
-};
-
 /**
  * Read an issue and its collaborator comments into one prompt section.
  *
@@ -145,10 +76,8 @@ try {
   // one sub-issue in isolation would otherwise be missing.
   const prdContext = issueSection(ISSUE_NUMBER, ISSUE_TITLE);
   const subContext = issueSection(SUB_NUMBER, SUB_TITLE);
-  writeProgress();
 
-  // Context fetched and the progress list rendered; the agent has no
-  // legitimate use for the GitHub token.
+  // Context fetched; the agent has no legitimate use for the GitHub token.
   // Pushing, opening the PRD PR and re-labelling all happen in workflow steps,
   // after this process has exited.
   scrubGitHubTokens();
@@ -163,13 +92,15 @@ try {
   // An earlier run's unpushed commits (#303), where they still build on the
   // tip this run starts from. After `before`, so they count as this run's,
   // which they are: none of them was pushed. Set aside, and said so on the
-  // PRD, where the PRD branch moved since they were saved.
+  // PRD by `implement-prd:conclude`, where the PRD branch moved since they
+  // were saved: handed over as the branch and its tip, the commit this run
+  // moved past.
   const resume = resumeFromRescue(RESCUE_BRANCH);
   if (resume.kind === "resumed") {
     console.log(`Resuming from ${resume.commits} commit(s) an earlier run saved on ${RESCUE_BRANCH}.`);
   } else if (resume.kind === "ignored") {
     console.log(`::warning::${RESCUE_BRANCH} was saved on an older tip of ${BRANCH}, so this run starts fresh.`);
-    writeText("rescue_ignored.md", ignoredNote("agent:implement", RESCUE_BRANCH, "the PRD branch"));
+    writeJson("rescue_ignored.json", { branch: RESCUE_BRANCH, movedPast: git(["rev-parse", rescueRef(RESCUE_BRANCH)]).trim() });
   }
 
   const result = await sandcastle.run({

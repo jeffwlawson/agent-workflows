@@ -28,7 +28,10 @@ import { SUBPROCESS_TIMEOUT } from "../vitest.config.js";
  * `update-branch:conclude` says how its run ended (#485), and
  * `tests/update-branch/conclude.test.ts` holds those. Nor is implement's:
  * `implement:conclude` says how its run ended (#493), and
- * `tests/implement/conclude.test.ts` holds those. What stays here of each
+ * `tests/implement/conclude.test.ts` holds those. Nor is implement-prd's:
+ * `implement-prd:conclude` says how its run ended (#505), and
+ * `tests/implement-prd/conclude.test.ts` holds those. What is left is
+ * follow-ups', until its own move (#478). What stays here of each
  * is the half that is still YAML, the agent's job's own measure of whether it
  * ran out of time, which only Actions' clock knows.
  *
@@ -52,7 +55,6 @@ interface Workflow {
  * no variable is set: today's value, which a timeout comment has to name.
  */
 const CASES = [
-  { command: "implement-prd", label: "agent:implement", step: "Mark blocked on failure", minutes: 30, blocks: true },
   // No `agent:blocked` on a merged pull request, on a failure or otherwise:
   // there is no pipeline left there to block (see the step's own note).
   { command: "follow-ups", label: "agent:follow-ups", step: "Report the failure on the PR", minutes: 10, blocks: false },
@@ -60,14 +62,6 @@ const CASES = [
 
 type Case = (typeof CASES)[number];
 
-/**
- * The job each failure step is in: its workflow's own, except where it is a
- * publish job: the agent's job writes nothing, and the publish job reads how
- * it ended from `needs`.
- */
-const JOB: Readonly<Record<string, string>> = {
-  "implement-prd": "publish",
-};
 
 const stepOf = (command: string, job: string, name: string): string => {
   const workflow = parse(fs.readFileSync(path.join(".github", "workflows", `${command}.yml`), "utf8")) as Workflow;
@@ -77,7 +71,7 @@ const stepOf = (command: string, job: string, name: string): string => {
   return step?.run ?? "";
 };
 
-const runOf = (c: Case): string => stepOf(c.command, JOB[c.command] ?? c.command, c.step);
+const runOf = (c: Case): string => stepOf(c.command, c.command, c.step);
 
 /** `name=value` and `name<<DELIMITER … DELIMITER` lines, as GitHub reads an output file. */
 const outputsOf = (text: string): Record<string, string> => {
@@ -275,101 +269,6 @@ describe.skipIf(!CAN_RUN)("a failure step says whether the run failed, timed out
       expect(outcome.gh.some((argv) => / comment /.test(` ${argv} `)), minutes).toBe(true);
     }
   });
-
-  /**
-   * The loop's one order (#236): every result posted, then the run's own
-   * label off, then the label naming the next step, which on a failure is
-   * `agent:blocked`. So nobody sees the issue or pull request blocked with
-   * no word of why, nor blocked while it still reads as a run in progress.
-   */
-  const TRIGGER: Readonly<Record<string, string>> = {
-    "implement-prd": "issue edit 135 --remove-label agent:implement",
-  };
-
-  it.each(CASES.filter((c) => c.blocks))("$command: comments, then takes its label off, then blocks", (c: Case) => {
-    for (const status of ["failure", "cancelled"] as const) {
-      const outcome = run(c, status, 120);
-      const comment = outcome.gh.findIndex((argv) => / comment /.test(` ${argv} `));
-      const removal = outcome.gh.indexOf(TRIGGER[c.command] ?? "");
-      const blocked = outcome.gh.findIndex((argv) => argv.includes("--add-label agent:blocked"));
-
-      expect(outcome.status, status).toBe(0);
-      expect(comment, status).toBeGreaterThanOrEqual(0);
-      expect(removal, status).toBeGreaterThan(comment);
-      expect(blocked, status).toBeGreaterThan(removal);
-    }
-  });
-
-  /**
-   * Except the label, on an implement run whose preflight died before it
-   * decided the issue was its own: that may be the sibling's event, and the
-   * sibling's run holds the label while it works.
-   */
-  it.each(CASES.filter((c) => c.command === "implement-prd"))(
-    "$command: leaves the label on where the preflight never decided",
-    (c: Case) => {
-      const outcome = run(c, "failure", 120, String(c.minutes), "");
-
-      expect(outcome.gh).not.toContain(TRIGGER[c.command]);
-      expect(outcome.gh.some((argv) => argv.includes("--add-label agent:blocked"))).toBe(true);
-    },
-  );
-
-  /**
-   * A split run's publish job reads the agent's job's end from `needs`, not
-   * from its own status, and a job that reached its limit may read there as
-   * failed. A runner that was killed wrote no reason, so a failure without
-   * one is measured against the clock too; a failure with one never is.
-   * implement-prd's since #308.
-   */
-  describe.each(["implement-prd"])("%s, reported from its publish job", (command) => {
-    const implement = CASES.find((c) => c.command === command) as Case;
-
-    it("says a run that failed at its limit with no reason timed out", () => {
-      const outcome = run(implement, "failure", implement.minutes * 60, String(implement.minutes), "false", {});
-
-      expect(outcome.comment).toContain(`timed out after ${implement.minutes} minutes`);
-    });
-
-    it("says a run that failed early with no reason gave none", () => {
-      const outcome = run(implement, "failure", 120, String(implement.minutes), "false", {});
-
-      expect(outcome.comment).toContain("It stopped without giving a reason.");
-      expect(outcome.comment).not.toContain("timed out");
-    });
-
-    it("says a run cancelled while it published was cancelled, though the agent's job succeeded", () => {
-      const outcome = run(implement, "cancelled", 120, String(implement.minutes), "false", {}, {
-        AGENT_RESULT: "success",
-      });
-
-      expect(outcome.comment).toContain("cancelled");
-      expect(outcome.comment).not.toContain("timed out");
-    });
-
-    it("says a run cancelled in its gate was cancelled, though the agent's job never ran", () => {
-      const outcome = run(implement, "failure", 120, String(implement.minutes), "", {}, {
-        GATE_RESULT: "cancelled",
-        AGENT_RESULT: "skipped",
-      });
-
-      expect(outcome.comment).toContain("cancelled");
-      expect(outcome.comment).not.toContain("timed out");
-    });
-
-    /** implement-prd's catch-up, between its gate and its agent's job. */
-    if (command === "implement-prd") {
-      it("says a run cancelled in its catch-up was cancelled, though the agent's job never ran", () => {
-        const outcome = run(implement, "failure", 120, String(implement.minutes), "false", {}, {
-          CATCH_UP_RESULT: "cancelled",
-          AGENT_RESULT: "skipped",
-        });
-
-        expect(outcome.comment).toContain("cancelled");
-        expect(outcome.comment).not.toContain("timed out");
-      });
-    }
-  });
 });
 
 /**
@@ -405,14 +304,14 @@ describe.skipIf(!CAN_RUN)("review hands over how its job ended", () => {
 });
 
 /**
- * Fix's agent's job's measure of whether it ran out of time (#469), and
- * update-branch's (#485), read off the gate's clock in its last step, which
- * stays YAML for the same reason. Unlike review's, a failure at the limit
- * counts too: `needs` may read a job that reached its limit as failed, and
- * `fix:conclude` and `update-branch:conclude` read the answer only where a
- * cancel or a failure left no reason.
+ * Fix's agent's job's measure of whether it ran out of time (#469),
+ * update-branch's (#485), implement's (#493) and implement-prd's (#505),
+ * read off the gate's clock in its last step, which stays YAML for the same
+ * reason. Unlike review's, a failure at the limit counts too: `needs` may
+ * read a job that reached its limit as failed, and each conclude reads the
+ * answer only where a cancel or a failure left no reason.
  */
-describe.skipIf(!CAN_RUN).each(["fix", "update-branch", "implement"])("%s's agent job hands over whether it timed out", (command) => {
+describe.skipIf(!CAN_RUN).each(["fix", "update-branch", "implement", "implement-prd"])("%s's agent job hands over whether it timed out", (command) => {
   const FIX = [command, command, "Measure how the agent's job ended"] as const;
 
   it.each(["cancelled", "failure"] as const)("says a job that ended %s at its limit timed out", (status) => {
@@ -427,80 +326,5 @@ describe.skipIf(!CAN_RUN).each(["fix", "update-branch", "implement"])("%s's agen
   /** `fromJSON` reads each as a number, which bash arithmetic does not: not compared, it reads as no timeout. */
   it.each(["1.5", "1e1", "1.0", "0", "-5"])("reads a limit of %s it cannot compare as no timeout", (minutes) => {
     expect(jobOutcome("cancelled", 30 * 60, minutes, {}, FIX)["timed-out"]).toBe("false");
-  });
-});
-
-/**
- * An `implement-prd` run that merged the default branch into the PRD branch
- * and pushed it (#245), then stopped before its slice was pushed. The PRD PR's
- * head is that merge, which no review has seen, so the gate would refuse a
- * re-added `agent:implement`. The way on it names is the review.
- */
-describe.skipIf(!CAN_RUN)("implement-prd's failure step after the default branch was merged in", () => {
-  const prd = CASES.find((c) => c.command === "implement-prd") as Case;
-  const merged = { SUB: "245", BASE_REF: "main", PRD_PR: "286", MERGED: "0123456789abcdef" };
-
-  /**
-   * The sub-issue named is the one the preflight selected off the slice
-   * ranges and handed over as `sub` (#246), with the run link: the step
-   * reads no issue, so it cannot infer one from which are closed.
-   */
-  it("names the sub-issue the run selected, with the run link", () => {
-    const outcome = run(prd, "failure", 120, "30", "false", undefined, { SUB: "246", BASE_REF: "main" });
-
-    expect(outcome.comment).toContain("It was building sub-issue #246.");
-    expect(outcome.comment).toContain("[Workflow run](https://github.com/acme/widgets/actions/runs/1)");
-    expect(outcome.gh.filter((call) => !call.startsWith("issue comment 135") && !call.startsWith("issue edit 135"))).toEqual([]);
-    expect(runOf(prd)).not.toMatch(/gh (api|issue view|issue list)/);
-  });
-
-  it("names the review on the PRD PR as the way on, not the label", () => {
-    const outcome = run(prd, "failure", 120, "30", "false", undefined, merged);
-
-    expect(outcome.comment).toContain("It was building sub-issue #245.");
-    expect(outcome.comment).toContain(
-      "The default branch `main` was merged into the PRD branch before it stopped, and that merge has no review yet, so adding `agent:implement` would be refused. Add `agent:review` to PRD PR #286",
-    );
-  });
-
-  it("says the slice was pushed, where it was, whatever was merged before it", () => {
-    const outcome = run(prd, "failure", 120, "30", "false", undefined, { ...merged, PUSHED: "fedcba9876543210" });
-
-    expect(outcome.comment).toContain("Sub-issue #245 was built and pushed to the PRD branch before it stopped");
-    expect(outcome.comment).not.toContain("was merged into the PRD branch");
-  });
-});
-
-/**
- * A run that stopped with commits keeps them on its rescue branch (#303), and
- * the comment names it: as the retry where nothing else was, since adding the
- * label resumes from it, and beside whatever else the retry says otherwise.
- * Fix's is `fix:conclude`'s (#469), held in `tests/fix/conclude.test.ts`.
- */
-describe.skipIf(!CAN_RUN)("a failure step names the rescue branch", () => {
-  const prd = CASES.find((c) => c.command === "implement-prd") as Case;
-
-  it("implement-prd: names the branch, and that adding the label resumes from it", () => {
-    const outcome = run(prd, "cancelled", 30 * 60, "30", "false", {}, { RESCUED: "agent/rescue/prd-135", SUB: "246" });
-
-    expect(outcome.comment).toContain("It was building sub-issue #246.");
-    expect(outcome.comment).toContain("Its commits so far are saved on `agent/rescue/prd-135`. To resume from them, add `agent:implement`.\n");
-  });
-
-  it("implement-prd: names the branch beside a retry that names something else", () => {
-    const outcome = run(prd, "failure", 120, "30", "false", undefined, {
-      RESCUED: "agent/rescue/prd-135",
-      SUB: "245",
-      BASE_REF: "main",
-      PRD_PR: "286",
-      MERGED: "0123456789abcdef",
-    });
-
-    expect(outcome.comment).toContain("Add `agent:review` to PRD PR #286");
-    expect(outcome.comment).toContain("Its commits so far are saved on `agent/rescue/prd-135`, and the next `agent:implement` run resumes from them.\n");
-  });
-
-  it("implement-prd: says nothing of a rescue where none was made", () => {
-    expect(run(prd, "cancelled", 30 * 60).comment).not.toContain("agent/rescue/");
   });
 });

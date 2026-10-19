@@ -48,8 +48,6 @@ let reader: GitHubReader;
 let reads: ReturnType<typeof fakeReader>["reads"];
 let decided: unknown;
 let snapshot: unknown;
-/** The progress list and status line the building row replaced, as the gate kept them. */
-let kept: Record<string, string>;
 let logged: string[];
 
 /** The PRD's sub-issues, #172 on, in `states`, each with no links. */
@@ -121,7 +119,6 @@ beforeEach(() => {
   ({ reader, reads } = fakeReader(github));
   decided = undefined;
   snapshot = undefined;
-  kept = {};
   logged = [];
   vi.spyOn(console, "log").mockImplementation((line: unknown) => {
     logged.push(String(line));
@@ -162,9 +159,8 @@ const run = async (inputs: Inputs = INPUTS(), github_: GitHubReader = reader): P
         else if (name === "prd-issue.json") snapshot = structuredClone(value);
         else throw new Error(`wrote ${name}`);
       },
-      writeText: (name, value) => {
-        if (name !== "progress_unbuilt.md" && name !== "status_unbuilt.md") throw new Error(`wrote ${name}`);
-        kept[name] = value;
+      writeText: (name) => {
+        throw new Error(`wrote ${name}`);
       },
       writeBytes: () => {},
       appendLine: () => {},
@@ -321,7 +317,7 @@ describe("implement-prd:gate finds the PRD branch and the PRD PR", () => {
     expect(reads.find((r) => r.method === "branchesStarting")?.args).toEqual(["agent/prd-171-"]);
   });
 
-  /** What `Open or reuse the PRD PR` writes its `Closes` lines from, in the shape the shell query gave it. */
+  /** What `implement-prd:publish` writes its `Closes` lines from, in the shape the shell query gave it. */
   it("leaves its snapshot of the PRD for the publish job", async () => {
     setSubIssues("CLOSED", "OPEN");
 
@@ -931,10 +927,6 @@ describe("implement-prd:gate shows the slice building", () => {
     expect(body()).toBe(frame(building));
     expect(renderProgressList(building)).toContain("| 2 · #173 | 🔨 Building | – | – | – |");
     expect(renderPrdStatus(building)).toBe("**🔨 Building slice 2 of 3** · #173");
-    expect(kept).toEqual({
-      "progress_unbuilt.md": renderProgressList(approved),
-      "status_unbuilt.md": statusBlock(renderPrdStatus(approved)),
-    });
     expect(edits()).toEqual(["workflow editPullRequest #201"]);
     expect(logged).toContain("PRD PR #201's progress list shows sub-issue #173 building.");
   });
@@ -946,7 +938,6 @@ describe("implement-prd:gate shows the slice building", () => {
     await run();
 
     expect(body()).toBe(spliceProgressList(before, renderProgressList(building)));
-    expect(kept).toEqual({ "progress_unbuilt.md": renderProgressList(approved) });
   });
 
   it.each([
@@ -961,14 +952,13 @@ describe("implement-prd:gate shows the slice building", () => {
       renderProgressList({ ...approved, subIssues: SUBS.slice(0, 1) }),
       "::warning::PRD PR #201's progress list has no row for sub-issue #173 as slice 2, so it was not written.",
     ],
-  ])("leaves %s alone, with a warning, and keeps nothing to write back", async (_case, before, warning) => {
+  ])("leaves %s alone, with a warning", async (_case, before, warning) => {
     withBody(before);
 
     await run();
 
     expect(body()).toBe(before);
     expect(logged.some((line) => line.startsWith(warning))).toBe(true);
-    expect(kept).toEqual({});
     expect(decided).toMatchObject({ proceed: "true", slice: { number: 173 } });
   });
 
@@ -978,7 +968,6 @@ describe("implement-prd:gate shows the slice building", () => {
     await run();
 
     expect(body()).toBe("Mine.");
-    expect(kept).toEqual({});
     expect(logged).toContain("PRD PR #201's body carries no progress list, so none shows sub-issue #173 building.");
   });
 

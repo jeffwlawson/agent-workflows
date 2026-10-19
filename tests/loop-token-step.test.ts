@@ -9,9 +9,8 @@ import { SUBPROCESS_TIMEOUT } from "../vitest.config.js";
 /**
  * The loop's token resolver (#319, PRD #314), executed: the choice
  * `.github/actions/loop-token` makes between the App, `AGENT_PAT` and the
- * workflow token, read out of the action and run under `bash`, and what the
- * issue side's label steps do with the source it reports, run against a `gh`
- * that records each call and the token it was made with.
+ * workflow token, read out of the action and run under `bash`, against a
+ * `gh` that records each call and the token it was made with.
  *
  * Minting is GitHub's own action and is not run here: what the action does
  * with a mint is asserted in `tests/workflows.test.ts`.
@@ -31,23 +30,12 @@ interface Step {
 interface Action {
   readonly runs: { readonly steps: readonly Step[] };
 }
-interface Workflow {
-  readonly jobs: Record<string, { readonly steps?: readonly Step[] }>;
-}
 
 const chooseRun = (): string => {
   const action = parse(fs.readFileSync(path.join(".github", "actions", "loop-token", "action.yml"), "utf8")) as Action;
   const step = action.runs.steps.find((s) => s.id === "choose");
 
   expect(step?.run, "the resolver has no `choose` step").toBeDefined();
-  return step?.run ?? "";
-};
-
-const publishStep = (command: string, name: string): string => {
-  const workflow = parse(fs.readFileSync(path.join(".github", "workflows", `${command}.yml`), "utf8")) as Workflow;
-  const step = (workflow.jobs["publish"]?.steps ?? []).find((s) => s.name === name);
-
-  expect(step?.run, `${command} has no \`${name}\` step in publish`).toBeDefined();
   return step?.run ?? "";
 };
 
@@ -131,56 +119,12 @@ describe.skipIf(!CAN_RUN)("the loop's token resolver chooses, executed", () => {
   });
 });
 
-/**
- * What a label step does with the source: the `agent:review` the issue side
- * adds is made with the token the resolver produced whatever it is, and only
- * the workflow token, which fires nothing, draws the warning to add it by
- * hand. An empty source, from a resolver that did not run, is read as the
- * workflow token.
- */
-describe.skipIf(!CAN_RUN)("the issue side's review request, by the resolver's source", () => {
-  const PUSHED = "2222222222222222222222222222222222222222";
-  // Implement's is `implement:publish`'s since #492, held in
-  // `tests/implement/publish.test.ts`.
-  const REQUESTS = [["implement-prd", "PRD_PR", "pr edit 152 --add-label agent:review"]] as const;
-
-  const request = (command: string, pr: string, source: string): Outcome =>
-    execute(publishStep(command, "Request review"), {
-      GH_TOKEN: `${source || "unknown"}-token`,
-      TOKEN_SOURCE: source,
-      ISSUE_NUMBER: "135",
-      [pr]: "152",
-      PUSHED_SHA: PUSHED,
-      HEAD_WAIT_SECONDS: "0",
-    });
-
-  describe.each(REQUESTS)("%s", (command, pr, add) => {
-    it.each(["app", "pat", "workflow", ""])("adds agent:review with the resolved token (source %j)", (source) => {
-      const outcome = request(command, pr, source);
-      const token = `${source || "unknown"}-token`;
-
-      expect(outcome.status, outcome.stdout).toBe(0);
-      expect(outcome.gh).toContain(`${token} ${add}`);
-      for (const call of outcome.gh) expect(call.startsWith(`${token} `), call).toBe(true);
-    });
-
-    it.each([
-      ["app", false],
-      ["pat", false],
-      ["workflow", true],
-      ["", true],
-    ] as const)("warns to add the label by hand only where it fires nothing (source %j)", (source, warns) => {
-      const warning = /::warning::Neither the loop's App nor AGENT_PAT is set, so this label was added with GITHUB_TOKEN/;
-
-      if (warns) expect(request(command, pr, source).stdout).toMatch(warning);
-      else expect(request(command, pr, source).stdout).not.toMatch(warning);
-    });
-  });
-});
-
-// The PR side's writes (#320), by the source the resolver reported, are each
-// a command's now: fix's re-review and ready-mark `fix:publish`'s (#468),
-// update-branch's review of a resolution `update-branch:publish`'s (#484),
-// review's advance and park `review:advance`'s (#423), and the ready-mark
-// `review:conclude`'s (#419). Each is held in that command's tests, under
-// `tests/fix/`, `tests/update-branch/` and `tests/review/`.
+// The writes made with the source the resolver reported are each a
+// command's now. The issue side's review request is `implement:publish`'s
+// (#492) and `implement-prd:publish`'s (#503); on the PR side (#320), fix's
+// re-review and ready-mark are `fix:publish`'s (#468), update-branch's review
+// of a resolution `update-branch:publish`'s (#484), review's advance and park
+// `review:advance`'s (#423), and the ready-mark `review:conclude`'s (#419).
+// Each is held in that command's tests, under `tests/implement/`,
+// `tests/implement-prd/`, `tests/fix/`, `tests/update-branch/` and
+// `tests/review/`.

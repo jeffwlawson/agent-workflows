@@ -47,7 +47,8 @@
  *                                                  : logged to GH_REPLAY_LOG, exit 0
  *                                                    (pr merge exits 1 under GH_REPLAY_MERGE_FAILURE)
  *
- * The rest serves `tests/implement-prd-preflight.test.ts` and its neighbours.
+ * The rest served `implement-prd`'s shell steps, whose tests retired as the
+ * steps became commands (`tests/implement-prd-preflight.test.ts` the last, #504).
  * Their *shapes* are the documented ones — a GraphQL `{"data":…}` envelope,
  * the REST array and object, `--json` printing exactly the fields asked for,
  * and `pr create` printing the new pull request's URL last — and what is

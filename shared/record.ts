@@ -161,6 +161,23 @@ export const DRAFT_NOTE_START = "<!-- agent:draft-note -->";
 export const DRAFT_NOTE_END = "<!-- /agent:draft-note -->";
 
 /**
+ * The PRD PR's **`Closes` block**: the parent and every sub-issue still open,
+ * on one line, each with its own keyword, since GitHub reads a closing keyword
+ * anywhere in the body. So merging the PRD PR closes exactly the work it
+ * holds, and nothing closes before that. Workflow-owned like the progress
+ * table, between its own markers, which the review's rewrite of the summary
+ * splices around. Written by `implement-prd:publish` into the frame, and
+ * appended to a PRD PR an older release opened, which has no block.
+ */
+export const CLOSES_START = "<!-- agent:closes -->";
+
+export const CLOSES_END = "<!-- /agent:closes -->";
+
+/** The `Closes` block for `parent` and its sub-issues still `open`, markers and all. */
+export const closesBlock = (parent: number, open: readonly number[]): string =>
+  `${CLOSES_START}\nCloses ${[parent, ...open].map((issue) => `#${issue}`).join(", closes ")}\n${CLOSES_END}`;
+
+/**
  * The **progress table** on a PRD PR's note: one row per sub-issue, between
  * these markers, workflow-owned and rendered from state
  * (`shared/progress-list.ts`).
@@ -344,6 +361,9 @@ export const closingReference = (issue: number): RegExp => new RegExp(String.raw
 
 /** The trailer key a build run's commits carry, as `Agent-Slice: #<sub>`. */
 export const SLICE_TRAILER = "Agent-Slice";
+
+/** The `Agent-Slice` trailer naming sub-issue `sub`, as `implement-prd:publish` writes it. */
+export const sliceTrailer = (sub: number): string => `${SLICE_TRAILER}: #${sub}`;
 
 /**
  * A line of a commit message that is an `Agent-Slice` trailer, the sub-issue

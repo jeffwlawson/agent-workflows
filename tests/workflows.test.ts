@@ -24,8 +24,7 @@ import {
   VERDICTS,
 } from "../shared/review-output.js";
 import { AGENT_CHECKS, CI_WAIT_SECONDS } from "../review/collect-checks.js";
-import { rescueRef } from "../shared/rescue.js";
-import { finalReviewRequestedLines, OPENING_STATUS, renderPrdStatus, statusBlock } from "../shared/progress-list.js";
+import { OPENING_STATUS, statusBlock } from "../shared/progress-list.js";
 import { renderPullRequestFrame } from "../shared/pr-frame.js";
 import { SUBPROCESS_TIMEOUT } from "../vitest.config.js";
 import {
@@ -834,40 +833,6 @@ const isInstallStep = (s: Step): boolean =>
   (s.run ?? "").includes("${{ inputs.setup }}") ||
   (s.uses ?? "").startsWith("actions/setup-node@");
 
-/**
- * The body of a bash function declared in a `run:` block. The parser has
- * already stripped the block scalar's own indent, so a top-level declaration
- * sits at column 0 and its closing brace is the next `}` at that same indent.
- *
- * Used to assert what a *refusal* does versus what a *deferral* does, which is
- * the whole difference between the two implement workflows' idle paths and is
- * invisible to a grep over the step as a whole.
- */
-const bashFunctionBody = (run: string, name: string): string => {
-  const lines = run.split("\n");
-  const open = lines.findIndex((l) => l.trimStart().startsWith(`${name}() {`));
-
-  expect(open).toBeGreaterThanOrEqual(0);
-  const indent = indentOf(lines[open] ?? "");
-  const close = lines.findIndex(
-    (l, i) => i > open && l.trimStart() === "}" && indentOf(l) === indent,
-  );
-
-  expect(close).toBeGreaterThan(open);
-  return lines.slice(open + 1, close).join("\n");
-};
-
-/** The body of an `if [ <condition> ]; then … fi` arm, up to its own `fi`. */
-const armOf = (run: string, condition: string): string => {
-  const start = run.indexOf(condition);
-
-  expect(start).toBeGreaterThanOrEqual(0);
-  const end = run.indexOf("\nfi", start);
-
-  expect(end).toBeGreaterThan(start);
-  return run.slice(start, end);
-};
-
 describe("workflow files", () => {
   it("finds workflows to check", () => {
     expect(workflowFiles.length).toBeGreaterThan(0);
@@ -1468,49 +1433,12 @@ describe("PR workflows refuse a closed or merged PR", () => {
 
 });
 
-/**
- * The pushing half of #229: every run that pushes and then asks for a review
- * waits for the pull request to show the pushed commit as its head first, so
- * the `labeled` payload names it. Bounded, and a timeout still labels, with a
- * warning naming both commits: the review side settles on the tip itself.
- */
-describe("a run that pushed waits for the PR head before asking for a review", () => {
-  // Fix's wait is `fix:publish`'s (#468), held in `tests/fix/publish.test.ts`,
-  // update-branch's `update-branch:publish`'s (#484), held in
-  // `tests/update-branch/publish.test.ts`, and implement's
-  // `implement:publish`'s (#492), held in `tests/implement/publish.test.ts`.
-  const cases: readonly (readonly [string, string, string])[] = [["implement-prd.yml", "Request review", "PRD_PR"]];
-
-  it.each(cases)("%s: waits for headRefOid to equal the pushed commit, then labels", (file, name, pr) => {
-    const steps = stepsOf(path.join(WORKFLOW_DIR, file));
-    const push = steps.find((s) => s.id === "push");
-    const step = steps.find((s) => s.name === name);
-    const run = step?.run ?? "";
-
-    // A split run's publish job never checks the agent's branch out: it
-    // unbundles the commits into a ref and pushes the ref.
-    const branch = file === "implement-prd.yml" ? "PRD_BRANCH" : "BRANCH";
-    const head = SPLIT_RUNS[path.join(WORKFLOW_DIR, file)] !== undefined ? `"$(git rev-parse "refs/heads/\${${branch}}")"` : '"$(git rev-parse HEAD)"';
-    expect(push?.run ?? "").toContain(`echo "head=${head.slice(1, -1)}"`);
-    expect(step?.env?.["PUSHED_SHA"]).toBe("${{ steps.push.outputs.head }}");
-    expect(step?.env?.["HEAD_WAIT_SECONDS"]).toBe("60");
-    expect(run).toContain(`gh pr view "$${pr}" --json headRefOid --jq .headRefOid`);
-    expect(run).toContain('[ "$head" = "$PUSHED_SHA" ]');
-    expect(run.indexOf("--json headRefOid")).toBeLessThan(run.indexOf('--add-label "agent:review"'));
-  });
-
-  it.each(cases)("%s: a wait that times out warns, naming both commits, and labels anyway", (file, name) => {
-    const run = stepsOf(path.join(WORKFLOW_DIR, file)).find((s) => s.name === name)?.run ?? "";
-    const timeout = run.slice(run.indexOf('if [ "$SECONDS" -ge "$deadline" ]; then'));
-    const arm = timeout.slice(0, timeout.search(/\n\s*fi\n/));
-
-    expect(arm).toContain("::warning::");
-    expect(arm).toContain("${head:-an unreadable head}");
-    expect(arm).toContain("${PUSHED_SHA}");
-    expect(arm).toContain("break");
-    expect(arm).not.toContain("exit");
-  });
-});
+// The pushing half of #229, every run that pushes and then asks for a review
+// waiting for the pull request to show the pushed commit as its head first, is
+// each command's now, through `waitForHead` in `shared/head-wait.ts`: fix's
+// `fix:publish`'s (#468), update-branch's `update-branch:publish`'s (#484),
+// implement's `implement:publish`'s (#492) and implement-prd's
+// `implement-prd:publish`'s (#503), each held in that command's tests.
 
 /**
  * Which commit a review is about (#229). The `labeled` payload names the head
@@ -1719,15 +1647,15 @@ describe("agent-review tells a slice round from the final review on a PRD PR", (
   });
 
   /**
-   * The mark is spelled where it is written, in `implement-prd.yml`'s
-   * handover, and where it is read, `shared/record.ts`, which
-   * `implement-prd:gate` reads it by (#498), and held equal here: a reader
-   * looking for a mark nobody writes would take every final review for a
-   * slice round.
+   * The mark is spelled once, in `shared/record.ts`, which
+   * `implement-prd:publish` writes it by on the finishing run (#504) and
+   * `implement-prd:gate` reads it by (#498): a reader looking for a mark
+   * nobody writes would take every final review for a slice round.
    */
   it("reads the final review's mark the finishing run writes", () => {
     expect(FINAL_REVIEW_MARK).toBe("<!-- agent:final-review requested -->");
-    expect(fs.readFileSync(PRD, "utf8")).toContain(`mark="${FINAL_REVIEW_MARK}"`);
+    expect(fs.readFileSync(PRD, "utf8")).not.toContain(FINAL_REVIEW_MARK);
+    expect(fs.readFileSync("implement-prd/publish.ts", "utf8")).toContain("FINAL_REVIEW_MARK");
     expect(fs.readFileSync("implement-prd/chain.ts", "utf8")).toContain("FINAL_REVIEW_MARK");
   });
 
@@ -4613,21 +4541,18 @@ describe("agent-implement-prd's gate is `implement-prd:gate`, before any checkou
   });
 
   /**
-   * The snapshot, the reason and the two lists the building row replaced,
-   * each declared by the command, handed to the publish job.
+   * The snapshot, the one file of the gate's the publish job's two commands
+   * read; its reason goes on as an output (#505), and the lists the building
+   * row replaced are retired, since conclude renders the row from the branch.
    */
-  it("hands the publish job the files the gate writes", () => {
+  it("hands the publish job the files the gate writes that the publish job reads", () => {
     const upload = (gateJob().steps ?? []).find((s) => s.name === "Hand the PRD's snapshot on");
-    const outputs: readonly string[] = COMMANDS["implement-prd:gate"].outputs;
-    const handed = outputs.filter((file) => !["gate.json", "write_log.jsonl"].includes(file));
 
     expect(upload?.with?.["name"]).toBe("agent-implement-prd-gate");
     expect(upload?.with?.["if-no-files-found"]).toBe("ignore");
-    expectHandsOver(upload, {
-      required: true,
-      producer: "implement-prd:gate",
-      files: Object.fromEntries(handed.map((file) => [file, "sometimes" as const])),
-    });
+    expectHandsOver(upload, COMMANDS["implement-prd:conclude"].inputs.GATE_DIR);
+    expect(Object.keys(COMMANDS["implement-prd:publish"].inputs.GATE_DIR.files)).toEqual(Object.keys(COMMANDS["implement-prd:conclude"].inputs.GATE_DIR.files));
+    expect(COMMANDS["implement-prd:gate"].outputs).not.toContain("progress_unbuilt.md");
     expect(stepsOf(PRD).find((s) => s.name === "Fetch what the gate handed over")?.with?.["name"]).toBe("agent-implement-prd-gate");
   });
 
@@ -4815,17 +4740,14 @@ describe("agent-implement-prd's catch-up is `implement-prd:catch-up`, after the 
     expect(stepsOf(PRD).find((s) => s.name === "Fetch what the catch-up handed over")?.with?.["name"]).toBe("agent-implement-prd-catch-up");
   });
 
-  /** `parked`, `merged` and `head` keep their names and meanings: the runner's `MERGED`, and the agent's and publish jobs' `BASE_SHA`. */
+  /** `parked`, `merged` and `head` keep their names and meanings: conclude's `MERGED`, and the agent's and publish jobs' `BASE_SHA`. */
   it("keeps the job's outputs under the names the later jobs read", () => {
     expect(job().outputs).toEqual({
       parked: "${{ steps.state.outputs.parked }}",
       merged: "${{ steps.state.outputs.merged }}",
       head: "${{ steps.state.outputs.head }}",
     });
-    const agent = jobNamed(PRD, "implement-prd");
-    expect((agent.steps ?? []).find((s) => /agent-workflows implement-prd(?!:)/.test(s.run ?? ""))?.env?.["MERGED"]).toBe(
-      "${{ needs.catch_up.outputs.merged }}",
-    );
+    expect(jobNamed(PRD, "publish").steps?.find((s) => s.name === "Conclude the run")?.env?.["MERGED"]).toBe("${{ needs.catch_up.outputs.merged }}");
   });
 
   /**
@@ -4841,10 +4763,9 @@ describe("agent-implement-prd's catch-up is `implement-prd:catch-up`, after the 
     expect(job().needs).toBe("gate");
     expect(agent.needs).toEqual(["gate", "catch_up"]);
     expect(agent.if).toContain("needs.catch_up.outputs.parked != 'true'");
-    for (const id of ["push", "prd_pr"]) {
-      expect(publish.find((s) => s.id === id)?.if, id).toContain("needs.implement-prd.result == 'success'");
-    }
-    expect(publish.find((s) => s.name === "Request review")?.if).toContain("needs.implement-prd.result == 'success'");
+    // The one publish step that acts on a build: `implement-prd:publish`,
+    // which opens the PRD PR and asks for its review too.
+    expect(publish.find((s) => s.id === "publish")?.if).toContain("needs.implement-prd.result == 'success'");
   });
 
   /** The glue, executed over what the command writes: each fact under its old name, and nothing where it wrote nothing. */
@@ -4998,6 +4919,8 @@ describe("implement's agent job runs implement:prepare and implement:bundle from
     expect(index("Bundle the branch")).toBeGreaterThan(runner);
     expect(index("Bundle the branch")).toBeGreaterThan(index("Upload the session transcript"));
     expect(index("Bundle the branch")).toBe(index("Hand the branch to the publish job") - 1);
+    expect(index("Measure how the agent's job ended")).toBe(steps().length - 1);
+    expect(job().outputs).toEqual({ "timed-out": "${{ steps.outcome.outputs.timed-out }}" });
     expect(bundle?.["working-directory"]).toBe("${{ runner.temp }}");
     expect(bundle?.env).toMatchObject({
       NPM_CONFIG_USERCONFIG: "${{ steps.npmrc.outputs.userconfig }}",
@@ -5062,6 +4985,354 @@ describe("implement's agent job runs implement:prepare and implement:bundle from
 });
 
 /**
+ * Implement-prd's agent job (#501): one early install, before *Install
+ * dependencies*, as implement's agent job has, and its two shell steps around
+ * the agent become `implement-prd:prepare` and `implement-prd:bundle`, run
+ * from it by its path, as the runner is. *Mark the slice's commits* is gone
+ * from it: `implement-prd:publish` marks the slice's commits (#502). What
+ * each command does is held in `tests/implement-prd/prepare.test.ts` and
+ * `tests/implement-prd/bundle.test.ts`; what is held here is what the YAML
+ * owns: the job's steps, where the tokens are, what each command is handed,
+ * and the hand-over.
+ */
+describe("implement-prd's agent job runs implement-prd:prepare and implement-prd:bundle from one early install", () => {
+  const job = (): Job => jobNamed(PRD, "implement-prd");
+  const steps = (): readonly Step[] => job().steps ?? [];
+  const index = (name: string): number => {
+    const at = steps().findIndex((s) => s.name === name);
+    expect(at, `implement-prd's agent job has no \`${name}\` step`).toBeGreaterThan(-1);
+    return at;
+  };
+  const step = (name: string): Step | undefined => steps()[index(name)];
+  const VERSION = PIN.slice(1);
+  const BY_PATH = (name: string): string => `"$RUNNER_TEMP/node_modules/.bin/agent-workflows" ${name}`;
+
+  /** Each step, by name, and what its `run:` is, where it has one. */
+  it("is exactly these steps, each a command, the install, the runner, glue or Actions' own", () => {
+    const want: readonly (readonly [string, string | undefined])[] = [
+      ["Checkout the base branch", undefined],
+      ["Set up Node for the package", undefined],
+      ["Keep the package's registry to the package's steps", "glue"],
+      ["Install the package", `npm install --prefix "$RUNNER_TEMP" --no-save @jeffwlawson/agent-workflows@${VERSION}`],
+      ["Prepare the PRD branch", BY_PATH("implement-prd:prepare")],
+      ["Setup Node.js", undefined],
+      ["Install dependencies", "adopter"],
+      ["Install Claude Code", "adopter"],
+      ["Authenticate to GitHub Packages", undefined],
+      ["Run implementation agent", BY_PATH("implement-prd")],
+      ["Redact the session transcript", "glue"],
+      ["Upload the session transcript", undefined],
+      ["Bundle the branch", BY_PATH("implement-prd:bundle")],
+      ["Hand the branch to the publish job", undefined],
+      ["Measure how the agent's job ended", "glue"],
+    ];
+
+    expect(steps().map((s) => s.name)).toEqual(want.map(([name]) => name));
+    for (const [i, [name, run]] of want.entries()) {
+      const got = steps()[i]?.run;
+      if (run === undefined) expect(got, name).toBeUndefined();
+      else if (run === "glue" || run === "adopter") expect(got, name).toBeDefined();
+      else expect(got, name).toBe(run);
+    }
+    const shell = steps().map((s) => s.run ?? "").join("\n");
+    expect(shell).not.toMatch(/\bgit (checkout|config|bundle|fetch|ls-remote)/);
+    expect(shell).not.toContain("npm exec");
+  });
+
+  /**
+   * **No step after *Install dependencies* holds a registry token**: the
+   * install is the job's one step handed it, and the runner and both
+   * commands run the install's binary by its path.
+   */
+  it("hands the registry token to the install alone, before Install dependencies", () => {
+    const install = index("Install the package");
+
+    expect(step("Install the package")?.["working-directory"]).toBe("${{ runner.temp }}");
+    expect(step("Install the package")?.env).toEqual({
+      NPM_CONFIG_USERCONFIG: "${{ steps.npmrc.outputs.userconfig }}",
+      NODE_AUTH_TOKEN: "${{ secrets.GITHUB_TOKEN }}",
+    });
+    expect(index("Keep the package's registry to the package's steps")).toBe(install - 1);
+    expect(index("Set up Node for the package")).toBe(install - 2);
+    expect(step("Set up Node for the package")?.with).toEqual({
+      "node-version": "24",
+      "registry-url": "https://npm.pkg.github.com",
+      scope: "@jeffwlawson",
+      "package-manager-cache": false,
+    });
+    expect(install).toBeLessThan(index("Install dependencies"));
+    expect(job().env ?? {}).not.toHaveProperty("NODE_AUTH_TOKEN");
+    expect(steps().filter((s) => s.env?.["NODE_AUTH_TOKEN"] !== undefined).map((s) => s.name)).toEqual(["Install the package"]);
+    for (const later of steps().slice(index("Install dependencies") + 1)) {
+      expect(JSON.stringify(later), later.name).not.toMatch(/NODE_AUTH_TOKEN|NPM_CONFIG_USERCONFIG/);
+    }
+    expect(JSON.stringify(job())).not.toMatch(/AGENT_PAT|AGENT_APP_|loop-token/);
+  });
+
+  /**
+   * After the install, before anything of the adopter's runs, with the job's
+   * read-only `GH_TOKEN`, and handed the gate's and the catch-up's facts,
+   * never this job's: the PRD branch is checked out at the tip the catch-up
+   * left.
+   */
+  it("prepares the PRD branch with implement-prd:prepare at the catch-up's tip, before the adopter's code", () => {
+    const prepare = step("Prepare the PRD branch");
+    const env = { ...job().env, ...prepare?.env };
+
+    expect(index("Prepare the PRD branch")).toBe(index("Install the package") + 1);
+    expect(index("Prepare the PRD branch")).toBeLessThan(index("Setup Node.js"));
+    expect(prepare?.if).toBeUndefined();
+    expect(prepare?.["working-directory"]).toBe("${{ runner.temp }}");
+    expect(prepare?.env).toEqual({
+      OUTPUT_DIR: "${{ runner.temp }}/prepare",
+      CHECKOUT: "${{ github.workspace }}",
+      PRD_BRANCH: "${{ needs.gate.outputs.prd_branch }}",
+      PRD_TIP: "${{ needs.gate.outputs.prd_tip }}",
+      BASE_SHA: "${{ needs.catch_up.outputs.head }}",
+      SUB: "${{ needs.gate.outputs.sub }}",
+    });
+    expect(env["GH_TOKEN"]).toBe("${{ secrets.GITHUB_TOKEN }}");
+    expect(env["RESCUE_BRANCH"]).toBe("agent/rescue/prd-${{ github.event.issue.number }}");
+    for (const name of Object.keys(COMMANDS["implement-prd:prepare"].inputs)) expect(env, name).toHaveProperty(name);
+    for (const name of Object.keys(prepare?.env ?? {})) expect(COMMANDS["implement-prd:prepare"].inputs, name).toHaveProperty(name);
+    expect(JSON.stringify(prepare)).not.toMatch(/needs\.implement-prd|steps\./);
+  });
+
+  /** However the agent ended, after the transcript, with the catch-up's tip its prerequisite, and no token. */
+  it("bundles the branch with implement-prd:bundle however the job ended, ahead of the catch-up's tip, with no token", () => {
+    const bundle = step("Bundle the branch");
+    const env = { ...job().env, ...bundle?.env };
+    const runner = steps().findIndex((s) => subcommandRun(s) === "implement-prd");
+
+    expect(bundle?.if).toBe("always()");
+    expect(index("Bundle the branch")).toBeGreaterThan(runner);
+    expect(index("Bundle the branch")).toBe(index("Upload the session transcript") + 1);
+    expect(index("Bundle the branch")).toBe(index("Hand the branch to the publish job") - 1);
+    expect(bundle?.["working-directory"]).toBe("${{ runner.temp }}");
+    expect(bundle?.env).toEqual({
+      GH_TOKEN: "",
+      OUTPUT_DIR: "${{ runner.temp }}/bundle",
+      CHECKOUT: "${{ github.workspace }}",
+      PRD_BRANCH: "${{ needs.gate.outputs.prd_branch }}",
+      BASE_SHA: "${{ needs.catch_up.outputs.head }}",
+    });
+    for (const name of Object.keys(COMMANDS["implement-prd:bundle"].inputs)) expect(env, name).toHaveProperty(name);
+    expect(COMMANDS["implement-prd:bundle"].inputs).not.toHaveProperty("GH_TOKEN");
+    expect(JSON.stringify(bundle)).not.toMatch(/secrets\.|NODE_AUTH_TOKEN|LOOP_TOKEN/);
+  });
+
+  /**
+   * The artifact carries the runner's declared files at `runner.temp`,
+   * `implement-prd:prepare`'s under `prepare/` and `implement-prd:bundle`'s
+   * under `bundle/`, each set read off its declaration.
+   */
+  it("hands over exactly the runner's, implement-prd:prepare's and implement-prd:bundle's declared files", () => {
+    const declared = (producer: string, outputs: readonly string[]): DirectoryInput => ({
+      required: true,
+      producer,
+      files: Object.fromEntries(outputs.map((file) => [file, "sometimes" as const])),
+    });
+
+    expectHandsOver(step("Hand the branch to the publish job"), declared("implement-prd", RUNNERS["implement-prd"].outputs), {
+      prepare: declared("implement-prd:prepare", COMMANDS["implement-prd:prepare"].outputs),
+      bundle: declared("implement-prd:bundle", COMMANDS["implement-prd:bundle"].outputs),
+    });
+    expect(step("Hand the branch to the publish job")?.if).toBe("always()");
+  });
+
+  /**
+   * The publish job reads each producer's files where the download puts
+   * them: the agent's artifact in a directory of its own, the runner's at its
+   * top and the two commands' under `prepare/` and `bundle/`, so the mint's
+   * reason file, at `runner.temp`, is never read as one of theirs.
+   */
+  it("has the publish job read the bundle and every reason file from where the download puts them", () => {
+    const publish = jobNamed(PRD, "publish").steps ?? [];
+    const at = "${{ runner.temp }}/agent-implement-prd";
+
+    expect(publish.find((s) => s.name === "Fetch what the agent handed over")?.with?.["path"]).toBe(at);
+    expect(publish.find((s) => s.id === "publish")?.env?.["BUNDLE_DIR"]).toBe(`${at}/bundle`);
+    expect(publish.find((s) => s.name === "Conclude the run")?.env).toMatchObject({
+      IMPLEMENT_PRD_DIR: at,
+      PREPARE_DIR: `${at}/prepare`,
+      BUNDLE_DIR: `${at}/bundle`,
+    });
+  });
+});
+
+/**
+ * Implement-prd's push is `implement-prd:publish` (#502): the bundle checked,
+ * the slice's commits marked with the `Agent-Slice` trailer, the marked head
+ * pushed leased on the catch-up's tip, and the rescue branch deleted, which
+ * `tests/implement-prd/publish.test.ts` holds against a real repository. The
+ * mark moves out of the agent's job with it (#410). Every ending after it is
+ * `implement-prd:conclude` (#505), which `tests/implement-prd/conclude.test.ts`
+ * holds. What is held here is what the YAML owns: the job's steps, where each
+ * command sits, what each is handed, and the write logs.
+ */
+describe("implement-prd's publish job marks and pushes the slice, and asks for its review, with implement-prd:publish", () => {
+  const job = (): Job => jobNamed(PRD, "publish");
+  const steps = (): readonly Step[] => job().steps ?? [];
+  const index = (name: string): number => {
+    const at = steps().findIndex((s) => s.name === name);
+    expect(at, `implement-prd's publish job has no \`${name}\` step`).toBeGreaterThan(-1);
+    return at;
+  };
+  const step = (name: string): Step | undefined => steps()[index(name)];
+
+  /**
+   * Only Actions-only steps, and the two commands (#505): the downloads, the
+   * mint, the checkout and the Node setup, wherever the gate claimed the run
+   * (the Node setup on every ending, since conclude reports a gate that never
+   * decided too), publish, conclude `always()`, and the write logs' upload.
+   * No inline shell at all.
+   */
+  it("is exactly these steps: the downloads, the mint, the checkout and Node, the two commands and the write logs", () => {
+    expect(steps().map((s) => [s.name, s.id, s.if])).toEqual([
+      ["Fetch what the agent handed over", "fetch", "always() && needs.gate.outputs.build == 'true'"],
+      ["Fetch what the catch-up handed over", undefined, "always() && needs.catch_up.result == 'failure'"],
+      ["Fetch what the gate handed over", undefined, "always()"],
+      ["Resolve the loop's token", "token", "always()"],
+      ["Checkout the base branch", undefined, "always() && needs.gate.outputs.refused == 'false'"],
+      ["Set up Node for the package", undefined, "always()"],
+      [
+        "Publish the slice",
+        "publish",
+        "needs.gate.result == 'success' && (needs.gate.outputs.finishing == 'true' || needs.gate.outputs.build == 'false' || needs.implement-prd.result == 'success') && success()",
+      ],
+      ["Conclude the run", undefined, "always()"],
+      ["Keep the write logs", undefined, "always()"],
+    ]);
+    for (const s of steps()) {
+      if (s.run !== undefined) expect(s.run, s.name).toMatch(/^npm exec .* -- agent-workflows implement-prd:(publish|conclude)$/);
+    }
+    for (const name of ["Fetch what the agent handed over", "Fetch what the catch-up handed over", "Fetch what the gate handed over"]) {
+      expect(step(name)?.["continue-on-error"], name).toBe(true);
+    }
+    expect(step("Checkout the base branch")?.with).toEqual({ ref: "${{ inputs.default-branch }}", "fetch-depth": 0, "persist-credentials": false });
+    expect(step("Set up Node for the package")?.with).toEqual({
+      "node-version": "24",
+      "registry-url": "https://npm.pkg.github.com",
+      scope: "@jeffwlawson",
+      "package-manager-cache": false,
+    });
+    expect(job().permissions?.["packages"]).toBe("read");
+  });
+
+  it("hands the command both tokens, the gate's and the catch-up's facts, the gate's snapshot, the bundle and the checkout, and nothing of the agent's job", () => {
+    const publish = step("Publish the slice");
+    const env = { ...job().env, ...publish?.env };
+
+    expect(publish?.run).toBe(
+      `npm exec --prefix "$RUNNER_TEMP" --yes --package=@jeffwlawson/agent-workflows@${PIN.slice(1)} -- agent-workflows implement-prd:publish`,
+    );
+    expect(publish?.["working-directory"]).toBe("${{ runner.temp }}");
+    expect(publish?.env).toEqual({
+      NODE_AUTH_TOKEN: "${{ secrets.GITHUB_TOKEN }}",
+      GH_TOKEN: "${{ secrets.GITHUB_TOKEN }}",
+      LOOP_TOKEN: "${{ steps.token.outputs.token }}",
+      LOOP_TOKEN_SOURCE: "${{ steps.token.outputs.source }}",
+      OUTPUT_DIR: "${{ runner.temp }}/publish",
+      BUNDLE_DIR: "${{ runner.temp }}/agent-implement-prd/bundle",
+      GATE_DIR: "${{ runner.temp }}/agent-implement-prd-gate",
+      CHECKOUT: "${{ github.workspace }}",
+      PRD_BRANCH: "${{ needs.gate.outputs.prd_branch }}",
+      PRD_TIP: "${{ needs.gate.outputs.prd_tip }}",
+      BUILD: "${{ needs.gate.outputs.build }}",
+      FINISHING: "${{ needs.gate.outputs.finishing }}",
+      PRD_PR: "${{ needs.gate.outputs.prd_pr }}",
+      LANDED: "${{ needs.gate.outputs.landed }}",
+      BASE_SHA: "${{ needs.catch_up.outputs.head }}",
+      SUB: "${{ needs.gate.outputs.sub }}",
+    });
+    // Every required input is set; the optional ones the job leaves unset take
+    // their defaults, and Actions sets `GITHUB_SERVER_URL` and
+    // `GITHUB_REPOSITORY` on every step.
+    for (const [name, input] of Object.entries(COMMANDS["implement-prd:publish"].inputs)) {
+      if (input.required) expect(env, name).toHaveProperty(name);
+    }
+    for (const name of Object.keys(publish?.env ?? {})) {
+      if (name !== "NODE_AUTH_TOKEN") expect(COMMANDS["implement-prd:publish"].inputs, name).toHaveProperty(name);
+    }
+    expect(JSON.stringify(publish)).not.toMatch(/needs\.implement-prd\.outputs/);
+  });
+
+  /** The trailer the next gate reads is the publish job's to write: nothing in the agent's job spells it. */
+  it("leaves nothing in the agent's job that writes the Agent-Slice trailer", () => {
+    const agent = JSON.stringify(jobNamed(PRD, "implement-prd").steps ?? []);
+
+    expect(agent).not.toMatch(/Agent-Slice|interpret-trailers|commit-tree|update-ref/);
+  });
+
+  /**
+   * Conclude is told the facts, not the conclusions: how each job ended, the
+   * gate's and the catch-up's outputs, the agent's job's own measure of its
+   * time limit and nothing else of it, and each step's outcome; and reads
+   * each producer's files from the directory its artifact is downloaded to.
+   */
+  it("hands implement-prd:conclude both tokens, every job's result, the gate's and the catch-up's facts and each producer's directory", () => {
+    const conclude = step("Conclude the run");
+    const env = { ...job().env, ...conclude?.env };
+
+    expect(conclude?.run).toBe(
+      `npm exec --prefix "$RUNNER_TEMP" --yes --package=@jeffwlawson/agent-workflows@${PIN.slice(1)} -- agent-workflows implement-prd:conclude`,
+    );
+    expect(conclude?.["working-directory"]).toBe("${{ runner.temp }}");
+    expect(conclude?.env).toEqual({
+      NODE_AUTH_TOKEN: "${{ secrets.GITHUB_TOKEN }}",
+      GH_TOKEN: "${{ secrets.GITHUB_TOKEN }}",
+      LOOP_TOKEN: "${{ steps.token.outputs.token }}",
+      LOOP_TOKEN_SOURCE: "${{ steps.token.outputs.source }}",
+      OUTPUT_DIR: "${{ runner.temp }}/conclude",
+      CHECKOUT: "${{ github.workspace }}",
+      GATE_DIR: "${{ runner.temp }}/agent-implement-prd-gate",
+      CATCH_UP_DIR: "${{ runner.temp }}/agent-implement-prd-catch-up",
+      PREPARE_DIR: "${{ runner.temp }}/agent-implement-prd/prepare",
+      IMPLEMENT_PRD_DIR: "${{ runner.temp }}/agent-implement-prd",
+      BUNDLE_DIR: "${{ runner.temp }}/agent-implement-prd/bundle",
+      PUBLISH_DIR: "${{ runner.temp }}/publish",
+      REFUSED: "${{ needs.gate.outputs.refused }}",
+      BUILD: "${{ needs.gate.outputs.build }}",
+      FINISHING: "${{ needs.gate.outputs.finishing }}",
+      PRD_BRANCH: "${{ needs.gate.outputs.prd_branch }}",
+      PRD_PR: "${{ needs.gate.outputs.prd_pr }}",
+      SUB: "${{ needs.gate.outputs.sub }}",
+      BASE_SHA: "${{ needs.catch_up.outputs.head }}",
+      MERGED: "${{ needs.catch_up.outputs.merged }}",
+      GATE_RESULT: "${{ needs.gate.result }}",
+      GATE_REASON: "${{ needs.gate.outputs.failure-reason }}",
+      CATCH_UP_RESULT: "${{ needs.catch_up.result }}",
+      AGENT_RESULT: "${{ needs.implement-prd.result }}",
+      TIMED_OUT: "${{ needs.implement-prd.outputs.timed-out }}",
+      TIMEOUT_MINUTES: "${{ vars.AGENT_TIMEOUT_MINUTES || '30' }}",
+      MINT_OUTCOME: "${{ steps.token.outcome }}",
+      DOWNLOAD_OUTCOME: "${{ steps.fetch.outcome }}",
+      PUBLISH_OUTCOME: "${{ steps.publish.outcome }}",
+    });
+    for (const [name, input] of Object.entries(COMMANDS["implement-prd:conclude"].inputs)) {
+      if (input.required) expect(env, name).toHaveProperty(name);
+    }
+    for (const name of Object.keys(conclude?.env ?? {})) {
+      if (name !== "NODE_AUTH_TOKEN") expect(COMMANDS["implement-prd:conclude"].inputs, name).toHaveProperty(name);
+    }
+    // The agent's job's measure of its limit, and nothing else of its outputs.
+    expect(JSON.stringify(conclude).match(/needs\.implement-prd\.outputs\.[\w-]+/g)).toEqual(["needs.implement-prd.outputs.timed-out"]);
+    expect(step("Fetch what the catch-up handed over")?.with?.["path"]).toBe("${{ runner.temp }}/agent-implement-prd-catch-up");
+    expect(step("Fetch what the gate handed over")?.with?.["path"]).toBe("${{ runner.temp }}/agent-implement-prd-gate");
+  });
+
+  it("keeps both commands' write logs", () => {
+    expect(step("Keep the write logs")?.with).toMatchObject({
+      name: "agent-implement-prd-write-log",
+      path: "${{ runner.temp }}/publish/write_log.jsonl\n${{ runner.temp }}/conclude/write_log.jsonl\n",
+      "if-no-files-found": "ignore",
+    });
+    expect(COMMANDS["implement-prd:publish"].outputs).toContain("write_log.jsonl");
+    expect(COMMANDS["implement-prd:conclude"].outputs).toContain("write_log.jsonl");
+  });
+});
+
+/**
  * `gh pr list` returns 30 PRs unless told otherwise, and says nothing when it
  * stops there (#275). implement's duplicate-PR guard read only those 30, so in a
  * repo with more open PRs it could miss the one already closing the issue and
@@ -5085,11 +5356,6 @@ describe("every gh pr list names its limit", () => {
     return calls;
   };
 
-  it("finds the calls to check", () => {
-    const calls = workflowFiles.flatMap((file) => callsIn(fs.readFileSync(file, "utf8")));
-    expect(calls.length).toBeGreaterThan(0);
-  });
-
   it.each([
     "gh pr list --state open --json number \\\n  --limit 1000",
     'x=$(gh pr list --head "$b" --limit 100 --json number)',
@@ -5106,8 +5372,11 @@ describe("every gh pr list names its limit", () => {
     expect(unbounded).toEqual([]);
   });
 
-  // Implement's duplicate-PR guard is `implement:gate`'s since #490, and its
-  // reader reads every page of open PRs (`tests/engine/writes.test.ts`).
+  // No workflow calls it any more, and the rule stands for the next one that
+  // does. Implement's duplicate-PR guard is `implement:gate`'s since #490, and
+  // implement-prd's look for its PRD PR `implement-prd:publish`'s since #503;
+  // the reader both read through reads every page of open PRs
+  // (`tests/engine/writes.test.ts`).
 });
 
 /**
@@ -5273,7 +5542,13 @@ describe("agent-implement-prd works one sub-issue per run", () => {
     expect(steps).not.toHaveLength(0);
     for (const step of steps) {
       const condition = conditionOf(PRD, step);
-      expect([NOT_REFUSED, GATE_WENT_AHEAD, AGENT_SUCCEEDED].some((c) => condition.includes(c)), `${step.name}: ${condition}`).toBe(true);
+      // The publish job's own `if:` stands it down on a refusal or a
+      // deferral, and lets a gate that never decided through, for which its
+      // Node setup runs, since conclude reports that too (#505).
+      expect(
+        [NOT_REFUSED, GATE_WENT_AHEAD, AGENT_SUCCEEDED, "needs.gate.outputs.refused != 'true'"].some((c) => condition.includes(c)),
+        `${step.name}: ${condition}`,
+      ).toBe(true);
     }
   });
 
@@ -5286,12 +5561,16 @@ describe("agent-implement-prd works one sub-issue per run", () => {
    * it by `prdBranchStem` (#498), and the catch-up reuses what it found.
    */
   it("finds the PRD branch by the half of its name a human cannot edit, and reuses it", () => {
-    const prepare = runOf(PRD, "prepare");
+    const prepare = stepsOf(PRD).find((s) => subcommandRun(s) === "implement-prd:prepare");
 
     expect(prdBranch(171, "Any title")).toMatch(/^agent\/prd-171-/);
     expect(fs.readFileSync("implement-prd/gate.ts", "utf8")).toContain("github.branchesStarting(prdBranchStem(parent))");
-    expect(prepare.indexOf('"$EXISTS" = "true"')).toBeLessThan(prepare.indexOf("git checkout -b"));
-    expect(prepare).toContain('git checkout -B "$PRD_BRANCH" "refs/remotes/origin/${PRD_BRANCH}"');
+    // `implement-prd:prepare` (#501) checks out the branch the gate found, by
+    // the name it found, and fetches it where the gate read a tip.
+    expect(prepare?.env).toMatchObject({
+      PRD_BRANCH: "${{ needs.gate.outputs.prd_branch }}",
+      PRD_TIP: "${{ needs.gate.outputs.prd_tip }}",
+    });
   });
 
   /**
@@ -5303,7 +5582,7 @@ describe("agent-implement-prd works one sub-issue per run", () => {
    * line between, which is how #224 finds what to remove.
    */
   it("builds every slice on the PRD branch, and names no agent/slice- branch outside the pre-upgrade rules", () => {
-    const agent = stepsOf(PRD).find((s) => /agent-workflows implement-prd(?!:)/.test(s.run ?? ""));
+    const agent = stepsOf(PRD).find((s) => subcommandRun(s) === "implement-prd");
     expect(agent?.env?.["BRANCH"]).toBe("${{ needs.gate.outputs.prd_branch }}");
     // The refusal is `implement-prd:gate`'s since #498, and held to the same rule there.
     let named = 0;
@@ -5331,14 +5610,15 @@ describe("agent-implement-prd works one sub-issue per run", () => {
   it("pushes the PRD branch without force, and never rebases it", () => {
     const pushes = code().filter((l) => /^\s*(if ! )?git (-c "[^"]*" )?push\b/.test(l));
 
-    expect(pushes.map((l) => l.trim())).toEqual([
-      'git -c "http.extraHeader=AUTHORIZATION: basic ${auth}" push origin "$PRD_BRANCH"',
-      'git -c "http.extraHeader=AUTHORIZATION: basic ${auth}" push --force-with-lease="refs/heads/${RESCUE_BRANCH}:${current}" origin "${tip}:refs/heads/${RESCUE_BRANCH}"',
-    ]);
-    // The rescue's lease is the one force in the file, and it is not on the PRD branch.
-    expect(code().filter((l) => /--force|\bpush -f\b|\+refs\/heads\/[^:]*:refs\/heads/.test(l)).map((l) => l.trim())).toEqual([
-      'git -c "http.extraHeader=AUTHORIZATION: basic ${auth}" push --force-with-lease="refs/heads/${RESCUE_BRANCH}:${current}" origin "${tip}:refs/heads/${RESCUE_BRANCH}"',
-    ]);
+    // The slice's push is `implement-prd:publish`'s since #502: a `pushRef`
+    // of the marked commits, leased on the tip the catch-up left, which
+    // `tests/implement-prd/publish.test.ts` holds. The rescue's is
+    // `implement-prd:conclude`'s since #505, to the rescue branch alone,
+    // leased on its tip, which `tests/implement-prd/conclude.test.ts` holds.
+    expect(runOf(PRD, "publish")).toContain("agent-workflows implement-prd:publish");
+    expect(stepsOf(PRD).find((s) => s.name === "Conclude the run")?.run).toContain("agent-workflows implement-prd:conclude");
+    expect(pushes).toEqual([]);
+    expect(code().filter((l) => /--force|\bpush -f\b|\+refs\/heads\/[^:]*:refs\/heads/.test(l))).toEqual([]);
     expect(code().filter((l) => /\brebase\b|\breset --hard\b|\bpull --rebase\b/.test(l))).toEqual([]);
     // The catch-up's merge and its push are `implement-prd:catch-up`'s since
     // #500: the engine's merge, never a rebase, and a `pushRef` leased on the
@@ -5387,86 +5667,39 @@ describe("agent-implement-prd works one sub-issue per run", () => {
   });
 
   /**
-   * The PRD PR opens in the run that builds the first slice (before that the
-   * PRD branch has nothing the base lacks) as a draft into the base, after
-   * the push, and is found by its **head** after. Its body opens with the
-   * `Closes` block (byte for byte in `tests/pr-body-steps.test.ts`).
+   * The PRD PR, opened as a draft by the run that builds the first slice and
+   * found by its head after, the slice's round, `agent:review` on it, and the
+   * finishing run's hand-over are `implement-prd:publish`'s (#503, #504),
+   * held in `tests/implement-prd/publish.test.ts`: no step of the job opens,
+   * finds, labels, marks ready or merges the PRD PR, and none re-labels the
+   * parent: the next slice waits for the gate.
    */
-  it("opens the PRD PR as a draft into the base after the push, and finds it by head after", () => {
+  it("leaves the PRD PR, its review request and its hand-over to implement-prd:publish, and re-labels nothing else", () => {
     const steps = stepsOf(PRD);
-    const at = steps.findIndex((s) => s.id === "prd_pr");
-    const step = steps[at];
-    const run = step?.run ?? "";
 
-    expect(at).toBeGreaterThan(steps.findIndex((s) => s.id === "push"));
-    // A run that builds nothing opens it too; one that builds, only where the
-    // agent's job succeeded, which it did not where the chain parked.
-    expect(step?.if).toBe(
-      `needs.gate.result == 'success' && needs.gate.outputs.finishing == 'false' && (needs.gate.outputs.build == 'false' || ${AGENT_SUCCEEDED}) && success()`,
-    );
-    expect(step?.env?.["PRD_BRANCH"]).toBe("${{ needs.gate.outputs.prd_branch }}");
-    expect(step?.env?.["GH_TOKEN"]).toBe("${{ steps.token.outputs.token }}");
-    expect(run).toContain('gh pr list --state open --head "$PRD_BRANCH"');
-    expect(run).toContain('gh pr create --draft --base "$BASE_REF" --head "$PRD_BRANCH"');
-    expect(run).toContain('["#\\($parent)", (.subIssues.nodes[] | select(.state == "OPEN") | "#\\(.number)")] | "Closes " + join(", closes ")');
-    expect(run.indexOf("gh pr list")).toBeLessThan(run.indexOf("gh pr create"));
-    // The snapshot is `implement-prd:gate`'s (#498), and its tests hold its shape.
-    expect(COMMANDS["implement-prd:gate"].outputs).toContain("prd-issue.json");
-  });
-
-  /**
-   * The slice's round is `agent:review` on the PRD PR, the way
-   * `agent-implement`'s PR asks for its review. The one other trigger label it
-   * adds is the finishing run's final review, which a building run never adds.
-   * Neither re-labels the parent: the next slice waits for the gate.
-   */
-  it("requests review on the PRD PR, and re-labels nothing else", () => {
-    // Past the probe opening `Transition labels`, which adds the label this run
-    // already holds and requests nothing (#236).
-    const adds = stepsOf(PRD).filter(
-      (s) => s.name !== "Transition labels" && /--add-label "agent:(implement|review)"/.test(s.run ?? ""),
-    );
-
-    expect(adds).toHaveLength(2);
-    expect(adds[0]?.name).toBe("Request review");
-    expect(adds[0]?.run ?? "").toContain('gh pr edit "$PRD_PR" --add-label "agent:review"');
-    expect(adds[0]?.env?.["PRD_PR"]).toBe("${{ steps.prd_pr.outputs.number }}");
-    expect(adds[0]?.if ?? "").toContain("needs.gate.outputs.finishing == 'false'");
-    expect(adds[1]?.id).toBe("handover");
-    expect(adds[1]?.run ?? "").toContain('gh pr edit "$PRD_PR" --add-label "agent:review"');
-    expect(adds[1]?.if ?? "").toContain("needs.gate.outputs.finishing == 'true'");
-    for (const step of adds) expect(step.run ?? "").not.toContain('--add-label "agent:implement"');
-  });
-
-  /**
-   * The label add is a silent no-op under `GITHUB_TOKEN` — the anti-recursion
-   * rule (docs/ADOPTING.md §1), so the slice would sit asking nobody for
-   * review. Warn loudly, and fail where the add itself fails.
-   */
-  it("warns loudly when neither the App nor AGENT_PAT is set for the review label, and fails on a failed add", () => {
-    const step = stepsOf(PRD).find((s) => s.name === "Request review");
-
-    expect(step?.env?.["GH_TOKEN"]).toBe("${{ steps.token.outputs.token }}");
-    expect(step?.env?.["TOKEN_SOURCE"]).toBe("${{ steps.token.outputs.source }}");
-    expect(step?.run ?? "").toContain("::warning::");
-    expect(step?.run ?? "").toContain("set -euo pipefail");
+    for (const step of steps) expect(step.run ?? "", step.name).not.toMatch(/gh pr (create|list|ready|merge|review)/);
+    expect(steps.filter((s) => /--add-label "agent:(implement|review)"/.test(s.run ?? ""))).toEqual([]);
+    expect(steps.map((s) => s.id)).not.toContain("handover");
+    const publish = steps.find((s) => s.id === "publish");
+    expect(publish?.if ?? "").toContain("needs.gate.outputs.finishing == 'true'");
+    expect(publish?.env?.["LOOP_TOKEN"]).toBe("${{ steps.token.outputs.token }}");
+    expect(publish?.env?.["LOOP_TOKEN_SOURCE"]).toBe("${{ steps.token.outputs.source }}");
   });
 
   /**
    * Once the slice is pushed, re-applying `agent:implement` builds nothing,
    * and its gate refuses while the slice has no review. So the failure
    * comment says where to ask for the review instead, whenever the push
-   * happened.
+   * happened: `implement-prd:conclude`'s since #505, read off publish's
+   * `published.json` and the gate's PRD PR, which
+   * `tests/implement-prd/conclude.test.ts` holds word for word.
    */
   it("names the PRD PR as the way out when the chain dies after its push", () => {
-    const failed = stepsOf(PRD).find((s) => s.name === "Mark blocked on failure");
-    const run = failed?.run ?? "";
+    const conclude = stepsOf(PRD).find((s) => s.name === "Conclude the run");
 
-    expect(failed?.env?.["PUSHED"]).toBe("${{ steps.push.outputs.head }}");
-    expect(failed?.env?.["PRD_PR"]).toBe("${{ steps.prd_pr.outputs.number || needs.gate.outputs.prd_pr }}");
-    expect(run).toContain("Add \\`agent:review\\` to PRD PR #${PRD_PR} if it doesn't have it.");
-    expect(run).toContain("so it won't be built again");
-    expect(run).toContain('reason="${reason} It was building sub-issue #${SUB}."');
+    expect(conclude?.env?.["PUBLISH_DIR"]).toBe(stepsOf(PRD).find((s) => s.id === "publish")?.env?.["OUTPUT_DIR"]);
+    expect(conclude?.env?.["PRD_PR"]).toBe("${{ needs.gate.outputs.prd_pr }}");
+    expect(conclude?.env?.["SUB"]).toBe("${{ needs.gate.outputs.sub }}");
   });
 
   /**
@@ -5483,63 +5716,28 @@ describe("agent-implement-prd works one sub-issue per run", () => {
         ((s.uses ?? "").startsWith("actions/setup-node@") && s.name !== "Set up Node for the gate") ||
         (s.run ?? "").includes("${{ inputs.setup }}") ||
         (s.run ?? "").includes("@anthropic-ai/claude-code") ||
-        /agent-workflows implement-prd(?!:)/.test(s.run ?? "") ||
-        ["prepare", "trailer", "push"].includes(s.id ?? ""),
+        ["implement-prd", "implement-prd:prepare"].includes(subcommandRun(s) ?? ""),
     );
+    const publishJob = jobNamed(PRD, "publish").steps ?? [];
+    const publishSetup = publishJob.filter((s) => (s.uses ?? "").startsWith("actions/checkout@") || (s.uses ?? "").startsWith("actions/setup-node@"));
+    const inPublishSetup = (step: Step): boolean => publishSetup.some((s) => JSON.stringify(s) === JSON.stringify(step));
 
-    // Four checkouts (the catch-up's, the agent's and the publish job's two,
-    // one to push and one to rescue, #303), the catch-up's Node (#500), the
-    // agent's `prepare`, and the agent's toolchain, runner and trailer, and
-    // the push.
-    expect(building).toHaveLength(13);
-    for (const step of building) {
+    // Two checkouts (the catch-up's and the agent's), the catch-up's Node
+    // (#500), the agent's package Node and `implement-prd:prepare` (#501), and
+    // the agent's toolchain and runner. The publish job's checkout and Node
+    // are not among them: they run wherever the gate claimed the run, a run
+    // that builds nothing included, so the steps after a stopped agent never
+    // check a bundle in an empty workspace, and no model runs in that job.
+    // Nor is `implement-prd:publish`, which runs no model and opens a missing
+    // PRD PR on a run that builds nothing (#503).
+    expect(building.filter((s) => !inPublishSetup(s))).toHaveLength(10);
+    for (const step of building.filter((s) => !inPublishSetup(s))) {
       const condition = conditionOf(PRD, step);
       expect(condition.includes(`${GATE_WENT_AHEAD} && ${BUILDING}`) || condition.includes(AGENT_SUCCEEDED), `${step.name}: ${condition}`).toBe(true);
     }
-  });
-
-  /**
-   * The handover. One slice landed: its round reviewed the whole PRD PR, so it
-   * is marked ready and no review is asked for. More than one: the final
-   * review is recorded in the PRD PR's body, then asked for. Both need the
-   * loop's App or AGENT_PAT. The loop never merges the PRD PR nor approves
-   * anything.
-   */
-  it("hands the PRD PR over on the finishing run, and never merges or approves it", () => {
-    const steps = stepsOf(PRD);
-    const at = steps.findIndex((s) => s.id === "handover");
-    const step = steps[at];
-    const run = step?.run ?? "";
-    const many = armOf(run, 'if [ "$LANDED" -gt 1 ]');
-
-    expect(at).toBeLessThan(steps.findIndex((s) => s.name === "Mark blocked on failure"));
-    expect(step?.if).toBe("needs.gate.result == 'success' && needs.gate.outputs.finishing == 'true' && success()");
-    expect(conditionOf(PRD, step as Step)).toContain("needs.gate.outputs.refused != 'true'");
-    expect(step?.env?.["PRD_PR"]).toBe("${{ needs.gate.outputs.prd_pr }}");
-    expect(step?.env?.["LANDED"]).toBe("${{ needs.gate.outputs.landed }}");
-    expect(step?.env?.["GH_TOKEN"]).toBe("${{ steps.token.outputs.token }}");
-    expect(step?.env?.["TOKEN_SOURCE"]).toBe("${{ steps.token.outputs.source }}");
-    expect(many).toContain('mark="<!-- agent:final-review requested -->"');
-    expect(many.indexOf("gh api -X PATCH")).toBeLessThan(many.indexOf('--add-label "agent:review"'));
-    expect(many.slice(many.indexOf("else"))).toContain('gh pr ready "$PRD_PR"');
-    expect(many.slice(many.indexOf("else"))).not.toContain("agent:review");
-    expect(run.indexOf('"$TOKEN_SOURCE" != "app"')).toBeLessThan(run.indexOf("gh pr edit"));
-    expect(bashFunctionBody(run, "block")).toContain('> "${RUNNER_TEMP}/failure_reason.txt"');
-    expect(code().filter((l) => /\bgh pr (merge|review)\b/.test(l))).toEqual([]);
-  });
-
-  /**
-   * Every stop of the PRD PR steps fails into `Mark blocked on failure` with
-   * a reason file, rather than commenting from the step. The gate's stops are
-   * `implement-prd:gate`'s throws, which the CLI writes the reason file for.
-   */
-  it.each(["prd_pr", "handover"])("%s blocks through the reason file, not a comment of its own", (id) => {
-    const body = bashFunctionBody(runOf(PRD, id), "block");
-
-    expect(body).toContain('> "${RUNNER_TEMP}/failure_reason.txt"');
-    expect(body).toContain("exit 1");
-    expect(body).not.toContain("gh ");
-    expect(body).not.toContain("refused=");
+    // The Node setup runs on every ending, for conclude, a gate that never
+    // decided included; the checkout only wherever the gate claimed the run.
+    expect(publishSetup.map((s) => s.if)).toEqual([`always() && ${GATE_WENT_AHEAD}`, "always()"]);
   });
 
   /**
@@ -5578,20 +5776,23 @@ describe("agent-implement-prd works one sub-issue per run", () => {
    * that *dies* writes no output.
    */
   it("comments on a preflight that fails rather than refuses", () => {
-    const blocked = stepsOf(PRD).find((s) => s.name === "Mark blocked on failure");
+    const conclude = stepsOf(PRD).find((s) => s.name === "Conclude the run");
 
-    // On the publish job's `if:`, which a failed gate passes.
-    expect(conditionOf(PRD, blocked as Step)).toContain("needs.gate.outputs.refused != 'true'");
-    expect(blocked?.if ?? "").toContain("needs.gate.result != 'success'");
-    expect(blocked?.if ?? "").toContain("failure()");
-    expect(blocked?.run ?? "").toContain('--add-label "agent:blocked"');
+    // On the publish job's `if:`, which a failed gate passes; what it says
+    // is `implement-prd:conclude`'s, held in its tests.
+    expect(conditionOf(PRD, conclude as Step)).toContain("needs.gate.outputs.refused != 'true'");
+    expect(conclude?.if).toBe("always()");
+    expect(conclude?.env?.["GATE_RESULT"]).toBe("${{ needs.gate.result }}");
+    expect(conclude?.env?.["REFUSED"]).toBe("${{ needs.gate.outputs.refused }}");
   });
 
+  /** However the run ends, `implement-prd:conclude` runs, and takes the label off wherever the gate decided (#236, #494). */
   it("removes agent:implement from the parent however the run ends", () => {
-    const last = stepsOf(PRD).at(-1);
+    const steps = stepsOf(PRD);
+    const at = steps.findIndex((s) => s.name === "Conclude the run");
 
-    expect(last?.if).toBe("always() && needs.gate.outputs.refused == 'false'");
-    expect(last?.run ?? "").toContain('--remove-label "agent:implement"');
+    expect(steps[at]?.if).toBe("always()");
+    expect(steps.slice(at + 1).map((s) => s.name)).toEqual(["Keep the write logs"]);
   });
 });
 /**
@@ -7552,7 +7753,8 @@ describe("a run that times out or is cancelled says so, as a failure does", () =
   const FAILURE_STEPS: Readonly<Record<string, { readonly name: string; readonly guard: string }>> = {
     // `implement:conclude` since #493, which tells the endings apart itself.
     implement: { name: "Conclude the run", guard: "" },
-    "implement-prd": { name: "Mark blocked on failure", guard: "steps.preflight.outputs.refused != 'true'" },
+    // `implement-prd:conclude` since #505, likewise.
+    "implement-prd": { name: "Conclude the run", guard: "" },
     // `fix:conclude` since #469, which tells the endings apart itself.
     fix: { name: "Conclude the run", guard: "" },
     // `update-branch:conclude` since #485, likewise.
@@ -7609,36 +7811,13 @@ describe("a run that times out or is cancelled says so, as a failure does", () =
       expect(step.env?.["PUBLISH_OUTCOME"]).toBe("${{ steps.publish.outcome }}");
       return;
     }
-    // So is fix's (#469), update-branch's (#485) and implement's (#493),
-    // told how the gate and the agent's job ended.
-    if (command === "fix" || command === "update-branch" || command === "implement") {
+    // So is fix's (#469), update-branch's (#485), implement's (#493) and
+    // implement-prd's (#505), told how the gate and the agent's job ended.
+    if (command === "fix" || command === "update-branch" || command === "implement" || command === "implement-prd") {
       expect(step.if).toBe("always()");
       expect(step.env?.["GATE_RESULT"]).toBe("${{ needs.gate.result }}");
       expect(step.env?.["AGENT_RESULT"]).toBe(`\${{ needs.${command}.result }}`);
       expect(step.env?.["PUBLISH_OUTCOME"]).toBe("${{ steps.publish.outcome }}");
-      return;
-    }
-
-    // A split run reports from its publish job, which runs `always()` after a
-    // gate that did not refuse: what failed or was cancelled may be either job
-    // ahead of it, read by name since `failure()` does not see a cancel there.
-    if (SPLIT_RUNS[fileOf(command)] !== undefined) {
-      // Each names the jobs ahead of it whose failure is its to report:
-      // implement-prd's catch-up, and its agent's job only where it ran,
-      // either being skipped on a run that builds nothing.
-      const SPLIT_FAILURE: Readonly<Record<string, string>> = {
-        "implement-prd":
-          "always() && (failure() || cancelled() || needs.gate.result != 'success' || needs.catch_up.result == 'failure' || needs.catch_up.result == 'cancelled' || needs.implement-prd.result == 'failure' || needs.implement-prd.result == 'cancelled')",
-      };
-      expect(step.if).toBe(SPLIT_FAILURE[command]);
-      expect(step.env?.["AGENT_RESULT"]).toBe(`\${{ needs.${command}.result }}`);
-      expect(step.env?.["GATE_RESULT"]).toBe("${{ needs.gate.result }}");
-      expect(step.env?.["JOB_STATUS"]).toBe("${{ job.status }}");
-      // implement-prd's catch-up between the gate's and the agent's.
-      const between = command === "implement-prd" ? ' || [ "$CATCH_UP_RESULT" = "cancelled" ]' : "";
-      expect(step.run ?? "").toContain(
-        `if [ "$JOB_STATUS" = "cancelled" ] || [ "$GATE_RESULT" = "cancelled" ]${between} || [ "$AGENT_RESULT" = "cancelled" ]; then`,
-      );
       return;
     }
 
@@ -7675,10 +7854,11 @@ describe("a run that times out or is cancelled says so, as a failure does", () =
    * Fix's clock is the gate's, read by the agent's job's last step, which
    * decides whether that job ran out of time and hands the answer to
    * `fix:conclude` (#469), as review's job does; and update-branch's to
-   * `update-branch:conclude` (#485), and implement's to `implement:conclude`
-   * (#493), the same way.
+   * `update-branch:conclude` (#485), implement's to `implement:conclude`
+   * (#493), and implement-prd's to `implement-prd:conclude` (#505), the same
+   * way.
    */
-  it.each(["fix", "update-branch", "implement"])("%s: measures the agent's job against its limit and hands the answer to its conclude, however it ended", (command) => {
+  it.each(["fix", "update-branch", "implement", "implement-prd"])("%s: measures the agent's job against its limit and hands the answer to its conclude, however it ended", (command) => {
     const steps = jobNamed(fileOf(command), command).steps ?? [];
     const outcome = steps.at(-1);
 
@@ -7705,9 +7885,10 @@ describe("a run that times out or is cancelled says so, as a failure does", () =
       expect(clock?.run).toBe(SPLIT_CLOCK);
       expect(gate.outputs?.["started"]).toBe("${{ steps.clock.outputs.started }}");
       // Fix's is read in its agent's job, which measures itself (#469), and
-      // update-branch's (#485) and implement's (#493) likewise.
+      // update-branch's (#485), implement's (#493) and implement-prd's (#505)
+      // likewise.
       const reader =
-        command === "fix" || command === "update-branch" || command === "implement"
+        command === "fix" || command === "update-branch" || command === "implement" || command === "implement-prd"
           ? (jobNamed(fileOf(command), command).steps ?? []).at(-1)
           : failureStep(command);
       expect(reader?.env?.["JOB_STARTED"]).toBe(`\${{ needs.${split[0]}.outputs.started }}`);
@@ -7892,26 +8073,6 @@ describe("a trigger label is on while its run works, and off when it ends", () =
   });
 
   /**
-   * The last step, so every failure arm above it has run: `agent:blocked` and
-   * the comment go on first, and the label comes off whatever happened. Gated
-   * on `always()`; the implement pair also on a preflight that decided the
-   * issue was this run's, since a deferral, or a preflight that died before it
-   * could defer, may be the sibling's event, and the sibling's run holds the
-   * label. Fix's, update-branch's and implement's are their conclude
-   * commands', below.
-   */
-  it.each(STEPPED.filter(([name]) => !["fix.yml", "update-branch.yml", "implement.yml"].includes(name)))("%s: takes %s off in its last step, however the run ends", (name, label, guard) => {
-    const last = writerStepsOf(fileOf(name))
-      .filter((s) => s.run !== undefined)
-      .at(-1);
-
-    expect(last?.name).toBe("Always remove the trigger label");
-    expect(last?.if).toBe(guard);
-    expect((last?.run ?? "").trim().split("\n")[0]).toMatch(removal(label));
-    expect(last?.run ?? "").toMatch(new RegExp(`${removal(label).source} \\|\\| true`));
-  });
-
-  /**
    * Review's is the last step that writes, `review:conclude`, run `always()`
    * after publish (#419): the glue and the logs' upload after it write
    * nothing on the record.
@@ -7932,12 +8093,15 @@ describe("a trigger label is on while its run works, and off when it ends", () =
    * Fix's moves in `fix:conclude` (#469), the last step that writes, run
    * `always()` after publish, whose tests hold the order: only the logs'
    * upload comes after it. Update-branch's in `update-branch:conclude`
-   * (#485), and implement's in `implement:conclude` (#493), the same way.
+   * (#485), implement's in `implement:conclude` (#493), and implement-prd's in
+   * `implement-prd:conclude` (#505), the same way: every workflow a trigger
+   * label starts takes it off in a command now.
    */
   it.each([
     ["fix.yml", "fix", "agent:fix"],
     ["update-branch.yml", "update-branch", "agent:update-branch"],
     ["implement.yml", "implement", "agent:implement"],
+    ["implement-prd.yml", "implement-prd", "agent:implement"],
   ])("%s: takes its label off in its last command, however the run ends", (name, workflow, label) => {
     const steps = jobNamed(fileOf(name), "publish").steps ?? [];
     const conclude = steps.findIndex((s) => (s.run ?? "").trim().endsWith(` agent-workflows ${workflow}:conclude`));
@@ -8055,24 +8219,12 @@ describe("a trigger label is on while its run works, and off when it ends", () =
   // Update-branch's is `update-branch:gate`'s (#481), whose tests hold the
   // order.
 
-  /**
-   * And a hand-off takes the run's own label off before it adds the next
-   * step's, in the same step and only on its success path, so the issue or
-   * pull request never carries both. Fix's is `fix:publish`'s (#468),
-   * update-branch's `update-branch:publish`'s (#484), and implement's
-   * `implement:publish`'s (#492), whose tests hold the order of their writes.
-   */
-  it.each([
-    ["implement-prd.yml", "Request review", 'gh issue edit "$ISSUE_NUMBER" --remove-label "agent:implement"', 'gh pr edit "$PRD_PR" --add-label "agent:review"'],
-    ["implement-prd.yml", "handover", 'gh issue edit "$ISSUE_NUMBER" --remove-label "agent:implement"', 'gh pr edit "$PRD_PR" --add-label "agent:review"'],
-  ])("%s: %s takes its own label off before it adds the next", (name, step, removal, add) => {
-    const found = stepsOf(fileOf(name)).find((s) => s.name === step || s.id === step);
-    const run = found?.run ?? "";
-
-    expect(found?.if ?? "").toContain("success()");
-    expect(run.indexOf(removal)).toBeGreaterThanOrEqual(0);
-    expect(run.indexOf(add)).toBeGreaterThan(run.indexOf(removal));
-  });
+  // A hand-off takes the run's own label off before it adds the next
+  // step's, so the issue or pull request never carries both. Fix's is
+  // `fix:publish`'s (#468), update-branch's `update-branch:publish`'s (#484),
+  // implement's `implement:publish`'s (#492), and implement-prd's review
+  // request and hand-over `implement-prd:publish`'s (#503, #504), whose tests
+  // hold the order of their writes.
 
   /**
    * A review whose pull request moved while it worked says so, and what acts
@@ -8119,12 +8271,13 @@ describe("every failure and refusal says so in one of two patterns", () => {
   const FIX = path.join(WORKFLOW_DIR, "fix.yml");
   const UPDATE = path.join(WORKFLOW_DIR, "update-branch.yml");
   const STOPPED = [
-    { file: PRD, label: "agent:implement", step: "Mark blocked on failure" },
     // Fix's is `fix:conclude`'s since #469, held in `tests/fix/conclude.test.ts`,
     // update-branch's `update-branch:conclude`'s since #485, held in
-    // `tests/update-branch/conclude.test.ts`, and implement's
+    // `tests/update-branch/conclude.test.ts`, implement's
     // `implement:conclude`'s since #493, held in
-    // `tests/implement/conclude.test.ts`.
+    // `tests/implement/conclude.test.ts`, and implement-prd's
+    // `implement-prd:conclude`'s since #505, held in
+    // `tests/implement-prd/conclude.test.ts`.
     { file: FOLLOW_UPS, label: "agent:follow-ups", step: "Report the failure on the PR" },
   ] as const;
   // Every refusal is a command's sentence now, each held word for word in
@@ -8289,41 +8442,14 @@ describe("what the loop posts names no internal mechanism", () => {
  */
 describe("the PRD chain's progress", () => {
   /**
-   * The list's markers and the final review's mark are spelled in the
-   * workflows, which run no toolchain, and held equal here to the one copy
-   * the renderer uses.
+   * The list's markers and the final review's mark are spelled by the
+   * renderer and `shared/record.ts` alone: every writer of the list is a
+   * command since #505, and no workflow spells one.
    */
-  it("spells the list's markers and the final review's mark as the renderer does", () => {
-    const prdPr = stepsOf(PRD).find((s) => s.id === "prd_pr");
-    const handover = runOf(PRD, "handover");
-
-    const stopped = stepsOf(PRD).find((s) => s.name === "Show the stopped slice in the progress list");
-    for (const env of [prdPr?.env, stopped?.env]) {
-      expect(env?.["PROGRESS_START"]).toBe(PROGRESS_START);
-      expect(env?.["PROGRESS_END"]).toBe(PROGRESS_END);
+  it("spells the list's markers in no workflow", () => {
+    for (const marker of [PROGRESS_START, PROGRESS_END, STATUS_START, STATUS_END]) {
+      expect(fs.readFileSync(PRD, "utf8"), marker).not.toContain(marker);
     }
-    for (const env of [prdPr?.env, stopped?.env]) {
-      expect(env?.["STATUS_START"]).toBe(STATUS_START);
-      expect(env?.["STATUS_END"]).toBe(STATUS_END);
-    }
-    expect(handover).toContain(`mark="${FINAL_REVIEW_MARK}"`);
-    expect(handover).toContain(`end="${PROGRESS_END}"`);
-    expect(handover).toContain(`status_start="${STATUS_START}"`);
-    expect(handover).toContain(`status_end="${STATUS_END}"`);
-    expect(handover).toContain(`quoted=$'\\n> '`);
-    const prUrl = "${SERVER_URL}/${GH_REPO}/pull/${PRD_PR}";
-    expect(handover).toContain(
-      `lines="${finalReviewRequestedLines(prUrl).replace(`\n${FINAL_REVIEW_MARK}\n`, "")}"$'\\n'"\${mark}"$'\\n'`,
-    );
-    expect(handover).toContain(
-      `\${status_start}\${quoted}${renderPrdStatus({
-        subIssues: [{ number: 1, state: "OPEN" }, { number: 2, state: "OPEN" }],
-        ranges: { slices: [], next: null, current: null },
-        verdict: "none",
-        running: { kind: "review" },
-        finalReview: "requested",
-      }).replace("2", "${SUBS}")}\${quoted}\${status_end}`,
-    );
   });
 
   /**
@@ -8336,39 +8462,9 @@ describe("the PRD chain's progress", () => {
     expect(statusBlock("x")).toBe("<!-- agent:status -->\n> x\n> <!-- /agent:status -->");
   });
 
-  /**
-   * The frames' rules (#353): one between the note and `## Summary`, and on a
-   * PRD PR a second between the summary block and the progress block. Each
-   * sits outside every marker pair, so no splice touches it, with a blank line
-   * before it, without which GitHub reads the line above as a setext heading.
-   */
-  it("rules the note off from the summary, and on a PRD PR the summary off from the progress table", () => {
-    const frame = (file: string, name: string): string[] => {
-      const run = stepsOf(file).find((s) => s.name === name)?.run ?? "";
-      return (run.match(/<<FRAME\n([\s\S]*?)\n\s*FRAME\n/)?.[1] ?? "").split("\n").map((line) => line.trim());
-    };
-    // A regular pull request's is `shared/pr-frame.ts`'s since #492, and
-    // `tests/pr-frame.test.ts` holds its rule.
-    const prd = frame(PRD, "Open or reuse the PRD PR");
-
-    expect(prd.slice(3)).toEqual([
-      "> <!-- agent:draft-note -->The agent loop builds PRD #${ISSUE_NUMBER} here, one sub-issue at a time, and reviews each on this PR before starting the next. It stays a draft until every slice is done. Don't merge it before then.<!-- /agent:draft-note --> Built by the agent loop from PRD #${ISSUE_NUMBER}, one sub-issue per slice. Comment here to steer it; your notes outside the loop's blocks are never edited.",
-      "",
-      "---",
-      "",
-      "## Summary",
-      "",
-      "<!-- agent:summary -->",
-      "_The final review will summarize the whole PRD here._",
-      "<!-- /agent:summary -->",
-      "",
-      "---",
-      "",
-      "${list}",
-      "",
-      "${closes_block}",
-    ]);
-  });
+  // The frames' rules (#353) are `shared/pr-frame.ts`'s, a regular pull
+  // request's since #492 and a PRD PR's since #503, and `tests/pr-frame.test.ts`
+  // holds them.
 
   /**
    * The regular pull request's status line is `review:publish`'s, which tells
@@ -8398,86 +8494,59 @@ describe("the PRD chain's progress", () => {
     expect(RUNNERS.review.outputs.filter((name) => /^(progress|status)_/.test(name))).toEqual([]);
   });
 
-  /** Each runner reads what its list is rendered from while the token is still in hand. */
-  it("reads the list in each runner while the token is still in hand", () => {
+  /**
+   * Review's runner reads what its list is rendered from while the token is
+   * still in hand. implement-prd's renders none since #505: the list of a run
+   * that stops is `implement-prd:conclude`'s, read through the reader.
+   */
+  it("reads the list in the review runner while the token is still in hand, and in implement-prd's runner not at all", () => {
     const review = fs.readFileSync("review/review.ts", "utf8");
     const implement = fs.readFileSync("implement-prd/implement-prd.ts", "utf8");
 
     expect(review.indexOf("writeProgress(context.carriedFindings.length);")).toBeGreaterThan(-1);
     expect(review.indexOf("writeProgress(context.carriedFindings.length);")).toBeLessThan(review.indexOf("scrubGitHubTokens();"));
-    expect(implement.indexOf("writeProgress();")).toBeGreaterThan(-1);
-    expect(implement.indexOf("writeProgress();")).toBeLessThan(implement.indexOf("scrubGitHubTokens();"));
-    expect(stepsOf(PRD).find((s) => s.name === "Run implementation agent")?.env?.["PRD_PR"]).toBe(
-      "${{ needs.gate.outputs.prd_pr }}",
-    );
+    expect(implement).not.toMatch(/writeProgress|renderProgressList|roundCounts/);
+    expect(stepsOf(PRD).find((s) => s.name === "Run implementation agent")?.env).not.toHaveProperty("PRD_PR");
   });
 
   /**
    * The gate shows the slice building (#312), as `implement-prd:gate` since
-   * #499, in a job that runs no agent and already holds the write scope,
-   * handing what it replaced to `publish` on the artifact that is uploaded
-   * however the gate ends. The runner writes nothing to the PRD PR's body.
+   * #499, in a job that runs no agent and already holds the write scope. It
+   * keeps no copy of what it replaced: a run that stops renders the row from
+   * the branch (#325). The runner writes nothing to the PRD PR's body.
    */
   it("shows the slice building from the gate, never from the agent's job", () => {
     const gate = jobNamed(PRD, "gate");
-    const upload = (gate.steps ?? []).find((s) => s.name === "Hand the PRD's snapshot on");
     const implement = fs.readFileSync("implement-prd/implement-prd.ts", "utf8");
     const outputs: readonly string[] = COMMANDS["implement-prd:gate"].outputs;
 
     expect(gate.permissions?.["pull-requests"]).toBe("write");
-    expect(outputs).toEqual(expect.arrayContaining(["progress_unbuilt.md", "status_unbuilt.md"]));
-    for (const file of ["progress_unbuilt.md", "status_unbuilt.md"]) {
-      expect(String(upload?.with?.["path"] ?? "")).toContain(`\${{ runner.temp }}/${file}`);
-    }
+    expect(outputs.filter((file) => file.endsWith(".md"))).toEqual([]);
     expect(implement).not.toContain('"PATCH"');
     expect(implement).not.toContain("could not be written");
     expect(implement).not.toMatch(/kind: "build"/);
   });
 
   /**
-   * A build run that stops after its gate showed the slice building writes
-   * the list back, since it starts no round and no advance job would: on a
-   * park, a failure or a cancel of a run that builds, after the comment and
-   * the labels, before the trigger label comes off, and never failing the
-   * job. The runner's render where it got that far, and what the gate
-   * replaced where it did not.
+   * A build run that stops after its gate showed the slice building has the
+   * list written back by `implement-prd:conclude` (#505), since it starts no
+   * round and no advance job would, rendered from the PRD branch's trailers
+   * as the run left it (#325), which `tests/implement-prd/conclude.test.ts`
+   * holds. What the YAML owns is that conclude is told what it needs: the
+   * gate's decision and PRD PR, the catch-up's merge, and the gate's snapshot.
    */
   it("writes the list back where a build run stops", () => {
-    const steps = stepsOf(PRD);
-    const names = steps.map((s) => s.name ?? "");
-    const step = steps.find((s) => s.name === "Show the stopped slice in the progress list");
-    const run = step?.run ?? "";
-    const implement = fs.readFileSync("implement-prd/implement-prd.ts", "utf8");
+    const conclude = stepsOf(PRD).find((s) => s.name === "Conclude the run");
 
-    // In the publish job since the split (#308), which runs however the jobs
-    // ahead of it ended, so their results are read by name.
-    expect(step?.if).toBe(
-      "always() && needs.gate.outputs.refused == 'false' && needs.gate.outputs.build == 'true' && (failure() || cancelled() || needs.catch_up.result != 'success' || needs.implement-prd.result != 'success')",
-    );
-    expect(names.indexOf("Show the stopped slice in the progress list")).toBe(names.indexOf("Mark blocked on failure") + 1);
-    expect(run).toContain("set -uo pipefail");
-    expect(run).not.toContain("set -e");
-    expect(step?.["continue-on-error"]).toBeUndefined();
-    expect(step?.env?.["PUSHED"]).toBe("${{ steps.push.outputs.head }}");
-    expect(steps.find((s) => s.name === "Run implementation agent")?.env?.["MERGED"]).toBe(
-      "${{ needs.catch_up.outputs.merged }}",
-    );
-    for (const file of [
-      "progress_stopped.md",
-      "progress_stopped_pushed.md",
-      "status_stopped.md",
-      "status_stopped_pushed.md",
-      "progress_unbuilt.md",
-      "status_unbuilt.md",
-    ]) {
-      expect(run).toContain(file);
-    }
-    // The runner writes `progress<name>.md` and `status<name>.md` for each.
-    for (const name of ['"_stopped"', '"_stopped_pushed"']) {
-      expect(implement.indexOf(`write(${name}`)).toBeGreaterThan(-1);
-    }
-    expect(implement).toContain("writeText(`progress${name}.md`");
-    expect(implement).toContain("writeText(`status${name}.md`");
+    expect(conclude?.env).toMatchObject({
+      BUILD: "${{ needs.gate.outputs.build }}",
+      PRD_PR: "${{ needs.gate.outputs.prd_pr }}",
+      MERGED: "${{ needs.catch_up.outputs.merged }}",
+      GATE_DIR: "${{ runner.temp }}/agent-implement-prd-gate",
+    });
+    expect(Object.keys(COMMANDS["implement-prd:conclude"].inputs.GATE_DIR.files)).toEqual(["prd-issue.json"]);
+    expect(stepsOf(PRD).map((s) => s.name)).not.toContain("Show the stopped slice in the progress list");
+    expect(RUNNERS["implement-prd"].outputs.filter((name) => /^(progress|status)/.test(name))).toEqual([]);
   });
 
   /**
@@ -8491,11 +8560,15 @@ describe("the PRD chain's progress", () => {
     const advance = fs.readFileSync(path.join("review", "advance.ts"), "utf8");
     const constants = (text: string): string[] => [...text.matchAll(/\.addLabel\([^,]+, ([A-Z_]+)\)/g)].map(([, name]) => name ?? "");
 
-    expect(new Set(added(prd))).toEqual(new Set(["agent:blocked", "agent:review"]));
+    const conclude = fs.readFileSync(path.join("implement-prd", "conclude.ts"), "utf8");
+
+    expect(added(prd)).toEqual([]);
     // The gate's probe re-adds the label the run holds, and a refusal blocks (#498).
     expect(constants(gate)).toEqual(["IMPLEMENT_LABEL", "BLOCKED_LABEL"]);
+    // A run that stopped blocks (#505).
+    expect(constants(conclude)).toEqual(["BLOCKED_LABEL"]);
     expect(constants(advance)).toEqual(["IMPLEMENT_LABEL"]);
-    for (const text of [prd, gate, advance]) expect(text).not.toMatch(/gh issue close|state=closed|closeIssue/);
+    for (const text of [prd, gate, advance, conclude]) expect(text).not.toMatch(/gh issue close|state=closed|closeIssue/);
   });
 });
 
@@ -8575,6 +8648,7 @@ describe("a job that installs the package early runs it from that install", () =
   it("finds the jobs that install the package early", () => {
     expect(withInstall.map(([label]) => label).sort()).toEqual([
       "fix.yml fix",
+      "implement-prd.yml implement-prd",
       "implement.yml implement",
       "review.yml red-check",
       "update-branch.yml gate",
@@ -8609,7 +8683,10 @@ describe("a job that installs the package early runs it from that install", () =
       if (isRunner(step)) {
         expect(runOf(step), step.name).toMatch(INSTALLED_BIN);
       } else {
-        expect(runOf(step), step.name).toMatch(PACKAGE_EXEC);
+        // A command runs from `RUNNER_TEMP`, by `npm exec`, which finds the
+        // install under its `--prefix` from there, or by the install's path,
+        // as implement-prd's agent job runs its two (#501).
+        expect([PACKAGE_EXEC, INSTALLED_BIN].some((form) => form.test(runOf(step))), step.name).toBe(true);
         expect(step["working-directory"], step.name).toBe("${{ runner.temp }}");
       }
     }
@@ -8906,18 +8983,12 @@ describe("a split run keeps every write off the agent's runner", () => {
         /**
          * The agent's job's `git bundle create`, where a shell step bundles:
          * fix's is `fix:bundle` (#472), update-branch's
-         * `update-branch:bundle` (#483), and implement's `implement:bundle`
-         * (#491).
+         * `update-branch:bundle` (#483), implement's `implement:bundle`
+         * (#491), and implement-prd's `implement-prd:bundle` (#501).
          */
         readonly bundle?: string;
         readonly bundleIf: string;
         readonly branch: string;
-        /**
-         * The shell push and the checks before it, where a shell step pushes:
-         * fix's is `fix:publish` (#468), and update-branch's
-         * `update-branch:publish` (#484), whose tests hold their bundle checks.
-         */
-        readonly push?: { readonly ancestors: readonly string[]; readonly pushed: string; readonly blocks: number };
         readonly patJobs: readonly string[];
       }
     >
@@ -8954,14 +9025,15 @@ describe("a split run keeps every write off the agent's runner", () => {
     },
     "implement-prd.yml": {
       agentIf: "needs.gate.outputs.refused == 'false' && needs.gate.outputs.build == 'true' && needs.catch_up.outputs.parked != 'true'",
-      agentPermissions: { contents: "read", issues: "read", packages: "read", "pull-requests": "read" },
+      // No `pull-requests: read` since #505: the runner no longer reads the
+      // PRD PR's rounds, `implement-prd:conclude` does.
+      agentPermissions: { contents: "read", issues: "read", packages: "read" },
       gateWrites: ["issues", "pull-requests"],
       group: `agent-implement-prd-issue-\${{ github.event.issue.number }}${otherLabel("agent:implement")}`,
-      bundle: 'git bundle create "${RUNNER_TEMP}/branch.bundle" "refs/heads/${BRANCH}" "^${BASE_SHA}"',
       // However the job ended (#303): a stopped run's commits are rescued.
       bundleIf: "always()",
       branch: "PRD_BRANCH",
-      push: { ancestors: ["$BASE_SHA"], pushed: 'push origin "$PRD_BRANCH"', blocks: 5 },
+      // The push is `implement-prd:publish`'s (#502), whose tests hold its checks.
       // The catch-up pushes the default branch's merge before the agent runs,
       // on a runner of its own.
       patJobs: ["catch_up", "publish"],
@@ -9037,11 +9109,11 @@ describe("a split run keeps every write off the agent's runner", () => {
   it.each(splits)("%s: takes nothing from the agent's job but its artifact", (_, file) => {
     const { agent } = rolesOf(file);
     const text = fs.readFileSync(file, "utf8");
-    // Fix's one exception (#469), update-branch's (#485) and implement's
-    // (#493): whether its job ran out of time, which only that job can
-    // measure, as review's job does, and which picks between two sentences of
-    // a stopped run's comment and decides nothing else.
-    if (file.endsWith("fix.yml") || file.endsWith("update-branch.yml") || file.endsWith("implement.yml")) {
+    // Fix's one exception (#469), update-branch's (#485), implement's (#493)
+    // and implement-prd's (#505): whether its job ran out of time, which only
+    // that job can measure, as review's job does, and which picks between two
+    // sentences of a stopped run's comment and decides nothing else.
+    if (file.endsWith("fix.yml") || file.endsWith("update-branch.yml") || file.endsWith("implement.yml") || file.endsWith("implement-prd.yml")) {
       expect(jobNamed(file, agent).outputs).toEqual({ "timed-out": "${{ steps.outcome.outputs.timed-out }}" });
       expect(text.match(new RegExp(`needs\\.${agent}\\.outputs\\.[\\w-]+`, "g"))).toEqual([`needs.${agent}.outputs.timed-out`]);
       return;
@@ -9084,40 +9156,8 @@ describe("a split run keeps every write off the agent's runner", () => {
     },
   );
 
-  /**
-   * The bundle's content is the agent's, as the pushed branch always was; what
-   * the publish job checks is that it is the branch this run was for: intact,
-   * exactly the one branch the gate named, built on what a job no agent ran in
-   * read. Every check precedes the push, and none of them reads the agent's
-   * job.
-   */
-  it.each(splits.filter(([name]) => specOf(name).push !== undefined))("%s: checks the bundle before it pushes", (name, file) => {
-    const spec = { ...specOf(name), ...specOf(name).push! };
-    const push = (jobNamed(file, rolesOf(file).publish).steps ?? []).find((s) => s.id === "push");
-    const run = push?.run ?? "";
-    const at = (needle: string): number => {
-      expect(run, needle).toContain(needle);
-      return run.indexOf(needle);
-    };
-
-    const pushed = at(spec.pushed);
-    for (const check of [
-      'git bundle verify --quiet "$bundle"',
-      'git bundle list-heads "$bundle"',
-      `!= "refs/heads/\${${spec.branch}}"`,
-      'git bundle unbundle "$bundle"',
-      ...spec.ancestors.map((a) => `git merge-base --is-ancestor "${a}" "refs/heads/\${${spec.branch}}"`),
-    ]) {
-      expect(at(check), check).toBeLessThan(pushed);
-    }
-    // Each refusal names itself, for the failure comment.
-    expect(run.match(/block "The agent's/g)).toHaveLength(spec.blocks);
-  });
-
   /** What the bundle is checked against comes from a job no agent ran in. */
   it("checks each bundle against a job that ran no agent", () => {
-    const pushEnv = (file: string): Readonly<Record<string, string>> =>
-      (jobNamed(file, "publish").steps ?? []).find((s) => s.id === "push")?.env ?? {};
 
     // implement's are the gate's base commit and the branch's tip as the gate
     // read it, handed to `implement:publish` (#492).
@@ -9132,7 +9172,10 @@ describe("a split run keeps every write off the agent's runner", () => {
     expect(refresh?.env?.["BASE_SHA"]).toBe("${{ needs.gate.outputs.base }}");
     expect(refresh?.env?.["HEAD_SHA"]).toBe("${{ github.event.pull_request.head.sha }}");
     expect(jobNamed(path.join(WORKFLOW_DIR, "update-branch.yml"), "gate").outputs?.["base"]).toBe("${{ steps.merged.outputs.base }}");
-    expect(pushEnv(path.join(WORKFLOW_DIR, "implement-prd.yml"))["BASE_SHA"]).toBe("${{ needs.catch_up.outputs.head }}");
+    // implement-prd's is the tip the catch-up left, handed to
+    // `implement-prd:publish` (#502).
+    const marked = (jobNamed(PRD, "publish").steps ?? []).find((s) => s.id === "publish");
+    expect(marked?.env?.["BASE_SHA"]).toBe("${{ needs.catch_up.outputs.head }}");
     expect(jobNamed(path.join(WORKFLOW_DIR, "implement-prd.yml"), "catch_up").outputs?.["head"]).toBe("${{ steps.state.outputs.head }}");
     // fix's is the event's head, which the gate confirmed is the branch's,
     // handed to `fix:publish` and `fix:conclude` as `HEAD_SHA` (#468, #469).
@@ -9363,9 +9406,9 @@ describe("the loop resolves its token in the jobs that write", () => {
 
     // Review's writes are all its commands' (#417, #419, #423), each handed
     // the resolved token as `LOOP_TOKEN`, which the test above holds, and so
-    // are fix's (#468, #469), update-branch's (#484, #485) and implement's
-    // (#492).
-    if (file === REVIEW || file.endsWith("fix.yml") || file.endsWith("update-branch.yml") || file === IMPLEMENT) {
+    // are fix's (#468, #469), update-branch's (#484, #485), implement's
+    // (#492) and implement-prd's (#500, #502, #505).
+    if (file === REVIEW || file.endsWith("fix.yml") || file.endsWith("update-branch.yml") || file === IMPLEMENT || file === PRD) {
       expect(writes).toEqual([]);
       return;
     }
@@ -9863,11 +9906,11 @@ describe("every agent run keeps its session transcript, redacted, for a few days
  * Rescue and resume (#303). A fix or implement-prd run that stops before it
  * finishes keeps the commits it made on a side branch with a fixed name, the
  * failure comment names it, and the next run of the label resumes from it.
- * What is asserted here is the shape that keeps a rescue from being anything
- * else: it runs only on a stopped run the preflight claimed, before the
- * failure comment that names it, with a lease, and it opens no pull request,
- * asks for no review and moves no label. `tests/rescue-step.test.ts` executes
- * the steps themselves.
+ * Both workflows' rescues are commands now, `fix:conclude` (#469) and
+ * `implement-prd:conclude` (#505), whose tests hold when each runs, its lease
+ * and that it writes nothing else. What is asserted here is what the YAML
+ * owns: one rescue branch named in the job that resumes and the job that
+ * rescues, the hand-over, and what each command is handed.
  */
 describe("rescue and resume for fix and implement-prd", () => {
   const CASES = [
@@ -9893,13 +9936,17 @@ describe("rescue and resume for fix and implement-prd", () => {
       file: PRD,
       agent: "implement-prd",
       rescue: "agent/rescue/prd-${{ github.event.issue.number }}",
+      // `implement-prd:prepare` (#501): `tests/implement-prd/prepare.test.ts` holds the fetch.
       prepare: "Prepare the PRD branch",
-      fetchedBy: "",
+      fetchedBy: "implement-prd:prepare",
       bundle: "Bundle the branch",
-      condition:
-        "always() && needs.gate.outputs.refused == 'false' && needs.gate.outputs.build == 'true' && (cancelled() || failure() || needs.implement-prd.result == 'failure' || needs.implement-prd.result == 'cancelled') && steps.push.outputs.head == ''",
-      ignored: "rescue_ignored.md",
-      deleteIf: "needs.implement-prd.result == 'success' && success()",
+      // `implement-prd:conclude`'s (#505): `tests/implement-prd/conclude.test.ts` holds when.
+      condition: "",
+      // As data, for `implement-prd:conclude` to say (#505).
+      ignored: "rescue_ignored.json",
+      // `implement-prd:publish` deletes the rescue (#502):
+      // `tests/implement-prd/publish.test.ts` holds it.
+      deleteIf: "",
       label: "agent:implement",
     },
   ] as const;
@@ -9917,41 +9964,6 @@ describe("rescue and resume for fix and implement-prd", () => {
     expect(jobNamed(c.file, "publish").env?.["RESCUE_BRANCH"]).toBe(c.rescue);
   });
 
-  /** Where the rescue is still a shell step: fix's is `fix:conclude`'s (#469). */
-  const RESCUING = CASES.filter((c) => c.condition !== "");
-
-  it.each(RESCUING)("$agent: rescues only a stopped run the preflight claimed, before the failure comment", (c) => {
-    const steps = jobNamed(c.file, "publish").steps ?? [];
-    const at = named(steps, "Rescue the agent's commits");
-    const step = steps[at];
-
-    expect(step?.id).toBe("rescue");
-    expect(step?.if).toBe(c.condition);
-    // A rescue that cannot be made must not cost the run its failure comment.
-    expect(step?.["continue-on-error"]).toBe(true);
-    expect(at).toBeLessThan(named(steps, "Mark blocked on failure"));
-    expect(steps.find((s) => s.name === "Mark blocked on failure")?.env?.["RESCUED"]).toBe("${{ steps.rescue.outputs.branch }}");
-  });
-
-  it.each(RESCUING)("$agent: pushes the rescue with a lease, to the rescue branch alone", (c) => {
-    const run = code((jobNamed(c.file, "publish").steps ?? []).find((s) => s.id === "rescue"));
-    const pushes = run.split("\n").filter((l) => /\bgit\b.*\bpush\b/.test(l));
-
-    expect(pushes).toHaveLength(1);
-    expect(pushes[0]).toContain('push --force-with-lease="refs/heads/${RESCUE_BRANCH}:${current}" origin "${tip}:refs/heads/${RESCUE_BRANCH}"');
-    expect(run).toContain('git bundle verify --quiet "$bundle"');
-    expect(run).toContain('echo "branch=${RESCUE_BRANCH}" >> "$GITHUB_OUTPUT"');
-  });
-
-  it.each(RESCUING)("$agent: opens no pull request, asks for no review and moves no label in the rescue", (c) => {
-    const run = code((jobNamed(c.file, "publish").steps ?? []).find((s) => s.id === "rescue"));
-
-    expect(run).not.toContain("gh pr create");
-    expect(run).not.toContain("agent:review");
-    expect(run).not.toMatch(/\bgh\b/);
-    expect(run).not.toMatch(/--(add|remove)-label/);
-  });
-
   it.each(CASES)("$agent: hands a stopped run's commits over, and fetches the rescue where the runner looks", (c) => {
     const steps = jobNamed(c.file, c.agent).steps ?? [];
     const upload = steps.find((s) => s.name === "Hand the branch to the publish job");
@@ -9959,30 +9971,21 @@ describe("rescue and resume for fix and implement-prd", () => {
     expect(steps.find((s) => s.name === c.bundle)?.if).toBe("always()");
     expect(upload?.with?.["path"]).toContain(`\${{ runner.temp }}/${c.ignored}`);
     const prepare = steps[named(steps, c.prepare)];
-    if (c.fetchedBy === "") {
-      expect(code(prepare)).toContain(`"+refs/heads/\${RESCUE_BRANCH}:${rescueRef("${RESCUE_BRANCH}")}"`);
-    } else {
-      expect((prepare?.run ?? "").trim().endsWith(` agent-workflows ${c.fetchedBy}`), c.prepare).toBe(true);
-    }
+    expect(subcommandRun(prepare ?? {}), c.prepare).toBe(c.fetchedBy);
   });
 
-  const SHELL = CASES.filter((c) => c.deleteIf !== "");
+  /**
+   * Implement-prd's deletion is `implement-prd:publish`'s (#502), after its
+   * push and only where it pushed, told the rescue branch by the job.
+   */
+  it("implement-prd: hands implement-prd:publish the rescue branch, where the agent's job succeeded", () => {
+    const steps = jobNamed(PRD, "publish").steps ?? [];
+    const publish = steps.find((s) => s.id === "publish");
 
-  it.each(SHELL)("$agent: deletes the rescue branch once a run succeeds, after its push", (c) => {
-    const steps = jobNamed(c.file, "publish").steps ?? [];
-    const at = named(steps, "Delete the rescue branch");
-    const run = code(steps[at]);
-
-    expect(steps[at]?.if).toBe(c.deleteIf);
-    expect(at).toBeGreaterThan(steps.findIndex((s) => s.id === "push"));
-    expect(run).toContain('gh api --method DELETE "repos/{owner}/{repo}/git/refs/heads/${RESCUE_BRANCH}"');
-  });
-
-  it.each(SHELL)("$agent: says so where it set a rescue aside, however the run ends", (c) => {
-    const step = (jobNamed(c.file, "publish").steps ?? []).find((s) => s.name === "Say the rescue was set aside");
-
-    expect(step?.if).toBe("always()");
-    expect(code(step)).toContain('note="${RUNNER_TEMP}/rescue_ignored.md"');
+    expect(COMMANDS["implement-prd:publish"].inputs).toHaveProperty("RESCUE_BRANCH");
+    expect(jobNamed(PRD, "publish").env?.["RESCUE_BRANCH"]).toBe("agent/rescue/prd-${{ github.event.issue.number }}");
+    expect(publish?.if).toContain("(needs.gate.outputs.finishing == 'true' || needs.gate.outputs.build == 'false' || needs.implement-prd.result == 'success') && success()");
+    expect(steps.find((s) => s.name === "Delete the rescue branch")).toBeUndefined();
   });
 
   /**
@@ -10018,6 +10021,32 @@ describe("rescue and resume for fix and implement-prd", () => {
       CHECKOUT: "${{ github.workspace }}",
     });
     expect(steps.find((s) => s.name === "Rescue the agent's commits")).toBeUndefined();
+  });
+
+  /**
+   * Implement-prd's rescue and its set-aside note are
+   * `implement-prd:conclude`'s (#505), run `always()`, told the rescue
+   * branch, handed the bundle and the runner's note through their
+   * directories and the loop's token to push with, and checking the bundle
+   * in the one checkout, which runs wherever the gate claimed the run.
+   */
+  it("implement-prd: hands implement-prd:conclude the rescue branch, the bundle, the note and the loop's token, however the run ended", () => {
+    const steps = jobNamed(PRD, "publish").steps ?? [];
+    const conclude = steps.find((s) => (s.run ?? "").trim().endsWith(" agent-workflows implement-prd:conclude"));
+
+    expect(conclude?.if).toBe("always()");
+    expect(COMMANDS["implement-prd:conclude"].inputs).toHaveProperty("RESCUE_BRANCH");
+    expect(COMMANDS["implement-prd:conclude"].inputs.BUNDLE_DIR.files).toHaveProperty("branch.bundle");
+    expect(COMMANDS["implement-prd:conclude"].inputs.IMPLEMENT_PRD_DIR.files).toHaveProperty("rescue_ignored.json");
+    expect(conclude?.env).toMatchObject({
+      LOOP_TOKEN: "${{ steps.token.outputs.token }}",
+      BUNDLE_DIR: "${{ runner.temp }}/agent-implement-prd/bundle",
+      IMPLEMENT_PRD_DIR: "${{ runner.temp }}/agent-implement-prd",
+      CHECKOUT: "${{ github.workspace }}",
+    });
+    for (const gone of ["Rescue the agent's commits", "Say the rescue was set aside"]) {
+      expect(steps.map((s) => s.name)).not.toContain(gone);
+    }
   });
 });
 

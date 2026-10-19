@@ -117,7 +117,7 @@ export const gate = async (inputs: Inputs, io: Io): Promise<void> => {
     if (pr === undefined) return;
     if (approved !== undefined) await noteApproved(inputs, io.github, workflow, pr.number, approved);
     if (next !== undefined) {
-      await showSliceBuilding(io, workflow, pr.number, { position: next.position, subIssue: next.subIssue.number, total: chain.subIssues.length });
+      await showSliceBuilding(workflow, pr.number, { position: next.position, subIssue: next.subIssue.number, total: chain.subIssues.length });
     }
   } finally {
     io.outputs.writeJson("gate.json", decided);
@@ -200,7 +200,7 @@ const preflight = async (parent: number, inputs: Inputs, io: Io): Promise<Ruling
       `This PRD's sub-issue list came back with ${subIssues.length} of its ${shape.subIssues} sub-issues, so nothing was built. Add \`${IMPLEMENT_LABEL}\` again.`,
     );
   }
-  // Kept for `Open or reuse the PRD PR`, which writes its `Closes` lines from
+  // Kept for `implement-prd:publish`, which writes its `Closes` lines from
   // the same snapshot every branch below rules on, in the shape the shell
   // query it replaced gave it.
   io.outputs.writeJson("prd-issue.json", {
@@ -448,15 +448,12 @@ const noteApproved = async (inputs: Inputs, github: GitHubReader, workflow: Writ
  * the slice, is left as it stands, with a warning, and one with no list is
  * left with a line saying so.
  *
- * The list and status line it replaces are kept first, as
- * `progress_unbuilt.md` and `status_unbuilt.md`: a list that shows the slice
- * building always has one to undo it, for a run that stops before the runner
- * renders its own (publish's *Show the stopped slice in the progress list*).
+ * A run that stops after this writes the stopped slice's row back,
+ * `implement-prd:conclude`, from the PRD branch as the run left it (#325).
  * A tolerated write: the list is a view of the chain, and a slice is worth
  * more than it.
  */
 const showSliceBuilding = async (
-  io: Io,
   workflow: Writer,
   pr: number,
   slice: { readonly position: number; readonly subIssue: number; readonly total: number },
@@ -467,10 +464,7 @@ const showSliceBuilding = async (
     workflow.editPullRequest(pr, {
       body: (live) => {
         shown = showBuilding(live, slice);
-        if (shown.kind !== "write") return undefined;
-        io.outputs.writeText("progress_unbuilt.md", shown.progress);
-        if (shown.status !== undefined) io.outputs.writeText("status_unbuilt.md", shown.status);
-        return shown.body;
+        return shown.kind === "write" ? shown.body : undefined;
       },
     }),
   );

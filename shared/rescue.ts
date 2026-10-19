@@ -1,3 +1,7 @@
+import type { GitFetcher } from "../engine/git.js";
+import { GitHubError } from "../engine/github.js";
+import type { GitHubReader } from "../engine/read.js";
+import { describe } from "./command-helpers.js";
 import { git } from "./common.js";
 
 /**
@@ -12,12 +16,50 @@ import { git } from "./common.js";
 
 /**
  * Where the agent's job fetches the rescue branch to. Outside `refs/remotes/`
- * on purpose: implement-prd's `Mark the slice's commits` marks every commit
- * reachable from `HEAD` and from nothing under `--remotes`, and a rescued
- * commit is this run's to mark, since it was never pushed anywhere it counts.
+ * on purpose: a rescued commit was never pushed anywhere it counts, so it is
+ * the resuming run's, and `implement-prd:publish` marks it as that run's
+ * slice's (#502).
  * The workflows name the same ref, and a test holds them equal.
  */
 export const rescueRef = (branch: string): string => `refs/rescue/${branch}`;
+
+/**
+ * The agent's job's half (#303): the rescue branch `branch`, where an earlier
+ * stopped run left one, fetched into the checkout as `rescueRef(branch)` for
+ * the runner to resume from, as `fix:prepare` and `implement-prd:prepare`
+ * fetch it. The runner decides whether it still builds on the head; this only
+ * fetches it.
+ *
+ * **An unreadable answer stops the run**, rather than reading as "no
+ * rescue": a run that started over without the rescue, and succeeded, would
+ * delete it. So a 404 for the branch is the one answer that is "none", and any
+ * other failure to read its tip, or to fetch a rescue that is there, throws a
+ * sentence.
+ */
+export const fetchRescue = async (github: GitHubReader, fetcher: GitFetcher, branch: string): Promise<void> => {
+  try {
+    await github.branchTip(branch);
+  } catch (error) {
+    if (error instanceof GitHubError && error.status === 404) {
+      console.log(`No ${branch}, so there is nothing to resume from.`);
+      return;
+    }
+    console.log(`::warning::Could not read the tip of ${branch}. ${describe(error)}`);
+    throw new Error(
+      `Couldn't check whether an earlier run left commits on \`${branch}\`, so this run stopped rather than start over without them.`,
+      { cause: error },
+    );
+  }
+  try {
+    await fetcher.fetchRef(`refs/heads/${branch}`, rescueRef(branch));
+  } catch (error) {
+    throw new Error(
+      `Couldn't fetch \`${branch}\`, which an earlier run left, so this run stopped rather than start over without it: ${describe(error)}`,
+      { cause: error },
+    );
+  }
+  console.log(`Fetched ${branch}, which an earlier run left, for the runner to resume from.`);
+};
 
 /** What the runner did with the rescue branch, if there was one. */
 export type Resume =

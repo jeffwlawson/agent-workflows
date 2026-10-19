@@ -14,12 +14,14 @@ import {
   gitFetcher,
   gitMerger,
   gitReader,
+  gitRewriter,
   gitWrites,
   githubRemote,
   type GitFetcher,
   type GitMerger,
   type GitReader,
   type GitRepository,
+  type GitRewriter,
 } from "../engine/git.js";
 import { fetchTransport } from "../engine/github.js";
 import { githubReader, type GitHubReader } from "../engine/read.js";
@@ -94,6 +96,15 @@ export interface MergingCheckoutIo<O extends Outputs> extends CheckoutIo<O> {
   readonly merger: GitMerger;
 }
 
+/**
+ * All of `MergingCheckoutIo`, and a rewriter in the checkout, which makes
+ * commits there and moves no ref. `implement-prd:publish` marks the slice's
+ * commits with it before it pushes them.
+ */
+export interface RewritingCheckoutIo<O extends Outputs> extends MergingCheckoutIo<O> {
+  readonly rewriter: GitRewriter;
+}
+
 /** The real ones, for `repo` with the workflow's token. */
 export const liveReadingIo = <O extends Outputs>(
   tokens: { readonly GH_REPO: string; readonly GH_TOKEN: string },
@@ -115,7 +126,7 @@ export const liveFetchingIo = <O extends Outputs>(
  * handed to `appendLine` as it is made. Each token's backend makes its GitHub
  * writes over the API and its git writes in `checkout`, the repository the
  * command runs in, pushing to the repository's remote on GitHub, and its git
- * reader reads the same checkout. Its fetcher and merger work in the same
+ * reader reads the same checkout. Its fetcher, merger and rewriter work in the same
  * checkout and fetch with the workflow's token; a command that asks them for
  * nothing spawns nothing. `end` writes the log's last line, how
  * the command ended, and writes nothing where the command never asked for its
@@ -127,7 +138,7 @@ export const liveCommandIo = <O extends Outputs>(
   outputs: OutputWriters<O>,
   appendLine: (line: string) => void,
   checkout: GitRepository,
-): { readonly io: MergingCheckoutIo<O>; readonly end: (error?: unknown) => void } => {
+): { readonly io: RewritingCheckoutIo<O>; readonly end: (error?: unknown) => void } => {
   let log: WriteLog | undefined;
   const workflow = fetchTransport(tokens.GH_TOKEN);
   const remote = { ...checkout, remote: githubRemote(tokens.GH_REPO) };
@@ -155,6 +166,7 @@ export const liveCommandIo = <O extends Outputs>(
       git: gitReader(checkout),
       fetcher,
       merger: gitMerger(checkout, fetcher),
+      rewriter: gitRewriter(checkout),
       outputs,
     },
     end: (error) => {

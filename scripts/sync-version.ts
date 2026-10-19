@@ -14,8 +14,9 @@ import { ACTION_DIR, assertPinnable, escapeRe, rewritePins, WORKFLOW_DIR } from 
  * package (review's runner and each of its commands, #417), one
  * `npm install … @<version>` per step that installs it ahead of them (the red
  * check's, #422, fix's agent job's, #472, whose binary fix's runner runs
- * by path and so pins, and update-branch's gate job's, #481, and agent
- * job's, #482, whose binary its runner runs by path), and one `…yml@v<version>` per
+ * by path and so pins, update-branch's gate job's, #481, and agent
+ * job's, #482, implement's agent job's, #491, and implement-prd's agent
+ * job's, #501, whose binary each runner runs by path), and one `…yml@v<version>` per
  * caller in each of the two caller sets, whose callers sit two caller files to
  * a set (#225). `v0.1.4` and `v0.1.5` were both cut by editing
  * them by hand and folding the result into the version commit.

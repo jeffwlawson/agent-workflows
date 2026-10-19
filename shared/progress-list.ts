@@ -174,12 +174,12 @@ const finalRow = (state: FinalReviewState, inputs: Pick<ProgressInputs, "prUrl" 
 /**
  * The lines the finishing run adds when it requests the final review: the
  * final review's row, in review with no round yet, and the mark. Exactly what
- * `renderProgressList` renders for that state below the slices, so the
- * finishing run, which runs no toolchain, writes them in front of the end
- * marker of the list the last slice's round left, and the result is the
- * render. A test holds the workflow's copy equal to this.
+ * `renderProgressList` renders for that state below the slices, so
+ * `implement-prd:publish`, which reads no rounds on that run, writes them in
+ * front of the end marker of the list the last slice's round left, and the
+ * result is the render. No `prUrl` links no diff, as the table does.
  */
-export const finalReviewRequestedLines = (prUrl: string): string =>
+export const finalReviewRequestedLines = (prUrl: string | undefined): string =>
   `${finalRow("in review", { prUrl, rounds: { slices: {}, final: { reviews: 0, fixes: 0 }, all: { reviews: 0, fixes: 0 } } })}\n${FINAL_REVIEW_MARK}\n`;
 
 /** A slice's row up to its status cell: its position from 1 and its sub-issue, which name the row. */
@@ -275,15 +275,12 @@ const buildingStatus = (slice: BuildingSlice): string =>
  * `half` for half a list, or two, and `no row` for a list with no row, or two,
  * for the slice: each is left alone, since which text is the loop's is not a
  * guess to make. `none` for a body with no list. Otherwise `write`, with the
- * new body and the blocks it replaced, the status line's only where the body
- * carries exactly one.
+ * new body, its status line rewritten only where it carries exactly one.
  */
 export const showBuilding = (
   body: string,
   slice: BuildingSlice,
-):
-  | { readonly kind: "half" | "none" | "no row" }
-  | { readonly kind: "write"; readonly body: string; readonly progress: string; readonly status?: string } => {
+): { readonly kind: "half" | "none" | "no row" } | { readonly kind: "write"; readonly body: string } => {
   const list = blockIn(body, PROGRESS_START, PROGRESS_END);
   if (list === undefined) return { kind: "half" };
   if (list === null) return { kind: "none" };
@@ -292,9 +289,8 @@ export const showBuilding = (
   if (lines.filter((line) => line.startsWith(prefix)).length !== 1) return { kind: "no row" };
   const row = `${prefix} ${statusCell("building", undefined)} | ${UNKNOWN} | ${UNKNOWN} | ${UNKNOWN} |`;
   const progressed = spliceProgressList(body, lines.map((line) => (line.startsWith(prefix) ? row : line)).join("\n")) ?? body;
-  const status = blockIn(progressed, STATUS_START, STATUS_END);
-  if (typeof status !== "string") return { kind: "write", body: progressed, progress: list };
-  return { kind: "write", body: spliceStatus(progressed, statusBlock(buildingStatus(slice))) ?? progressed, progress: list, status };
+  if (typeof blockIn(progressed, STATUS_START, STATUS_END) !== "string") return { kind: "write", body: progressed };
+  return { kind: "write", body: spliceStatus(progressed, statusBlock(buildingStatus(slice))) ?? progressed };
 };
 
 /**

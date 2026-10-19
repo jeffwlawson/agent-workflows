@@ -180,6 +180,11 @@ export interface GitReader {
    * whether a commit builds on another. Both have to be in the repository.
    */
   isAncestor(ancestor: string, commit: string): Promise<boolean>;
+  /**
+   * Every path under `under` that `to` changes from `from`, in git's order:
+   * which files a commit touches there. Both have to be in the repository.
+   */
+  changedPaths(from: string, to: string, under: string): Promise<readonly string[]>;
 }
 
 /** The reader over `repository`. */
@@ -203,6 +208,8 @@ export const gitReader = (repository: GitRepository): GitReader => {
         throw new GitError(lastLine(outputOf(error, "stderr")) || (error instanceof Error ? error.message : String(error)));
       }
     },
+    changedPaths: async (from, to, under) =>
+      (await git(["diff", "--name-only", "-z", from, to, "--", under])).split("\0").filter((p) => p !== ""),
     verifyBundle: async (path) => {
       await git(["bundle", "verify", "--quiet", path]);
       const listed = await git(["bundle", "unbundle", path]);
@@ -263,12 +270,21 @@ export interface GitMerger {
    * base's name, so the merge and its message are the earlier one's. A base
    * that no longer contains it throws `BaseMoved`, before anything is
    * checked out.
+   *
+   * With `from`, the branch `into` is made at that commit, or ref, rather
+   * than at the one checked out: resolved after the fetch, so the base's
+   * remote-tracking name is the base as fetched. With `message`, a merge
+   * commit is made with that message, and always made, never a fast-forward,
+   * so a mark the message carries is never lost; without it, git writes its
+   * own.
    */
   merge(options: {
     readonly base: string;
     readonly into: string;
     readonly identity: GitIdentity;
     readonly commit?: string;
+    readonly from?: string;
+    readonly message?: string;
   }): Promise<Merged>;
 }
 
@@ -305,7 +321,7 @@ export const gitMerger = (repository: GitRepository, fetcher: GitFetcher): GitMe
     }
   };
   return {
-    merge: async ({ base, into, identity, commit: earlier }) => {
+    merge: async ({ base, into, identity, commit: earlier, from, message }) => {
       const tracking = `refs/remotes/origin/${base}`;
       let commit: string;
       try {
@@ -322,7 +338,7 @@ export const gitMerger = (repository: GitRepository, fetcher: GitFetcher): GitMe
       }
       await git(["config", "user.name", identity.name]);
       await git(["config", "user.email", identity.email]);
-      await git(["checkout", "--quiet", "-B", into]);
+      await git(["checkout", "--quiet", "-B", into, ...(from === undefined ? [] : [from])]);
       try {
         await run("git", ["merge-base", "--is-ancestor", commit, "HEAD"], { cwd: repository.dir, env, encoding: "utf8" });
         return { status: "uptodate", base: commit };
@@ -335,7 +351,8 @@ export const gitMerger = (repository: GitRepository, fetcher: GitFetcher): GitMe
       try {
         // By its remote-tracking name, so the message is the one a person's
         // `git merge origin/<base>` makes.
-        await run("git", ["merge", "--no-edit", "--no-verify", `origin/${base}`], { cwd: repository.dir, env, encoding: "utf8" });
+        const own = message === undefined ? [] : ["--no-ff", "-m", message];
+        await run("git", ["merge", "--no-edit", "--no-verify", ...own, `origin/${base}`], { cwd: repository.dir, env, encoding: "utf8" });
       } catch (error) {
         const conflicts = (await git(["diff", "--name-only", "-z", "--diff-filter=U"])).split("\0").filter((p) => p !== "");
         if (conflicts.length > 0) return { status: "conflicts", base: commit, conflicts };

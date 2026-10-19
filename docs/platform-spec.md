@@ -59,7 +59,7 @@ cannot check is one only an orchestrator's author will catch.
   `review`, `fix` and `update-branch`. It reads its inputs from the environment, starts the agent,
   and writes files and commits. It is not the agent.
 - **Command.** A subcommand that does an orchestrator's work on the record and starts no agent,
-  named `<workflow>:<step>`: `fix:gate`, `fix:prepare`, `fix:bundle`, `fix:publish`, `fix:conclude`, `follow-ups:file`, `implement:gate`, `implement:prepare`, `implement:bundle`, `implement:publish`, `implement:conclude`, `implement-prd:gate`, `review:gate`, `review:budget`,
+  named `<workflow>:<step>`: `fix:gate`, `fix:prepare`, `fix:bundle`, `fix:publish`, `fix:conclude`, `follow-ups:file`, `implement:gate`, `implement:prepare`, `implement:bundle`, `implement:publish`, `implement:conclude`, `implement-prd:gate`, `implement-prd:catch-up`, `review:gate`, `review:budget`,
   `review:collect-checks`, `review:red-check-place`, `review:red-check-classify`, `review:publish`,
   `review:conclude`, `review:advance`, `update-branch:gate`, `update-branch:merge`,
   `update-branch:prepare`, `update-branch:bundle`, `update-branch:publish` and
@@ -139,7 +139,7 @@ The inputs every runner reads, set once for any of them:
 |---|---|---|---|
 | `OUTPUT_DIR` | required | | The directory the runner writes its files into (§2.3). |
 | `GH_REPO` | required | | The repository, `owner/name`. Required rather than left to whatever `gh` infers. |
-| `GH_TOKEN` | required | | The token `gh` reads. The runners only read with it, `fix:prepare` reads and fetches the rescue branch with it, and `update-branch:merge`, `update-branch:prepare` and `update-branch:publish` fetch the base branch with it; `follow-ups:file` files issues with it, `implement:gate` makes its refusals, its start comment and its label transitions with it, `implement:publish` the link on the issue with it, `implement:conclude` its failure comment, `agent:implement` off and `agent:blocked` on, `implement-prd:gate` its refusals, its start comments, its label transitions, the approved slice's note and the PRD PR's building row, and `review:publish` posts the review, the summary and the verdict with it, `review:conclude` its comments, its error verdict and the labels nothing fires on, `review:advance` a PRD PR's progress list and its notes there, `fix:gate` its refusals and its label transitions, `fix:publish` its thread replies, its comments and notes, and the rescue branch's deletion, `fix:conclude` its failure comment, the rescue-set-aside note where `fix:publish` did not post it, and `agent:fix` off and `agent:blocked` on, `update-branch:gate` its refusal and its label transitions, `update-branch:publish` the verdict it carries over, its comment, and the comment that no review will start, and `update-branch:conclude` its failure comment, `agent:update-branch` off and `agent:blocked` on, and the comment that no refresh of a moved head will start. |
+| `GH_TOKEN` | required | | The token `gh` reads. The runners only read with it, `fix:prepare` reads and fetches the rescue branch with it, and `update-branch:merge`, `update-branch:prepare` and `update-branch:publish` fetch the base branch with it; `follow-ups:file` files issues with it, `implement:gate` makes its refusals, its start comment and its label transitions with it, `implement:publish` the link on the issue with it, `implement:conclude` its failure comment, `agent:implement` off and `agent:blocked` on, `implement-prd:gate` its refusals, its start comments, its label transitions, the approved slice's note and the PRD PR's building row, `implement-prd:catch-up` fetches the PRD branch and the base branch with it and parks the chain with it, and `review:publish` posts the review, the summary and the verdict with it, `review:conclude` its comments, its error verdict and the labels nothing fires on, `review:advance` a PRD PR's progress list and its notes there, `fix:gate` its refusals and its label transitions, `fix:publish` its thread replies, its comments and notes, and the rescue branch's deletion, `fix:conclude` its failure comment, the rescue-set-aside note where `fix:publish` did not post it, and `agent:fix` off and `agent:blocked` on, `update-branch:gate` its refusal and its label transitions, `update-branch:publish` the verdict it carries over, its comment, and the comment that no review will start, and `update-branch:conclude` its failure comment, `agent:update-branch` off and `agent:blocked` on, and the comment that no refresh of a moved head will start. |
 
 A command that runs where no token is held, as the red check's two do beside the pull request's own
 code, `fix:bundle`, `update-branch:bundle` and `implement:bundle` do after the agent and
@@ -466,7 +466,7 @@ only a status whose creator is the loop's identity (§4.1).
 | Trailer | What it records | Written by | Read by |
 |---|---|---|---|
 | `Agent-Slice: #<sub>` | The commit is part of slice `<sub>`'s build. Which slice is next, and which commits a slice round reviews, are read from these and nothing else. The key is read in any case, on a line of its own. | the orchestrator, on every commit a build run makes, before the push | `implement-prd`, `review`, `fix`; `implement-prd:gate`, over the commits the PRD branch has and the base lacks, as `SLICE_TRAILER_LINE` in `shared/record.ts` matches it, for which slice is next |
-| `Agent-Catch-Up: #<sub>` | The commit is the orchestrator's merge of the default branch, made before slice `<sub>`. | the orchestrator | the same three, to keep that merge out of any slice |
+| `Agent-Catch-Up: #<sub>` | The commit is the orchestrator's merge of the default branch, made before slice `<sub>`. | `implement-prd:catch-up`, as `catchUpMessage` in `shared/record.ts` spells the merge's message | the same three, to keep that merge out of any slice |
 
 **Branch names and refs.**
 
@@ -962,6 +962,10 @@ earlier run of this PRD left commits on `RESCUE_BRANCH`, that branch fetched to
 > out, which defers to `implement`, refuses the run on the parent, or claims it and decides what it
 > does; a glue step copies its decision and facts into the job's outputs, which every later job
 > reads, and the job's last step starts the agent's clock.
+> On a build, a catch-up job mints the loop's token, checks the default branch out and runs
+> `implement-prd:catch-up`, which merges the default branch into the PRD branch and pushes it, or
+> parks the chain on a conflict; a glue step copies its `catch-up.json` into the job's `parked`,
+> `merged` and `head`, and the agent's job runs only where it did not park.
 > A publish job adds the `Agent-Slice` trailer to the slice's commits,
 > pushes the PRD branch, opens the PRD PR as a draft the first time or reuses it, writes the
 > progress list and status line into its body, and adds `agent:review`. A run that fails has its
@@ -1083,6 +1087,71 @@ them has to start a run. A refusal or a deferral is a decision, and the command 
 > and `status_unbuilt.md` for the publish job, whose *Show the stopped slice* writes the two lists
 > back where the run stops before the runner renders its own. The job
 > fails where the command does, so a failed probe never starts the catch-up or the agent's job.
+
+### `implement-prd:catch-up`
+
+Brings the PRD branch up to date with the default branch before a slice is built, so a change made
+there mid-chain reaches the next slice's round with no hand steps. It runs no model, and runs in a
+checkout of the repository. In order:
+
+- **Prepare.** Where `PRD_TIP` is set, the PRD branch is fetched with `GH_TOKEN` and checked out at
+  its tip. Where it is empty, the gate found no PRD branch, and it is made at `BASE_REF` as fetched:
+  nothing is merged and nothing is pushed, since a PRD branch is pushed with its first slice. A
+  fetch that fails fails the command, naming why.
+- **The merge.** `BASE_REF`, fetched with `GH_TOKEN`, merged into the PRD branch as the loop's
+  committer, always as a merge commit, never a rebase or a fast-forward, with the message
+  `Merge <BASE_REF> into <PRD_BRANCH>`, a blank line and `Agent-Catch-Up: #<SUB>` (§4.3). A branch
+  already holding the base merges nothing and pushes nothing. A merge that stops on no conflict
+  fails the command with git's reason.
+- **The park**, on a conflict: nothing is built or pushed, and `catch-up.json` says `parked`
+  first. Then the comment on `ISSUE_NUMBER`, `` **`agent:implement` didn't run:** `` and a sentence
+  naming the conflicted files and the slice it parked before, with the way on: `agent:update-branch`
+  on `PRD_PR` where it is set, otherwise a merge by hand; then `agent:implement` off. No
+  `agent:blocked`: the chain moves on by itself once the conflict is resolved. Each is tolerated,
+  and the command succeeds.
+- **The push** of the merge to `refs/heads/<PRD_BRANCH>` with `LOOP_TOKEN`, leased on `PRD_TIP`,
+  so a push someone made to the PRD branch during the run is refused rather than overwritten, and
+  the command fails saying the branch moved. A push refused otherwise fails it too, and where the
+  merge changes a file under `.github/workflows`, names it and the token's missing Workflows:
+  write, since a retry fails the same way.
+
+#### Inputs
+
+| Input | Kind | Default | What it is |
+|---|---|---|---|
+| `LOOP_TOKEN` | required | | The token whose writes start the loop's next workflow: the push. |
+| `LOOP_TOKEN_SOURCE` | required | | Where `LOOP_TOKEN` came from: `app`, `pat` or `workflow`. |
+| `ISSUE_NUMBER` | required | | The PRD parent, which a park comments on. |
+| `BASE_REF` | required | | The default branch, merged into the PRD branch. |
+| `PRD_BRANCH` | required | | The PRD branch: `implement-prd:gate`'s `prdBranch`. |
+| `PRD_TIP` | optional | `""` | `implement-prd:gate`'s `prdTip`, which the push is leased on. Empty is a PRD branch that does not exist yet. |
+| `PRD_PR` | optional | `""` | The PRD PR, where one is open, which a park names. |
+| `SUB` | required | | The sub-issue this run builds, named in the merge's trailer and in a park. |
+| `CHECKOUT` | required | | A checkout of the repository, the merge is made and pushed in. |
+
+#### Outputs
+
+| Output | When it is written |
+|---|---|
+| `catch-up.json` | Where it did not fail: `parked`, whether the chain parked; `merged`, the merge commit, where it pushed one; and `head`, the PRD branch's tip as it left it, where it did not park. On a park it is written before the comment. |
+| `write_log.jsonl` | Every write as it lands, one JSON line each, and a last line for how the command ended, as `review:conclude`'s. Not written where it wrote nothing. |
+
+**`doctor` cannot check this.** These tables are the command's, for the reason §6 gives.
+
+#### What it reads from the record
+
+- Nothing GitHub's API answers: the PRD branch and `BASE_REF`, fetched.
+
+**`doctor` cannot check this.** The record is written by the orchestrator's posting code, for the reason §4.3 gives.
+
+> **Actions orchestrator:** the catch-up job runs on a build, where the gate claimed the run. It
+> mints the loop's token, checks the default branch out with no credential left in it, and sets up
+> Node; `implement-prd:catch-up` runs from `RUNNER_TEMP`, working in the checkout, handed the
+> workflow token as `GH_TOKEN` and the loop's. `PRD_BRANCH`, `PRD_TIP`, `PRD_PR` and `SUB` are the
+> gate job's outputs. A glue step copies `catch-up.json` into the job's `parked`, `merged` and
+> `head`: the agent's job runs only where `parked` is not `true`, the runner reads `merged` as
+> `MERGED`, and the agent's and publish jobs read `head` as `BASE_SHA`. Where the command fails, the
+> job uploads its `failure_reason.txt` for the publish job to report.
 
 ## 8. `review`
 

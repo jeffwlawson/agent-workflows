@@ -411,15 +411,21 @@ jobs:
       contents: write
       # The parked chain's comment and its label removal.
       issues: write
+      # Installing the package `implement-prd:catch-up` runs from, by `npm
+      # exec`. GitHub Packages has no anonymous install, and both caller sets
+      # already grant it.
+      packages: read
     outputs:
-      parked: ${{ steps.catch_up.outputs.parked }}
-      merged: ${{ steps.catch_up.outputs.merged }}
-      head: ${{ steps.tip.outputs.sha }}
+      parked: ${{ steps.state.outputs.parked }}
+      merged: ${{ steps.state.outputs.merged }}
+      head: ${{ steps.state.outputs.head }}
 
+    # **No job-level `GH_TOKEN`.** A token is handed to the step that reads
+    # and writes with it and to no other, so the checkout, the Node setup, the
+    # glue and the upload hold none.
     env:
       ISSUE_NUMBER: ${{ github.event.issue.number }}
       BASE_REF: ${{ inputs.default-branch }}
-      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       GH_REPO: ${{ github.repository }}
 
     steps:
@@ -441,161 +447,77 @@ jobs:
         with:
           ref: ${{ inputs.default-branch }}
           fetch-depth: 0
-          # No credential is left in the checkout. Each fetch and push below
-          # passes its own token on the command line instead.
+          # No credential is left in the checkout. The command's fetches and
+          # its push each pass their own token instead.
           persist-credentials: false
 
-      # Every slice is built **on the PRD branch itself**, at its tip, so slice
-      # N is written on top of slices 1..N-1. The branch the preflight found is
-      # reused; with none, it is cut from the base branch here and pushed with
-      # the first slice.
-      - name: Prepare the PRD branch
-        id: prepare
-        env:
-          PRD_BRANCH: ${{ needs.gate.outputs.prd_branch }}
-          EXISTS: ${{ needs.gate.outputs.prd_branch_exists }}
-          SUB: ${{ needs.gate.outputs.sub }}
-        run: |
-          set -euo pipefail
-          git config user.name "sandcastle-agent[bot]"
-          git config user.email "sandcastle-agent[bot]@users.noreply.github.com"
+      # The Node the command runs on, and the registry it installs from. A
+      # version rather than a version file, since nothing of the adopter's
+      # runs here: the one the package's `engines.node` names, which
+      # `tests/workflows.test.ts` holds it to.
+      - name: Set up Node for the package
+        uses: actions/setup-node@v7
+        with:
+          node-version: "24"
+          registry-url: https://npm.pkg.github.com
+          scope: "@jeffwlawson"
+          package-manager-cache: false
 
-          if [ "$EXISTS" = "true" ]; then
-            # The checkout persists no credential, so the fetch carries the
-            # job's read token itself, as each push carries its own.
-            auth=$(printf 'x-access-token:%s' "$GH_TOKEN" | base64 | tr -d '\n')
-            echo "::add-mask::${auth}"
-            git -c "http.extraHeader=AUTHORIZATION: basic ${auth}" fetch origin "+refs/heads/${PRD_BRANCH}:refs/remotes/origin/${PRD_BRANCH}"
-            git checkout -B "$PRD_BRANCH" "refs/remotes/origin/${PRD_BRANCH}"
-            echo "Building sub-issue #${SUB} on $PRD_BRANCH at $(git rev-parse --short HEAD)."
-          else
-            git checkout -b "$PRD_BRANCH"
-            echo "Created $PRD_BRANCH from ${BASE_REF}; building sub-issue #${SUB} on it, and it is pushed with this slice."
-          fi
-
-      # **Keeping up with the default branch** (#245). Before a slice is built,
-      # the default branch is merged into the PRD branch wherever it has moved
-      # since the two last met, so a change made there mid-chain, CI's own
-      # workflow included, reaches the next slice's round with no hand steps
-      # (#211). GitHub runs no `pull_request` CI on a PR with conflicts, so a
-      # conflict found here, a slice at a time, is one found before it can
-      # strand every later slice on 🔵.
+      # **Keeping up with the default branch** (#245), as one command (#500):
+      # the PRD branch the gate found fetched and checked out, or made at the
+      # base where there is none; the default branch merged in where it has
+      # moved, with the `Agent-Catch-Up` trailer that keeps the merge out of
+      # every slice range; and the merge pushed, leased on the tip the gate
+      # read, before any agent runs. A conflict parks the chain with a
+      # refusal naming `agent:update-branch` on the PRD PR, and is not a
+      # failure: every job after this one stands down on `parked`.
+      # `implement-prd/catch-up.ts` says why each is as it is.
       #
-      # A **merge**, never a rebase, and the push is plain, never forced:
-      # verdicts are commit statuses and review threads are pinned to commits,
-      # so rewriting the PRD branch orphans both.
-      #
-      # A clean merge is pushed **here, before the runner starts**. It is then
-      # on the remote, so `Mark the slice's commits` gives it no `Agent-Slice`
-      # trailer, and it carries `Agent-Catch-Up` instead: it lands before the
-      # slice's first trailered commit, outside every slice range
-      # (`shared/slice-ranges.ts`), so no slice round reviews it.
-      #
-      # The checkout persists no credential, so the fetch carries the job's
-      # read token and the push the loop's token, each as a masked header on
-      # its own command. In a job of its own, before the agent's and
-      # on another runner, which is why the push token is in its env at all;
-      # nothing it does is written into the checkout.
-      #
-      # A conflict is aborted, builds nothing and pushes nothing, and parks the
-      # chain with a refusal naming `agent:update-branch` on the PRD PR, whose
-      # agent resolves it and asks for a re-review: a round of the slice
-      # already built, whose approval moves the chain on as any other. Not a
-      # failure, so it exits 0, and every job after this one stands down on
-      # `parked`.
-      - name: Merge the default branch into the PRD branch
+      # Given both tokens: `GH_TOKEN`, the workflow's, which it fetches with
+      # and parks with, and the loop's, which it pushes with, since a merge may
+      # touch a workflow file and a push made with the workflow token starts
+      # CI that waits for a maintainer's approval. In a job of its own, before
+      # the agent's and on another runner, which is why the push token is here
+      # at all; nothing it does is written into the checkout. From
+      # `RUNNER_TEMP`, so no `.npmrc` of the checkout is read, and working in
+      # the checkout.
+      - name: Catch the PRD branch up
         id: catch_up
+        working-directory: ${{ runner.temp }}
         env:
+          NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          LOOP_TOKEN: ${{ steps.token.outputs.token }}
+          LOOP_TOKEN_SOURCE: ${{ steps.token.outputs.source }}
           PRD_BRANCH: ${{ needs.gate.outputs.prd_branch }}
-          EXISTS: ${{ needs.gate.outputs.prd_branch_exists }}
+          PRD_TIP: ${{ needs.gate.outputs.prd_tip }}
           PRD_PR: ${{ needs.gate.outputs.prd_pr }}
           SUB: ${{ needs.gate.outputs.sub }}
-          PUSH_TOKEN: ${{ steps.token.outputs.token }}
+          CHECKOUT: ${{ github.workspace }}
+          OUTPUT_DIR: ${{ runner.temp }}
+        run: npm exec --prefix "$RUNNER_TEMP" --yes --package=@jeffwlawson/agent-workflows@0.8.8 -- agent-workflows implement-prd:catch-up
+
+      # Glue only Actions can do (ADR 0003): what the catch-up came to, copied
+      # into step outputs under the names the later jobs have always read.
+      # `head` is the PRD branch's tip as this job left it, which the agent
+      # builds on and `publish` checks the agent's commits against: read here,
+      # in a job no agent ran in, and never from the agent's job. Nothing
+      # where the command wrote no `catch-up.json`, which it does only where it
+      # failed.
+      - name: Hand the catch-up's result to the job
+        id: state
         run: |
-          set -euo pipefail
+          file="${RUNNER_TEMP}/catch-up.json"
+          [ -f "$file" ] || { echo "implement-prd:catch-up wrote no catch-up.json."; exit 0; }
+          jq -r '
+            def out($name; $value): if $value == null then empty else "\($name)=\($value)" end;
+            out("parked"; .parked),
+            out("merged"; .merged),
+            out("head"; .head)
+          ' "$file" >> "$GITHUB_OUTPUT"
 
-          block() {
-            printf '%s\n' "$1" > "${RUNNER_TEMP}/failure_reason.txt"
-            echo "::error::$1"
-            exit 1
-          }
-
-          # A PRD branch this run just cut from the default branch is the
-          # default branch, and is pushed with its first slice: pushing it
-          # here, with a merge on it and no slice, would publish a PRD branch
-          # nothing was built on.
-          if [ "$EXISTS" != "true" ]; then
-            echo "\`${PRD_BRANCH}\` was cut from \`${BASE_REF}\` by this run; nothing to merge."
-            exit 0
-          fi
-
-          auth=$(printf 'x-access-token:%s' "$GH_TOKEN" | base64 | tr -d '\n')
-          echo "::add-mask::${auth}"
-          git -c "http.extraHeader=AUTHORIZATION: basic ${auth}" fetch origin "+refs/heads/${BASE_REF}:refs/remotes/origin/${BASE_REF}" \
-            || block "Couldn't fetch \`${BASE_REF}\` to bring the PRD branch up to date with it, so nothing was built."
-          if git merge-base --is-ancestor "refs/remotes/origin/${BASE_REF}" HEAD; then
-            echo "\`${PRD_BRANCH}\` already has everything on \`${BASE_REF}\`; nothing to merge."
-            exit 0
-          fi
-
-          # The `Agent-Catch-Up` trailer (`CATCH_UP_TRAILER` in
-          # `shared/slice-ranges.ts`, held equal by a test) is what keeps this
-          # merge out of every slice range: `update-branch`'s conflict
-          # resolution is a merge of the same shape, and belongs to its slice.
-          message=$(printf 'Merge %s into %s\n\nAgent-Catch-Up: #%s' "$BASE_REF" "$PRD_BRANCH" "$SUB")
-          if ! git merge --no-ff --no-edit -m "$message" "refs/remotes/origin/${BASE_REF}"; then
-            conflicts=$(git diff --name-only --diff-filter=U | sed 's/.*/`&`/' | paste -sd ',' - | sed 's/,/, /g')
-            git merge --abort || true
-            # A merge that stopped on no conflict is git refusing for some
-            # other reason, which is a failure, not this refusal.
-            if [ -z "$conflicts" ]; then
-              block "Couldn't merge \`${BASE_REF}\` into \`${PRD_BRANCH}\`, and not because of a conflict, so nothing was built. Git's reply is in the workflow run's log."
-            fi
-            if [ -n "$PRD_PR" ]; then
-              way="Add \`agent:update-branch\` to PRD PR #${PRD_PR} to merge it there and resolve the conflict. The chain moves on once a review of the resolution recommends approval."
-            else
-              way="Merge \`${BASE_REF}\` into \`${PRD_BRANCH}\` and resolve the conflict by hand, then add \`agent:implement\` again."
-            fi
-            # A refusal's order, as in the preflight: the comment first, then
-            # this run's own label off. No `agent:blocked`: the way on is a
-            # label on the PRD PR, and the chain moves on by itself after it.
-            echo "parked=true" >> "$GITHUB_OUTPUT"
-            gh issue comment "$ISSUE_NUMBER" --body "**\`agent:implement\` didn't run:** The default branch \`${BASE_REF}\` has changed since the PRD branch last took it in, and merging it into \`${PRD_BRANCH}\` conflicts in ${conflicts}. The chain parked before sub-issue #${SUB}, and nothing was built or pushed. ${way}" \
-              || echo "::warning::Could not post the conflict comment on #${ISSUE_NUMBER}."
-            gh issue edit "$ISSUE_NUMBER" --remove-label "agent:implement" || true
-            exit 0
-          fi
-
-          # A merge that brings in a change to a workflow file is a push
-          # GitHub rejects from a token without Workflows: write, the
-          # `GITHUB_TOKEN` fallback included, and a retry fails the same way.
-          # So that cause is named wherever the merge carries one: telling the
-          # human only to retry is a loop that cannot end.
-          push_auth=$(printf 'x-access-token:%s' "$PUSH_TOKEN" | base64 | tr -d '\n')
-          echo "::add-mask::${push_auth}"
-          if ! git -c "http.extraHeader=AUTHORIZATION: basic ${push_auth}" push origin "$PRD_BRANCH"; then
-            workflows=$(git diff --name-only HEAD^1 HEAD -- .github/workflows | sed 's/.*/`&`/' | paste -sd ',' - | sed 's/,/, /g')
-            if [ -n "$workflows" ]; then
-              block "Couldn't push the merge of \`${BASE_REF}\` into \`${PRD_BRANCH}\`, so nothing was built. The merge changes ${workflows}, and GitHub refuses a push that changes a workflow file from a token without Workflows: write, so trying again fails the same way until the loop pushes with a token that has Workflows: write: the loop's App, or \`AGENT_PAT\`. If it does, something else may have moved the PRD branch; trying again merges on top of it."
-            fi
-            block "Couldn't push the merge of \`${BASE_REF}\` into \`${PRD_BRANCH}\`, so nothing was built. Something else may have moved the PRD branch; trying again merges on top of it."
-          fi
-          # The remote-tracking ref is what `Mark the slice's commits` reads
-          # "already published" off, so it is moved to the merge explicitly
-          # rather than trusted to the push's refspec.
-          git update-ref "refs/remotes/origin/${PRD_BRANCH}" HEAD
-          echo "merged=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
-          echo "Merged \`${BASE_REF}\` into \`${PRD_BRANCH}\` at $(git rev-parse --short HEAD), before building sub-issue #${SUB}."
-
-      # The PRD branch's tip as this job left it, which the agent builds on and
-      # `publish` checks the agent's commits against. Read here, in a job no
-      # agent ran in, and never from the agent's job.
-      - name: Record the PRD branch's tip
-        id: tip
-        if: steps.catch_up.outputs.parked != 'true'
-        run: echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
-
-      # The reason file a `block` above writes, for `publish` to report.
+      # The reason file the command writes where it fails, for `publish` to
+      # report.
       - name: Hand the reason on
         if: failure()
         uses: actions/upload-artifact@v7

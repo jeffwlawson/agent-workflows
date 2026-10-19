@@ -371,6 +371,11 @@ export const SUBCOMMANDS: Readonly<Record<string, Subcommand>> = {
     async () => (await import("./implement-prd/gate.js")).gate,
     "Refuse or defer an implement-prd run on a PRD parent, or claim it and decide its slice (no model).",
   ),
+  "implement-prd:catch-up": writingCommand(
+    "implement-prd:catch-up",
+    async () => (await import("./implement-prd/catch-up.js")).catchUp,
+    "Merge the default branch into a PRD branch before a slice is built, and push it, or park the chain on a conflict (no model).",
+  ),
   "implement:prepare": command(
     "implement:prepare",
     async () => (await import("./implement/prepare.js")).prepare,

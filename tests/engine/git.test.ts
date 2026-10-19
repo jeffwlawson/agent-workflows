@@ -344,6 +344,26 @@ describe("isAncestor", () => {
   });
 });
 
+describe("changedPaths", () => {
+  it("names each path under the directory handed in that one commit changes from another, and nothing outside it", async () => {
+    git(work, "checkout", "--quiet", "--detach", base);
+    fs.mkdirSync(path.join(work, ".github", "workflows"), { recursive: true });
+    fs.writeFileSync(path.join(work, ".github", "workflows", "ci.yml"), "on: push\n");
+    fs.writeFileSync(path.join(work, "notes.md"), "notes\n");
+    git(work, "add", ".");
+    git(work, "commit", "--quiet", "-m", "both");
+    const changed = git(work, "rev-parse", "HEAD");
+    const reader = gitReader({ dir: work, env });
+
+    expect(await reader.changedPaths(base, changed, ".github/workflows")).toEqual([".github/workflows/ci.yml"]);
+    expect(await reader.changedPaths(base, base, ".github/workflows")).toEqual([]);
+  });
+
+  it("throws where the repository does not hold a commit, rather than reading it as no change", async () => {
+    await expect(gitReader({ dir: work, env }).changedPaths("f".repeat(40), next, ".github/workflows")).rejects.toBeInstanceOf(GitError);
+  });
+});
+
 /**
  * The merge of a base branch into a pull request's (#481), against a real
  * origin and a clone of it checked out at the pull request's head, as a
@@ -442,6 +462,49 @@ describe("merge", { timeout: 20 * SUBPROCESS_TIMEOUT }, () => {
     expect(git(clone, "rev-parse", "HEAD")).toBe(head);
     expect(fs.readFileSync(path.join(clone, "shared.txt"), "utf8")).toContain("<<<<<<<");
     expect(git(clone, "config", "user.name")).toBe(IDENTITY.name);
+  });
+
+  /**
+   * `implement-prd:catch-up`'s merge (#500): its own message, carrying the
+   * trailer the record reads, and always a merge commit, even where the
+   * branch is behind the base, so the trailer is never fast-forwarded away.
+   */
+  it("makes the merge commit with the message handed in, never a fast-forward", async () => {
+    git(seed, "checkout", "--quiet", "feature");
+    git(seed, "reset", "--quiet", "--hard", "main");
+    head = git(seed, "rev-parse", "HEAD");
+    git(seed, "push", "--quiet", "--force", origin, "feature");
+    const moved = moveMain("main.txt", "main\n");
+    checkOut();
+
+    const merged = await gitMerger({ dir: clone, env }, gitFetcher({ dir: clone, env, remote: origin }, TOKEN)).merge({
+      base: "main",
+      into: "feature",
+      identity: IDENTITY,
+      message: "Merge main into feature\n\nAgent-Catch-Up: #7",
+    });
+
+    expect(merged).toEqual({ status: "clean", base: moved, commit: git(clone, "rev-parse", "HEAD") });
+    expect(git(clone, "rev-parse", "HEAD^1", "HEAD^2").split("\n")).toEqual([head, moved]);
+    expect(git(clone, "log", "-1", "--format=%B")).toBe("Merge main into feature\n\nAgent-Catch-Up: #7");
+  });
+
+  it("makes the branch at the commit handed in as `from`, rather than at the one checked out", async () => {
+    const moved = moveMain("main.txt", "main\n");
+    const before = git(seed, "rev-parse", "main~1");
+    checkOut();
+    git(clone, "checkout", "--quiet", "--detach", before);
+
+    const merged = await gitMerger({ dir: clone, env }, gitFetcher({ dir: clone, env, remote: origin }, TOKEN)).merge({
+      base: "main",
+      into: "feature",
+      identity: IDENTITY,
+      from: head,
+    });
+
+    expect(merged.status).toBe("clean");
+    expect(git(clone, "rev-parse", "HEAD^1", "HEAD^2").split("\n")).toEqual([head, moved]);
+    expect(git(clone, "symbolic-ref", "HEAD")).toBe("refs/heads/feature");
   });
 
   it("throws FetchFailed where the base cannot be fetched, and leaves the checkout as it was", async () => {

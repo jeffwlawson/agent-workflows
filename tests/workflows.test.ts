@@ -4717,6 +4717,167 @@ describe("agent-implement-prd's gate is `implement-prd:gate`, before any checkou
 });
 
 /**
+ * Implement-prd's catch-up is `implement-prd:catch-up` (#500): the PRD branch
+ * prepared, the default branch merged in with the `Agent-Catch-Up` trailer,
+ * the park on a conflict and the leased push, executed against a real
+ * repository in `tests/implement-prd/catch-up.test.ts`. What is held here is
+ * the wiring, and the job graph that stands every later job down on a park,
+ * carried over from the retired `tests/default-branch-merge-step.test.ts`.
+ */
+describe("agent-implement-prd's catch-up is `implement-prd:catch-up`, after the mint and the checkout", () => {
+  const job = (): Job => jobNamed(PRD, "catch_up");
+  const steps = (): readonly Step[] => job().steps ?? [];
+  const commandStep = (): Step | undefined => steps().find((s) => s.id === "catch_up");
+  const copyStep = (): Step | undefined => steps().find((s) => s.id === "state");
+
+  /** *Prepare the PRD branch*, *Merge the default branch into the PRD branch* and *Record the PRD branch's tip* are gone into the command. */
+  it("is the mint, the checkout, the Node, the command, its glue and the reason's hand-over", () => {
+    expect(steps().map((s) => [s.name, s.id, s.if])).toEqual([
+      ["Resolve the loop's token", "token", undefined],
+      ["Checkout the base branch", undefined, undefined],
+      ["Set up Node for the package", undefined, undefined],
+      ["Catch the PRD branch up", "catch_up", undefined],
+      ["Hand the catch-up's result to the job", "state", undefined],
+      ["Hand the reason on", undefined, "failure()"],
+    ]);
+    expect(commandStep()?.run).toBe(
+      `npm exec --prefix "$RUNNER_TEMP" --yes --package=@jeffwlawson/agent-workflows@${PIN.slice(1)} -- agent-workflows implement-prd:catch-up`,
+    );
+    expect(commandStep()?.["working-directory"]).toBe("${{ runner.temp }}");
+    expect(steps().map((s) => s.name)).not.toContain("Merge the default branch into the PRD branch");
+    expect(steps().map((s) => s.name)).not.toContain("Record the PRD branch's tip");
+    expect(steps().map((s) => s.id)).not.toContain("prepare");
+  });
+
+  /**
+   * The push token reaches the command step and no other, and so does the
+   * workflow token: the job sets neither for every step, and no step but
+   * the command runs `git` or `gh`.
+   */
+  it("hands the push token, and every other, to the command step alone", () => {
+    const LOOP = "${{ steps.token.outputs.token }}";
+
+    expect(JSON.stringify(job().env ?? {})).not.toMatch(/secrets\.|steps\./);
+    expect(commandStep()?.env).toMatchObject({
+      GH_TOKEN: "${{ secrets.GITHUB_TOKEN }}",
+      NODE_AUTH_TOKEN: "${{ secrets.GITHUB_TOKEN }}",
+      LOOP_TOKEN: LOOP,
+      LOOP_TOKEN_SOURCE: "${{ steps.token.outputs.source }}",
+    });
+    for (const step of steps()) {
+      if (step.id === "catch_up" || step.id === "token") continue;
+      expect(step.run ?? "", step.name).not.toMatch(/\bgh |\bgit |GH_TOKEN|secrets\./);
+      expect(JSON.stringify(step.env ?? {}), step.name).not.toMatch(/secrets\.|steps\.token/);
+      expect(JSON.stringify(step.with ?? {}), step.name).not.toMatch(/secrets\.|steps\.token/);
+    }
+    expect(COMMANDS["implement-prd:catch-up"].inputs).toHaveProperty("LOOP_TOKEN");
+  });
+
+  /** The gate's facts, never a file: the branch, the tip the push is leased on, the PRD PR a park names, and the slice. */
+  it("hands the command the gate's branch, tip, PRD PR and slice, and the checkout", () => {
+    expect(job().env).toEqual({
+      ISSUE_NUMBER: "${{ github.event.issue.number }}",
+      BASE_REF: "${{ inputs.default-branch }}",
+      GH_REPO: "${{ github.repository }}",
+    });
+    expect(commandStep()?.env).toMatchObject({
+      PRD_BRANCH: "${{ needs.gate.outputs.prd_branch }}",
+      PRD_TIP: "${{ needs.gate.outputs.prd_tip }}",
+      PRD_PR: "${{ needs.gate.outputs.prd_pr }}",
+      SUB: "${{ needs.gate.outputs.sub }}",
+      CHECKOUT: "${{ github.workspace }}",
+      OUTPUT_DIR: "${{ runner.temp }}",
+    });
+  });
+
+  it("checks the base out with no credential, sets up Node, and installs the package with `packages: read`", () => {
+    const checkout = steps().find((s) => (s.uses ?? "").startsWith("actions/checkout@"));
+    const node = steps().find((s) => s.name === "Set up Node for the package");
+
+    expect(checkout?.with).toEqual({ ref: "${{ inputs.default-branch }}", "fetch-depth": 0, "persist-credentials": false });
+    expect(node?.uses).toMatch(/^actions\/setup-node@/);
+    expect(node?.with).toEqual({
+      "node-version": "24",
+      "registry-url": "https://npm.pkg.github.com",
+      scope: "@jeffwlawson",
+      "package-manager-cache": false,
+    });
+    expect(job().permissions).toEqual({ contents: "write", issues: "write", packages: "read" });
+  });
+
+  /** The reason file, declared by the command, and nothing else, handed to the publish job. */
+  it("hands the publish job only the reason the command writes", () => {
+    const upload = steps().find((s) => s.name === "Hand the reason on");
+
+    expect(upload?.with?.["name"]).toBe("agent-implement-prd-catch-up");
+    expectHandsOver(upload, { required: true, producer: "implement-prd:catch-up", files: { "failure_reason.txt": "sometimes" } });
+    expect(COMMANDS["implement-prd:catch-up"].outputs).toContain("failure_reason.txt");
+    expect(stepsOf(PRD).find((s) => s.name === "Fetch what the catch-up handed over")?.with?.["name"]).toBe("agent-implement-prd-catch-up");
+  });
+
+  /** `parked`, `merged` and `head` keep their names and meanings: the runner's `MERGED`, and the agent's and publish jobs' `BASE_SHA`. */
+  it("keeps the job's outputs under the names the later jobs read", () => {
+    expect(job().outputs).toEqual({
+      parked: "${{ steps.state.outputs.parked }}",
+      merged: "${{ steps.state.outputs.merged }}",
+      head: "${{ steps.state.outputs.head }}",
+    });
+    const agent = jobNamed(PRD, "implement-prd");
+    expect((agent.steps ?? []).find((s) => /agent-workflows implement-prd(?!:)/.test(s.run ?? ""))?.env?.["MERGED"]).toBe(
+      "${{ needs.catch_up.outputs.merged }}",
+    );
+  });
+
+  /**
+   * Every job that builds, pushes or asks for a review stands down on a park:
+   * the agent's job runs only where the catch-up did not park, and the
+   * publish job's steps that act on a build need the agent's job to have
+   * succeeded, which a job that never ran did not.
+   */
+  it("stands the agent's job, and every publish step that acts on a build, down on a park", () => {
+    const agent = jobNamed(PRD, "implement-prd");
+    const publish = jobNamed(PRD, "publish").steps ?? [];
+
+    expect(job().needs).toBe("gate");
+    expect(agent.needs).toEqual(["gate", "catch_up"]);
+    expect(agent.if).toContain("needs.catch_up.outputs.parked != 'true'");
+    for (const id of ["push", "prd_pr"]) {
+      expect(publish.find((s) => s.id === id)?.if, id).toContain("needs.implement-prd.result == 'success'");
+    }
+    expect(publish.find((s) => s.name === "Request review")?.if).toContain("needs.implement-prd.result == 'success'");
+  });
+
+  /** The glue, executed over what the command writes: each fact under its old name, and nothing where it wrote nothing. */
+  describe.skipIf(!["bash", "jq"].every((command) => {
+    try {
+      execFileSync("sh", ["-c", `command -v ${command}`], { timeout: SUBPROCESS_TIMEOUT });
+      return true;
+    } catch {
+      return false;
+    }
+  }))("the glue, executed", () => {
+    const glue = (files: Readonly<Record<string, string>>): string => {
+      const temp = fs.mkdtempSync(path.join(os.tmpdir(), "prd-catch-up-glue-"));
+      const output = path.join(temp, "output");
+      fs.writeFileSync(output, "");
+      for (const [name, text] of Object.entries(files)) fs.writeFileSync(path.join(temp, name), text);
+      execFileSync("bash", ["-e", "-c", copyStep()?.run ?? ""], {
+        timeout: SUBPROCESS_TIMEOUT,
+        env: { PATH: process.env["PATH"] ?? "", RUNNER_TEMP: temp, GITHUB_OUTPUT: output },
+      });
+      return fs.readFileSync(output, "utf8");
+    };
+
+    it("copies a pushed merge, a branch merging nothing, and a park", () => {
+      expect(glue({ "catch-up.json": JSON.stringify({ parked: false, merged: "abc", head: "abc" }) })).toBe("parked=false\nmerged=abc\nhead=abc\n");
+      expect(glue({ "catch-up.json": JSON.stringify({ parked: false, head: "def" }) })).toBe("parked=false\nhead=def\n");
+      expect(glue({ "catch-up.json": JSON.stringify({ parked: true }) })).toBe("parked=true\n");
+      expect(glue({})).toBe("");
+    });
+  });
+});
+
+/**
  * Implement's agent job (#491): one early install, before *Install
  * dependencies*, and its two shell steps around the agent become
  * `implement:prepare` and `implement:bundle`, run from it with no token, and
@@ -5171,7 +5332,6 @@ describe("agent-implement-prd works one sub-issue per run", () => {
     const pushes = code().filter((l) => /^\s*(if ! )?git (-c "[^"]*" )?push\b/.test(l));
 
     expect(pushes.map((l) => l.trim())).toEqual([
-      'if ! git -c "http.extraHeader=AUTHORIZATION: basic ${push_auth}" push origin "$PRD_BRANCH"; then',
       'git -c "http.extraHeader=AUTHORIZATION: basic ${auth}" push origin "$PRD_BRANCH"',
       'git -c "http.extraHeader=AUTHORIZATION: basic ${auth}" push --force-with-lease="refs/heads/${RESCUE_BRANCH}:${current}" origin "${tip}:refs/heads/${RESCUE_BRANCH}"',
     ]);
@@ -5180,7 +5340,10 @@ describe("agent-implement-prd works one sub-issue per run", () => {
       'git -c "http.extraHeader=AUTHORIZATION: basic ${auth}" push --force-with-lease="refs/heads/${RESCUE_BRANCH}:${current}" origin "${tip}:refs/heads/${RESCUE_BRANCH}"',
     ]);
     expect(code().filter((l) => /\brebase\b|\breset --hard\b|\bpull --rebase\b/.test(l))).toEqual([]);
-    expect(runOf(PRD, "catch_up")).toContain('git merge --no-ff --no-edit');
+    // The catch-up's merge and its push are `implement-prd:catch-up`'s since
+    // #500: the engine's merge, never a rebase, and a `pushRef` leased on the
+    // tip the gate read, which `tests/implement-prd/catch-up.test.ts` holds.
+    expect(runOf(PRD, "catch_up")).toContain("agent-workflows implement-prd:catch-up");
   });
 
   /**
@@ -5325,8 +5488,9 @@ describe("agent-implement-prd works one sub-issue per run", () => {
     );
 
     // Four checkouts (the catch-up's, the agent's and the publish job's two,
-    // one to push and one to rescue, #303), two `prepare`s (the catch-up's and
-    // the agent's), and the agent's toolchain, runner and trailer, and the push.
+    // one to push and one to rescue, #303), the catch-up's Node (#500), the
+    // agent's `prepare`, and the agent's toolchain, runner and trailer, and
+    // the push.
     expect(building).toHaveLength(13);
     for (const step of building) {
       const condition = conditionOf(PRD, step);
@@ -8969,7 +9133,7 @@ describe("a split run keeps every write off the agent's runner", () => {
     expect(refresh?.env?.["HEAD_SHA"]).toBe("${{ github.event.pull_request.head.sha }}");
     expect(jobNamed(path.join(WORKFLOW_DIR, "update-branch.yml"), "gate").outputs?.["base"]).toBe("${{ steps.merged.outputs.base }}");
     expect(pushEnv(path.join(WORKFLOW_DIR, "implement-prd.yml"))["BASE_SHA"]).toBe("${{ needs.catch_up.outputs.head }}");
-    expect(jobNamed(path.join(WORKFLOW_DIR, "implement-prd.yml"), "catch_up").outputs?.["head"]).toBe("${{ steps.tip.outputs.sha }}");
+    expect(jobNamed(path.join(WORKFLOW_DIR, "implement-prd.yml"), "catch_up").outputs?.["head"]).toBe("${{ steps.state.outputs.head }}");
     // fix's is the event's head, which the gate confirmed is the branch's,
     // handed to `fix:publish` and `fix:conclude` as `HEAD_SHA` (#468, #469).
     for (const step of (jobNamed(path.join(WORKFLOW_DIR, "fix.yml"), "publish").steps ?? []).filter((s) => /agent-workflows fix:/.test(s.run ?? ""))) {
@@ -9472,8 +9636,8 @@ describe("no checkout an agent runs in leaves a credential behind", () => {
    * That is all this asserts. Since the split (#307, #308) no job that runs an
    * agent names the PAT at all, which *a split run keeps every write off the
    * agent's runner* asserts; the steps that hold it are in the publish jobs,
-   * and in implement-prd's catch-up, whose `Merge the default branch into the
-   * PRD branch` pushes before the agent's job starts, on a runner of its own.
+   * and in implement-prd's catch-up, whose `implement-prd:catch-up` pushes
+   * before the agent's job starts, on a runner of its own (#500).
    */
   it.each(checkingOut.map((j) => [label(j), j] as const))("%s: keeps the PAT out of the job's env and the agent's step", (_, { job }) => {
     expect(JSON.stringify(job.env ?? {})).not.toContain("AGENT_PAT");

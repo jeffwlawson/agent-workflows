@@ -362,3 +362,7 @@ export const SLICE_TRAILER_LINE = new RegExp(String.raw`^${SLICE_TRAILER}:[ \t]*
  * it as a slice's commit.
  */
 export const CATCH_UP_TRAILER = "Agent-Catch-Up";
+
+/** The message of `implement-prd`'s merge of `base` into the PRD branch `branch`, made before slice `sub`. */
+export const catchUpMessage = (base: string, branch: string, sub: number): string =>
+  `Merge ${base} into ${branch}\n\n${CATCH_UP_TRAILER}: #${sub}`;

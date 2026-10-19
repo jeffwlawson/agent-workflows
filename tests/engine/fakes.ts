@@ -509,12 +509,15 @@ export interface ReceivedWrite {
 /**
  * One fake writer per token in `tokens`, over `github`, sharing `limits` and a
  * log: every write each received, in order across them, and the log's lines
- * as a command's declared file would hold them.
+ * as a command's declared file would hold them. `real` puts a token's real
+ * backend in for the types it names, `gitWrites` against a temporary
+ * repository for a push a test makes for real.
  */
 export const fakeWriters = <T extends string>(
   github: FakeGitHub,
   tokens: readonly T[],
   limits: Limits,
+  real: Partial<Record<T, Partial<Backend>>> = {},
 ): {
   readonly writers: Readonly<Record<T, Writer>>;
   readonly log: WriteLog;
@@ -525,7 +528,7 @@ export const fakeWriters = <T extends string>(
   const lines: string[] = [];
   const writes: ReceivedWrite[] = [];
   const { writers, log } = createWriters({
-    backends: Object.fromEntries(tokens.map((token) => [token, fakeBackend(github, token)])) as Record<T, Backend>,
+    backends: Object.fromEntries(tokens.map((token) => [token, { ...fakeBackend(github, token), ...real[token] }])) as Record<T, Backend>,
     limits,
     appendLine: (line) => lines.push(line),
   });
@@ -575,6 +578,10 @@ export const fakeGit = (holds: {
         const history = holds.history?.[commit];
         if (history === undefined) throw new GitError(`fatal: Not a valid commit name ${commit}, by the fake`);
         return history.includes(ancestor);
+      },
+      changedPaths: async (from, to, under) => {
+        calls.push(`changedPaths ${from} ${to} ${under}`);
+        return [];
       },
     },
   };

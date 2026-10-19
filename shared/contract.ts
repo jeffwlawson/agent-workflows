@@ -823,6 +823,16 @@ const REVIEW_RED_CHECK_PLACE = {
  *   and `progress_unbuilt.md` and `status_unbuilt.md` are the progress list
  *   and status line the building row replaced, which the publish job writes
  *   back where the run stops before the runner renders its own.
+ * - `implement-prd:catch-up` brings the PRD branch up to date with
+ *   `BASE_REF` before a slice is built, in `CHECKOUT`, as the loop's
+ *   committer: `PRD_BRANCH` fetched at its tip, or, where `PRD_TIP`, the tip
+ *   the gate read, is empty, made at the base, and the base merged in with
+ *   the `Agent-Catch-Up` trailer naming `SUB`. A clean merge is pushed with
+ *   the loop's token, leased on `PRD_TIP`; a conflicting one parks the chain
+ *   with a comment on the parent, `ISSUE_NUMBER`, naming `agent:update-branch`
+ *   on `PRD_PR` where there is one, and takes `agent:implement` off.
+ *   `catch-up.json` is whether it parked, the merge it pushed, where it
+ *   pushed one, and the tip it left the branch at, where it did not park.
  * - `implement:prepare` creates the agent's `BRANCH` in `CHECKOUT` at
  *   `BASE_SHA`, the commit the gate read `BASE_REF` at, and checks it out,
  *   with the loop's committer as the checkout's identity. A checkout that
@@ -1036,6 +1046,20 @@ export const COMMANDS = {
       "status_unbuilt.md",
       WRITE_LOG,
     ],
+  },
+  "implement-prd:catch-up": {
+    inputs: {
+      ...EVERY_SUBCOMMAND,
+      ...LOOP,
+      ISSUE_NUMBER: REQUIRED,
+      BASE_REF: REQUIRED,
+      PRD_BRANCH: REQUIRED,
+      PRD_TIP: EMPTY,
+      PRD_PR: EMPTY,
+      SUB: REQUIRED,
+      CHECKOUT: REQUIRED,
+    },
+    outputs: [...EVERY_SUBCOMMAND_OUTPUTS, "catch-up.json", WRITE_LOG],
   },
   "review:gate": {
     inputs: {

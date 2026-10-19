@@ -16,9 +16,9 @@ import { git } from "./common.js";
 
 /**
  * Where the agent's job fetches the rescue branch to. Outside `refs/remotes/`
- * on purpose: implement-prd's `Mark the slice's commits` marks every commit
- * reachable from `HEAD` and from nothing under `--remotes`, and a rescued
- * commit is this run's to mark, since it was never pushed anywhere it counts.
+ * on purpose: a rescued commit was never pushed anywhere it counts, so it is
+ * the resuming run's, and `implement-prd:publish` marks it as that run's
+ * slice's (#502).
  * The workflows name the same ref, and a test holds them equal.
  */
 export const rescueRef = (branch: string): string => `refs/rescue/${branch}`;

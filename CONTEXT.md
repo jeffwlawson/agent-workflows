@@ -30,7 +30,8 @@ default branch, so the CI configured for the default branch runs on every slice 
 to set up. No slice has a branch or a pull request of its own (PRD #222).
 
 A sub-issue's commits on the PRD branch are its **slice range**. Every commit a build run makes
-carries an `Agent-Slice: #<sub>` trailer, written by the workflow before the push, and
+carries an `Agent-Slice: #<sub>` trailer, written by `implement-prd:publish` before the push, out of
+the agent's reach (#502), and
 `shared/slice-ranges.ts` derives the ranges from the PRD branch's first-parent log: a slice starts
 at the first parent of its earliest trailered commit and ends where the next one starts. Fix, human
 and conflict-resolution commits carry no trailer and belong to the range they fall in, a

@@ -3,7 +3,7 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import { fileURLToPath } from "node:url";
 import { commonWriters } from "./shared/common.js";
-import type { MergingCheckoutIo, MergingIo, OutputWriters, ReadingIo } from "./shared/command-io.js";
+import type { MergingIo, OutputWriters, ReadingIo, RewritingCheckoutIo } from "./shared/command-io.js";
 import { COMMANDS, type Command, type Runner } from "./shared/contract.js";
 import { fail, gitEnvironment, readInputs, writers, type InputValues } from "./shared/env.js";
 import { VERSION } from "./shared/manifest.js";
@@ -196,7 +196,7 @@ type WritingCommand = {
 const writingCommand = <C extends WritingCommand>(
   name: C,
   load: () => Promise<
-    (inputs: InputValues<(typeof COMMANDS)[C]["inputs"]>, io: MergingCheckoutIo<(typeof COMMANDS)[C]["outputs"]>) => Promise<unknown>
+    (inputs: InputValues<(typeof COMMANDS)[C]["inputs"]>, io: RewritingCheckoutIo<(typeof COMMANDS)[C]["outputs"]>) => Promise<unknown>
   >,
   summary: string,
 ): Subcommand => ({
@@ -380,6 +380,11 @@ export const SUBCOMMANDS: Readonly<Record<string, Subcommand>> = {
     "implement-prd:bundle",
     async () => (await import("./implement-prd/bundle.js")).bundle,
     "Bundle the agent's commits on a PRD branch for the publish job (no model).",
+  ),
+  "implement-prd:publish": writingCommand(
+    "implement-prd:publish",
+    async () => (await import("./implement-prd/publish.js")).publish,
+    "Mark a built slice's commits with its Agent-Slice trailer, push them to the PRD branch, and delete the rescue branch (no model).",
   ),
   "implement-prd:catch-up": writingCommand(
     "implement-prd:catch-up",

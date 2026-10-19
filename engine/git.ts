@@ -2,8 +2,9 @@
  * The engine's door to git, beside `github.ts`'s door to GitHub's API: the
  * write types git makes (`pushRef`, `deleteRef`); a fetch, which reads the
  * remote with a token and changes nothing there; a merge of the base branch,
- * which fetches it so and changes only the checkout; and a bundle check,
- * which is a read and holds no token.
+ * which fetches it so and changes only the checkout; a bundle check, which is
+ * a read and holds no token; and a rewrite of commit messages, which makes
+ * new commits in the repository, moves no ref and holds no token either.
  *
  * Each runs `git` in a repository the backend is bound to, with the
  * environment it is handed and only two additions: `GIT_TERMINAL_PROMPT=0`,
@@ -220,6 +221,97 @@ export const gitReader = (repository: GitRepository): GitReader => {
           const [commit = "", ref = ""] = line.trim().split(/\s+/);
           return { ref, commit };
         });
+    },
+  };
+};
+
+/** What a rewrite of commit messages came to: the new head, and how many commits it rewrote. */
+export interface Rewritten {
+  readonly head: string;
+  readonly rewritten: number;
+}
+
+/** What git can make in a repository without a token: new commits from old ones, moving no ref. */
+export interface GitRewriter {
+  /**
+   * Every commit in `head`'s history and in none of `exclude`'s made again
+   * with its message passed through `message`: the same tree, its author and
+   * committer, names, emails and dates, kept, and each parent that was
+   * rewritten replaced by its rewrite, a merge's every parent included. The
+   * new head, which is `head` itself where the range is empty, and how many
+   * it rewrote. No ref and no working tree is touched: the commits are made
+   * in the object store, and what is done with the head is the caller's.
+   * What any message says is the caller's too; this spells none.
+   */
+  rewriteMessages(options: {
+    readonly head: string;
+    readonly exclude: readonly string[];
+    readonly message: (message: string) => string;
+  }): Promise<Rewritten>;
+}
+
+/** One person line of a raw commit, `Name <email> <seconds> <zone>`, as git's environment takes it. */
+const person = (line: string): { readonly name: string; readonly email: string; readonly date: string } => {
+  const match = /^(.*) <([^>]*)> (\S+ \S+)$/.exec(line);
+  if (match === null) throw new GitError(`Couldn't read the person line ${JSON.stringify(line)}.`);
+  return { name: match[1] ?? "", email: match[2] ?? "", date: match[3] ?? "" };
+};
+
+/** The rewriter in `repository`. */
+export const gitRewriter = (repository: GitRepository): GitRewriter => {
+  const env = { ...repository.env, GIT_TERMINAL_PROMPT: "0" };
+  const git = async (args: readonly string[], options: { readonly env?: GitEnvironment; readonly input?: string } = {}): Promise<string> => {
+    try {
+      const running = run("git", args, { cwd: repository.dir, env: options.env ?? env, encoding: "utf8", maxBuffer: 64 * 1024 * 1024 });
+      if (options.input !== undefined) {
+        // An error writing is git's to report, by its exit and its stderr.
+        running.child.stdin?.on("error", () => {});
+        running.child.stdin?.end(options.input);
+      }
+      return (await running).stdout;
+    } catch (error) {
+      throw new GitError(lastLine(outputOf(error, "stderr")) || (error instanceof Error ? error.message : String(error)));
+    }
+  };
+  return {
+    rewriteMessages: async ({ head: named, exclude, message }) => {
+      const head = (await git(["rev-parse", "--verify", `${named}^{commit}`])).trim();
+      const range = (await git(["rev-list", "--reverse", "--topo-order", head, ...exclude.map((commit) => `^${commit}`), "--"]))
+        .split("\n")
+        .filter((line) => line !== "");
+      const rewritten = new Map<string, string>();
+      for (const commit of range) {
+        // The raw commit: its headers, a blank line, and its message byte for byte.
+        const raw = await git(["cat-file", "commit", commit]);
+        const split = raw.indexOf("\n\n");
+        const headers = (split === -1 ? raw : raw.slice(0, split)).split("\n");
+        const text = split === -1 ? "" : raw.slice(split + 2);
+        const field = (name: string): string[] =>
+          headers.filter((line) => line.startsWith(`${name} `)).map((line) => line.slice(name.length + 1));
+        const [tree] = field("tree");
+        const [author] = field("author");
+        const [committer] = field("committer");
+        if (tree === undefined || author === undefined || committer === undefined) {
+          throw new GitError(`Couldn't read commit ${commit}: it has no tree, author or committer.`);
+        }
+        const by = person(author);
+        const at = person(committer);
+        const parents = field("parent").flatMap((parent) => ["-p", rewritten.get(parent) ?? parent]);
+        const made = await git(["commit-tree", tree, ...parents], {
+          env: {
+            ...env,
+            GIT_AUTHOR_NAME: by.name,
+            GIT_AUTHOR_EMAIL: by.email,
+            GIT_AUTHOR_DATE: by.date,
+            GIT_COMMITTER_NAME: at.name,
+            GIT_COMMITTER_EMAIL: at.email,
+            GIT_COMMITTER_DATE: at.date,
+          },
+          input: message(text),
+        });
+        rewritten.set(commit, made.trim());
+      }
+      return { head: rewritten.get(head) ?? head, rewritten: rewritten.size };
     },
   };
 };

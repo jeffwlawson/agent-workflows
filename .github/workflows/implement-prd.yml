@@ -399,7 +399,7 @@ jobs:
   # before the agent's starts.
   catch_up:
     needs: gate
-    # From here to `Push the PRD branch` is **building a slice**, and only a
+    # From here to `Publish the slice` is **building a slice**, and only a
     # run that builds one does any of it. The finishing run, and the run
     # that only opens a missing PRD PR, check nothing out, install no
     # toolchain and run no model.
@@ -623,8 +623,8 @@ jobs:
       # moved, or cut from the base branch where there was none, and fetched
       # with the job's read token where it exists. And the rescue branch an
       # earlier run left (#303), where there is one, fetched to `refs/rescue/`
-      # for the runner to resume from: outside `refs/remotes/`, so `Mark the
-      # slice's commits` marks rescued commits as this run's. **An unreadable
+      # for the runner to resume from: outside `refs/remotes/`, so the agent's
+      # git counts rescued commits as this run's. **An unreadable
       # answer stops the run**, rather than reading as "no rescue": a run that
       # started over without it, and succeeded, would delete it.
       # `implement-prd/prepare.ts` says why each is as it is.
@@ -792,70 +792,16 @@ jobs:
           retention-days: ${{ inputs.transcript-retention-days }}
           overwrite: true
 
-      # Every commit this run made gets exactly one `Agent-Slice: #<sub>`
-      # trailer naming the sub-issue it built (#242): the mark
-      # `shared/slice-ranges.ts` reads a slice's commits off the PRD branch by,
-      # and the one `implement-prd:gate` reads which sub-issues are built from,
-      # whatever their subject lines say. The agent is not told to write it,
-      # so it is written here, and one the agent did write is replaced.
-      #
-      # Here, after the runner and before the bundle, because the commits are
-      # still local: rewriting them rewrites nothing published. "This run's" is
-      # every commit reachable from HEAD and from nothing on the remote, so the
-      # PRD branch's earlier slices and a default-branch commit the agent
-      # merged in keep their identity. Trees, authors and dates are kept, and
-      # the branch is moved without touching the working tree, since only
-      # messages change.
-      #
-      # `--no-divider` because the input is a commit message, not a patch
-      # email: without it a `---` line anywhere in the body is read as the
-      # start of a patch, the trailer lands above it, and git's own trailer
-      # parser, which reads the message's last paragraph, never sees it.
-      - name: Mark the slice's commits
-        id: trailer
-        if: success()
-        env:
-          SUB: ${{ needs.gate.outputs.sub }}
-        run: |
-          set -euo pipefail
-
-          declare -A rewritten=()
-          mapped() { printf '%s' "${rewritten[$1]:-$1}"; }
-
-          old=$(git rev-parse HEAD)
-          count=0
-          for commit in $(git rev-list --reverse --topo-order HEAD --not --remotes); do
-            parents=()
-            for parent in $(git rev-list --parents -n 1 "$commit" | cut -d' ' -f2-); do
-              parents+=(-p "$(mapped "$parent")")
-            done
-            message=$(git log -1 --format=%B "$commit" \
-              | { grep -iv '^Agent-Slice:' || true; } \
-              | git interpret-trailers --no-divider --trailer "Agent-Slice: #${SUB}")
-            rewritten[$commit]=$(
-              export GIT_AUTHOR_NAME GIT_AUTHOR_EMAIL GIT_AUTHOR_DATE GIT_COMMITTER_NAME GIT_COMMITTER_EMAIL GIT_COMMITTER_DATE
-              GIT_AUTHOR_NAME=$(git log -1 --format=%an "$commit")
-              GIT_AUTHOR_EMAIL=$(git log -1 --format=%ae "$commit")
-              GIT_AUTHOR_DATE=$(git log -1 --format=%ad --date=raw "$commit")
-              GIT_COMMITTER_NAME=$(git log -1 --format=%cn "$commit")
-              GIT_COMMITTER_EMAIL=$(git log -1 --format=%ce "$commit")
-              GIT_COMMITTER_DATE=$(git log -1 --format=%cd --date=raw "$commit")
-              git commit-tree "${commit}^{tree}" "${parents[@]}" <<< "$message"
-            )
-            count=$((count + 1))
-          done
-
-          git update-ref -m "Agent-Slice: #${SUB}" HEAD "$(mapped "$old")" "$old"
-          echo "Marked ${count} commit(s) with Agent-Slice: #${SUB}."
-
       # The agent's commits, as the one thing `publish` pushes:
       # `implement-prd:bundle` bundles the PRD branch, thin, the tip `catch_up`
       # left being its prerequisite, which `publish` has from its own
       # checkout, read from that job and never from this one.
       #
+      # Unmarked: the `Agent-Slice` trailer is `implement-prd:publish`'s to
+      # write, in the publish job, where the agent cannot reach it (#502).
       # `always()` (#303): a run that failed, was cancelled or timed out hands
-      # its commits over too, unmarked, for `publish` to rescue to a side
-      # branch rather than push; the run that resumes from them marks them.
+      # its commits over too, for `publish` to rescue to a side branch rather
+      # than push; the run that resumes from them pushes them, marked.
       # No commits is no bundle, which `publish` reads as nothing to push or
       # rescue. From the install above, by its path, run from `RUNNER_TEMP`
       # and working in the checkout, and **with no token**: the agent and the
@@ -926,6 +872,10 @@ jobs:
       contents: write
       issues: write
       pull-requests: write
+      # Installing the package `implement-prd:publish` runs from, by `npm
+      # exec`. GitHub Packages has no anonymous install, and both caller sets
+      # already grant it.
+      packages: read
 
     env:
       ISSUE_NUMBER: ${{ github.event.issue.number }}
@@ -992,88 +942,98 @@ jobs:
           gh issue comment "$ISSUE_NUMBER" --body-file "$note" \
             || echo "::warning::Could not say on #${ISSUE_NUMBER} that ${RESCUE_BRANCH} was set aside."
 
+      # Wherever the gate claimed the run, so a step after the agent's job
+      # stopped, the rescue's included, never checks a bundle in an empty
+      # workspace (#473's last bug): the prerequisite of the bundle is the tip
+      # `catch_up` left, which every full checkout of the repository has.
       - name: Checkout the base branch
-        if: needs.implement-prd.result == 'success'
+        if: always() && needs.gate.outputs.refused == 'false'
         uses: actions/checkout@v7
         with:
           ref: ${{ inputs.default-branch }}
           fetch-depth: 0
-          # Nothing the agent touched is on this runner, and the push below
-          # passes its token on its own command, as everywhere else.
+          # Nothing the agent touched is on this runner, and the command below
+          # passes its tokens on its own git commands, as everywhere else.
           persist-credentials: false
 
-      # **Plain**, never forced. The PRD branch carries every earlier slice,
-      # and verdicts and review threads are pinned to its commits, so a force
-      # push is a chain that silently eats its own history and orphans its
-      # reviews. A rejected non-fast-forward is the correct outcome: it means
-      # something else moved the branch while this slice was built, and the
-      # slice is then built again on top of that by the retry.
-      #
-      # The checkout persists no credential, so the token reaches git here, for
-      # the push alone, as a masked header. Why, and what that does not cover,
-      # is the note on implement.yml's `Push branch`.
+      # The Node the command runs on, and the registry it installs from. A
+      # version rather than a version file, since nothing of the adopter's
+      # runs here: the one the package's `engines.node` names, which
+      # `tests/workflows.test.ts` holds it to.
+      - name: Set up Node for the package
+        if: always() && needs.gate.outputs.refused == 'false'
+        uses: actions/setup-node@v7
+        with:
+          node-version: "24"
+          registry-url: https://npm.pkg.github.com
+          scope: "@jeffwlawson"
+          package-manager-cache: false
+
+      # **The slice, marked and pushed**, as one command (#502): the bundle
+      # checked, intact, exactly the PRD branch and nothing else, and built on
+      # the tip `catch_up` left, read there and never from the agent's job;
+      # the slice's commits marked with the `Agent-Slice: #<sub>` trailer, the
+      # mark `implement-prd:gate` reads which sub-issues are built from,
+      # here, outside the agent's reach (#410), every commit of the bundle's
+      # head that is on neither that tip nor the default branch, so a
+      # default-branch commit the agent merged in keeps its identity; the
+      # marked head pushed with the loop's token, **leased** on that tip, so a
+      # push someone made to the PRD branch during the run is refused rather
+      # than overwritten; and the rescue branch deleted, leased on its tip as
+      # read. `implement-prd/publish.ts` says why each is as it is.
       #
       # The steps here that act on a build read the agent's job's result, and
       # the ones a run that builds nothing does too read the gate's, by name:
       # GitHub documents an ancestor job's failure as seen by `failure()`, and
       # says nothing of `success()`, in a job that runs `always()`.
       #
-      # **The bundle is checked before anything is pushed from it**, as
-      # implement.yml's is: intact, exactly the PRD branch and nothing else,
-      # and built on the tip `catch_up` left, read there and never from the
-      # agent's job. Its content is the agent's to write and the round's to
-      # judge.
-      - name: Push the PRD branch
-        id: push
+      # From `RUNNER_TEMP`, so no `.npmrc` of the checkout is read, and
+      # working in the checkout. Into a directory of its own, for the failure
+      # step below to find its reason file in.
+      - name: Publish the slice
+        id: publish
         if: needs.implement-prd.result == 'success' && success()
+        working-directory: ${{ runner.temp }}
         env:
+          NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          LOOP_TOKEN: ${{ steps.token.outputs.token }}
+          LOOP_TOKEN_SOURCE: ${{ steps.token.outputs.source }}
+          OUTPUT_DIR: ${{ runner.temp }}/publish
+          BUNDLE_DIR: ${{ runner.temp }}/bundle
+          CHECKOUT: ${{ github.workspace }}
           PRD_BRANCH: ${{ needs.gate.outputs.prd_branch }}
+          PRD_TIP: ${{ needs.gate.outputs.prd_tip }}
           BASE_SHA: ${{ needs.catch_up.outputs.head }}
-          PUSH_TOKEN: ${{ steps.token.outputs.token }}
+          SUB: ${{ needs.gate.outputs.sub }}
+        run: npm exec --prefix "$RUNNER_TEMP" --yes --package=@jeffwlawson/agent-workflows@0.8.8 -- agent-workflows implement-prd:publish
+
+      # Glue only Actions can do (ADR 0003): the commit the command pushed,
+      # copied from its `published.json` into a step output under the name
+      # the steps below have always read, `head`: the commit `Request review`
+      # waits for the PRD PR to show, and what tells the failure step and the
+      # rescue that the slice was pushed. Nothing where it wrote no
+      # `published.json` or pushed nothing.
+      - name: Hand the push on
+        id: push
+        if: always()
         run: |
-          set -euo pipefail
-          bundle="${RUNNER_TEMP}/bundle/branch.bundle"
+          file="${RUNNER_TEMP}/publish/published.json"
+          [ -f "$file" ] || exit 0
+          jq -r 'if .pushed == true and .head != null then "head=\(.head)" else empty end' "$file" >> "$GITHUB_OUTPUT"
 
-          block() {
-            printf '%s\n' "$1" > "${RUNNER_TEMP}/failure_reason.txt"
-            echo "::error::$1"
-            exit 1
-          }
-
-          [ -f "$bundle" ] || block "The agent's job finished without handing over its commits, so nothing was pushed."
-          git bundle verify --quiet "$bundle" \
-            || block "The agent's commits arrived damaged or incomplete, so nothing was pushed."
-          git bundle unbundle "$bundle" > /dev/null \
-            || block "The agent's commits arrived damaged or incomplete, so nothing was pushed."
-          heads=$(git bundle list-heads "$bundle")
-          if [ "$(wc -l <<< "$heads")" -ne 1 ] || [ "$(cut -d' ' -f2 <<< "$heads")" != "refs/heads/${PRD_BRANCH}" ]; then
-            block "The agent's commits arrived on a branch other than \`${PRD_BRANCH}\`, or beside other branches, so nothing was pushed."
-          fi
-          git update-ref "refs/heads/${PRD_BRANCH}" "$(cut -d' ' -f1 <<< "$heads")"
-          git merge-base --is-ancestor "$BASE_SHA" "refs/heads/${PRD_BRANCH}" \
-            || block "The agent's commits don't build on \`${PRD_BRANCH}\` as this run left it, so nothing was pushed."
-
-          auth=$(printf 'x-access-token:%s' "$PUSH_TOKEN" | base64 | tr -d '\n')
-          echo "::add-mask::${auth}"
-          git -c "http.extraHeader=AUTHORIZATION: basic ${auth}" push origin "$PRD_BRANCH"
-          # The commit `Request review` waits for the PRD PR to show.
-          echo "head=$(git rev-parse "refs/heads/${PRD_BRANCH}")" >> "$GITHUB_OUTPUT"
-
-      # A run that pushed its slice leaves no rescue branch behind (#303),
-      # whether it resumed from it, and its commits are now on the PRD branch
-      # with the rest of this run's, or set it aside. Never fails the run: a
-      # branch left behind is set aside by the next run, whose tip has moved
-      # past it.
-      - name: Delete the rescue branch
-        if: needs.implement-prd.result == 'success' && success()
-        run: |
-          if ! gh api "repos/{owner}/{repo}/git/ref/heads/${RESCUE_BRANCH}" --silent 2> /dev/null; then
-            echo "No ${RESCUE_BRANCH} to delete."
-            exit 0
-          fi
-          gh api --method DELETE "repos/{owner}/{repo}/git/refs/heads/${RESCUE_BRANCH}" --silent \
-            && echo "Deleted ${RESCUE_BRANCH}: this run succeeded." \
-            || echo "::warning::Could not delete ${RESCUE_BRANCH}. The next run sets it aside; delete it by hand."
+      # `implement-prd:publish`'s record of every write it made, kept as an
+      # artifact (ADR 0005): what each said, which token made it, and how the
+      # command ended. `always()`, so a run that failed keeps its log too.
+      - name: Keep the write log
+        if: always() && needs.gate.outputs.refused == 'false'
+        uses: actions/upload-artifact@v7
+        with:
+          name: agent-implement-prd-write-log
+          path: ${{ runner.temp }}/publish/write_log.jsonl
+          if-no-files-found: ignore
+          retention-days: 7
+          overwrite: true
 
       # The PRD PR: PRD branch into the base branch, the one PR of the chain,
       # and the one a human merges. The run that builds the first slice opens
@@ -1437,29 +1397,21 @@ jobs:
       #
       # Ahead of it, the rescue (#303): a run that stopped with commits the PRD
       # branch does not have keeps them on a side branch, and the comment
-      # names it. The checkout first, where the agent's job stopped and the
-      # one above was skipped: the prerequisite of its bundle is the tip
-      # `catch_up` left, which every full checkout of the repository has.
-      - name: Checkout the base branch for the rescue
-        if: always() && needs.gate.outputs.refused == 'false' && needs.gate.outputs.build == 'true' && (needs.implement-prd.result == 'failure' || needs.implement-prd.result == 'cancelled')
-        uses: actions/checkout@v7
-        with:
-          ref: ${{ inputs.default-branch }}
-          fetch-depth: 0
-          persist-credentials: false
-
+      # names it, from the checkout above.
+      #
       # **To a side branch with a fixed name, never to the PRD branch.** A
       # commit pushed there would stand on the PRD PR's head unverified, with
-      # no verdict and without the `Agent-Slice` trailer `Mark the slice's
-      # commits` gives a finished run's, so rescued work reaches the PRD
-      # branch only through the resumed run's own push, after its verify.
+      # no verdict and without the `Agent-Slice` trailer
+      # `implement-prd:publish` gives a finished run's, so rescued work
+      # reaches the PRD branch only through the resumed run's own push, after
+      # its verify.
       # Nothing else: no PRD PR, no review asked for, no label.
       #
       # Only where the gate claimed a build, the run stopped (the agent's
       # job failed, timed out or was cancelled, or a step here failed), and
-      # nothing was pushed to the PRD branch. The bundle is checked as `Push
-      # the PRD branch` checks it, and a bundle that fails a check is not
-      # rescued: no bundle at all is a run with no commits ahead of the tip it
+      # nothing was pushed to the PRD branch. The bundle is checked as
+      # `implement-prd:publish` checks it, and a bundle that fails a check is
+      # not rescued: no bundle at all is a run with no commits ahead of the tip it
       # started from, which pushes nothing.
       #
       # `--force-with-lease`, against the rescue as this step reads it: a run
@@ -1533,10 +1485,11 @@ jobs:
           reason="It stopped without giving a reason. The workflow run's log has the details."
           # The reason files, in the order they are read: this job's, the
           # gate's, the catch-up's and the runner's at the top, then
+          # `implement-prd:publish`'s in its own directory, then
           # `implement-prd:prepare`'s and `implement-prd:bundle`'s, each in the
           # directory of its own the agent's job handed it over in.
           reason_file=""
-          for file in "${RUNNER_TEMP}/failure_reason.txt" "${RUNNER_TEMP}/prepare/failure_reason.txt" "${RUNNER_TEMP}/bundle/failure_reason.txt"; do
+          for file in "${RUNNER_TEMP}/failure_reason.txt" "${RUNNER_TEMP}/publish/failure_reason.txt" "${RUNNER_TEMP}/prepare/failure_reason.txt" "${RUNNER_TEMP}/bundle/failure_reason.txt"; do
             if [ -f "$file" ]; then
               reason_file="$file"
               break

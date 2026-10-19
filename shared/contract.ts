@@ -661,6 +661,28 @@ const IMPLEMENT_PRD_BUNDLE = {
 } as const satisfies CommandContract;
 
 /**
+ * `implement-prd:publish`, declared ahead of `COMMANDS` so that the commands
+ * after it in the publish job can read its outputs. See `COMMANDS`.
+ */
+const IMPLEMENT_PRD_PUBLISH = {
+  inputs: {
+    ...EVERY_SUBCOMMAND,
+    ...LOOP,
+    BASE_REF: REQUIRED,
+    PRD_BRANCH: REQUIRED,
+    PRD_TIP: EMPTY,
+    BASE_SHA: REQUIRED,
+    SUB: REQUIRED,
+    RESCUE_BRANCH: REQUIRED,
+    CHECKOUT: REQUIRED,
+    BUNDLE_DIR: readsFromCommand("implement-prd:bundle", IMPLEMENT_PRD_BUNDLE, {
+      "branch.bundle": "sometimes",
+    }),
+  },
+  outputs: [...EVERY_SUBCOMMAND_OUTPUTS, "published.json", WRITE_LOG],
+} as const satisfies CommandContract;
+
+/**
  * `implement:publish`, declared ahead of `COMMANDS` so that
  * `implement:conclude` can read its outputs (`readsFromCommand`). See
  * `COMMANDS`.
@@ -877,6 +899,16 @@ const REVIEW_RED_CHECK_PLACE = {
  *   `CHECKOUT`, ahead of `BASE_SHA`, the tip `implement-prd:catch-up` left,
  *   into `branch.bundle`, and writes nothing where there are none, as
  *   `fix:bundle` bundles. It reads no repository and is handed no token.
+ * - `implement-prd:publish` checks the bundle `implement-prd:bundle` wrote,
+ *   read through `BUNDLE_DIR`, in `CHECKOUT`: there, intact, holding exactly
+ *   `PRD_BRANCH`, and building on `BASE_SHA`, the tip
+ *   `implement-prd:catch-up` left. Then it marks the slice's commits, those
+ *   in the bundle's head and in neither `BASE_SHA` nor `BASE_REF` as fetched
+ *   with `GH_TOKEN`, with the `Agent-Slice` trailer naming `SUB`, refusing
+ *   where there are none; pushes the marked head to `PRD_BRANCH` with the
+ *   loop's token, leased on `BASE_SHA`, or on the branch not existing where
+ *   `PRD_TIP` is empty; and deletes `RESCUE_BRANCH`, leased on its tip as
+ *   read, tolerated. `published.json` is whether it pushed, and the head.
  * - `implement:prepare` creates the agent's `BRANCH` in `CHECKOUT` at
  *   `BASE_SHA`, the commit the gate read `BASE_REF` at, and checks it out,
  *   with the loop's committer as the checkout's identity. A checkout that
@@ -1093,6 +1125,7 @@ export const COMMANDS = {
   },
   "implement-prd:prepare": IMPLEMENT_PRD_PREPARE,
   "implement-prd:bundle": IMPLEMENT_PRD_BUNDLE,
+  "implement-prd:publish": IMPLEMENT_PRD_PUBLISH,
   "implement-prd:catch-up": {
     inputs: {
       ...EVERY_SUBCOMMAND,

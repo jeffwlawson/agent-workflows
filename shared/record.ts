@@ -345,6 +345,9 @@ export const closingReference = (issue: number): RegExp => new RegExp(String.raw
 /** The trailer key a build run's commits carry, as `Agent-Slice: #<sub>`. */
 export const SLICE_TRAILER = "Agent-Slice";
 
+/** The `Agent-Slice` trailer naming sub-issue `sub`, as `implement-prd:publish` writes it. */
+export const sliceTrailer = (sub: number): string => `${SLICE_TRAILER}: #${sub}`;
+
 /**
  * A line of a commit message that is an `Agent-Slice` trailer, the sub-issue
  * it names as its group: the key in any case, as git's own parser reads it,

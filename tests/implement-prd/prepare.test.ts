@@ -149,7 +149,7 @@ describe("implement-prd:prepare checks the PRD branch out at the catch-up's tip"
 
     expect(git(work, "symbolic-ref", "HEAD")).toBe(`refs/heads/${BRANCH}`);
     expect(tip(work, "HEAD")).toBe(head);
-    // Under `refs/remotes/`, where the mark counts it as published.
+    // Under `refs/remotes/`, as the remote's.
     expect(tip(work, `refs/remotes/origin/${BRANCH}`)).toBe(head);
     expect(git(work, "config", "user.name")).toBe(LOOP_COMMITTER.name);
     expect(git(work, "config", "user.email")).toBe(LOOP_COMMITTER.email);

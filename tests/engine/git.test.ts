@@ -9,7 +9,18 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { BaseMoved, FetchFailed, GitError, gitFetcher, gitMerger, gitReader, gitWrites, githubRemote, type GitEnvironment } from "../../engine/git.js";
+import {
+  BaseMoved,
+  FetchFailed,
+  GitError,
+  gitFetcher,
+  gitMerger,
+  gitReader,
+  gitRewriter,
+  gitWrites,
+  githubRemote,
+  type GitEnvironment,
+} from "../../engine/git.js";
 import { createWriters, WriteFailed, type LogEntry } from "../../engine/writer.js";
 import { SUBPROCESS_TIMEOUT } from "../../vitest.config.js";
 
@@ -370,6 +381,82 @@ describe("changedPaths", () => {
  * workflow's checkout leaves it: detached. Each case spawns git about a
  * dozen times.
  */
+/**
+ * The rewrite of commit messages (#502), in `work`: a range over a merge, the
+ * commits outside it, and what is kept. Each commit is made by its own author
+ * and committer at its own dates, so a rewrite that took the environment's
+ * would show.
+ */
+describe("rewriteMessages", { timeout: 20 * SUBPROCESS_TIMEOUT }, () => {
+  /** A commit on `parents` with `message`, `file` written into its tree, by `who` at `when`. */
+  const made = (message: string, parents: readonly string[], who: string, when: number): string => {
+    fs.writeFileSync(path.join(work, `${who}.txt`), `${message}\n`);
+    git(work, "add", `${who}.txt`);
+    return execFileSync("git", ["commit-tree", git(work, "write-tree"), ...parents.flatMap((p) => ["-p", p])], {
+      cwd: work,
+      env: {
+        ...env,
+        GIT_AUTHOR_NAME: `${who} author`,
+        GIT_AUTHOR_EMAIL: `${who}@example.com`,
+        GIT_AUTHOR_DATE: `${when} +0200`,
+        GIT_COMMITTER_NAME: `${who} committer`,
+        GIT_COMMITTER_EMAIL: `${who}-c@example.com`,
+        GIT_COMMITTER_DATE: `${when + 60} -0500`,
+      },
+      input: message,
+      encoding: "utf8",
+      timeout: SUBPROCESS_TIMEOUT,
+    }).trim();
+  };
+  const show = (commit: string, format: string): string => git(work, "log", "-1", `--format=${format}`, commit);
+  const KEPT = "%T %an %ae %ad %cn %ce %cd";
+
+  it("makes every commit in the range again with its message rewritten, keeping trees, people and dates, and remapping a merge's parents", async () => {
+    const elsewhere = made("elsewhere moves on\n", [base], "main", 1_700_000_000);
+    const first = made("first\n\nbody\n", [base], "agent", 1_700_000_100);
+    const merge = made("Merge main\n", [first, elsewhere], "merger", 1_700_000_200);
+    const last = made("last\n", [merge], "agent2", 1_700_000_300);
+    const refs = git(work, "for-each-ref");
+
+    const result = await gitRewriter({ dir: work, env }).rewriteMessages({
+      head: last,
+      exclude: [base, elsewhere],
+      message: (text) => `${text}[marked]\n`,
+    });
+
+    expect(result.rewritten).toBe(3);
+    const chain = git(work, "rev-list", "--topo-order", result.head, `^${base}`, `^${elsewhere}`).split("\n");
+    expect(chain).toHaveLength(3);
+    const [newLast = "", newMerge = "", newFirst = ""] = chain;
+    for (const [was, now] of [
+      [last, newLast],
+      [merge, newMerge],
+      [first, newFirst],
+    ] as const) {
+      expect(now).not.toBe(was);
+      expect(show(now, KEPT)).toBe(show(was, KEPT));
+      expect(show(now, "%B")).toBe(`${show(was, "%B")}\n[marked]`);
+    }
+    expect(show(newMerge, "%P")).toBe(`${newFirst} ${elsewhere}`);
+    expect(show(newFirst, "%P")).toBe(base);
+    expect(show(elsewhere, "%B")).toBe("elsewhere moves on");
+    // Nothing moved: the commits are made, and no ref is touched.
+    expect(git(work, "for-each-ref")).toBe(refs);
+  });
+
+  it("hands back the head itself, and rewrites nothing, where every commit is excluded", async () => {
+    const result = await gitRewriter({ dir: work, env }).rewriteMessages({ head: next, exclude: [next], message: () => "never" });
+
+    expect(result).toEqual({ head: next, rewritten: 0 });
+  });
+
+  it("throws where the repository does not hold the head", async () => {
+    await expect(
+      gitRewriter({ dir: work, env }).rewriteMessages({ head: "f".repeat(40), exclude: [], message: (text) => text }),
+    ).rejects.toBeInstanceOf(GitError);
+  });
+});
+
 describe("merge", { timeout: 20 * SUBPROCESS_TIMEOUT }, () => {
   const IDENTITY = { name: "loop[bot]", email: "loop[bot]@example.com" };
   let origin: string;

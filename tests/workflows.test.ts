@@ -1486,11 +1486,10 @@ describe("a run that pushed waits for the PR head before asking for a review", (
     const step = steps.find((s) => s.name === name);
     const run = step?.run ?? "";
 
-    // A split run's publish job never checks the agent's branch out: it
-    // unbundles the commits into a ref and pushes the ref.
-    const branch = file === "implement-prd.yml" ? "PRD_BRANCH" : "BRANCH";
-    const head = SPLIT_RUNS[path.join(WORKFLOW_DIR, file)] !== undefined ? `"$(git rev-parse "refs/heads/\${${branch}}")"` : '"$(git rev-parse HEAD)"';
-    expect(push?.run ?? "").toContain(`echo "head=${head.slice(1, -1)}"`);
+    // The push is `implement-prd:publish`'s (#502), and the commit it pushed
+    // reaches this step through the glue that copies its `published.json`.
+    expect(push?.run ?? "").toContain('"${RUNNER_TEMP}/publish/published.json"');
+    expect(push?.run ?? "").toContain('"head=\\(.head)"');
     expect(step?.env?.["PUSHED_SHA"]).toBe("${{ steps.push.outputs.head }}");
     expect(step?.env?.["HEAD_WAIT_SECONDS"]).toBe("60");
     expect(run).toContain(`gh pr view "$${pr}" --json headRefOid --jq .headRefOid`);
@@ -4840,7 +4839,7 @@ describe("agent-implement-prd's catch-up is `implement-prd:catch-up`, after the 
     expect(job().needs).toBe("gate");
     expect(agent.needs).toEqual(["gate", "catch_up"]);
     expect(agent.if).toContain("needs.catch_up.outputs.parked != 'true'");
-    for (const id of ["push", "prd_pr"]) {
+    for (const id of ["publish", "prd_pr"]) {
       expect(publish.find((s) => s.id === id)?.if, id).toContain("needs.implement-prd.result == 'success'");
     }
     expect(publish.find((s) => s.name === "Request review")?.if).toContain("needs.implement-prd.result == 'success'");
@@ -5064,8 +5063,8 @@ describe("implement's agent job runs implement:prepare and implement:bundle from
  * Implement-prd's agent job (#501): one early install, before *Install
  * dependencies*, as implement's agent job has, and its two shell steps around
  * the agent become `implement-prd:prepare` and `implement-prd:bundle`, run
- * from it by its path, as the runner is. *Mark the slice's commits* stays
- * between the runner and the bundle until the publish job marks them. What
+ * from it by its path, as the runner is. *Mark the slice's commits* is gone
+ * from it: `implement-prd:publish` marks the slice's commits (#502). What
  * each command does is held in `tests/implement-prd/prepare.test.ts` and
  * `tests/implement-prd/bundle.test.ts`; what is held here is what the YAML
  * owns: the job's steps, where the tokens are, what each command is handed,
@@ -5098,7 +5097,6 @@ describe("implement-prd's agent job runs implement-prd:prepare and implement-prd
       ["Run implementation agent", BY_PATH("implement-prd")],
       ["Redact the session transcript", "glue"],
       ["Upload the session transcript", undefined],
-      ["Mark the slice's commits", "glue"],
       ["Bundle the branch", BY_PATH("implement-prd:bundle")],
       ["Hand the branch to the publish job", undefined],
     ];
@@ -5174,7 +5172,7 @@ describe("implement-prd's agent job runs implement-prd:prepare and implement-prd
     expect(JSON.stringify(prepare)).not.toMatch(/needs\.implement-prd|steps\./);
   });
 
-  /** However the agent ended, after the mark, with the catch-up's tip its prerequisite, and no token. */
+  /** However the agent ended, after the transcript, with the catch-up's tip its prerequisite, and no token. */
   it("bundles the branch with implement-prd:bundle however the job ended, ahead of the catch-up's tip, with no token", () => {
     const bundle = step("Bundle the branch");
     const env = { ...job().env, ...bundle?.env };
@@ -5182,7 +5180,7 @@ describe("implement-prd's agent job runs implement-prd:prepare and implement-prd
 
     expect(bundle?.if).toBe("always()");
     expect(index("Bundle the branch")).toBeGreaterThan(runner);
-    expect(index("Bundle the branch")).toBe(index("Mark the slice's commits") + 1);
+    expect(index("Bundle the branch")).toBe(index("Upload the session transcript") + 1);
     expect(index("Bundle the branch")).toBe(index("Hand the branch to the publish job") - 1);
     expect(bundle?.["working-directory"]).toBe("${{ runner.temp }}");
     expect(bundle?.env).toEqual({
@@ -5221,11 +5219,131 @@ describe("implement-prd's agent job runs implement-prd:prepare and implement-prd
     const publish = jobNamed(PRD, "publish").steps ?? [];
 
     expect(publish.find((s) => s.name === "Fetch what the agent handed over")?.with?.["path"]).toBe("${{ runner.temp }}");
-    for (const id of ["push", "rescue"]) {
-      expect(publish.find((s) => s.id === id)?.run, id).toContain('bundle="${RUNNER_TEMP}/bundle/branch.bundle"');
-    }
+    expect(publish.find((s) => s.id === "publish")?.env?.["BUNDLE_DIR"]).toBe("${{ runner.temp }}/bundle");
+    expect(publish.find((s) => s.id === "rescue")?.run).toContain('bundle="${RUNNER_TEMP}/bundle/branch.bundle"');
     const failure = publish.find((s) => s.name === "Mark blocked on failure")?.run ?? "";
-    for (const dir of ["prepare", "bundle"]) expect(failure).toContain(`"\${RUNNER_TEMP}/${dir}/failure_reason.txt"`);
+    for (const dir of ["publish", "prepare", "bundle"]) expect(failure).toContain(`"\${RUNNER_TEMP}/${dir}/failure_reason.txt"`);
+  });
+});
+
+/**
+ * Implement-prd's push is `implement-prd:publish` (#502): the bundle checked,
+ * the slice's commits marked with the `Agent-Slice` trailer, the marked head
+ * pushed leased on the catch-up's tip, and the rescue branch deleted, which
+ * `tests/implement-prd/publish.test.ts` holds against a real repository. The
+ * mark moves out of the agent's job with it (#410). What is held here is what
+ * the YAML owns: where the command sits, what it is handed, the glue that
+ * copies its push for the shell steps still after it, and the write log.
+ */
+describe("implement-prd's publish job marks and pushes the slice with implement-prd:publish", () => {
+  const job = (): Job => jobNamed(PRD, "publish");
+  const steps = (): readonly Step[] => job().steps ?? [];
+  const index = (name: string): number => {
+    const at = steps().findIndex((s) => s.name === name);
+    expect(at, `implement-prd's publish job has no \`${name}\` step`).toBeGreaterThan(-1);
+    return at;
+  };
+  const step = (name: string): Step | undefined => steps()[index(name)];
+
+  it("checks the base out and sets up Node wherever the gate claimed the run, then runs the command, its glue and the write log's upload", () => {
+    const at = index("Checkout the base branch");
+
+    expect(steps().slice(at, at + 5).map((s) => [s.name, s.id, s.if])).toEqual([
+      ["Checkout the base branch", undefined, "always() && needs.gate.outputs.refused == 'false'"],
+      ["Set up Node for the package", undefined, "always() && needs.gate.outputs.refused == 'false'"],
+      ["Publish the slice", "publish", "needs.implement-prd.result == 'success' && success()"],
+      ["Hand the push on", "push", "always()"],
+      ["Keep the write log", undefined, "always() && needs.gate.outputs.refused == 'false'"],
+    ]);
+    expect(index("Resolve the loop's token")).toBeLessThan(at);
+    expect(index("Open or reuse the PRD PR")).toBe(at + 5);
+    expect(step("Checkout the base branch")?.with).toEqual({ ref: "${{ inputs.default-branch }}", "fetch-depth": 0, "persist-credentials": false });
+    expect(step("Set up Node for the package")?.with).toEqual({
+      "node-version": "24",
+      "registry-url": "https://npm.pkg.github.com",
+      scope: "@jeffwlawson",
+      "package-manager-cache": false,
+    });
+    expect(job().permissions?.["packages"]).toBe("read");
+    expect(steps().filter((s) => (s.uses ?? "").startsWith("actions/checkout@"))).toHaveLength(1);
+    for (const gone of ["Push the PRD branch", "Delete the rescue branch", "Checkout the base branch for the rescue"]) {
+      expect(steps().map((s) => s.name)).not.toContain(gone);
+    }
+  });
+
+  it("hands the command both tokens, the gate's and the catch-up's facts, the bundle and the checkout, and nothing of the agent's job", () => {
+    const publish = step("Publish the slice");
+    const env = { ...job().env, ...publish?.env };
+
+    expect(publish?.run).toBe(
+      `npm exec --prefix "$RUNNER_TEMP" --yes --package=@jeffwlawson/agent-workflows@${PIN.slice(1)} -- agent-workflows implement-prd:publish`,
+    );
+    expect(publish?.["working-directory"]).toBe("${{ runner.temp }}");
+    expect(publish?.env).toEqual({
+      NODE_AUTH_TOKEN: "${{ secrets.GITHUB_TOKEN }}",
+      GH_TOKEN: "${{ secrets.GITHUB_TOKEN }}",
+      LOOP_TOKEN: "${{ steps.token.outputs.token }}",
+      LOOP_TOKEN_SOURCE: "${{ steps.token.outputs.source }}",
+      OUTPUT_DIR: "${{ runner.temp }}/publish",
+      BUNDLE_DIR: "${{ runner.temp }}/bundle",
+      CHECKOUT: "${{ github.workspace }}",
+      PRD_BRANCH: "${{ needs.gate.outputs.prd_branch }}",
+      PRD_TIP: "${{ needs.gate.outputs.prd_tip }}",
+      BASE_SHA: "${{ needs.catch_up.outputs.head }}",
+      SUB: "${{ needs.gate.outputs.sub }}",
+    });
+    for (const name of Object.keys(COMMANDS["implement-prd:publish"].inputs)) expect(env, name).toHaveProperty(name);
+    for (const name of Object.keys(publish?.env ?? {})) {
+      if (name !== "NODE_AUTH_TOKEN") expect(COMMANDS["implement-prd:publish"].inputs, name).toHaveProperty(name);
+    }
+    expect(JSON.stringify(publish)).not.toMatch(/needs\.implement-prd\.outputs/);
+  });
+
+  /** The trailer the next gate reads is the publish job's to write: nothing in the agent's job spells it. */
+  it("leaves nothing in the agent's job that writes the Agent-Slice trailer", () => {
+    const agent = JSON.stringify(jobNamed(PRD, "implement-prd").steps ?? []);
+
+    expect(agent).not.toMatch(/Agent-Slice|interpret-trailers|commit-tree|update-ref/);
+  });
+
+  it("keeps the command's write log", () => {
+    expect(step("Keep the write log")?.with).toMatchObject({
+      name: "agent-implement-prd-write-log",
+      path: "${{ runner.temp }}/publish/write_log.jsonl",
+      "if-no-files-found": "ignore",
+    });
+    expect(COMMANDS["implement-prd:publish"].outputs).toContain("write_log.jsonl");
+  });
+
+  /** The glue, executed: the pushed head under the name the shell steps read, and nothing where nothing was pushed. */
+  describe.skipIf(!["bash", "jq"].every((command) => {
+    try {
+      execFileSync("sh", ["-c", `command -v ${command}`], { timeout: SUBPROCESS_TIMEOUT });
+      return true;
+    } catch {
+      return false;
+    }
+  }))("the glue, executed", () => {
+    const glue = (published?: unknown): string => {
+      const temp = fs.mkdtempSync(path.join(os.tmpdir(), "prd-publish-glue-"));
+      const output = path.join(temp, "output");
+      fs.writeFileSync(output, "");
+      if (published !== undefined) {
+        fs.mkdirSync(path.join(temp, "publish"));
+        fs.writeFileSync(path.join(temp, "publish", "published.json"), JSON.stringify(published));
+      }
+      execFileSync("bash", ["-e", "-c", step("Hand the push on")?.run ?? ""], {
+        timeout: SUBPROCESS_TIMEOUT,
+        env: { PATH: process.env["PATH"] ?? "", RUNNER_TEMP: temp, GITHUB_OUTPUT: output },
+      });
+      return fs.readFileSync(output, "utf8");
+    };
+
+    it("copies the pushed head, and nothing where it pushed nothing or wrote nothing", () => {
+      expect(glue({ pushed: true, head: "abc" })).toBe("head=abc\n");
+      expect(glue({ pushed: false })).toBe("");
+      expect(glue()).toBe("");
+    });
   });
 });
 
@@ -5503,8 +5621,11 @@ describe("agent-implement-prd works one sub-issue per run", () => {
   it("pushes the PRD branch without force, and never rebases it", () => {
     const pushes = code().filter((l) => /^\s*(if ! )?git (-c "[^"]*" )?push\b/.test(l));
 
+    // The slice's push is `implement-prd:publish`'s since #502: a `pushRef`
+    // of the marked commits, leased on the tip the catch-up left, which
+    // `tests/implement-prd/publish.test.ts` holds.
+    expect(runOf(PRD, "publish")).toContain("agent-workflows implement-prd:publish");
     expect(pushes.map((l) => l.trim())).toEqual([
-      'git -c "http.extraHeader=AUTHORIZATION: basic ${auth}" push origin "$PRD_BRANCH"',
       'git -c "http.extraHeader=AUTHORIZATION: basic ${auth}" push --force-with-lease="refs/heads/${RESCUE_BRANCH}:${current}" origin "${tip}:refs/heads/${RESCUE_BRANCH}"',
     ]);
     // The rescue's lease is the one force in the file, and it is not on the PRD branch.
@@ -5655,19 +5776,25 @@ describe("agent-implement-prd works one sub-issue per run", () => {
         ((s.uses ?? "").startsWith("actions/setup-node@") && s.name !== "Set up Node for the gate") ||
         (s.run ?? "").includes("${{ inputs.setup }}") ||
         (s.run ?? "").includes("@anthropic-ai/claude-code") ||
-        ["implement-prd", "implement-prd:prepare"].includes(subcommandRun(s) ?? "") ||
-        ["trailer", "push"].includes(s.id ?? ""),
+        ["implement-prd", "implement-prd:prepare", "implement-prd:publish"].includes(subcommandRun(s) ?? ""),
     );
+    const publishJob = jobNamed(PRD, "publish").steps ?? [];
+    const publishSetup = publishJob.filter((s) => (s.uses ?? "").startsWith("actions/checkout@") || (s.uses ?? "").startsWith("actions/setup-node@"));
+    const inPublishSetup = (step: Step): boolean => publishSetup.some((s) => JSON.stringify(s) === JSON.stringify(step));
 
-    // Four checkouts (the catch-up's, the agent's and the publish job's two,
-    // one to push and one to rescue, #303), the catch-up's Node (#500), the
-    // agent's package Node and `implement-prd:prepare` (#501), and the
-    // agent's toolchain, runner and trailer, and the push.
-    expect(building).toHaveLength(14);
-    for (const step of building) {
+    // Two checkouts (the catch-up's and the agent's), the catch-up's Node
+    // (#500), the agent's package Node and `implement-prd:prepare` (#501), the
+    // agent's toolchain and runner, and `implement-prd:publish` (#502). The
+    // publish job's checkout and Node are not among them: they run wherever
+    // the gate claimed the run, a run that builds nothing included, so the
+    // steps after a stopped agent never check a bundle in an empty workspace,
+    // and no model runs in that job.
+    expect(building.filter((s) => !inPublishSetup(s))).toHaveLength(11);
+    for (const step of building.filter((s) => !inPublishSetup(s))) {
       const condition = conditionOf(PRD, step);
       expect(condition.includes(`${GATE_WENT_AHEAD} && ${BUILDING}`) || condition.includes(AGENT_SUCCEEDED), `${step.name}: ${condition}`).toBe(true);
     }
+    expect(publishSetup.map((s) => s.if)).toEqual([`always() && ${GATE_WENT_AHEAD}`, `always() && ${GATE_WENT_AHEAD}`]);
   });
 
   /**
@@ -9088,12 +9215,6 @@ describe("a split run keeps every write off the agent's runner", () => {
         readonly bundle?: string;
         readonly bundleIf: string;
         readonly branch: string;
-        /**
-         * The shell push and the checks before it, where a shell step pushes:
-         * fix's is `fix:publish` (#468), and update-branch's
-         * `update-branch:publish` (#484), whose tests hold their bundle checks.
-         */
-        readonly push?: { readonly ancestors: readonly string[]; readonly pushed: string; readonly blocks: number };
         readonly patJobs: readonly string[];
       }
     >
@@ -9136,7 +9257,7 @@ describe("a split run keeps every write off the agent's runner", () => {
       // However the job ended (#303): a stopped run's commits are rescued.
       bundleIf: "always()",
       branch: "PRD_BRANCH",
-      push: { ancestors: ["$BASE_SHA"], pushed: 'push origin "$PRD_BRANCH"', blocks: 5 },
+      // The push is `implement-prd:publish`'s (#502), whose tests hold its checks.
       // The catch-up pushes the default branch's merge before the agent runs,
       // on a runner of its own.
       patJobs: ["catch_up", "publish"],
@@ -9259,40 +9380,8 @@ describe("a split run keeps every write off the agent's runner", () => {
     },
   );
 
-  /**
-   * The bundle's content is the agent's, as the pushed branch always was; what
-   * the publish job checks is that it is the branch this run was for: intact,
-   * exactly the one branch the gate named, built on what a job no agent ran in
-   * read. Every check precedes the push, and none of them reads the agent's
-   * job.
-   */
-  it.each(splits.filter(([name]) => specOf(name).push !== undefined))("%s: checks the bundle before it pushes", (name, file) => {
-    const spec = { ...specOf(name), ...specOf(name).push! };
-    const push = (jobNamed(file, rolesOf(file).publish).steps ?? []).find((s) => s.id === "push");
-    const run = push?.run ?? "";
-    const at = (needle: string): number => {
-      expect(run, needle).toContain(needle);
-      return run.indexOf(needle);
-    };
-
-    const pushed = at(spec.pushed);
-    for (const check of [
-      'git bundle verify --quiet "$bundle"',
-      'git bundle list-heads "$bundle"',
-      `!= "refs/heads/\${${spec.branch}}"`,
-      'git bundle unbundle "$bundle"',
-      ...spec.ancestors.map((a) => `git merge-base --is-ancestor "${a}" "refs/heads/\${${spec.branch}}"`),
-    ]) {
-      expect(at(check), check).toBeLessThan(pushed);
-    }
-    // Each refusal names itself, for the failure comment.
-    expect(run.match(/block "The agent's/g)).toHaveLength(spec.blocks);
-  });
-
   /** What the bundle is checked against comes from a job no agent ran in. */
   it("checks each bundle against a job that ran no agent", () => {
-    const pushEnv = (file: string): Readonly<Record<string, string>> =>
-      (jobNamed(file, "publish").steps ?? []).find((s) => s.id === "push")?.env ?? {};
 
     // implement's are the gate's base commit and the branch's tip as the gate
     // read it, handed to `implement:publish` (#492).
@@ -9307,7 +9396,10 @@ describe("a split run keeps every write off the agent's runner", () => {
     expect(refresh?.env?.["BASE_SHA"]).toBe("${{ needs.gate.outputs.base }}");
     expect(refresh?.env?.["HEAD_SHA"]).toBe("${{ github.event.pull_request.head.sha }}");
     expect(jobNamed(path.join(WORKFLOW_DIR, "update-branch.yml"), "gate").outputs?.["base"]).toBe("${{ steps.merged.outputs.base }}");
-    expect(pushEnv(path.join(WORKFLOW_DIR, "implement-prd.yml"))["BASE_SHA"]).toBe("${{ needs.catch_up.outputs.head }}");
+    // implement-prd's is the tip the catch-up left, handed to
+    // `implement-prd:publish` (#502).
+    const marked = (jobNamed(PRD, "publish").steps ?? []).find((s) => s.id === "publish");
+    expect(marked?.env?.["BASE_SHA"]).toBe("${{ needs.catch_up.outputs.head }}");
     expect(jobNamed(path.join(WORKFLOW_DIR, "implement-prd.yml"), "catch_up").outputs?.["head"]).toBe("${{ steps.state.outputs.head }}");
     // fix's is the event's head, which the gate confirmed is the branch's,
     // handed to `fix:publish` and `fix:conclude` as `HEAD_SHA` (#468, #469).
@@ -10075,7 +10167,9 @@ describe("rescue and resume for fix and implement-prd", () => {
       condition:
         "always() && needs.gate.outputs.refused == 'false' && needs.gate.outputs.build == 'true' && (cancelled() || failure() || needs.implement-prd.result == 'failure' || needs.implement-prd.result == 'cancelled') && steps.push.outputs.head == ''",
       ignored: "rescue_ignored.md",
-      deleteIf: "needs.implement-prd.result == 'success' && success()",
+      // `implement-prd:publish` deletes the rescue (#502):
+      // `tests/implement-prd/publish.test.ts` holds it.
+      deleteIf: "",
       label: "agent:implement",
     },
   ] as const;
@@ -10138,16 +10232,20 @@ describe("rescue and resume for fix and implement-prd", () => {
     expect(subcommandRun(prepare ?? {}), c.prepare).toBe(c.fetchedBy);
   });
 
-  const SHELL = CASES.filter((c) => c.deleteIf !== "");
+  const SHELL = CASES.filter((c) => c.ignored === "rescue_ignored.md");
 
-  it.each(SHELL)("$agent: deletes the rescue branch once a run succeeds, after its push", (c) => {
-    const steps = jobNamed(c.file, "publish").steps ?? [];
-    const at = named(steps, "Delete the rescue branch");
-    const run = code(steps[at]);
+  /**
+   * Implement-prd's deletion is `implement-prd:publish`'s (#502), after its
+   * push and only where it pushed, told the rescue branch by the job.
+   */
+  it("implement-prd: hands implement-prd:publish the rescue branch, where the agent's job succeeded", () => {
+    const steps = jobNamed(PRD, "publish").steps ?? [];
+    const publish = steps.find((s) => s.id === "publish");
 
-    expect(steps[at]?.if).toBe(c.deleteIf);
-    expect(at).toBeGreaterThan(steps.findIndex((s) => s.id === "push"));
-    expect(run).toContain('gh api --method DELETE "repos/{owner}/{repo}/git/refs/heads/${RESCUE_BRANCH}"');
+    expect(COMMANDS["implement-prd:publish"].inputs).toHaveProperty("RESCUE_BRANCH");
+    expect(jobNamed(PRD, "publish").env?.["RESCUE_BRANCH"]).toBe("agent/rescue/prd-${{ github.event.issue.number }}");
+    expect(publish?.if).toBe("needs.implement-prd.result == 'success' && success()");
+    expect(steps.find((s) => s.name === "Delete the rescue branch")).toBeUndefined();
   });
 
   it.each(SHELL)("$agent: says so where it set a rescue aside, however the run ends", (c) => {

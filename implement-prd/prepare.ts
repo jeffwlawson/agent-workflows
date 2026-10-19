@@ -29,14 +29,14 @@ const gitReason = (error: unknown): string => {
  * from this one, so the agent builds on exactly the tip the publish job
  * checks its commits against. Where `PRD_TIP`, the tip the gate read, says
  * the branch exists, it is fetched first with the workflow token into
- * `refs/remotes/origin/`, where `Mark the slice's commits` counts it as
- * published; where it does not, the catch-up made it at the base, which the
+ * `refs/remotes/origin/`, as the remote's; where it does not, the catch-up made it at the base, which the
  * checkout already holds. A checkout that still does not hold `BASE_SHA` is
  * refused with a sentence. The checkout's identity is the loop's committer.
  *
  * **The rescue**, `RESCUE_BRANCH`, fetched to `refs/rescue/` as
- * `fix:prepare` fetches it (`fetchRescue`): outside `refs/remotes/`, so the
- * mark counts its commits as this run's. None is fine; one that couldn't be
+ * `fix:prepare` fetches it (`fetchRescue`): outside `refs/remotes/`, since
+ * its commits were never pushed anywhere they count, and are this run's,
+ * which `implement-prd:publish` marks once they are pushed. None is fine; one that couldn't be
  * read stops the run.
  *
  * It runs before anything of the adopter's has run on the runner, reads with

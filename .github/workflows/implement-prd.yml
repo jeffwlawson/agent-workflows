@@ -25,7 +25,7 @@ name: Agent Implement PRD (reusable)
 #
 # The chain walks **sub-issues API order**: publish order is execution order
 # (docs/agents/ticket-shape.md). Before the first slice is built, and only
-# then, the preflight reads every sub-issue's "blocked by" links and refuses a
+# then, `implement-prd:gate` reads every sub-issue's "blocked by" links and refuses a
 # list whose order contradicts them, or a sub-issue blocked from outside the
 # PRD (#222). There is no check as each later slice is reached: sub-issues
 # stay open until the PRD PR merges, so a link between two slices never clears
@@ -53,7 +53,7 @@ name: Agent Implement PRD (reusable)
 # A run builds one slice, pushes it to the PRD branch, adds `agent:review` to
 # the PRD PR and stops. That review is the slice's round. The next run builds
 # the next slice **only if the PRD PR's head carries an `agent-review` verdict
-# of approval**, read live in the preflight. Anything else refuses and names
+# of approval**, read live by `implement-prd:gate`. Anything else refuses and names
 # the ways on, and that includes a human re-adding `agent:implement` to a
 # parked chain: the label is never the gate.
 #
@@ -782,7 +782,7 @@ jobs:
       # Every commit this run made gets exactly one `Agent-Slice: #<sub>`
       # trailer naming the sub-issue it built (#242): the mark
       # `shared/slice-ranges.ts` reads a slice's commits off the PRD branch by,
-      # and the one the preflight reads which sub-issues are built from,
+      # and the one `implement-prd:gate` reads which sub-issues are built from,
       # whatever their subject lines say. The agent is not told to write it,
       # so it is written here, and one the agent did write is replaced.
       #
@@ -1137,7 +1137,7 @@ jobs:
           progress="${RUNNER_TEMP}/progress.md"
           status="${RUNNER_TEMP}/status.md"
 
-          # From the preflight's snapshot, the one every branch of it ruled on.
+          # From the gate's snapshot, the one every branch of it ruled on.
           # A closed sub-issue gets no reference: one this release built is
           # open until the PRD PR merges, so a closed one landed before the
           # upgrade. One line, every reference with its own keyword, since
@@ -1303,7 +1303,7 @@ jobs:
       # records that it is requested in the PRD PR's progress list, where a review of
       # the PRD PR reads it from, and then adds `agent:review`. The record goes
       # first, so the review the label starts finds it, and a retry writes it
-      # once. It is also what the preflight reads the PRD as finished by, so
+      # once. It is also what `implement-prd:gate` reads the PRD as finished by, so
       # a label add that fails takes it back out before the step stops.
       #
       # `LANDED` counts the slices that landed before the upgrade too
@@ -1372,7 +1372,7 @@ jobs:
             gh issue edit "$ISSUE_NUMBER" --remove-label "agent:implement" || true
             # Removed first, as every trigger label the loop adds (#236).
             gh pr edit "$PRD_PR" --remove-label "agent:review" || true
-            # The mark is what the preflight calls this PRD finished by, so a
+            # The mark is what `implement-prd:gate` calls this PRD finished by, so a
             # label that did not go on takes it back out: left in, the retry
             # would be refused as finished with no final review ever asked for.
             if ! gh pr edit "$PRD_PR" --add-label "agent:review"; then
@@ -1402,15 +1402,15 @@ jobs:
       # job are skipped on a run that builds nothing, and the agent's on a
       # parked chain.
       #
-      # `!= 'true'`, not `== 'false'`: a preflight that fails hard exits before
-      # writing the output at all, and `''` is not `'false'` — an equality gate
-      # would skip this step precisely when the PRD most needed the comment.
-      # Refusals and deferrals exit 0 and set `refused`, so neither reaches
-      # this job at all; the preflight's `block` is the exception, which exits
-      # 1 to land here.
+      # `!= 'true'`, not `== 'false'`: `implement-prd:gate` that throws before
+      # deciding writes no `proceed`, so the gate job's `refused` is `''`, and
+      # `''` is not `'false'`; an equality gate would skip this step precisely
+      # when the PRD most needed the comment. Refusals and deferrals succeed
+      # and set `refused` to `true`, so neither reaches this job at all; a
+      # throw is what lands here, with the reason the CLI wrote for it.
       #
       # In the loop's one order (#236): the comment, then this run's own label
-      # off, then `agent:blocked`. The removal only where the preflight decided
+      # off, then `agent:blocked`. The removal only where the gate decided
       # the issue was this run's, for the last step's reason below.
       #
       # Ahead of it, the rescue (#303): a run that stopped with commits the PRD
@@ -1433,7 +1433,7 @@ jobs:
       # branch only through the resumed run's own push, after its verify.
       # Nothing else: no PRD PR, no review asked for, no label.
       #
-      # Only where the preflight claimed a build, the run stopped (the agent's
+      # Only where the gate claimed a build, the run stopped (the agent's
       # job failed, timed out or was cancelled, or a step here failed), and
       # nothing was pushed to the PRD branch. The bundle is checked as `Push
       # the PRD branch` checks it, and a bundle that fails a check is not
@@ -1556,7 +1556,7 @@ jobs:
           elif [ -n "${SUB}" ]; then
             reason="${reason} It was building sub-issue #${SUB}."
           fi
-          # Not after a preflight that died before deciding: that run leaves
+          # Not after a gate that died before deciding: that run leaves
           # the label on (see the last step), and adding a label that is
           # already present fires no event.
           if [ "$REFUSED" != "false" ]; then
@@ -1684,7 +1684,7 @@ jobs:
       # failure, timeout or cancel, so it never outlives the run that decided
       # the issue was its own. `== 'false'`, unlike the failure step above: a
       # refusal took it off already, a deferral must not touch it, and nor
-      # must a preflight that died before deciding, since that run may be the
+      # must a gate that died before deciding, since that run may be the
       # one that would have deferred, and `agent-implement` owns that label event
       # and holds the label while it works. Such a run leaves it on, as it
       # always has, and the failure comment says to remove it before re-adding.

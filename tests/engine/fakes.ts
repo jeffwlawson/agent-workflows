@@ -9,10 +9,11 @@
  * it reaches the fake.
  */
 import { GitError, type BundleHead, type GitReader } from "../../engine/git.js";
-import { GitHubError } from "../../engine/github.js";
+import { GitHubError, isServerError } from "../../engine/github.js";
 import type { CheckRun, CommitStatus, ConversationComment, GitHubReader, PullRequest, WorkflowRun } from "../../engine/read.js";
 import {
   createWriters,
+  ReadBackFailed,
   type Backend,
   type Lease,
   type Limits,
@@ -33,6 +34,19 @@ export interface FakePullRequest {
   title: string;
   body: string;
   labels: string[];
+  /** The branch it is from, and the branch it is into, where a test names them. */
+  headRef?: string;
+  baseRef?: string;
+}
+
+/**
+ * An issue's place in the hierarchy and its blockers. Its labels are
+ * `issueLabels`', which its writes move.
+ */
+export interface FakeIssue {
+  parent?: number;
+  subIssues: number;
+  blockedBy: { readonly number: number; readonly state: "open" | "closed" }[];
 }
 
 /** The live state both fakes share. */
@@ -46,6 +60,8 @@ export interface FakeGitHub {
   readonly conversation: Map<number, ConversationComment[]>;
   /** Labels on issues that are not pull requests. */
   readonly issueLabels: Map<number, string[]>;
+  /** Issues that are not pull requests, by number. One not here is not found. */
+  readonly issues: Map<number, FakeIssue>;
   /**
    * Each branch's tip, by name: what a push moves, and what `pushRef` and
    * `deleteRef` lease against, a `refs/heads/` ref by its branch name and any
@@ -116,6 +132,7 @@ export const fakeGitHub = (pullRequests: readonly Partial<FakePullRequest>[] = [
   threads: new Map(),
   conversation: new Map(),
   issueLabels: new Map(),
+  issues: new Map(),
   branches: new Map(),
   commits: new Map(),
   comparisons: new Map(),
@@ -133,12 +150,24 @@ const pullRequestOf = (github: FakeGitHub, number: number): FakePullRequest => {
   return pr;
 };
 
+const issueOf = (github: FakeGitHub, number: number): FakeIssue => {
+  const issue = github.issues.get(number);
+  if (issue === undefined) throw new GitHubError(`issue #${number}: 404 Not Found`, 404);
+  return issue;
+};
+
 const labelsOf = (github: FakeGitHub, issue: number): string[] => {
   const pr = github.pullRequests.get(issue);
   if (pr !== undefined) return pr.labels;
   const labels = github.issueLabels.get(issue) ?? [];
   github.issueLabels.set(issue, labels);
   return labels;
+};
+
+/** The open pull request from exactly `head` into exactly `base`, as the reader and the open's read-back find it. */
+const openFrom = (github: FakeGitHub, head: string, base: string) => {
+  const pr = [...github.pullRequests.values()].find((p) => p.state === "open" && p.headRef === head && p.baseRef === base);
+  return pr === undefined ? undefined : { number: pr.number, url: `https://github.com/o/r/pull/${pr.number}` };
 };
 
 /** A read the fake reader received: the method and its arguments. */
@@ -155,6 +184,29 @@ export const fakeReader = (github: FakeGitHub): { readonly reader: GitHubReader;
       reads.push({ method: "pullRequest", args: [number] });
       const pr = pullRequestOf(github, number);
       return { ...pr, labels: [...pr.labels] } satisfies PullRequest;
+    },
+    issueShape: async (number) => {
+      reads.push({ method: "issueShape", args: [number] });
+      const issue = issueOf(github, number);
+      return { parent: issue.parent, subIssues: issue.subIssues, labels: [...(github.issueLabels.get(number) ?? [])] };
+    },
+    openBlockers: async (number) => {
+      reads.push({ method: "openBlockers", args: [number] });
+      return issueOf(github, number)
+        .blockedBy.filter((blocker) => blocker.state === "open")
+        .map((blocker) => blocker.number);
+    },
+    openPullRequestsClosing: async (pattern) => {
+      reads.push({ method: "openPullRequestsClosing", args: [pattern] });
+      // Newest first, as the endpoint lists them.
+      return [...github.pullRequests.values()]
+        .filter((pr) => pr.state === "open" && pattern.test(pr.body))
+        .map((pr) => pr.number)
+        .sort((a, b) => b - a);
+    },
+    openPullRequest: async (head, base) => {
+      reads.push({ method: "openPullRequest", args: [head, base] });
+      return openFrom(github, head, base);
     },
     commitStatuses: async (sha) => {
       reads.push({ method: "commitStatuses", args: [sha] });
@@ -358,6 +410,39 @@ const fakeBackend = (github: FakeGitHub, token: string): Backend => {
         github.branches.delete(name);
       });
       return { outcome: "applied" };
+    },
+    openPullRequest: async (call, open) => {
+      try {
+        return await call("POST pulls", async () =>
+          attempt("openPullRequest", "POST pulls", () => {
+            const number = Math.max(0, ...github.pullRequests.keys()) + 1;
+            github.pullRequests.set(number, {
+              number,
+              nodeId: `PR_${number}`,
+              state: "open",
+              draft: open.draft,
+              headSha: github.branches.get(open.head) ?? "",
+              title: open.title,
+              body: open.body,
+              labels: [],
+              headRef: open.head,
+              baseRef: open.base,
+            });
+            return { outcome: "applied" as const, number, url: `https://github.com/o/r/pull/${number}` };
+          }),
+        );
+      } catch (error) {
+        // The read-back the engine's own makes, on a server error alone, by head and base alone.
+        if (!isServerError(error)) throw error;
+        let found;
+        try {
+          found = await call("GET pulls", async () => attempt("openPullRequest", "GET pulls", () => openFrom(github, open.head, open.base)), "read");
+        } catch (readError) {
+          throw new ReadBackFailed(error, readError);
+        }
+        if (found === undefined) throw error;
+        return { outcome: "applied", ...found, readBack: (error as Error).message };
+      }
     },
     editPullRequest: async (call, number, edit) => {
       const pr = await call("GET pull", async () => pullRequestOf(github, number), "read");

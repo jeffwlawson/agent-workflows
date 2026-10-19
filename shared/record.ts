@@ -33,9 +33,10 @@ export const DEFAULT_LOOP_ACCOUNT = "github-actions[bot]";
 /**
  * Who the merge commits the loop makes are made by: the name and noreply
  * address every workflow's merge of a base branch, and the resolution of one,
- * is committed as. Handed to the engine's merge (`engine/git.ts`), which
- * spells no identity of its own. The workflows' shell steps that still merge
- * spell it too, until their steps move.
+ * is committed as, and the identity `implement:prepare` gives the checkout
+ * an implement agent commits in. Handed to the engine's merge
+ * (`engine/git.ts`), which spells no identity of its own. The workflows'
+ * shell steps that still merge spell it too, until their steps move.
  */
 export const LOOP_COMMITTER = {
   name: "sandcastle-agent[bot]",
@@ -276,6 +277,39 @@ export const SERVICE_LABELS: readonly string[] = [REVIEW_LABEL];
  * (PRD #222).
  */
 export const PRD_BRANCH_PREFIX = "agent/prd-";
+
+/**
+ * What an issue branch's name starts with: `agent/issue-<n>-<slug>`, the
+ * branch `implement` builds a standalone issue on, and the head of its PR.
+ */
+export const ISSUE_BRANCH_PREFIX = "agent/issue-";
+
+/**
+ * The branch `implement` builds issue `issue` on, its slug from `title`:
+ * lowercased, every run of anything but `[a-z0-9]` one `-`, the ends trimmed,
+ * then cut to 50, which can leave a trailing `-` the trim came too early to
+ * take. Byte for byte what the shell step it replaced wrote, on the runner's
+ * `C.UTF-8` locale, so a retry lands on the branch an older release named:
+ * only ASCII is lowercased there, and every other character is a separator,
+ * so `toLowerCase`, which turns `İ` into an ASCII `i`, would name another
+ * branch.
+ */
+export const issueBranch = (issue: number, title: string): string => {
+  const slug = title
+    .replace(/[A-Z]/g, (letter) => letter.toLowerCase())
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, 50);
+  return `${ISSUE_BRANCH_PREFIX}${issue}-${slug}`;
+};
+
+/**
+ * What a pull request's body says to close issue `issue` with, as a match:
+ * `Closes`, `Fixes` or `Resolves`, any case, then `#<issue>` and a word
+ * boundary, so `#12` is not `#123`. A PR whose body carries it is the issue's,
+ * and `implement` refuses to open a second.
+ */
+export const closingReference = (issue: number): RegExp => new RegExp(String.raw`(closes|fixes|resolves)\s+#${issue}\b`, "i");
 
 // Commit trailers.
 

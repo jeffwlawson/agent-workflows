@@ -1,6 +1,7 @@
 import { GitHubError } from "../engine/github.js";
 import type { PullRequest } from "../engine/read.js";
-import { WriteFailed, type Limits, type Writer } from "../engine/writer.js";
+import type { Limits, Writer } from "../engine/writer.js";
+import { describe, pullRequestNumber, tolerated } from "../shared/command-helpers.js";
 import type { CommandIo } from "../shared/command-io.js";
 import { workflowRunUrl } from "../shared/common.js";
 import { COMMANDS, type DirectoryFiles, type DirectoryInput } from "../shared/contract.js";
@@ -226,7 +227,7 @@ const failureComment = (inputs: Inputs, reason: string, retry: string): string =
 };
 
 /** The trigger label comes off however the run ends (#236), so it never outlives the run. */
-const removeTrigger = (pr: number, workflow: Writer): Promise<void> =>
+const removeTrigger = (pr: number, workflow: Writer): Promise<boolean> =>
   tolerated(undefined, () => workflow.removeLabel(pr, UPDATE_BRANCH_LABEL));
 
 /** The labels a run queued in this pull request's concurrency group carries. */
@@ -295,20 +296,6 @@ const askAgainIfMoved = async (
 };
 
 /**
- * A write the loop can live without: a failure is said as `warning`, where
- * there is one, and stays in the write log as a failure its last line does not
- * name. Anything but a failed write, a limit reached included, still stops.
- */
-const tolerated = async (warning: string | undefined, write: () => Promise<unknown>): Promise<void> => {
-  try {
-    await write();
-  } catch (error) {
-    if (!(error instanceof WriteFailed)) throw error;
-    if (warning !== undefined) console.log(`::warning::${warning}`);
-  }
-};
-
-/**
  * What conclude may write, and how many of each (ADR 0005): two comments (the
  * failure comment, and the note that the head moved with no token to ask
  * again; never both), `agent:update-branch` off, and two labels added
@@ -317,13 +304,6 @@ const tolerated = async (warning: string | undefined, write: () => Promise<unkno
 const LIMITS: Limits = { comment: 2, removeLabel: 1, addLabel: 2 };
 
 const FLAG = choice([true, false]);
-
-const describe = (error: unknown): string => (error instanceof Error ? error.message : String(error));
-
-const pullRequestNumber = (value: string): number => {
-  if (!/^[1-9][0-9]{0,9}$/.test(value)) throw new Error(`PR_NUMBER is ${JSON.stringify(value)}, which is not a pull request number.`);
-  return Number(value);
-};
 
 const commit = (value: string): string => {
   if (!/^[0-9a-f]{40}$/.test(value)) throw new Error(`HEAD_SHA is ${JSON.stringify(value)}, which is not a full commit id.`);

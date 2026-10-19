@@ -7,16 +7,17 @@ import { parse } from "yaml";
 import { SUBPROCESS_TIMEOUT } from "../vitest.config.js";
 
 /**
- * Runs implement's `Push branch`, the real `run:` block read out of its publish
- * job, under `bash -e` against real git: a bare repository as `origin`, a
- * clone of it as the publish job's fresh checkout, and a second clone standing
- * in for the agent's runner, which hands over a bundle.
+ * Runs implement-prd's `Push the PRD branch`, the real `run:` block read out of its
+ * publish job, under `bash -e` against real git: a bare repository as
+ * `origin`, a clone of it as the publish job's fresh checkout, and a second
+ * clone standing in for the agent's runner, which hands over a bundle.
  *
  * What it executes is the check between the two runners. The bundle's content
  * is the agent's to write; the step pushes it only where it is intact, holds
- * exactly the branch the gate named, and builds on the base the gate read —
+ * exactly the branch the gate named, and builds on the tip the catch-up left,
  * and where it does not, it pushes nothing and says which, in the reason file
- * the failure step posts.
+ * the failure step posts. Implement's push is `implement:publish`'s since
+ * #492, and its scenarios are `tests/implement/publish.test.ts`'s.
  *
  * Skipped where `bash` or `git` is not on PATH.
  */
@@ -33,14 +34,6 @@ const BRANCH = "agent/issue-7-add-a-widget";
 interface Workflow {
   readonly jobs: Record<string, { readonly steps?: readonly { readonly id?: string; readonly run?: string }[] }>;
 }
-
-const pushStep = (): string => {
-  const workflow = parse(fs.readFileSync(path.join(".github", "workflows", "implement.yml"), "utf8")) as Workflow;
-  const run = (workflow.jobs["publish"]?.steps ?? []).find((s) => s.id === "push")?.run;
-
-  expect(run, "implement.yml's publish job has no `push` step").toBeDefined();
-  return run ?? "";
-};
 
 const IDENTITY = {
   GIT_AUTHOR_NAME: "test",
@@ -94,8 +87,12 @@ const world = (): World => {
   return { temp, origin, publish, agent, runner, base };
 };
 
-const bundle = (w: World, ...refs: string[]): void => {
-  git(w.agent, "bundle", "create", "--quiet", path.join(w.runner, "branch.bundle"), ...refs, "^refs/heads/main");
+/** Where the publish job finds the bundle: at the top of what the download wrote. */
+const bundleFile = (w: World): string => path.join(w.runner, "branch.bundle");
+
+const bundleTo = (w: World, ...refs: string[]): void => {
+  fs.mkdirSync(path.dirname(bundleFile(w)), { recursive: true });
+  git(w.agent, "bundle", "create", "--quiet", bundleFile(w), ...refs, "^refs/heads/main");
 };
 
 interface Outcome {
@@ -105,42 +102,6 @@ interface Outcome {
   readonly pushed: string;
 }
 
-const push = (w: World): Outcome => {
-  const script = path.join(w.temp, "step.sh");
-  const output = path.join(w.temp, "output");
-  fs.writeFileSync(script, pushStep());
-  fs.writeFileSync(output, "");
-
-  const result = spawnSync("bash", ["-e", script], {
-    cwd: w.publish,
-    encoding: "utf8",
-    timeout: SUBPROCESS_TIMEOUT,
-    env: {
-      ...process.env,
-      ...IDENTITY,
-      RUNNER_TEMP: w.runner,
-      GITHUB_OUTPUT: output,
-      BRANCH,
-      BASE_REF: "main",
-      BASE_SHA: w.base,
-      PUSH_TOKEN: "not-a-token",
-    },
-  });
-  const reason = path.join(w.runner, "failure_reason.txt");
-  const pushed = spawnSync("git", ["rev-parse", "--verify", "--quiet", `refs/heads/${BRANCH}`], {
-    cwd: w.origin,
-    encoding: "utf8",
-    timeout: SUBPROCESS_TIMEOUT,
-  });
-
-  return {
-    status: result.status,
-    reason: fs.existsSync(reason) ? fs.readFileSync(reason, "utf8") : "",
-    head: /^head=(.*)$/m.exec(fs.readFileSync(output, "utf8"))?.[1] ?? "",
-    pushed: pushed.stdout.trim(),
-  };
-};
-
 /** A refusal pushes nothing, fails the step, and names itself for the failure comment. */
 const refused = (outcome: Outcome, says: RegExp): void => {
   expect(outcome.status).not.toBe(0);
@@ -148,103 +109,6 @@ const refused = (outcome: Outcome, says: RegExp): void => {
   expect(outcome.reason).toMatch(says);
   expect(outcome.reason).toMatch(/nothing was pushed\.\n$/);
 };
-
-describe.skipIf(!CAN_RUN)("implement's publish job pushes the agent's bundle only once it checks out", () => {
-  it(
-    "pushes the branch the gate named, at the agent's commit, and reports it",
-    () => {
-      const w = world();
-      bundle(w, `refs/heads/${BRANCH}`);
-      const outcome = push(w);
-      const commit = git(w.agent, "rev-parse", "HEAD");
-
-      expect(outcome.status).toBe(0);
-      expect(outcome.pushed).toBe(commit);
-      expect(outcome.head).toBe(commit);
-      expect(outcome.reason).toBe("");
-    },
-    CEILING,
-  );
-
-  it(
-    "refuses where the agent's job handed nothing over",
-    () => {
-      refused(push(world()), /finished without handing over its commits/);
-    },
-    CEILING,
-  );
-
-  /**
-   * Cut short in its commits, past a header that still reads whole: `git
-   * bundle verify` passes that, since it reads the header and the
-   * prerequisites and not the pack, so it is unbundling that refuses it.
-   */
-  it(
-    "refuses a bundle cut short in its commits",
-    () => {
-      const w = world();
-      bundle(w, `refs/heads/${BRANCH}`);
-      const file = path.join(w.runner, "branch.bundle");
-      const bytes = fs.readFileSync(file);
-      fs.writeFileSync(file, bytes.subarray(0, bytes.indexOf("\n\n") + 2 + 20));
-
-      refused(push(w), /arrived damaged or incomplete/);
-    },
-    CEILING,
-  );
-
-  it(
-    "refuses a bundle cut short in its header",
-    () => {
-      const w = world();
-      bundle(w, `refs/heads/${BRANCH}`);
-      const file = path.join(w.runner, "branch.bundle");
-      fs.writeFileSync(file, fs.readFileSync(file).subarray(0, 30));
-
-      refused(push(w), /arrived damaged or incomplete/);
-    },
-    CEILING,
-  );
-
-  it(
-    "refuses a bundle that carries a second branch beside the one named",
-    () => {
-      const w = world();
-      git(w.agent, "branch", "other");
-      bundle(w, `refs/heads/${BRANCH}`, "refs/heads/other");
-
-      refused(push(w), /on a branch other than `agent\/issue-7-add-a-widget`, or beside other branches/);
-    },
-    CEILING,
-  );
-
-  it(
-    "refuses a bundle of another branch",
-    () => {
-      const w = world();
-      git(w.agent, "branch", "other");
-      bundle(w, "refs/heads/other");
-
-      refused(push(w), /on a branch other than/);
-    },
-    CEILING,
-  );
-
-  it(
-    "refuses a branch that does not build on the base the gate read",
-    () => {
-      const w = world();
-      git(w.agent, "checkout", "--quiet", "--orphan", "unrelated");
-      git(w.agent, "commit", "--quiet", "-m", "unrelated history");
-      git(w.agent, "branch", "--quiet", "-D", BRANCH);
-      git(w.agent, "branch", "--quiet", "-m", BRANCH);
-      bundle(w, `refs/heads/${BRANCH}`);
-
-      refused(push(w), /don't build on `main` as this run found it/);
-    },
-    CEILING,
-  );
-});
 
 /**
  * The same check in the runs split after implement's (#308), each
@@ -312,7 +176,7 @@ describe.skipIf(!CAN_RUN)("implement-prd's publish job pushes the slice only onc
     "pushes the PRD branch at the agent's commit, plainly, and reports it",
     () => {
       const w = world();
-      bundle(w, `refs/heads/${BRANCH}`);
+      bundleTo(w, `refs/heads/${BRANCH}`);
       const outcome = pushWith(w, "implement-prd.yml", env(w));
       const commit = git(w.agent, "rev-parse", "HEAD");
 
@@ -331,7 +195,7 @@ describe.skipIf(!CAN_RUN)("implement-prd's publish job pushes the slice only onc
       git(w.agent, "commit", "--quiet", "-m", "unrelated history");
       git(w.agent, "branch", "--quiet", "-D", BRANCH);
       git(w.agent, "branch", "--quiet", "-m", BRANCH);
-      bundle(w, `refs/heads/${BRANCH}`);
+      bundleTo(w, `refs/heads/${BRANCH}`);
 
       refused(pushWith(w, "implement-prd.yml", env(w)), /don't build on `agent\/issue-7-add-a-widget` as this run left it/);
     },

@@ -1,4 +1,5 @@
 import { WriteFailed, type Limits, type Writer } from "../engine/writer.js";
+import { pullRequestNumber, seconds, tolerated } from "../shared/command-helpers.js";
 import type { CommandIo } from "../shared/command-io.js";
 import type { COMMANDS } from "../shared/contract.js";
 import type { InputValues } from "../shared/env.js";
@@ -85,32 +86,9 @@ const refuse = async (pr: number, workflow: Writer, sentence: string): Promise<v
 };
 
 /**
- * A write the loop can live without: a failure is said as `warning`, where
- * there is one, and stays in the write log as a failure its last line does not
- * name. Anything but a failed write, a limit reached included, still stops.
- */
-const tolerated = async (warning: string | undefined, write: () => Promise<unknown>): Promise<void> => {
-  try {
-    await write();
-  } catch (error) {
-    if (!(error instanceof WriteFailed)) throw error;
-    if (warning !== undefined) console.log(`::warning::${warning}`);
-  }
-};
-
-/**
  * What the gate may write, and how many of each (ADR 0005). A refusal is one
  * comment and `agent:update-branch` off; a run that goes ahead is the probe's
  * `agent:update-branch` and `agent:blocked` off. Never both.
  */
 const LIMITS: Limits = { comment: 1, removeLabel: 2, addLabel: 1 };
 
-const seconds = (value: string, name: string): number => {
-  if (!/^[0-9]{1,6}$/.test(value)) throw new Error(`${name} is ${JSON.stringify(value)}, which is not a number of seconds.`);
-  return Number(value);
-};
-
-const pullRequestNumber = (value: string): number => {
-  if (!/^[1-9][0-9]{0,9}$/.test(value)) throw new Error(`PR_NUMBER is ${JSON.stringify(value)}, which is not a pull request number.`);
-  return Number(value);
-};

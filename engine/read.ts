@@ -69,8 +69,45 @@ export interface ConversationComment {
   readonly url: string;
 }
 
+/** An issue's place in the hierarchy, and its labels, as one query reads them together. */
+export interface IssueShape {
+  /** The issue it is a sub-issue of, where it is one. */
+  readonly parent: number | undefined;
+  /** How many sub-issues it has. */
+  readonly subIssues: number;
+  readonly labels: readonly string[];
+}
+
+/** A pull request as far as a link to it needs it. */
+export interface PullRequestLink {
+  readonly number: number;
+  readonly url: string;
+}
+
 export interface GitHubReader {
   pullRequest(number: number): Promise<PullRequest>;
+  /**
+   * The issue's parent, sub-issue count and labels, in **one** GraphQL query,
+   * so every decision taken on them reads the same snapshot. An answer that
+   * holds no issue throws rather than reading as an issue with no parent and
+   * no sub-issues.
+   */
+  issueShape(number: number): Promise<IssueShape>;
+  /** The issues blocking the issue, by its `blocked_by` relations, that are still open, as the endpoint lists them. */
+  openBlockers(number: number): Promise<readonly number[]>;
+  /**
+   * Every open pull request whose body `pattern` matches, newest first. The
+   * pattern is the caller's: the engine spells no record string, and which
+   * words close an issue is one.
+   */
+  openPullRequestsClosing(pattern: RegExp): Promise<readonly number[]>;
+  /**
+   * The open pull request from exactly `head`, a branch of this repository,
+   * into exactly `base`, where there is one: GitHub allows one open pull
+   * request per head and base, so the pair identifies it. What the
+   * `openPullRequest` write reads back on a server error.
+   */
+  openPullRequest(head: string, base: string): Promise<PullRequestLink | undefined>;
   /** Every status set on `sha`, newest first, as the endpoint documents. */
   commitStatuses(sha: string): Promise<readonly CommitStatus[]>;
   /** The node id of every review thread on the pull request: what a thread target is checked against (#403). */
@@ -192,6 +229,23 @@ const CONVERSATION_COMMENTS = `query($owner:String!,$name:String!,$number:Int!,$
   }}
 }`;
 
+interface ShapeAnswer {
+  readonly repository: {
+    readonly issue: {
+      readonly parent: { readonly number: number } | null;
+      readonly subIssues: { readonly totalCount: number };
+      readonly labels: { readonly nodes: readonly { readonly name: string }[] };
+    } | null;
+  } | null;
+}
+
+/** The first hundred labels, as the shell pre-flight this replaced read them. */
+const ISSUE_SHAPE = `query($owner:String!,$name:String!,$number:Int!){
+  repository(owner:$owner,name:$name){issue(number:$number){
+    parent{number} subIssues(first:1){totalCount} labels(first:100){nodes{name}}
+  }}
+}`;
+
 /** The reader over `transport`, for `repo` (`owner/name`). */
 export const githubReader = (repo: string, transport: Transport): GitHubReader => {
   const [owner = "", name = ""] = repo.split("/");
@@ -208,6 +262,50 @@ export const githubReader = (repo: string, transport: Transport): GitHubReader =
   return {
     pullRequest: async (number) =>
       toPullRequest((await transport.rest({ method: "GET", path: `/repos/${repo}/pulls/${number}` })) as RawPullRequest),
+    issueShape: async (number) => {
+      const data = (await transport.graphql(ISSUE_SHAPE, { owner, name, number })) as ShapeAnswer | undefined;
+      const issue = data?.repository?.issue;
+      if (issue === null || issue === undefined) throw new Error(`The shape of issue #${number} came back empty.`);
+      return {
+        parent: issue.parent?.number,
+        subIssues: issue.subIssues.totalCount,
+        labels: issue.labels.nodes.map((label) => label.name),
+      };
+    },
+    openBlockers: async (number) =>
+      (
+        await paged(
+          `/repos/${repo}/issues/${number}/dependencies/blocked_by`,
+          (page) => page as readonly { readonly number: number; readonly state: string }[],
+        )
+      )
+        .filter((issue) => issue.state === "open")
+        .map((issue) => issue.number),
+    openPullRequestsClosing: async (pattern) =>
+      (
+        await paged(
+          `/repos/${repo}/pulls?state=open`,
+          (page) => page as readonly { readonly number: number; readonly body: string | null }[],
+        )
+      )
+        .filter((pr) => pattern.test(pr.body ?? ""))
+        .map((pr) => pr.number),
+    openPullRequest: async (head, base) => {
+      const query = `state=open&head=${encodeURIComponent(`${owner}:${head}`)}&base=${encodeURIComponent(base)}`;
+      const found = (
+        await paged(
+          `/repos/${repo}/pulls?${query}`,
+          (page) =>
+            page as readonly {
+              readonly number: number;
+              readonly html_url: string;
+              readonly head: { readonly ref: string; readonly repo: { readonly full_name: string } | null };
+              readonly base: { readonly ref: string };
+            }[],
+        )
+      ).find((pr) => pr.head.ref === head && pr.head.repo?.full_name === repo && pr.base.ref === base);
+      return found === undefined ? undefined : { number: found.number, url: found.html_url };
+    },
     commitStatuses: async (sha) => {
       const statuses: CommitStatus[] = [];
       for (let page = 1; ; page++) {

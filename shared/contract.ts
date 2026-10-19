@@ -466,8 +466,9 @@ const REVIEW_PUBLISH = {
  * What a command that runs where no token is held reads of
  * `EVERY_SUBCOMMAND`: `OUTPUT_DIR`, and neither the repository nor the token,
  * since it reads no repository and is handed none. The red check's two
- * (#422), whose job runs the pull request's own code, and `fix:bundle`
- * (#472) and `update-branch:bundle` (#483), which run after the agent.
+ * (#422), whose job runs the pull request's own code, `fix:bundle`
+ * (#472), `update-branch:bundle` (#483) and `implement:bundle` (#491), which
+ * run after the agent, and `implement:prepare` (#491), which needs none.
  */
 export const TOKENLESS = {
   OUTPUT_DIR: EVERY_SUBCOMMAND.OUTPUT_DIR,
@@ -591,6 +592,63 @@ const UPDATE_BRANCH_PUBLISH = {
       "update_comment.md": "sometimes",
     }),
     BUNDLE_DIR: readsFromCommand("update-branch:bundle", UPDATE_BRANCH_BUNDLE, {
+      "branch.bundle": "sometimes",
+    }),
+  },
+  outputs: [...EVERY_SUBCOMMAND_OUTPUTS, "published.json", WRITE_LOG],
+} as const satisfies CommandContract;
+
+/**
+ * `implement:bundle`, declared ahead of `COMMANDS` so that
+ * `implement:publish` and `implement:conclude` can read its outputs
+ * (`readsFromCommand`). See `COMMANDS`.
+ */
+const IMPLEMENT_BUNDLE = {
+  inputs: {
+    ...TOKENLESS,
+    CHECKOUT: REQUIRED,
+    BRANCH: REQUIRED,
+    BASE_SHA: REQUIRED,
+  },
+  outputs: [...EVERY_SUBCOMMAND_OUTPUTS, "branch.bundle"],
+} as const satisfies CommandContract;
+
+/**
+ * `implement:prepare`, declared ahead of `COMMANDS` so that
+ * `implement:conclude` can read its outputs (`readsFromCommand`). See
+ * `COMMANDS`.
+ */
+const IMPLEMENT_PREPARE = {
+  inputs: {
+    ...TOKENLESS,
+    CHECKOUT: REQUIRED,
+    BRANCH: REQUIRED,
+    BASE_REF: REQUIRED,
+    BASE_SHA: REQUIRED,
+  },
+  outputs: [...EVERY_SUBCOMMAND_OUTPUTS],
+} as const satisfies CommandContract;
+
+/**
+ * `implement:publish`, declared ahead of `COMMANDS` so that
+ * `implement:conclude` can read its outputs (`readsFromCommand`). See
+ * `COMMANDS`.
+ */
+const IMPLEMENT_PUBLISH = {
+  inputs: {
+    ...EVERY_SUBCOMMAND,
+    ...LOOP,
+    ISSUE_NUMBER: REQUIRED,
+    ISSUE_TITLE: REQUIRED,
+    BASE_REF: REQUIRED,
+    BRANCH: REQUIRED,
+    BASE_SHA: REQUIRED,
+    BRANCH_TIP: EMPTY,
+    RUN_URL: REQUIRED,
+    CHECKOUT: REQUIRED,
+    HEAD_WAIT_SECONDS: { required: false, default: "60" },
+    HEAD_POLL_SECONDS: { required: false, default: "5" },
+    BUNDLE_DIR: readsFromCommand("implement:bundle", IMPLEMENT_BUNDLE, {
       "branch.bundle": "sometimes",
     }),
   },
@@ -733,6 +791,41 @@ const REVIEW_RED_CHECK_PLACE = {
  *   runner's reason and set-aside rescue through `FIX_DIR`, and
  *   `fix:bundle`'s bundle and reason through `BUNDLE_DIR`,
  *   checked in `CHECKOUT` against `HEAD_SHA` before it is rescued.
+ * - `implement:gate` refuses, defers or claims the issue before any
+ *   checkout. An issue with sub-issues is `implement-prd`'s and is deferred
+ *   without a write; a closed one, a `wayfinder:*` one, a sub-issue, one
+ *   with open blockers and one an open pull request already closes are
+ *   refused on the issue, in that order. `ISSUE_STATE` is the issue as the
+ *   label's event saw it; its shape, its blockers and the open pull requests
+ *   it reads itself. One it claims has the permission probe, `agent:blocked`
+ *   off and the start comment linking `RUN_URL`, and then its branch, named
+ *   from `ISSUE_NUMBER` and `ISSUE_TITLE`, the commit `BASE_REF` is at, and
+ *   the branch's current tip, empty where it does not exist. It declares no
+ *   loop token. `gate.json` is its decision, `proceed`, written as soon as it
+ *   decides and however it ends, with `branch`, `base` and `tip` once read.
+ * - `implement:prepare` creates the agent's `BRANCH` in `CHECKOUT` at
+ *   `BASE_SHA`, the commit the gate read `BASE_REF` at, and checks it out,
+ *   with the loop's committer as the checkout's identity. A checkout that
+ *   does not hold `BASE_SHA` is refused. It reads no repository and is
+ *   handed no token.
+ * - `implement:bundle` bundles the agent's commits on `BRANCH`, in
+ *   `CHECKOUT`, ahead of `BASE_SHA`, the gate's base commit, into
+ *   `branch.bundle`. Where there is nothing to bundle it refuses: it runs
+ *   only where the agent succeeded. It reads no repository and is handed no
+ *   token.
+ * - `implement:publish` checks the bundle `implement:bundle` wrote, read
+ *   through `BUNDLE_DIR`, in `CHECKOUT`: there, intact, holding exactly
+ *   `BRANCH`, and building on `BASE_SHA`, the gate's base commit. Then it
+ *   pushes it with the loop's token, leased on `BRANCH_TIP`, the gate's tip,
+ *   or on the branch not existing where that is empty; opens the draft pull
+ *   request from `BRANCH` into `BASE_REF`, titled from `ISSUE_NUMBER` and
+ *   `ISSUE_TITLE`, its frame linking `RUN_URL`, reading it back on a server
+ *   error; links it on the issue; waits, bounded by `HEAD_WAIT_SECONDS` and
+ *   polled every `HEAD_POLL_SECONDS`, for it to show the pushed head; and
+ *   takes `agent:implement` off and puts `agent:review` on, removed first,
+ *   with the loop's token. `published.json` is whether it pushed, the pushed
+ *   head, the pull request's number and whether the review was requested,
+ *   written as each becomes true.
  * - `review:advance` moves a PRD PR's chain on after a review, or parks it:
  *   the progress table and status line for how the round ended, then
  *   `agent:implement` back on the parent on a slice round's approval, or the
@@ -860,6 +953,50 @@ export const COMMANDS = {
       PR_NUMBER: REQUIRED,
     },
     outputs: [...EVERY_SUBCOMMAND_OUTPUTS],
+  },
+  "implement:gate": {
+    inputs: {
+      ...EVERY_SUBCOMMAND,
+      ISSUE_NUMBER: REQUIRED,
+      ISSUE_TITLE: REQUIRED,
+      ISSUE_STATE: REQUIRED,
+      BASE_REF: REQUIRED,
+      RUN_URL: REQUIRED,
+    },
+    outputs: [...EVERY_SUBCOMMAND_OUTPUTS, "gate.json", WRITE_LOG],
+  },
+  "implement:prepare": IMPLEMENT_PREPARE,
+  "implement:bundle": IMPLEMENT_BUNDLE,
+  "implement:publish": IMPLEMENT_PUBLISH,
+  "implement:conclude": {
+    inputs: {
+      ...EVERY_SUBCOMMAND,
+      ISSUE_NUMBER: REQUIRED,
+      RUN_URL: REQUIRED,
+      REFUSED: { required: false, default: "", accepts: ["true", "false"] },
+      GATE_RESULT: { required: true, accepts: RESULTS },
+      GATE_REASON: EMPTY,
+      AGENT_RESULT: { required: true, accepts: RESULTS },
+      TIMED_OUT: EMPTY,
+      TIMEOUT_MINUTES: EMPTY,
+      MINT_OUTCOME: EMPTY,
+      DOWNLOAD_OUTCOME: EMPTY,
+      PUBLISH_OUTCOME: EMPTY,
+      PUBLISH_DIR: readsFromCommand("implement:publish", IMPLEMENT_PUBLISH, {
+        "published.json": "sometimes",
+        "failure_reason.txt": "sometimes",
+      }),
+      PREPARE_DIR: readsFromCommand("implement:prepare", IMPLEMENT_PREPARE, {
+        "failure_reason.txt": "sometimes",
+      }),
+      IMPLEMENT_DIR: readsFrom("implement", {
+        "failure_reason.txt": "sometimes",
+      }),
+      BUNDLE_DIR: readsFromCommand("implement:bundle", IMPLEMENT_BUNDLE, {
+        "failure_reason.txt": "sometimes",
+      }),
+    },
+    outputs: [...EVERY_SUBCOMMAND_OUTPUTS, WRITE_LOG],
   },
   "review:gate": {
     inputs: {

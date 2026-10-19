@@ -140,10 +140,9 @@ describe.skipIf(!CAN_RUN)("the loop's token resolver chooses, executed", () => {
  */
 describe.skipIf(!CAN_RUN)("the issue side's review request, by the resolver's source", () => {
   const PUSHED = "2222222222222222222222222222222222222222";
-  const REQUESTS = [
-    ["implement", "NEW_PR", "pr edit 152 --add-label agent:review"],
-    ["implement-prd", "PRD_PR", "pr edit 152 --add-label agent:review"],
-  ] as const;
+  // Implement's is `implement:publish`'s since #492, held in
+  // `tests/implement/publish.test.ts`.
+  const REQUESTS = [["implement-prd", "PRD_PR", "pr edit 152 --add-label agent:review"]] as const;
 
   const request = (command: string, pr: string, source: string): Outcome =>
     execute(publishStep(command, "Request review"), {

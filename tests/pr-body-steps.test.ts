@@ -31,8 +31,10 @@ import {
 /**
  * The pull request body's writers that are still shell (#218), run as the
  * real `run:` blocks read out of the workflows under `bash -e`, against a `gh`
- * that records what it was sent: the **frame** each opening run writes once,
- * and the splices of the progress list and the status line. The review's
+ * that records what it was sent: the **frame** a PRD PR's opening run writes
+ * once, and the splices of the progress list and the status line. A regular
+ * pull request's frame is `implement:publish`'s since #492, rendered by
+ * `shared/pr-frame.ts` and held by `tests/pr-frame.test.ts`. The review's
  * summary, and a regular pull request's status line, are `review:publish`'s,
  * and its tests hold them (`tests/review/publish.test.ts`).
  *
@@ -176,38 +178,6 @@ const CLOSES_END = "<!-- /agent:closes -->";
  * opens the pull request, and never again by anything.
  */
 describe.skipIf(!CAN_RUN)("the frame a pull request opens with", () => {
-  it("opens a single-issue PR with the note and its status line, the summary, then Closes", () => {
-    const outcome = runStep(stepRun("implement", "publish", "Open draft PR"), {
-      ISSUE_NUMBER: "123",
-      ISSUE_TITLE: "Do the thing",
-      RUN_URL,
-      BASE_REF: "main",
-      BRANCH: "agent/issue-123-do-the-thing",
-      OPENING_STATUS,
-    });
-
-    expect(outcome.status, outcome.stdout).toBe(0);
-    expect(outcome.sent).toBe(
-      [
-        "> [!NOTE]",
-        `> ${statusBlock(OPENING_STATUS)}`,
-        ">",
-        `> Opened by the agent loop from #123 ([Workflow run](${RUN_URL})). Comment here to steer it; your notes outside the loop's blocks are never edited.`,
-        "",
-        "---",
-        "",
-        "## Summary",
-        "",
-        SUMMARY_START,
-        "_The review will summarize this change here after its first pass._",
-        SUMMARY_END,
-        "",
-        "Closes #123",
-        "",
-      ].join("\n"),
-    );
-  });
-
   it("opens a PRD PR with the note and its status line, the summary, the progress table, then the Closes line", () => {
     const outcome = runStep(
       stepRun("implement-prd", "publish", "Open or reuse the PRD PR"),

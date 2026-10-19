@@ -4,6 +4,7 @@ import type { CommitStatus } from "../engine/read.js";
 import { WriteFailed, type CommitStatusWrite, type Limits, type Writer } from "../engine/writer.js";
 import { checkBundle } from "../shared/bundle.js";
 import type { Cleaned } from "../shared/clean.js";
+import { describe, inWriteLog, pullRequestNumber, seconds, tolerated } from "../shared/command-helpers.js";
 import type { MergingCheckoutIo } from "../shared/command-io.js";
 import { COMMANDS } from "../shared/contract.js";
 import type { InputValues } from "../shared/env.js";
@@ -311,8 +312,11 @@ const requestReview = async (inputs: Inputs, io: Io, pr: number, loop: Writer, w
     waitSeconds: seconds(inputs.HEAD_WAIT_SECONDS, "HEAD_WAIT_SECONDS"),
     pollSeconds: seconds(inputs.HEAD_POLL_SECONDS, "HEAD_POLL_SECONDS"),
   });
-  await tolerated(() => loop.removeLabel(pr, UPDATE_BRANCH_LABEL), `Could not take \`${UPDATE_BRANCH_LABEL}\` off PR #${pr}.`);
-  await tolerated(() => loop.removeLabel(pr, REVIEW_LABEL), `Could not take \`${REVIEW_LABEL}\` off PR #${pr} before adding it.`);
+  await tolerated(inWriteLog(`Could not take \`${UPDATE_BRANCH_LABEL}\` off PR #${pr}.`), () => loop.removeLabel(pr, UPDATE_BRANCH_LABEL));
+  await tolerated(
+    inWriteLog(`Could not take \`${REVIEW_LABEL}\` off PR #${pr} before adding it.`),
+    () => loop.removeLabel(pr, REVIEW_LABEL),
+  );
   try {
     await loop.addLabel(pr, REVIEW_LABEL);
   } catch (error) {
@@ -326,7 +330,7 @@ const requestReview = async (inputs: Inputs, io: Io, pr: number, loop: Writer, w
   console.log(
     `::warning::Neither the loop's App nor AGENT_PAT is set, so this label was added with GITHUB_TOKEN and will NOT trigger agent-review. Add ${REVIEW_LABEL} by hand on PR #${pr}.`,
   );
-  await tolerated(() => workflow.comment(pr, NO_REVIEW_STARTS), "…and that could not be said on the pull request either.");
+  await tolerated(inWriteLog("…and that could not be said on the pull request either."), () => workflow.comment(pr, NO_REVIEW_STARTS));
 };
 
 /**
@@ -337,32 +341,6 @@ const requestReview = async (inputs: Inputs, io: Io, pr: number, loop: Writer, w
  * stops it.
  */
 const LIMITS: Limits = { pushRef: 1, setCommitStatus: 1, comment: 2, removeLabel: 2, addLabel: 1 };
-
-/**
- * A write the loop can live without: made, or said as a warning where GitHub
- * refused it. A write past its limit is still thrown: that is our own bug,
- * never one to read past.
- */
-const tolerated = async (write: () => Promise<unknown>, warning: string): Promise<void> => {
-  try {
-    await write();
-  } catch (error) {
-    if (!(error instanceof WriteFailed)) throw error;
-    console.log(`::warning::${warning} GitHub's reply is in the write log.`);
-  }
-};
-
-const describe = (error: unknown): string => (error instanceof Error ? error.message : String(error));
-
-const seconds = (value: string, name: string): number => {
-  if (!/^[0-9]{1,6}$/.test(value)) throw new Error(`${name} is ${JSON.stringify(value)}, which is not a number of seconds.`);
-  return Number(value);
-};
-
-const pullRequestNumber = (value: string): number => {
-  if (!/^[1-9][0-9]{0,9}$/.test(value)) throw new Error(`PR_NUMBER is ${JSON.stringify(value)}, which is not a pull request number.`);
-  return Number(value);
-};
 
 const commit = (value: string, name: string): string => {
   if (!/^[0-9a-f]{40}$/.test(value)) throw new Error(`${name} is ${JSON.stringify(value)}, which is not a full commit id.`);

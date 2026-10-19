@@ -4,23 +4,21 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { describe, expect, it } from "vitest";
 import { parse } from "yaml";
-import { rescueRef } from "../shared/rescue.js";
 import { SUBPROCESS_TIMEOUT } from "../vitest.config.js";
 
 /**
- * Runs both halves of rescue and resume (#303) as the workflows hold them, the
- * real `run:` blocks under `bash -e` against real git: a bare repository as
- * `origin`, a clone as the publish job's checkout, and a second clone standing
- * in for the agent's runner, which hands over a bundle.
+ * Runs the publish job's half of rescue and resume (#303) as the workflow
+ * holds it, the real `run:` block under `bash -e` against real git: a bare
+ * repository as `origin`, a clone as the publish job's checkout, and a second
+ * clone standing in for the agent's runner, which hands over a bundle.
  *
- * - `Rescue the agent's commits`, in implement-prd's publish job: pushes a
- *   stopped run's commits to the rescue branch and nowhere else, overwrites
- *   an earlier rescue, and pushes nothing where there were none. Fix's is
- *   `fix:conclude`'s (#469), held in `tests/fix/conclude.test.ts`.
- * - The agent's job's prepare step, implement-prd's: fetches the rescue
- *   branch to where the runner looks for it (`rescueRef`), and nothing where
- *   there is none. Fix's is `fix:prepare`'s (#471), held in
- *   `tests/fix/prepare.test.ts`.
+ * `Rescue the agent's commits`, in implement-prd's publish job, pushes a
+ * stopped run's commits to the rescue branch and nowhere else, overwrites an
+ * earlier rescue, and pushes nothing where there were none. Fix's is
+ * `fix:conclude`'s (#469), held in `tests/fix/conclude.test.ts`. The agent's
+ * job's half, the fetch of the rescue branch, is `fix:prepare`'s (#471) and
+ * `implement-prd:prepare`'s (#501), held in `tests/fix/prepare.test.ts` and
+ * `tests/implement-prd/prepare.test.ts`.
  *
  * Skipped where `bash` or `git` is not on PATH.
  */
@@ -81,8 +79,6 @@ const commit = (cwd: string, file: string): string => {
 const CASES = [
   {
     file: "implement-prd.yml",
-    agent: "implement-prd",
-    prepare: "Prepare the PRD branch",
     branch: "agent/prd-9-widgets",
     branchVar: "PRD_BRANCH",
     startVar: "BASE_SHA",
@@ -124,10 +120,11 @@ const world = (c: Case): World => {
 };
 
 /** Where the publish job finds the agent's bundle. */
-const bundleFile = (w: World): string => path.join(w.runner, "branch.bundle");
+const bundleFile = (w: World): string => path.join(w.runner, "bundle", "branch.bundle");
 
 /** The agent's job's bundle, as it is built: its branch, past the head it started from. */
 const bundle = (w: World, c: Case): void => {
+  fs.mkdirSync(path.dirname(bundleFile(w)), { recursive: true });
   git(w.agent, "bundle", "create", "--quiet", bundleFile(w), `refs/heads/${c.branch}`, `^${w.start}`);
 };
 
@@ -241,6 +238,7 @@ describe.skipIf(!CAN_RUN)("a stopped run's commits are rescued to a side branch"
       commit(w.agent, "unrelated.txt");
       git(w.agent, "branch", "--quiet", "-D", c.branch);
       git(w.agent, "branch", "--quiet", "-m", c.branch);
+      fs.mkdirSync(path.dirname(bundleFile(w)), { recursive: true });
       git(w.agent, "bundle", "create", "--quiet", bundleFile(w), `refs/heads/${c.branch}`);
 
       const outcome = rescue(w, c);
@@ -249,65 +247,6 @@ describe.skipIf(!CAN_RUN)("a stopped run's commits are rescued to a side branch"
       expect(outcome.rescued).toBe("");
       expect(outcome.output).toBe("");
       expect(outcome.stdout).toContain("Nothing was rescued.");
-    },
-    CEILING,
-  );
-});
-
-/**
- * The agent's job's prepare step, run in a clone checked out at the head the
- * run starts from, as `actions/checkout` leaves it.
- */
-const prepare = (w: World, c: Case): { readonly status: number | null; readonly fetched: string } => {
-  const script = path.join(w.temp, "prepare.sh");
-  fs.writeFileSync(script, stepOf(c.file, c.agent, c.prepare));
-  const work = path.join(w.temp, "work");
-  git(w.temp, "clone", "--quiet", "--branch", "main", w.origin, work);
-  git(work, "checkout", "--quiet", "--detach", w.start);
-
-  const result = spawnSync("bash", ["-e", script], {
-    cwd: work,
-    encoding: "utf8",
-    timeout: SUBPROCESS_TIMEOUT,
-    env: {
-      ...process.env,
-      ...IDENTITY,
-      RUNNER_TEMP: w.runner,
-      BRANCH: c.branch,
-      PRD_BRANCH: c.branch,
-      EXISTS: "true",
-      SUB: "10",
-      BASE_REF: "main",
-      RESCUE_BRANCH: c.rescue,
-      GH_TOKEN: "not-a-token",
-    },
-  });
-  expect(result.status, result.stderr).toBe(0);
-  const fetched = spawnSync("git", ["rev-parse", "--verify", "--quiet", rescueRef(c.rescue)], {
-    cwd: work,
-    encoding: "utf8",
-    timeout: SUBPROCESS_TIMEOUT,
-  });
-  return { status: result.status, fetched: fetched.stdout.trim() };
-};
-
-describe.skipIf(!CAN_RUN)("the agent's job fetches the rescue branch for the runner to resume from", () => {
-  it.each(CASES)(
-    "$file: fetches $rescue to where the runner looks for it",
-    (c) => {
-      const w = world(c);
-      const tip = commit(w.agent, "one.txt");
-      git(w.agent, "push", "--quiet", "origin", `HEAD:refs/heads/${c.rescue}`);
-
-      expect(prepare(w, c).fetched).toBe(tip);
-    },
-    CEILING,
-  );
-
-  it.each(CASES)(
-    "$file: fetches nothing where there is no rescue branch",
-    (c) => {
-      expect(prepare(world(c), c).fetched).toBe("");
     },
     CEILING,
   );

@@ -1,9 +1,7 @@
-import { GitHubError } from "../engine/github.js";
-import { describe } from "../shared/command-helpers.js";
 import type { FetchingIo } from "../shared/command-io.js";
 import type { COMMANDS } from "../shared/contract.js";
 import type { InputValues } from "../shared/env.js";
-import { rescueRef } from "../shared/rescue.js";
+import { fetchRescue } from "../shared/rescue.js";
 
 type Declared = (typeof COMMANDS)["fix:prepare"];
 type Inputs = InputValues<Declared["inputs"]>;
@@ -27,28 +25,5 @@ type Io = FetchingIo<Declared["outputs"]>;
  * with a sentence.
  */
 export const prepare = async (inputs: Inputs, io: Io): Promise<void> => {
-  const branch = inputs.RESCUE_BRANCH;
-  try {
-    await io.github.branchTip(branch);
-  } catch (error) {
-    if (error instanceof GitHubError && error.status === 404) {
-      console.log(`No ${branch}, so there is nothing to resume from.`);
-      return;
-    }
-    console.log(`::warning::Could not read the tip of ${branch}. ${describe(error)}`);
-    throw new Error(
-      `Couldn't check whether an earlier run left commits on \`${branch}\`, so this run stopped rather than start over without them.`,
-      { cause: error },
-    );
-  }
-  try {
-    await io.fetcher.fetchRef(`refs/heads/${branch}`, rescueRef(branch));
-  } catch (error) {
-    throw new Error(
-      `Couldn't fetch \`${branch}\`, which an earlier run left, so this run stopped rather than start over without it: ${describe(error)}`,
-      { cause: error },
-    );
-  }
-  console.log(`Fetched ${branch}, which an earlier run left, for the runner to resume from.`);
+  await fetchRescue(io.github, io.fetcher, inputs.RESCUE_BRANCH);
 };
-

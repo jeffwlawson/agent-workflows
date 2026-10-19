@@ -577,56 +577,73 @@ jobs:
           # publish job pushes, from a checkout of its own.
           persist-credentials: false
 
-      # The PRD branch again, as `catch_up` left it: at its tip, with the
-      # default branch merged in where it had moved, or cut from the base
-      # branch where there was none.
-      #
-      # And the rescue branch an earlier run left (#303), where there is one,
-      # fetched to `refs/rescue/` for the runner to resume from: outside
-      # `refs/remotes/`, so `Mark the slice's commits` marks rescued commits as
-      # this run's. The runner decides whether it still builds on this tip;
-      # this only fetches it. **An unreadable answer stops the run**, rather
-      # than reading as "no rescue": a run that started over without it, and
-      # succeeded, would delete it.
-      - name: Prepare the PRD branch
-        id: prepare
-        env:
-          PRD_BRANCH: ${{ needs.gate.outputs.prd_branch }}
-          EXISTS: ${{ needs.gate.outputs.prd_branch_exists }}
-          SUB: ${{ needs.gate.outputs.sub }}
+      # The package, installed once and early, as `implement.yml`'s agent job
+      # installs it (#491, #501), for everything of it this job runs:
+      # `implement-prd:prepare` before the adopter's code, the runner, and
+      # `implement-prd:bundle` after the agent. Node and the registry the
+      # package installs from, a version its `engines.node` names, and no
+      # cache, since this job runs the adopter's code and a cache it saved
+      # would be restored on the base branch.
+      - name: Set up Node for the package
+        uses: actions/setup-node@v7
+        with:
+          node-version: "24"
+          registry-url: https://npm.pkg.github.com
+          scope: "@jeffwlawson"
+          package-manager-cache: false
+
+      # That step points `NPM_CONFIG_USERCONFIG` at the `.npmrc` it wrote, for
+      # every later step in the job (#429), the adopter's *Install dependencies*
+      # included. So the job's setting goes back to npm's default here, and the
+      # path comes out as `userconfig`, handed in `env:` to the one step that
+      # installs the package. The file `setup-node` wrote, never a second copy.
+      - name: Keep the package's registry to the package's steps
+        id: npmrc
         run: |
-          set -euo pipefail
-          git config user.name "sandcastle-agent[bot]"
-          git config user.email "sandcastle-agent[bot]@users.noreply.github.com"
+          echo "userconfig=${NPM_CONFIG_USERCONFIG}" >> "$GITHUB_OUTPUT"
+          echo "NPM_CONFIG_USERCONFIG=${HOME}/.npmrc" >> "$GITHUB_ENV"
 
-          if [ "$EXISTS" = "true" ]; then
-            # The checkout persists no credential, so the fetch carries the
-            # job's read token itself.
-            auth=$(printf 'x-access-token:%s' "$GH_TOKEN" | base64 | tr -d '\n')
-            echo "::add-mask::${auth}"
-            git -c "http.extraHeader=AUTHORIZATION: basic ${auth}" fetch origin "+refs/heads/${PRD_BRANCH}:refs/remotes/origin/${PRD_BRANCH}"
-            git checkout -B "$PRD_BRANCH" "refs/remotes/origin/${PRD_BRANCH}"
-            echo "Building sub-issue #${SUB} on $PRD_BRANCH at $(git rev-parse --short HEAD)."
-          else
-            git checkout -b "$PRD_BRANCH"
-            echo "Created $PRD_BRANCH from ${BASE_REF}; building sub-issue #${SUB} on it, and it is pushed with this slice."
-          fi
+      # Into `RUNNER_TEMP` while nothing of the adopter's has run, so a step
+      # after the agent finds it there and never asks the registry. The agent
+      # and the adopter's own code (`inputs.setup`) can leave things behind on
+      # this runner, so nothing after them is handed the registry token: this
+      # is the one step of the job that holds it. From `RUNNER_TEMP` too, so no
+      # `.npmrc` of the checkout is read. Every step of the package below runs
+      # this install's binary by its path, so this pin is the version of all
+      # three.
+      - name: Install the package
+        working-directory: ${{ runner.temp }}
+        env:
+          NPM_CONFIG_USERCONFIG: ${{ steps.npmrc.outputs.userconfig }}
+          NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: npm install --prefix "$RUNNER_TEMP" --no-save @jeffwlawson/agent-workflows@0.8.8
 
-          auth=$(printf 'x-access-token:%s' "$GH_TOKEN" | base64 | tr -d '\n')
-          echo "::add-mask::${auth}"
-          found=0
-          git -c "http.extraHeader=AUTHORIZATION: basic ${auth}" ls-remote --exit-code origin "refs/heads/${RESCUE_BRANCH}" > /dev/null || found=$?
-          case "$found" in
-            0)
-              git -c "http.extraHeader=AUTHORIZATION: basic ${auth}" fetch --no-tags origin "+refs/heads/${RESCUE_BRANCH}:refs/rescue/${RESCUE_BRANCH}"
-              echo "Fetched ${RESCUE_BRANCH}, which an earlier run left, for the runner to resume from." ;;
-            2) echo "No ${RESCUE_BRANCH}, so there is nothing to resume from." ;;
-            *)
-              reason="Couldn't check whether an earlier run left commits on \`${RESCUE_BRANCH}\`, so this run stopped rather than start over without them."
-              printf '%s\n' "$reason" > "${RUNNER_TEMP}/failure_reason.txt"
-              echo "::error::${reason}"
-              exit 1 ;;
-          esac
+      # The PRD branch again, as `catch_up` left it: checked out at the tip
+      # that job left it at, with the default branch merged in where it had
+      # moved, or cut from the base branch where there was none, and fetched
+      # with the job's read token where it exists. And the rescue branch an
+      # earlier run left (#303), where there is one, fetched to `refs/rescue/`
+      # for the runner to resume from: outside `refs/remotes/`, so `Mark the
+      # slice's commits` marks rescued commits as this run's. **An unreadable
+      # answer stops the run**, rather than reading as "no rescue": a run that
+      # started over without it, and succeeded, would delete it.
+      # `implement-prd/prepare.ts` says why each is as it is.
+      #
+      # From the install above, by its path, before anything of the
+      # adopter's runs, so the job's `GH_TOKEN`, read-only here, meets no git
+      # config entry or hook the adopter's code left behind. Gate and catch-up
+      # facts only, never this job's. Its reason file goes in a directory of
+      # its own, which the hand-over below carries.
+      - name: Prepare the PRD branch
+        working-directory: ${{ runner.temp }}
+        env:
+          OUTPUT_DIR: ${{ runner.temp }}/prepare
+          CHECKOUT: ${{ github.workspace }}
+          PRD_BRANCH: ${{ needs.gate.outputs.prd_branch }}
+          PRD_TIP: ${{ needs.gate.outputs.prd_tip }}
+          BASE_SHA: ${{ needs.catch_up.outputs.head }}
+          SUB: ${{ needs.gate.outputs.sub }}
+        run: '"$RUNNER_TEMP/node_modules/.bin/agent-workflows" implement-prd:prepare'
 
       # Both setup steps are the adopter's toolchain, so both are skippable.
       # `npm install -g @anthropic-ai/claude-code` below is not: that is the
@@ -651,13 +668,11 @@ jobs:
       - name: Install Claude Code
         run: npm install -g @anthropic-ai/claude-code
 
-      # The runner package lives on GitHub Packages, which has no anonymous
-      # install even for a public package — see the long note on the same step in
-      # agent-review-reusable.yml. Short version: the scoped `.npmrc` is written
-      # for `@jeffwlawson` only so a caller's own `npm ci` is untouched, and
-      # `packages: read` in the caller is what makes the token below work. The
-      # cache opt-out belongs to the same note: this half declares no toolchain,
-      # so it must not infer one.
+      # The runner below runs from the install above and asks the registry for
+      # nothing, so here this step's work is the Node it names; the registry
+      # entry is the shape every runner's job shares, and unread in this one.
+      # The cache opt-out: this half declares no toolchain, so it must not
+      # infer one.
       #
       # With `node-version-file: ''` the toolchain step above is skipped, and
       # without a Node named here the runner would run on the image's, below
@@ -676,7 +691,6 @@ jobs:
       - name: Run implementation agent
         env:
           CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
-          NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           # Unset variable interpolates to "", and the runner falls back to its
           # own default. Change the model in Settings -> Variables, no commit.
           AGENT_MODEL: ${{ vars.AGENT_MODEL }}
@@ -693,19 +707,18 @@ jobs:
           # the slice before this one parked, not approved.
           MERGED: ${{ needs.catch_up.outputs.merged }}
           OUTPUT_DIR: ${{ runner.temp }}
-        # `npm exec --prefix` rather than a bare `npx`, and the prefix is the
-        # whole point. `npx pkg@version` reuses a package already present in the
-        # working directory when it satisfies the spec — and in the repository
-        # that *publishes* this package, the checkout is such a package. It has
-        # no `dist/` (CI installs, it does not build), so the bin resolves to
-        # nothing and the step dies `command not found` before any runner code
-        # runs (#8). Installing into RUNNER_TEMP sidesteps the name collision.
-        #
-        # A no-op for every consuming repo, which has no package of this name to
-        # collide with — verified against npm 10 and 11, both of which ignore
-        # `--ignore-existing` here. `--prefix` moves the *install*, not the
-        # process `cwd`: the runner still does its git work in the checkout.
-        run: npm exec --prefix "$RUNNER_TEMP" --yes --package=@jeffwlawson/agent-workflows@0.8.8 -- agent-workflows implement-prd
+        # The binary *Install the package* linked, run by its path, from the
+        # checkout, where the runner does its git work, as `implement.yml`'s
+        # runner is (#487, #501). Not `npm exec`: with the package already
+        # under its `--prefix`, `npm exec` installs nothing and puts no install
+        # directory on `PATH`, only `node_modules/.bin` of the directory it
+        # runs in and each one above it, so from the checkout it finds no
+        # command at all, and a `PATH` entry handed in would come after the
+        # checkout's own `node_modules/.bin`, which the adopter's code has just
+        # had the chance to write. By path, nothing is looked up, the version
+        # is the install's pin, and the registry token stays with the install:
+        # this step holds none.
+        run: '"$RUNNER_TEMP/node_modules/.bin/agent-workflows" implement-prd'
 
       # The agent's own record of the session (#269), so a run can be profiled
       # and debugged from what it did and not only from the log, which shows
@@ -835,36 +848,43 @@ jobs:
           git update-ref -m "Agent-Slice: #${SUB}" HEAD "$(mapped "$old")" "$old"
           echo "Marked ${count} commit(s) with Agent-Slice: #${SUB}."
 
-      # The agent's commits, as the one thing `publish` pushes. A bundle rather
-      # than a push from here: this job holds no token that can write, and the
-      # runner that ran the agent is not one to spend a token on. Thin (the
-      # PRD branch's tip `catch_up` left is its prerequisite, which `publish`
-      # has from its own checkout), and holding exactly the PRD branch.
+      # The agent's commits, as the one thing `publish` pushes:
+      # `implement-prd:bundle` bundles the PRD branch, thin, the tip `catch_up`
+      # left being its prerequisite, which `publish` has from its own
+      # checkout, read from that job and never from this one.
       #
       # `always()` (#303): a run that failed, was cancelled or timed out hands
       # its commits over too, unmarked, for `publish` to rescue to a side
       # branch rather than push; the run that resumes from them marks them.
       # No commits is no bundle, which `publish` reads as nothing to push or
-      # rescue.
+      # rescue. From the install above, by its path, run from `RUNNER_TEMP`
+      # and working in the checkout, and **with no token**: the agent and the
+      # adopter's code have run, and the job's `GH_TOKEN` is set empty for it.
+      # Into a directory of its own, which the hand-over below carries beside
+      # the runner's files.
       - name: Bundle the branch
         if: always()
+        working-directory: ${{ runner.temp }}
         env:
-          BRANCH: ${{ needs.gate.outputs.prd_branch }}
+          GH_TOKEN: ""
+          OUTPUT_DIR: ${{ runner.temp }}/bundle
+          CHECKOUT: ${{ github.workspace }}
+          PRD_BRANCH: ${{ needs.gate.outputs.prd_branch }}
           BASE_SHA: ${{ needs.catch_up.outputs.head }}
-        run: |
-          if [ -z "$(git rev-list -n 1 "${BASE_SHA}..refs/heads/${BRANCH}")" ]; then
-            echo "No new commits, so there is nothing to bundle."
-            exit 0
-          fi
-          git bundle create "${RUNNER_TEMP}/branch.bundle" "refs/heads/${BRANCH}" "^${BASE_SHA}"
+        run: '"$RUNNER_TEMP/node_modules/.bin/agent-workflows" implement-prd:bundle'
 
-      # The bundle, the reason file on a failure, and the progress lists and
-      # status lines the runner rendered for `publish` to write, as one
-      # artifact. `always()`, because a failed run is one of the outcomes
-      # `publish` reports, and any of them may be missing. Uploading needs no
-      # scope: the artifact service takes the runner's own token, so this job
-      # stays read-only. `overwrite`, so a re-run replaces this attempt's copy
-      # rather than failing on the name.
+      # `implement-prd:prepare`'s reason file on a failure, under `prepare/`;
+      # `implement-prd:bundle`'s files, the bundle and its reason file on a
+      # failure, under `bundle/`; and the runner's reason file, progress lists
+      # and status lines for `publish` to write, and its set-aside note, at the
+      # top: exactly the files each declares. One artifact, `always()`,
+      # because a failed run is one of the outcomes `publish` reports, and any
+      # of them may be missing. The paths' common directory is `runner.temp`,
+      # so `prepare/` and `bundle/` stay as they are in the artifact and where
+      # `publish` downloads it. Uploading needs no scope: the artifact service
+      # takes the runner's own token, so this job stays read-only.
+      # `overwrite`, so a re-run replaces this attempt's copy rather than
+      # failing on the name.
       #
       # What this job hands over is the agent's to write, whatever a step here
       # meant it to be. So `publish` takes nothing from it but this artifact,
@@ -875,7 +895,9 @@ jobs:
         with:
           name: agent-implement-prd
           path: |
-            ${{ runner.temp }}/branch.bundle
+            ${{ runner.temp }}/prepare/failure_reason.txt
+            ${{ runner.temp }}/bundle/branch.bundle
+            ${{ runner.temp }}/bundle/failure_reason.txt
             ${{ runner.temp }}/failure_reason.txt
             ${{ runner.temp }}/progress.md
             ${{ runner.temp }}/status.md
@@ -1010,7 +1032,7 @@ jobs:
           PUSH_TOKEN: ${{ steps.token.outputs.token }}
         run: |
           set -euo pipefail
-          bundle="${RUNNER_TEMP}/branch.bundle"
+          bundle="${RUNNER_TEMP}/bundle/branch.bundle"
 
           block() {
             printf '%s\n' "$1" > "${RUNNER_TEMP}/failure_reason.txt"
@@ -1455,7 +1477,7 @@ jobs:
           PUSH_TOKEN: ${{ steps.token.outputs.token }}
         run: |
           set -euo pipefail
-          bundle="${RUNNER_TEMP}/branch.bundle"
+          bundle="${RUNNER_TEMP}/bundle/branch.bundle"
 
           skip() {
             echo "::warning::$1 Nothing was rescued."
@@ -1509,8 +1531,19 @@ jobs:
           RESCUED: ${{ steps.rescue.outputs.branch }}
         run: |
           reason="It stopped without giving a reason. The workflow run's log has the details."
-          if [ -f "${RUNNER_TEMP}/failure_reason.txt" ]; then
-            reason=$(cat "${RUNNER_TEMP}/failure_reason.txt")
+          # The reason files, in the order they are read: this job's, the
+          # gate's, the catch-up's and the runner's at the top, then
+          # `implement-prd:prepare`'s and `implement-prd:bundle`'s, each in the
+          # directory of its own the agent's job handed it over in.
+          reason_file=""
+          for file in "${RUNNER_TEMP}/failure_reason.txt" "${RUNNER_TEMP}/prepare/failure_reason.txt" "${RUNNER_TEMP}/bundle/failure_reason.txt"; do
+            if [ -f "$file" ]; then
+              reason_file="$file"
+              break
+            fi
+          done
+          if [ -n "$reason_file" ]; then
+            reason=$(cat "$reason_file")
           fi
           # Cancelled is not failed (#220), and a job that reached its limit
           # is cancelled too. What tells the two apart is the clock `gate`
@@ -1530,7 +1563,7 @@ jobs:
           if [ "$JOB_STATUS" = "cancelled" ] || [ "$GATE_RESULT" = "cancelled" ] || [ "$CATCH_UP_RESULT" = "cancelled" ] || [ "$AGENT_RESULT" = "cancelled" ]; then
             stopped=true
             reason="It was cancelled before it finished, by hand or by GitHub."
-          elif [ "$AGENT_RESULT" = "failure" ] && [ ! -f "${RUNNER_TEMP}/failure_reason.txt" ]; then
+          elif [ "$AGENT_RESULT" = "failure" ] && [ -z "$reason_file" ]; then
             stopped=true
           fi
           if [ "$stopped" = "true" ]; then

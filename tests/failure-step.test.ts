@@ -230,6 +230,28 @@ describe.skipIf(!CAN_RUN)("a failure step says whether the run failed, timed out
   });
 
   /**
+   * `implement-prd:prepare` and `implement-prd:bundle` write their reasons
+   * in directories of their own (#501), which the failure step reads after
+   * the reason at the top, where the runner, the gate and the catch-up put
+   * theirs.
+   */
+  it("implement-prd: reads implement-prd:prepare's and implement-prd:bundle's reasons from their own directories", () => {
+    const c = CASES[0];
+    const prepared = run(c, "failure", 120, String(c.minutes), "false", { "prepare/failure_reason.txt": "Couldn't check the rescue.\n" });
+    const bundled = run(c, "failure", 120, String(c.minutes), "false", { "bundle/failure_reason.txt": "Couldn't bundle.\n" });
+    const both = run(c, "failure", 120, String(c.minutes), "false", {
+      "failure_reason.txt": "The runner wrote this.\n",
+      "bundle/failure_reason.txt": "Couldn't bundle.\n",
+    });
+
+    expect(prepared.comment).toContain("stopped:** Couldn't check the rescue.");
+    expect(bundled.comment).toContain("stopped:** Couldn't bundle.");
+    expect(both.comment).toContain("stopped:** The runner wrote this.");
+    expect(both.comment).not.toContain("Couldn't bundle.");
+    // Three runs, so three spawns' worth of ceiling (`vitest.config.ts`).
+  }, 3 * SUBPROCESS_TIMEOUT);
+
+  /**
    * One pattern for every run that stopped (#253), whichever way it stopped:
    * the label in bold and `stopped:`, the reason as a sentence starting with a
    * capital and ending in a full stop, then the run's link and what to do.

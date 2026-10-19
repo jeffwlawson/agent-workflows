@@ -371,6 +371,16 @@ export const SUBCOMMANDS: Readonly<Record<string, Subcommand>> = {
     async () => (await import("./implement-prd/gate.js")).gate,
     "Refuse or defer an implement-prd run on a PRD parent, or claim it and decide its slice (no model).",
   ),
+  "implement-prd:prepare": fetchingCommand(
+    "implement-prd:prepare",
+    async () => (await import("./implement-prd/prepare.js")).prepare,
+    "Check the PRD branch out at the tip the catch-up left, and fetch an earlier stopped run's rescue (no model).",
+  ),
+  "implement-prd:bundle": command(
+    "implement-prd:bundle",
+    async () => (await import("./implement-prd/bundle.js")).bundle,
+    "Bundle the agent's commits on a PRD branch for the publish job (no model).",
+  ),
   "implement-prd:catch-up": writingCommand(
     "implement-prd:catch-up",
     async () => (await import("./implement-prd/catch-up.js")).catchUp,

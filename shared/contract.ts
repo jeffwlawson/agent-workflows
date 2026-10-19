@@ -467,8 +467,9 @@ const REVIEW_PUBLISH = {
  * `EVERY_SUBCOMMAND`: `OUTPUT_DIR`, and neither the repository nor the token,
  * since it reads no repository and is handed none. The red check's two
  * (#422), whose job runs the pull request's own code, `fix:bundle`
- * (#472), `update-branch:bundle` (#483) and `implement:bundle` (#491), which
- * run after the agent, and `implement:prepare` (#491), which needs none.
+ * (#472), `update-branch:bundle` (#483), `implement:bundle` (#491) and
+ * `implement-prd:bundle` (#501), which run after the agent, and
+ * `implement:prepare` (#491), which needs none.
  */
 export const TOKENLESS = {
   OUTPUT_DIR: EVERY_SUBCOMMAND.OUTPUT_DIR,
@@ -627,6 +628,36 @@ const IMPLEMENT_PREPARE = {
     BASE_SHA: REQUIRED,
   },
   outputs: [...EVERY_SUBCOMMAND_OUTPUTS],
+} as const satisfies CommandContract;
+
+/**
+ * `implement-prd:prepare`. See `COMMANDS`.
+ */
+const IMPLEMENT_PRD_PREPARE = {
+  inputs: {
+    ...EVERY_SUBCOMMAND,
+    CHECKOUT: REQUIRED,
+    PRD_BRANCH: REQUIRED,
+    PRD_TIP: EMPTY,
+    BASE_SHA: REQUIRED,
+    SUB: REQUIRED,
+    RESCUE_BRANCH: REQUIRED,
+  },
+  outputs: [...EVERY_SUBCOMMAND_OUTPUTS],
+} as const satisfies CommandContract;
+
+/**
+ * `implement-prd:bundle`, declared ahead of `COMMANDS` so that the publish
+ * job's commands can read its outputs (`readsFromCommand`). See `COMMANDS`.
+ */
+const IMPLEMENT_PRD_BUNDLE = {
+  inputs: {
+    ...TOKENLESS,
+    CHECKOUT: REQUIRED,
+    PRD_BRANCH: REQUIRED,
+    BASE_SHA: REQUIRED,
+  },
+  outputs: [...EVERY_SUBCOMMAND_OUTPUTS, "branch.bundle"],
 } as const satisfies CommandContract;
 
 /**
@@ -833,6 +864,19 @@ const REVIEW_RED_CHECK_PLACE = {
  *   on `PRD_PR` where there is one, and takes `agent:implement` off.
  *   `catch-up.json` is whether it parked, the merge it pushed, where it
  *   pushed one, and the tip it left the branch at, where it did not park.
+ * - `implement-prd:prepare` checks the PRD branch out in `CHECKOUT` for the
+ *   agent: `PRD_BRANCH`, fetched with `GH_TOKEN` where `PRD_TIP`, the tip the
+ *   gate read, says it exists, at `BASE_SHA`, the tip `implement-prd:catch-up`
+ *   left it at, with the loop's committer as the checkout's identity. Then
+ *   `RESCUE_BRANCH`, where an earlier stopped run left one, fetched as
+ *   `refs/rescue/<RESCUE_BRANCH>`, as `fix:prepare` fetches it: a tip it
+ *   cannot read stops the run rather than reading as no rescue. `SUB` is the
+ *   sub-issue the run builds, named in its log. It writes nothing to the
+ *   record.
+ * - `implement-prd:bundle` bundles the commits on `PRD_BRANCH`, in
+ *   `CHECKOUT`, ahead of `BASE_SHA`, the tip `implement-prd:catch-up` left,
+ *   into `branch.bundle`, and writes nothing where there are none, as
+ *   `fix:bundle` bundles. It reads no repository and is handed no token.
  * - `implement:prepare` creates the agent's `BRANCH` in `CHECKOUT` at
  *   `BASE_SHA`, the commit the gate read `BASE_REF` at, and checks it out,
  *   with the loop's committer as the checkout's identity. A checkout that
@@ -1047,6 +1091,8 @@ export const COMMANDS = {
       WRITE_LOG,
     ],
   },
+  "implement-prd:prepare": IMPLEMENT_PRD_PREPARE,
+  "implement-prd:bundle": IMPLEMENT_PRD_BUNDLE,
   "implement-prd:catch-up": {
     inputs: {
       ...EVERY_SUBCOMMAND,

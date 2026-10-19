@@ -87,8 +87,8 @@ const world = (): World => {
   return { temp, origin, publish, agent, runner, base };
 };
 
-/** Where the publish job finds the bundle: at the top of what the download wrote. */
-const bundleFile = (w: World): string => path.join(w.runner, "branch.bundle");
+/** Where the publish job finds the bundle: under `bundle/`, where `implement-prd:bundle` wrote it (#501). */
+const bundleFile = (w: World): string => path.join(w.runner, "bundle", "branch.bundle");
 
 const bundleTo = (w: World, ...refs: string[]): void => {
   fs.mkdirSync(path.dirname(bundleFile(w)), { recursive: true });

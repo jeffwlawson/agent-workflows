@@ -327,6 +327,41 @@ describe("implement-prd:conclude ends a run that finished", () => {
   }, CEILING);
 });
 
+/**
+ * Fail closed (#505's review): a publish skipped because the checkout or the
+ * Node setup before it failed is `skipped`, not `failure`, and a run is
+ * called finished only where every step it needed succeeded.
+ */
+describe("implement-prd:conclude reads a skipped publish as a run that stopped", () => {
+  it.each([
+    ["a build whose agent succeeded", {}],
+    ["the finishing run", { BUILD: "false", FINISHING: "true", SUB: "", CATCH_UP_RESULT: "skipped", AGENT_RESULT: "skipped", DOWNLOAD_OUTCOME: "skipped" }],
+    ["the open-only run", { BUILD: "false", SUB: "", CATCH_UP_RESULT: "skipped", AGENT_RESULT: "skipped", DOWNLOAD_OUTCOME: "skipped" }],
+  ] as const)("on %s: comments, takes the label off and blocks", async (_case, over) => {
+    await run(INPUTS({ ...over, PUBLISH_OUTCOME: "skipped" }));
+
+    expect(writes().slice(0, 3)).toEqual(STOPPED_WRITES);
+    expect(comment()).toContain("It stopped without giving a reason.");
+    expect(labels()).toEqual([BLOCKED_LABEL]);
+  }, CEILING);
+
+  it("on a build whose agent succeeded, writes the slice back as not started", async () => {
+    await run(INPUTS({ PUBLISH_OUTCOME: "skipped" }));
+
+    expect(body()).toContain(`| 3 · #${SUB} | ⏳ Not started |`);
+  }, CEILING);
+
+  it("reads a mint that did not run, and an empty publish outcome, as stopped too", async () => {
+    await run(INPUTS({ MINT_OUTCOME: "skipped" }));
+    expect(labels()).toEqual([BLOCKED_LABEL]);
+
+    github.issueLabels.set(PARENT, [IMPLEMENT_LABEL]);
+    fs.rmSync(work, { recursive: true, force: true });
+    await run(INPUTS({ PUBLISH_OUTCOME: "" }));
+    expect(labels()).toEqual([BLOCKED_LABEL]);
+  }, CEILING);
+});
+
 describe("implement-prd:conclude ends a chain the catch-up parked", () => {
   it("says nothing the catch-up said, takes the label off, and writes the slice back as not started", async () => {
     await run(INPUTS({ AGENT_RESULT: "skipped", DOWNLOAD_OUTCOME: "skipped", PUBLISH_OUTCOME: "skipped" }));

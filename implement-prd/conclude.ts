@@ -141,16 +141,21 @@ const endingOf = (inputs: Inputs): Ending => {
   // The download is tolerated, so its failure stops nothing by itself:
   // publish, finding no bundle, says so.
   const steps = [inputs.MINT_OUTCOME, inputs.PUBLISH_OUTCOME];
-  const stopped =
-    kind === "undecided" ||
-    inputs.GATE_RESULT !== "success" ||
-    ended(inputs.CATCH_UP_RESULT) ||
-    ended(inputs.AGENT_RESULT) ||
-    steps.some(ended);
-  if (!stopped) {
-    // A build whose agent's job never ran behind a catch-up that succeeded:
-    // the catch-up parked the chain, and said so.
-    return inputs.BUILD === "true" && inputs.AGENT_RESULT === "skipped" ? { kind: "parked" } : { kind: "finished" };
+  // Fail closed, as `implement:conclude` does: a run finished only where
+  // every step it needed says `success`. A publish skipped because the
+  // checkout or the Node setup before it failed is `skipped`, not `failure`,
+  // and must not read as a run that finished. The one skip that is an ending
+  // of its own is the park: a build whose catch-up succeeded and whose
+  // agent's job, and so publish, never ran.
+  if (kind === "stopped" && inputs.GATE_RESULT === "success" && inputs.MINT_OUTCOME === "success") {
+    const build = inputs.BUILD === "true";
+    if (build && inputs.CATCH_UP_RESULT === "success" && inputs.AGENT_RESULT === "skipped" && inputs.PUBLISH_OUTCOME === "skipped") {
+      return { kind: "parked" };
+    }
+    const jobsRan = build
+      ? inputs.CATCH_UP_RESULT === "success" && inputs.AGENT_RESULT === "success"
+      : !ended(inputs.CATCH_UP_RESULT) && !ended(inputs.AGENT_RESULT);
+    if (jobsRan && inputs.PUBLISH_OUTCOME === "success") return { kind: "finished" };
   }
 
   // Cancelled is not failed (#220), and a job that reached its limit is

@@ -1418,11 +1418,12 @@ runner wrote `rescue_ignored.json`, the note that the rescue was set aside (#303
 Then the ending, one of:
 
 - **A refusal or a deferral** (`REFUSED` is `true`): nothing, not the note either.
-- **A run that finished**: the gate, the catch-up and the agent's job where they ran, the mint and
-  publish. `agent:implement` off, even where publish took it off before it asked for the review,
+- **A run that finished**: every step it needed says `success`, the gate, the mint and publish,
+  and on a build the catch-up and the agent's job too; anything else, a publish skipped behind a
+  failed checkout among it, is a run that stopped. `agent:implement` off, even where publish took it off before it asked for the review,
   since that removal is tolerated and may have failed (#494).
-- **A chain the catch-up parked**: a build whose agent's job was skipped behind a catch-up that
-  succeeded. The catch-up said so; `agent:implement` off, and the stopped slice's row.
+- **A chain the catch-up parked**: a build whose agent's job, and so publish, was skipped behind a
+  catch-up that succeeded. The catch-up said so; `agent:implement` off, and the stopped slice's row.
 - **A run that stopped**, after a gate that decided the run was its own (`REFUSED` is `false`):
   on a build where `published.json` says nothing was pushed and a bundle arrived, the bundle checked
   in `CHECKOUT` as publish checks it and its tip pushed to `RESCUE_BRANCH` with the loop's token,

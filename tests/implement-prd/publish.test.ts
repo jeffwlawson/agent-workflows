@@ -12,7 +12,7 @@ import type { COMMANDS } from "../../shared/contract.js";
 import type { InputValues } from "../../shared/env.js";
 import { renderPullRequestFrame } from "../../shared/pr-frame.js";
 import { renderPrdStatus, renderProgressList, statusBlock, type ProgressInputs } from "../../shared/progress-list.js";
-import { CATCH_UP_TRAILER, IMPLEMENT_LABEL, REVIEW_LABEL, SLICE_TRAILER } from "../../shared/record.js";
+import { CATCH_UP_TRAILER, FINAL_REVIEW_MARK, IMPLEMENT_LABEL, REVIEW_LABEL, SLICE_TRAILER } from "../../shared/record.js";
 import { sliceRanges, type BranchCommit } from "../../shared/slice-ranges.js";
 import { SUBPROCESS_TIMEOUT } from "../../vitest.config.js";
 import { fakeGitHub, fakeReader, fakeWriters, type FakeGitHub } from "../engine/fakes.js";
@@ -36,9 +36,10 @@ import { fakeGitHub, fakeReader, fakeWriters, type FakeGitHub } from "../engine/
  * `tests/publish-push-step.test.ts`, *Open or reuse the PRD PR*'s
  * (`tests/pr-body-steps.test.ts` and the `prd_pr` cases of
  * `tests/implement-prd-preflight.test.ts`) and *Request review*'s
- * (`tests/loop-token-step.test.ts` and `tests/workflows.test.ts`), carried
- * over by behaviour, and the ones the move adds: the mark is read back as the
- * next gate reads it, rescued commits are marked, an empty range is refused,
+ * (`tests/loop-token-step.test.ts` and `tests/workflows.test.ts`), and
+ * *Hand over PRD PR*'s (the `handover` cases of the same retired file),
+ * carried over by behaviour, and the ones the move adds: the mark is read
+ * back as the next gate reads it, rescued commits are marked, an empty range is refused,
  * a push someone made meanwhile is refused by the lease rather than
  * overwritten, the PRD PR GitHub opened while erroring is carried on with,
  * and the list is rendered from data.
@@ -61,6 +62,7 @@ const SUB_ISSUES = [
   { number: 243, title: "next", state: "OPEN" },
 ] as const;
 const PRD_TITLE = "A PRD";
+const RUN_URL = "https://github.com/acme/widgets/actions/runs/7";
 const SERVER = "https://github.com";
 const REPO = "acme/widgets";
 /** The account the loop's reviews are posted as. */
@@ -208,6 +210,10 @@ const INPUTS = (over: Partial<Inputs> = {}): Inputs => ({
   PRD_BRANCH,
   PRD_TIP: tip,
   BUILD: "true",
+  FINISHING: "false",
+  PRD_PR: "",
+  LANDED: "",
+  RUN_URL: RUN_URL,
   BASE_SHA: tip,
   SUB: String(SUB),
   RESCUE_BRANCH: RESCUE,
@@ -272,7 +278,7 @@ const writes = (): string[] => (made?.writes ?? []).map((w) => `${w.token} ${w.t
 /** Every write a build run that opens the PRD PR makes, in order. */
 const OPENED_WRITES = ["loop pushRef", "loop deleteRef", "loop openPullRequest", "loop comment", "loop removeLabel", "loop removeLabel", "loop addLabel"];
 
-const LIMITS = { pushRef: 1, deleteRef: 1, openPullRequest: 1, editPullRequest: 1, comment: 1, removeLabel: 2, addLabel: 1 };
+const LIMITS = { pushRef: 1, deleteRef: 1, openPullRequest: 1, editPullRequest: 2, markReadyForReview: 1, comment: 2, removeLabel: 2, addLabel: 1 };
 
 const warnings = (): string[] =>
   vi
@@ -358,7 +364,7 @@ describe("implement-prd:publish marks the slice's commits and pushes them", { ti
     await run();
 
     const pushed = remoteTip(PRD_BRANCH) ?? "";
-    expect(written.get("published.json")).toEqual({ pushed: true, head: pushed, pr: 1, requested: true });
+    expect(written.get("published.json")).toEqual({ pushed: true, head: pushed, pr: 1, requested: true, handedOver: false });
     const slice = git(origin, "rev-list", pushed, `^${tip}`, `^${mainMoved}`).split("\n");
     expect(slice).toHaveLength(7);
     for (const sha of slice) {
@@ -436,7 +442,7 @@ describe("implement-prd:publish marks the slice's commits and pushes them", { ti
       `\`${PRD_BRANCH}\` changed while this run worked, so sub-issue #${SUB}'s commits were not pushed over what is there now. Trying again builds it on top of that.`,
     );
     expect(remoteTip(PRD_BRANCH)).toBe(theirs);
-    expect(written.get("published.json")).toEqual({ pushed: false, requested: false });
+    expect(written.get("published.json")).toEqual({ pushed: false, requested: false, handedOver: false });
     expect(remoteTip(RESCUE)).toBe(rescued);
     expect(prdPr()).toBeUndefined();
   });
@@ -554,7 +560,7 @@ describe("implement-prd:publish opens the PRD PR and asks for its review", { tim
     ]);
     expect(github.issueLabels.get(PARENT)).toEqual([]);
     expect(prdPr()?.labels).toEqual([REVIEW_LABEL]);
-    expect(written.get("published.json")).toEqual({ pushed: true, head: pushed(), pr: 1, requested: true });
+    expect(written.get("published.json")).toEqual({ pushed: true, head: pushed(), pr: 1, requested: true, handedOver: false });
     expect(warnings()).toEqual([]);
   });
 
@@ -598,7 +604,7 @@ describe("implement-prd:publish opens the PRD PR and asks for its review", { tim
     github.fails = (write) => write.type === "addLabel";
 
     await expect(run()).rejects.toThrow(`Couldn't add \`${REVIEW_LABEL}\` to PRD PR #1, so no review was requested.`);
-    expect(written.get("published.json")).toEqual({ pushed: true, head: pushed(), pr: 1, requested: false });
+    expect(written.get("published.json")).toEqual({ pushed: true, head: pushed(), pr: 1, requested: false, handedOver: false });
   });
 
   it("never takes an open PR from another head as the PRD PR", async () => {
@@ -618,7 +624,7 @@ describe("implement-prd:publish opens the PRD PR and asks for its review", { tim
       `2 open PRs come from this PRD's branch \`${PRD_BRANCH}\` (#201, #205), so it can't tell which one is the PRD PR. Close all but one.`,
     );
     expect(writes()).toEqual(["loop pushRef"]);
-    expect(written.get("published.json")).toEqual({ pushed: true, head: pushed(), requested: false });
+    expect(written.get("published.json")).toEqual({ pushed: true, head: pushed(), requested: false, handedOver: false });
   });
 
   /**
@@ -647,7 +653,7 @@ describe("implement-prd:publish opens the PRD PR and asks for its review", { tim
           /^::warning::GitHub answered opening the PRD PR with a server error \(.*502.*\), but PR #1 from `agent\/prd-222-slices` into `main` is open, so this run goes on with it\.$/,
         ),
       ]);
-      expect(written.get("published.json")).toEqual({ pushed: true, head: pushed(), pr: 1, requested: true });
+      expect(written.get("published.json")).toEqual({ pushed: true, head: pushed(), pr: 1, requested: true, handedOver: false });
     });
 
     it("fails where the read-back fails too, saying to look for the PRD PR before adding agent:implement again", async () => {
@@ -665,7 +671,7 @@ describe("implement-prd:publish opens the PRD PR and asks for its review", { tim
 
       await expect(run()).rejects.toThrow(/^Couldn't open the PRD PR from `agent\/prd-222-slices` into `main`: /);
       expect(github.pullRequests.get(40)?.labels).toEqual([]);
-      expect(written.get("published.json")).toEqual({ pushed: true, head: pushed(), requested: false });
+      expect(written.get("published.json")).toEqual({ pushed: true, head: pushed(), requested: false, handedOver: false });
     });
   });
 
@@ -735,7 +741,7 @@ describe("implement-prd:publish reuses the PRD PR an earlier run opened", { time
     expect(github.comments).toEqual([]);
     expect(github.pullRequests.size).toBe(1);
     expect(github.pullRequests.get(PR)?.labels).toEqual([REVIEW_LABEL]);
-    expect(written.get("published.json")).toEqual({ pushed: true, head: pushed(), pr: PR, requested: true });
+    expect(written.get("published.json")).toEqual({ pushed: true, head: pushed(), pr: PR, requested: true, handedOver: false });
   });
 
   /** Pre-upgrade compatibility, removable under #224: a body an older release opened has no `Closes` block. */
@@ -803,11 +809,208 @@ describe("implement-prd:publish on a run that only opens a missing PRD PR", { ti
     expect(writes()).toEqual(["loop openPullRequest", "loop removeLabel", "loop removeLabel", "loop addLabel"]);
     expect(github.comments).toEqual([]);
     expect(prdPr()?.labels).toEqual([REVIEW_LABEL]);
-    expect(written.get("published.json")).toEqual({ pushed: false, pr: 1, requested: true });
+    expect(written.get("published.json")).toEqual({ pushed: false, pr: 1, requested: true, handedOver: false });
   });
 
   it("refuses a build that names no sub-issue, rather than opening the PRD PR as though nothing was built", async () => {
     await expect(run(OPEN_ONLY({ BUILD: "true" }))).rejects.toThrow('SUB is "", which is not a sub-issue number.');
+    expect(made).toBeUndefined();
+  });
+});
+
+/**
+ * The finishing run (#504): every sub-issue built and the last slice's round
+ * approved, so no agent ran and nothing is pushed. One slice was reviewed as
+ * the whole PRD PR already, so it is marked ready and no review is asked for.
+ * More than one asks for the final review: recorded in the body first, then
+ * `agent:review`. The handover cases of the retired
+ * `tests/implement-prd-preflight.test.ts`, carried over by behaviour.
+ */
+describe("implement-prd:publish hands the PRD PR over on the finishing run", { timeout: CEILING }, () => {
+  const PR = 201;
+  const PR_URL = `${SERVER}/${REPO}/pull/${PR}`;
+  const FINISHING = (landed: number, over: Partial<Inputs> = {}): Inputs =>
+    OPEN_ONLY({ FINISHING: "true", PRD_PR: String(PR), LANDED: String(landed), ...over });
+  const body = (): string | undefined => github.pullRequests.get(PR)?.body;
+  const START = `**Final review of all ${SUB_ISSUES.length} slices started** · [Workflow run](${RUN_URL})`;
+
+  beforeEach(() => {
+    existing(PR, PRD_BRANCH, "main", `Closes #${PARENT}`);
+  });
+
+  it("marks the PRD PR of a one-slice PRD ready itself, and asks for no review", async () => {
+    await run(FINISHING(1));
+
+    expect(writes()).toEqual(["loop markReadyForReview"]);
+    expect(github.pullRequests.get(PR)).toMatchObject({ draft: false, body: `Closes #${PARENT}`, labels: [] });
+    expect(github.comments).toEqual([]);
+    expect(written.get("published.json")).toEqual({ pushed: false, pr: PR, requested: false, handedOver: true });
+    expect(remoteTip(PRD_BRANCH)).toBe(tip);
+  });
+
+  it("records the final review in the body, then takes agent:implement off and puts agent:review on, removed first, then says it started", async () => {
+    await run(FINISHING(3));
+
+    expect(body()).toBe(`Closes #${PARENT}\n\n${FINAL_REVIEW_MARK}`);
+    expect(writes()).toEqual(["loop editPullRequest", "loop removeLabel", "loop removeLabel", "loop addLabel", "loop comment"]);
+    const labels = (made?.writes ?? []).filter((w) => w.type === "removeLabel" || w.type === "addLabel").map((w) => [w.type, ...w.args]);
+    expect(labels).toEqual([
+      ["removeLabel", PARENT, IMPLEMENT_LABEL],
+      ["removeLabel", PR, REVIEW_LABEL],
+      ["addLabel", PR, REVIEW_LABEL],
+    ]);
+    expect(github.issueLabels.get(PARENT)).toEqual([]);
+    expect(github.pullRequests.get(PR)).toMatchObject({ draft: true, labels: [REVIEW_LABEL] });
+    expect(github.comments).toEqual([{ token: "loop", issue: PR, body: START }]);
+    expect(written.get("published.json")).toEqual({ pushed: false, pr: PR, requested: true, handedOver: true });
+    expect(warnings()).toEqual([]);
+  });
+
+  it("drops the body's trailing line breaks before the mark, as the shell read it", async () => {
+    const pr = github.pullRequests.get(PR);
+    if (pr !== undefined) pr.body = `Closes #${PARENT}\n\n`;
+
+    await run(FINISHING(2));
+
+    expect(body()).toBe(`Closes #${PARENT}\n\n${FINAL_REVIEW_MARK}`);
+  });
+
+  /**
+   * The mark goes into the progress list (#246), with the final review shown
+   * in review: what the list rendered for the final review requested is, byte
+   * for byte, the one the last slice's round left with the lines written in
+   * front of its end marker, and the status line the one rendered for it.
+   */
+  it("records the final review in the progress table and the status line as they render it", async () => {
+    const ranges = sliceRanges(
+      [
+        { sha: "d", parents: ["c"], slice: 243 },
+        { sha: "c", parents: ["b"], slice: SUB },
+        { sha: "b", parents: ["a"], slice: 241 },
+      ],
+      SUB_ISSUES,
+    );
+    const rounds = {
+      slices: { 241: { reviews: 1, fixes: 0 }, [SUB]: { reviews: 1, fixes: 0 }, 243: { reviews: 2, fixes: 1 } },
+      final: { reviews: 0, fixes: 0 },
+      all: { reviews: 4, fixes: 1 },
+    };
+    const approved: ProgressInputs = { subIssues: SUB_ISSUES, ranges, verdict: "approval", running: null, finalReview: "not requested", prUrl: PR_URL, rounds };
+    const requested: ProgressInputs = { ...approved, running: { kind: "review" }, finalReview: "requested" };
+    const framed = (inputs: ProgressInputs): string =>
+      `> [!NOTE]\n> ${statusBlock(renderPrdStatus(inputs))}\n\n${renderProgressList(inputs)}\n\nMine.`;
+    const pr = github.pullRequests.get(PR);
+    if (pr !== undefined) pr.body = framed(approved);
+
+    await run(FINISHING(3));
+
+    expect(body()).toBe(framed(requested));
+    expect(renderPrdStatus(requested)).toBe(`**🔍 Final review of all ${SUB_ISSUES.length} slices**`);
+    expect(renderProgressList(requested)).toContain(FINAL_REVIEW_MARK);
+  });
+
+  /** A retry finds the record a run before it wrote, and writes it once. */
+  it("does not record the final review twice on a retry, and still asks for it", async () => {
+    const MARKED = `Closes #${PARENT}\n\n${FINAL_REVIEW_MARK}`;
+    const pr = github.pullRequests.get(PR);
+    if (pr !== undefined) pr.body = MARKED;
+
+    await run(FINISHING(2));
+
+    expect(body()).toBe(MARKED);
+    expect(made?.lines.filter((line) => line.includes("PATCH"))).toEqual([]);
+    expect(github.pullRequests.get(PR)?.labels).toEqual([REVIEW_LABEL]);
+    expect(written.get("published.json")).toEqual({ pushed: false, pr: PR, requested: true, handedOver: true });
+  });
+
+  /**
+   * The mark is what `implement-prd:gate` reads "finished" by, so a label
+   * that did not go on takes it back out: left in, the retry the failure
+   * comment offers would be refused as finished, and no final review would
+   * ever run.
+   */
+  it("takes the final-review mark back out when the label does not go on, and stops with a sentence", async () => {
+    github.fails = (write) => write.type === "addLabel";
+
+    await expect(run(FINISHING(3))).rejects.toThrow(
+      `Couldn't add \`${REVIEW_LABEL}\` to PRD PR #${PR}, so its final review was not requested. Trying again resumes the handover and builds nothing.`,
+    );
+    expect(body()).toBe(`Closes #${PARENT}`);
+    expect(writes()).toEqual(["loop editPullRequest", "loop removeLabel", "loop removeLabel", "loop addLabel", "loop editPullRequest"]);
+    expect(github.comments).toEqual([]);
+    expect(written.get("published.json")).toEqual({ pushed: false, pr: PR, requested: false, handedOver: false });
+  });
+
+  it("says to add agent:review by hand where the mark cannot be taken back out either", async () => {
+    let edits = 0;
+    github.fails = (write) => write.type === "addLabel" || (write.type === "editPullRequest" && ++edits > 1);
+
+    await expect(run(FINISHING(3))).rejects.toThrow(
+      `Couldn't add \`${REVIEW_LABEL}\` to PRD PR #${PR}, and couldn't take back out the note that its final review is due. Add \`${REVIEW_LABEL}\` to PRD PR #${PR} by hand.`,
+    );
+    expect(body()).toBe(`Closes #${PARENT}\n\n${FINAL_REVIEW_MARK}`);
+  });
+
+  it("leaves a mark a retry found in place where the label does not go on, since this run did not write it", async () => {
+    const MARKED = `Closes #${PARENT}\n\n${FINAL_REVIEW_MARK}`;
+    const pr = github.pullRequests.get(PR);
+    if (pr !== undefined) pr.body = MARKED;
+    github.fails = (write) => write.type === "addLabel";
+
+    await expect(run(FINISHING(2))).rejects.toThrow("so its final review was not requested.");
+    expect(body()).toBe(MARKED);
+  });
+
+  it("stops before any label where the mark cannot be written", async () => {
+    github.fails = (write) => write.type === "editPullRequest";
+
+    await expect(run(FINISHING(3))).rejects.toThrow(
+      `Couldn't note on PRD PR #${PR} that its final review is due, so it wasn't requested. Trying again builds nothing.`,
+    );
+    expect(writes()).toEqual(["loop editPullRequest"]);
+  });
+
+  it("goes on where the final review's start cannot be said", async () => {
+    github.fails = (write) => write.type === "comment";
+
+    await run(FINISHING(3));
+
+    expect(written.get("published.json")).toEqual({ pushed: false, pr: PR, requested: true, handedOver: true });
+    expect(warnings()).toEqual([
+      `::warning::Could not post the final review's start comment on PRD PR #${PR}. GitHub's reply is in the write log.`,
+    ]);
+  });
+
+  it("stops with a sentence where the PRD PR cannot be marked ready", async () => {
+    github.fails = (write) => write.type === "markReadyForReview";
+
+    await expect(run(FINISHING(1))).rejects.toThrow(
+      `Couldn't mark PRD PR #${PR} ready for review. Trying again resumes the handover and builds nothing.`,
+    );
+    expect(written.get("published.json")).toEqual({ pushed: false, pr: PR, requested: false, handedOver: false });
+  });
+
+  /**
+   * The App's token fires events as the PAT does, so it hands over the same
+   * way (#319); the workflow token cannot mark a draft ready, and a label
+   * added with it starts no review, so it touches nothing.
+   */
+  it.each(["app", "pat"] as const)("hands over on the %s token", async (source) => {
+    await run(FINISHING(1, { LOOP_TOKEN_SOURCE: source }));
+
+    expect(github.pullRequests.get(PR)?.draft).toBe(false);
+  });
+
+  it.each([1, 2])("refuses on the workflow token with %i slice(s) landed, touching nothing", async (landed) => {
+    await expect(run(FINISHING(landed, { LOOP_TOKEN_SOURCE: "workflow" }))).rejects.toThrow(
+      `Couldn't hand PRD PR #${PR} over, because neither the loop's App nor \`AGENT_PAT\` is set and GitHub doesn't let the default token mark a draft ready or start a review. Every sub-issue is built. Set up one of them; trying again resumes the handover and builds nothing.`,
+    );
+    expect(made).toBeUndefined();
+    expect(github.pullRequests.get(PR)).toMatchObject({ draft: true, body: `Closes #${PARENT}`, labels: [] });
+  });
+
+  it("refuses a finishing run that names no PRD PR", async () => {
+    await expect(run(FINISHING(2, { PRD_PR: "" }))).rejects.toThrow('PRD_PR is "", which is not a pull request number.');
     expect(made).toBeUndefined();
   });
 });

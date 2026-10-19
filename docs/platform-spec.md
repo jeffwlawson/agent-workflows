@@ -459,7 +459,7 @@ body.
 | `<!-- agent:closes -->` … `<!-- /agent:closes -->` | A PRD PR's `Closes` line: the parent and every sub-issue still open. Written by `implement-prd:publish`, as `closesBlock` in `shared/record.ts` spells it, in the frame, and appended to a reused PRD PR an older release opened, whose body has no `Closes` marker. | `review`, through `Closes #<n>`; `implement-prd:publish`, for whether a reused body has the block |
 | `<!-- agent:draft-note -->` … `<!-- /agent:draft-note -->` | A PRD PR's note that it stays a draft until every slice is done. Written by `implement-prd:publish` in the frame. | `review`, whose final review's write of the summary removes it |
 | `\| <k> · #<sub> \| 🔨 Building \| – \| – \| – \|`, `**🔨 Building slice <k> of <n>** · #<sub>` | In a PRD PR's `<!-- agent:progress -->` and `<!-- agent:status -->` blocks: the row and the status line of slice `<k>`, sub-issue `<sub>`, while a build run builds it, as the renderer renders them. Written by `implement-prd:gate`. | nothing: a view of the chain, re-rendered by the next writer |
-| `<!-- agent:final-review requested -->` | A PRD PR's body: the finishing run asked for the final review. | `review`, as the final review; `implement-prd:gate`, as `FINAL_REVIEW_MARK` in `shared/record.ts` spells it, to call a PRD of more than one slice finished |
+| `<!-- agent:final-review requested -->` | A PRD PR's body: the finishing run asked for the final review. Written by `implement-prd:publish` on the finishing run, with the final review's row, in front of the progress list's end marker, or at the body's end where it has no list; taken back out where `agent:review` does not go on. | `review`, as the final review; `implement-prd:gate`, as `FINAL_REVIEW_MARK` in `shared/record.ts` spells it, to call a PRD of more than one slice finished |
 
 **Commit status contexts.** Read off each of the pull request's commits, newest first, counting
 only a status whose creator is the loop's identity (§4.1).
@@ -981,7 +981,8 @@ earlier run of this PRD left commits on `RESCUE_BRANCH`, that branch fetched to
 > slice's commits with the `Agent-Slice` trailer, pushes them to the PRD branch and deletes the
 > rescue branch, then opens the PRD PR as a draft the first time or reuses it, writing its progress
 > list and status line, and adds `agent:review`; and on a run that only opens a missing PRD PR,
-> which does the last two alone. The finishing run's hand-over is a shell step. A run that fails
+> which does the last two alone; and on the finishing run, which hands the PRD PR over: marked
+> ready, or its final review recorded and `agent:review` added. A run that fails
 > has its commits pushed to `RESCUE_BRANCH`, and the `stopped` lists written.
 
 > **Service orchestrator:** the chain moves on only when a review ends on an approval and
@@ -1329,6 +1330,29 @@ commit, polled every `HEAD_POLL_SECONDS`, then a warning; `agent:implement` off 
 command fails with `` Couldn't add `agent:review` to PRD PR #<n>, so no review was requested. ``.
 Where `LOOP_TOKEN_SOURCE` is neither `app` nor `pat` it warns that the label starts nothing.
 
+On **the finishing run**, `FINISHING` `true` (#504), it builds, fetches and pushes nothing, and
+hands `PRD_PR` over, with the loop's token. Where `LOOP_TOKEN_SOURCE` is neither `app` nor `pat`
+it writes nothing and fails with `` Couldn't hand PRD PR #<n> over, because neither the loop's App
+nor `AGENT_PAT` is set and GitHub doesn't let the default token mark a draft ready or start a
+review. Every sub-issue is built. Set up one of them; trying again resumes the handover and builds
+nothing. ``
+
+- **`LANDED` one:** the slice's round was the review of the whole PRD PR, so it is marked ready
+  for review, or the command fails with `` Couldn't mark PRD PR #<n> ready for review. Trying again
+  resumes the handover and builds nothing. ``
+- **More than one:** the final review. Its live body, its trailing line breaks dropped, gets the
+  final review's row, in review, and `agent:final-review requested` (§4.3) in front of the
+  progress list's end marker, or the mark at its end after a blank line where it has no list, and
+  its status line, where it has exactly one, becomes `**🔍 Final review of all <n> slices**`, `<n>`
+  the snapshot's sub-issues; a body that has the mark already, a retry's, is not written. A failed
+  edit fails the command. Then `agent:implement` off `ISSUE_NUMBER` and `agent:review` off the PRD
+  PR, each a warning where it fails, and `agent:review` added. Where the add fails, a body this run
+  marked is written back as it read it, and the command fails with `` Couldn't add `agent:review`
+  to PRD PR #<n>, so its final review was not requested. Trying again resumes the handover and
+  builds nothing. ``, or, where the write back fails too, with a sentence saying to add the label
+  by hand. Then `**Final review of all <n> slices started** · [Workflow run](<RUN_URL>)` on the
+  PRD PR; a failure is a warning.
+
 #### Inputs
 
 | Input | Kind | Default | What it is |
@@ -1344,6 +1368,10 @@ Where `LOOP_TOKEN_SOURCE` is neither `app` nor `pat` it warns that the label sta
 | `PRD_BRANCH` | required | | The PRD branch: `implement-prd:gate`'s `prdBranch`, which the bundle has to hold, the push moves and the PRD PR comes from. |
 | `PRD_TIP` | optional | `""` | `implement-prd:gate`'s `prdTip`. Empty is a PRD branch the catch-up made and did not push, and the push is leased on its not existing. |
 | `BUILD` | required | | Accepts `true` or `false`: whether `implement-prd:gate` decided this run builds a slice, or only opens a missing PRD PR. |
+| `FINISHING` | required | | Accepts `true` or `false`: whether `implement-prd:gate` decided this is the finishing run, which hands the PRD PR over and builds nothing. |
+| `PRD_PR` | optional | `""` | Required on the finishing run: the PRD PR `implement-prd:gate` found, its `prdPr`, which is handed over. |
+| `LANDED` | optional | `""` | Required on the finishing run: `implement-prd:gate`'s `landed`, every slice that landed, those before the upgrade included. One is marked ready; more is a final review. |
+| `RUN_URL` | required | | This run's page, which the final review's start comment links. |
 | `BASE_SHA` | optional | `""` | Required on a build: the PRD branch's tip as `implement-prd:catch-up` left it, its `head`: what the bundle has to build on, what the mark starts after, and what the push is leased on. |
 | `SUB` | optional | `""` | Required on a build: the sub-issue this run built, which the trailer names. |
 | `RESCUE_BRANCH` | required | | Where an earlier run of this PRD that stopped left its commits, deleted once the slice is pushed. |
@@ -1357,7 +1385,7 @@ Where `LOOP_TOKEN_SOURCE` is neither `app` nor `pat` it warns that the label sta
 
 | Output | When it is written |
 |---|---|
-| `published.json` | From its first write: `pushed`, whether it pushed; `head`, the marked commit pushed, where it did; `pr`, the PRD PR opened or reused, once it is known; and `requested`, whether `agent:review` went on. |
+| `published.json` | From its first write: `pushed`, whether it pushed; `head`, the marked commit pushed, where it did; `pr`, the PRD PR opened or reused, once it is known; `requested`, whether `agent:review` went on; and `handedOver`, whether the finishing run handed the PRD PR over. |
 | `write_log.jsonl` | Every write as it lands, one JSON line each, and a last line for how the command ended, as `review:publish`'s. Not written where it wrote nothing. |
 
 **`doctor` cannot check this.** These tables are the command's, for the reason §6 gives.
@@ -1371,14 +1399,17 @@ Where `LOOP_TOKEN_SOURCE` is neither `app` nor `pat` it warns that the label sta
 - A reused PRD PR's reviews headed `## Agent review` by the loop's identity, and each time
   `agent:fix` was added to it, for the progress list's counts; its live body, for the
   `agent:progress`, `agent:status` and `agent:closes` blocks; and its head, for the wait.
+- On the finishing run, the PRD PR's live body, for `agent:final-review requested`, the progress
+  list's end marker and the status line.
 
 **`doctor` cannot check this.** The record is written by the orchestrator's posting code, for the reason §4.3 gives.
 
 > **Actions orchestrator:** the publish job, after the downloads, the mint, the checkout of the
-> default branch and the Node setup, where the gate decided a run that is not the finishing one
-> and, on a build, the agent's job succeeded. It runs from `npm exec` from `RUNNER_TEMP`, handed
-> the workflow token as `GH_TOKEN` and the loop's. `CHECKOUT` is the workspace; `PRD_BRANCH`,
-> `PRD_TIP`, `BUILD` and `SUB` are the gate job's outputs, `BASE_SHA` the catch-up job's `head`,
+> default branch and the Node setup, wherever the gate decided the run and, on a build, the
+> agent's job succeeded: the finishing run's included, which has no agent's job. It runs from
+> `npm exec` from `RUNNER_TEMP`, handed the workflow token as `GH_TOKEN` and the loop's.
+> `CHECKOUT` is the workspace; `PRD_BRANCH`, `PRD_TIP`, `BUILD`, `FINISHING`, `PRD_PR`, `LANDED`
+> and `SUB` are the gate job's outputs, `RUN_URL` the job's, `BASE_SHA` the catch-up job's `head`,
 > `GATE_DIR` where the gate's artifact puts its `prd-issue.json`, and `BUNDLE_DIR` where the agent's
 > job's artifact puts `implement-prd:bundle`'s files. `OUTPUT_DIR` is a directory of its own under
 > `runner.temp`. A glue step copies `published.json`'s `head` and `pr` into step outputs, which the

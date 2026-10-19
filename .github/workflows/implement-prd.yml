@@ -984,7 +984,10 @@ jobs:
       # branch reused, its progress list and status line rendered from data
       # and spliced in, or one opened as a draft with its frame and the
       # slice's chapter marker; and its review asked for, once it shows the
-      # pushed head. `implement-prd/publish.ts` says why each is as it is.
+      # pushed head. On the finishing run (#504), the PRD PR handed over
+      # instead: marked ready where one slice landed, or its final review
+      # recorded in its body and asked for, and refused on the workflow
+      # token. `implement-prd/publish.ts` says why each is as it is.
       #
       # The steps here that act on a build read the agent's job's result, and
       # the ones a run that builds nothing does too read the gate's, by name:
@@ -996,7 +999,7 @@ jobs:
       # step below to find its reason file in.
       - name: Publish the slice
         id: publish
-        if: needs.gate.result == 'success' && needs.gate.outputs.finishing == 'false' && (needs.gate.outputs.build == 'false' || needs.implement-prd.result == 'success') && success()
+        if: needs.gate.result == 'success' && (needs.gate.outputs.finishing == 'true' || needs.gate.outputs.build == 'false' || needs.implement-prd.result == 'success') && success()
         working-directory: ${{ runner.temp }}
         env:
           NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -1015,6 +1018,12 @@ jobs:
           # Whether this run built a slice: `false` on a run that only opens
           # a missing PRD PR, which pushes nothing.
           BUILD: ${{ needs.gate.outputs.build }}
+          # The finishing run: every sub-issue built, so the PRD PR the gate
+          # found is handed over, marked ready or its final review asked for
+          # by how many slices landed.
+          FINISHING: ${{ needs.gate.outputs.finishing }}
+          PRD_PR: ${{ needs.gate.outputs.prd_pr }}
+          LANDED: ${{ needs.gate.outputs.landed }}
           BASE_SHA: ${{ needs.catch_up.outputs.head }}
           SUB: ${{ needs.gate.outputs.sub }}
         run: npm exec --prefix "$RUNNER_TEMP" --yes --package=@jeffwlawson/agent-workflows@0.8.8 -- agent-workflows implement-prd:publish
@@ -1046,106 +1055,6 @@ jobs:
           if-no-files-found: ignore
           retention-days: 7
           overwrite: true
-
-      # The finishing run's handover: every sub-issue is built and the last
-      # slice's round approved, so the PRD PR leaves the chain. A human merges
-      # it; the loop never merges it and never approves.
-      #
-      # One slice landed means its round was a review of the whole PRD PR
-      # already, and of the same lines, so the PRD PR is marked ready here and
-      # no second review runs. More than one means a **final review**: this
-      # records that it is requested in the PRD PR's progress list, where a review of
-      # the PRD PR reads it from, and then adds `agent:review`. The record goes
-      # first, so the review the label starts finds it, and a retry writes it
-      # once. It is also what `implement-prd:gate` reads the PRD as finished by, so
-      # a label add that fails takes it back out before the step stops.
-      #
-      # `LANDED` counts the slices that landed before the upgrade too
-      # (pre-upgrade compatibility, removable under #224): no round on the
-      # PRD PR reviewed them, so one slice built here beside them is not a
-      # review of the whole PRD PR.
-      #
-      # Needs the loop's App or AGENT_PAT either way, and refuses without one
-      # rather than doing half. `gh pr ready` cannot convert a draft under
-      # GITHUB_TOKEN, and a label added with it starts no review.
-      - name: "Hand over PRD PR #${{ needs.gate.outputs.prd_pr }}"
-        if: needs.gate.result == 'success' && needs.gate.outputs.finishing == 'true' && success()
-        id: handover
-        env:
-          PRD_PR: ${{ needs.gate.outputs.prd_pr }}
-          LANDED: ${{ needs.gate.outputs.landed }}
-          SUBS: ${{ needs.gate.outputs.subs }}
-          SERVER_URL: ${{ github.server_url }}
-          TOKEN_SOURCE: ${{ steps.token.outputs.source }}
-          GH_TOKEN: ${{ steps.token.outputs.token }}
-        run: |
-          set -euo pipefail
-
-          block() {
-            printf '%s\n' "$1" > "${RUNNER_TEMP}/failure_reason.txt"
-            echo "::error::$1"
-            exit 1
-          }
-
-          if [ "$TOKEN_SOURCE" != "app" ] && [ "$TOKEN_SOURCE" != "pat" ]; then
-            block "Couldn't hand PRD PR #${PRD_PR} over, because neither the loop's App nor \`AGENT_PAT\` is set and GitHub doesn't let the default token mark a draft ready or start a review. Every sub-issue is built. Set up one of them; trying again resumes the handover and builds nothing."
-          fi
-
-          if [ "$LANDED" -gt 1 ]; then
-            mark="<!-- agent:final-review requested -->"
-            body=$(gh pr view "$PRD_PR" --json body --jq '.body') \
-              || block "Couldn't read PRD PR #${PRD_PR} to ask for its final review. Trying again builds nothing."
-            if [[ "$body" != *"$mark"* ]]; then
-              # Into the progress table (#246, #298), with the final review's
-              # row in review: `finalReviewRequestedLines` in
-              # `shared/progress-list.ts`, which a test holds this copy equal
-              # to. Written in front of the end marker of the table the last
-              # slice's round left, every slice approved, it is the table
-              # rendered for the final review requested. A body with no table,
-              # one opened before #246, gets the mark at its end.
-              lines="| Final review | 🔍 In review | 0 | 0 | [all](${SERVER_URL}/${GH_REPO}/pull/${PRD_PR}/files) |"$'\n'"${mark}"$'\n'
-              end="<!-- /agent:progress -->"
-              requested="${body}"$'\n\n'"${mark}"
-              if [[ "$body" == *"$end"* ]]; then
-                requested="${body/"$end"/"${lines}${end}"}"
-              fi
-              # And the status line, where the body has exactly one: what
-              # `renderPrdStatus` says of the final review in review.
-              status_start="<!-- agent:status -->"
-              status_end="<!-- /agent:status -->"
-              rest="${requested#*"$status_start"}"
-              if [[ "$requested" == *"$status_start"*"$status_end"* ]] && [[ "$rest" != *"$status_start"* ]] && [[ "${rest#*"$status_end"}" != *"$status_end"* ]]; then
-                quoted=$'\n> '
-                requested="${requested%%"$status_start"*}${status_start}${quoted}**🔍 Final review of all ${SUBS} slices**${quoted}${status_end}${rest#*"$status_end"}"
-              fi
-              gh api -X PATCH "repos/${GH_REPO}/pulls/${PRD_PR}" -f body="${requested}" >/dev/null \
-                || block "Couldn't note on PRD PR #${PRD_PR} that its final review is due, so it wasn't requested. Trying again builds nothing."
-            fi
-            # This run's own label off the parent before the next step's goes
-            # on the PRD PR, as `implement-prd:publish` does (#236).
-            gh issue edit "$ISSUE_NUMBER" --remove-label "agent:implement" || true
-            # Removed first, as every trigger label the loop adds (#236).
-            gh pr edit "$PRD_PR" --remove-label "agent:review" || true
-            # The mark is what `implement-prd:gate` calls this PRD finished by, so a
-            # label that did not go on takes it back out: left in, the retry
-            # would be refused as finished with no final review ever asked for.
-            if ! gh pr edit "$PRD_PR" --add-label "agent:review"; then
-              if [[ "$body" != *"$mark"* ]]; then
-                gh api -X PATCH "repos/${GH_REPO}/pulls/${PRD_PR}" -f body="${body}" >/dev/null \
-                  || block "Couldn't add \`agent:review\` to PRD PR #${PRD_PR}, and couldn't take back out the note that its final review is due. Add \`agent:review\` to PRD PR #${PRD_PR} by hand."
-              fi
-              block "Couldn't add \`agent:review\` to PRD PR #${PRD_PR}, so its final review was not requested. Trying again resumes the handover and builds nothing."
-            fi
-            echo "Asked for the final review of PRD PR #${PRD_PR}, over its ${LANDED} slices."
-            # Its start comment on the PRD PR (#298), with this run's link,
-            # since no sub-issue holds one for it.
-            gh pr comment "$PRD_PR" --body "**Final review of all ${SUBS} slices started** · [Workflow run](${RUN_URL})" \
-              || echo "::warning::Could not post the final review's start comment on PRD PR #${PRD_PR}."
-          else
-            gh pr ready "$PRD_PR" \
-              || block "Couldn't mark PRD PR #${PRD_PR} ready for review. Trying again resumes the handover and builds nothing."
-            echo "Marked PRD PR #${PRD_PR} ready: its one slice's round was the review of the whole PR."
-          fi
 
       # Any of the four jobs: `gate` failing (this job's own `if:` lets a
       # failed gate through, since its `refused` is `!= 'true'` there), the

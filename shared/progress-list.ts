@@ -174,12 +174,12 @@ const finalRow = (state: FinalReviewState, inputs: Pick<ProgressInputs, "prUrl" 
 /**
  * The lines the finishing run adds when it requests the final review: the
  * final review's row, in review with no round yet, and the mark. Exactly what
- * `renderProgressList` renders for that state below the slices, so the
- * finishing run, which runs no toolchain, writes them in front of the end
- * marker of the list the last slice's round left, and the result is the
- * render. A test holds the workflow's copy equal to this.
+ * `renderProgressList` renders for that state below the slices, so
+ * `implement-prd:publish`, which reads no rounds on that run, writes them in
+ * front of the end marker of the list the last slice's round left, and the
+ * result is the render. No `prUrl` links no diff, as the table does.
  */
-export const finalReviewRequestedLines = (prUrl: string): string =>
+export const finalReviewRequestedLines = (prUrl: string | undefined): string =>
   `${finalRow("in review", { prUrl, rounds: { slices: {}, final: { reviews: 0, fixes: 0 }, all: { reviews: 0, fixes: 0 } } })}\n${FINAL_REVIEW_MARK}\n`;
 
 /** A slice's row up to its status cell: its position from 1 and its sub-issue, which name the row. */

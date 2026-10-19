@@ -699,6 +699,10 @@ const IMPLEMENT_PRD_PUBLISH = {
     PRD_BRANCH: REQUIRED,
     PRD_TIP: EMPTY,
     BUILD: { required: true, accepts: ["true", "false"] },
+    FINISHING: { required: true, accepts: ["true", "false"] },
+    PRD_PR: EMPTY,
+    LANDED: EMPTY,
+    RUN_URL: REQUIRED,
     BASE_SHA: EMPTY,
     SUB: EMPTY,
     RESCUE_BRANCH: REQUIRED,
@@ -942,6 +946,10 @@ const REVIEW_RED_CHECK_PLACE = {
  *   loop's token, leased on `BASE_SHA`, or on the branch not existing where
  *   `PRD_TIP` is empty; and deletes `RESCUE_BRANCH`, leased on its tip as
  *   read, tolerated. `published.json` is whether it pushed, and the head.
+ *   On the finishing run, `FINISHING` `true`, it builds and pushes nothing
+ *   and hands `PRD_PR` over instead: marked ready where `LANDED` is one
+ *   slice, or its final review asked for, refused where the loop's token is
+ *   the workflow token. `published.json` says whether it handed over.
  * - `implement:prepare` creates the agent's `BRANCH` in `CHECKOUT` at
  *   `BASE_SHA`, the commit the gate read `BASE_REF` at, and checks it out,
  *   with the loop's committer as the checkout's identity. A checkout that

@@ -24,7 +24,7 @@ import {
   VERDICTS,
 } from "../shared/review-output.js";
 import { AGENT_CHECKS, CI_WAIT_SECONDS } from "../review/collect-checks.js";
-import { finalReviewRequestedLines, OPENING_STATUS, renderPrdStatus, statusBlock } from "../shared/progress-list.js";
+import { OPENING_STATUS, statusBlock } from "../shared/progress-list.js";
 import { renderPullRequestFrame } from "../shared/pr-frame.js";
 import { SUBPROCESS_TIMEOUT } from "../vitest.config.js";
 import {
@@ -832,40 +832,6 @@ const runOf = (file: string, id: string): string =>
 const isInstallStep = (s: Step): boolean =>
   (s.run ?? "").includes("${{ inputs.setup }}") ||
   (s.uses ?? "").startsWith("actions/setup-node@");
-
-/**
- * The body of a bash function declared in a `run:` block. The parser has
- * already stripped the block scalar's own indent, so a top-level declaration
- * sits at column 0 and its closing brace is the next `}` at that same indent.
- *
- * Used to assert what a *refusal* does versus what a *deferral* does, which is
- * the whole difference between the two implement workflows' idle paths and is
- * invisible to a grep over the step as a whole.
- */
-const bashFunctionBody = (run: string, name: string): string => {
-  const lines = run.split("\n");
-  const open = lines.findIndex((l) => l.trimStart().startsWith(`${name}() {`));
-
-  expect(open).toBeGreaterThanOrEqual(0);
-  const indent = indentOf(lines[open] ?? "");
-  const close = lines.findIndex(
-    (l, i) => i > open && l.trimStart() === "}" && indentOf(l) === indent,
-  );
-
-  expect(close).toBeGreaterThan(open);
-  return lines.slice(open + 1, close).join("\n");
-};
-
-/** The body of an `if [ <condition> ]; then … fi` arm, up to its own `fi`. */
-const armOf = (run: string, condition: string): string => {
-  const start = run.indexOf(condition);
-
-  expect(start).toBeGreaterThanOrEqual(0);
-  const end = run.indexOf("\nfi", start);
-
-  expect(end).toBeGreaterThan(start);
-  return run.slice(start, end);
-};
 
 describe("workflow files", () => {
   it("finds workflows to check", () => {
@@ -1681,15 +1647,15 @@ describe("agent-review tells a slice round from the final review on a PRD PR", (
   });
 
   /**
-   * The mark is spelled where it is written, in `implement-prd.yml`'s
-   * handover, and where it is read, `shared/record.ts`, which
-   * `implement-prd:gate` reads it by (#498), and held equal here: a reader
-   * looking for a mark nobody writes would take every final review for a
-   * slice round.
+   * The mark is spelled once, in `shared/record.ts`, which
+   * `implement-prd:publish` writes it by on the finishing run (#504) and
+   * `implement-prd:gate` reads it by (#498): a reader looking for a mark
+   * nobody writes would take every final review for a slice round.
    */
   it("reads the final review's mark the finishing run writes", () => {
     expect(FINAL_REVIEW_MARK).toBe("<!-- agent:final-review requested -->");
-    expect(fs.readFileSync(PRD, "utf8")).toContain(`mark="${FINAL_REVIEW_MARK}"`);
+    expect(fs.readFileSync(PRD, "utf8")).not.toContain(FINAL_REVIEW_MARK);
+    expect(fs.readFileSync("implement-prd/publish.ts", "utf8")).toContain("FINAL_REVIEW_MARK");
     expect(fs.readFileSync("implement-prd/chain.ts", "utf8")).toContain("FINAL_REVIEW_MARK");
   });
 
@@ -5217,14 +5183,12 @@ describe("implement-prd's publish job marks and pushes the slice, and asks for i
       [
         "Publish the slice",
         "publish",
-        "needs.gate.result == 'success' && needs.gate.outputs.finishing == 'false' && (needs.gate.outputs.build == 'false' || needs.implement-prd.result == 'success') && success()",
+        "needs.gate.result == 'success' && (needs.gate.outputs.finishing == 'true' || needs.gate.outputs.build == 'false' || needs.implement-prd.result == 'success') && success()",
       ],
       ["Hand the push on", "push", "always()"],
       ["Keep the write log", undefined, "always() && needs.gate.outputs.refused == 'false'"],
     ]);
     expect(index("Resolve the loop's token")).toBeLessThan(at);
-    // The finishing run's hand-over is still the job's own step, after it.
-    expect(index("Hand over PRD PR #${{ needs.gate.outputs.prd_pr }}")).toBe(at + 5);
     expect(step("Checkout the base branch")?.with).toEqual({ ref: "${{ inputs.default-branch }}", "fetch-depth": 0, "persist-credentials": false });
     expect(step("Set up Node for the package")?.with).toEqual({
       "node-version": "24",
@@ -5234,7 +5198,7 @@ describe("implement-prd's publish job marks and pushes the slice, and asks for i
     });
     expect(job().permissions?.["packages"]).toBe("read");
     expect(steps().filter((s) => (s.uses ?? "").startsWith("actions/checkout@"))).toHaveLength(1);
-    for (const gone of ["Push the PRD branch", "Delete the rescue branch", "Checkout the base branch for the rescue", "Open or reuse the PRD PR", "Request review"]) {
+    for (const gone of ["Push the PRD branch", "Delete the rescue branch", "Checkout the base branch for the rescue", "Open or reuse the PRD PR", "Request review", "Hand over PRD PR #${{ needs.gate.outputs.prd_pr }}"]) {
       expect(steps().map((s) => s.name)).not.toContain(gone);
     }
   });
@@ -5259,6 +5223,9 @@ describe("implement-prd's publish job marks and pushes the slice, and asks for i
       PRD_BRANCH: "${{ needs.gate.outputs.prd_branch }}",
       PRD_TIP: "${{ needs.gate.outputs.prd_tip }}",
       BUILD: "${{ needs.gate.outputs.build }}",
+      FINISHING: "${{ needs.gate.outputs.finishing }}",
+      PRD_PR: "${{ needs.gate.outputs.prd_pr }}",
+      LANDED: "${{ needs.gate.outputs.landed }}",
       BASE_SHA: "${{ needs.catch_up.outputs.head }}",
       SUB: "${{ needs.gate.outputs.sub }}",
     });
@@ -5656,25 +5623,20 @@ describe("agent-implement-prd works one sub-issue per run", () => {
 
   /**
    * The PRD PR, opened as a draft by the run that builds the first slice and
-   * found by its head after, and the slice's round, `agent:review` on it, are
-   * `implement-prd:publish`'s (#503), held in
-   * `tests/implement-prd/publish.test.ts`: no step of the job opens, finds or
-   * labels the PRD PR on a building run. The one other trigger label the
-   * workflow adds is the finishing run's final review, which a building run
-   * never adds. Neither re-labels the parent: the next slice waits for the
-   * gate.
+   * found by its head after, the slice's round, `agent:review` on it, and the
+   * finishing run's hand-over are `implement-prd:publish`'s (#503, #504),
+   * held in `tests/implement-prd/publish.test.ts`: no step of the job opens,
+   * finds, labels, marks ready or merges the PRD PR, and none re-labels the
+   * parent: the next slice waits for the gate.
    */
-  it("leaves the PRD PR and its review request to implement-prd:publish, and re-labels nothing else", () => {
+  it("leaves the PRD PR, its review request and its hand-over to implement-prd:publish, and re-labels nothing else", () => {
     const steps = stepsOf(PRD);
-    const adds = steps.filter((s) => /--add-label "agent:(implement|review)"/.test(s.run ?? ""));
 
-    for (const step of steps) expect(step.run ?? "", step.name).not.toMatch(/gh pr (create|list)/);
-    expect(adds.map((s) => s.id)).toEqual(["handover"]);
-    expect(adds[0]?.run ?? "").toContain('gh pr edit "$PRD_PR" --add-label "agent:review"');
-    expect(adds[0]?.if ?? "").toContain("needs.gate.outputs.finishing == 'true'");
-    for (const step of adds) expect(step.run ?? "").not.toContain('--add-label "agent:implement"');
+    for (const step of steps) expect(step.run ?? "", step.name).not.toMatch(/gh pr (create|list|ready|merge|review)/);
+    expect(steps.filter((s) => /--add-label "agent:(implement|review)"/.test(s.run ?? ""))).toEqual([]);
+    expect(steps.map((s) => s.id)).not.toContain("handover");
     const publish = steps.find((s) => s.id === "publish");
-    expect(publish?.if ?? "").toContain("needs.gate.outputs.finishing == 'false'");
+    expect(publish?.if ?? "").toContain("needs.gate.outputs.finishing == 'true'");
     expect(publish?.env?.["LOOP_TOKEN"]).toBe("${{ steps.token.outputs.token }}");
     expect(publish?.env?.["LOOP_TOKEN_SOURCE"]).toBe("${{ steps.token.outputs.source }}");
   });
@@ -5730,50 +5692,6 @@ describe("agent-implement-prd works one sub-issue per run", () => {
       expect(condition.includes(`${GATE_WENT_AHEAD} && ${BUILDING}`) || condition.includes(AGENT_SUCCEEDED), `${step.name}: ${condition}`).toBe(true);
     }
     expect(publishSetup.map((s) => s.if)).toEqual([`always() && ${GATE_WENT_AHEAD}`, `always() && ${GATE_WENT_AHEAD}`]);
-  });
-
-  /**
-   * The handover. One slice landed: its round reviewed the whole PRD PR, so it
-   * is marked ready and no review is asked for. More than one: the final
-   * review is recorded in the PRD PR's body, then asked for. Both need the
-   * loop's App or AGENT_PAT. The loop never merges the PRD PR nor approves
-   * anything.
-   */
-  it("hands the PRD PR over on the finishing run, and never merges or approves it", () => {
-    const steps = stepsOf(PRD);
-    const at = steps.findIndex((s) => s.id === "handover");
-    const step = steps[at];
-    const run = step?.run ?? "";
-    const many = armOf(run, 'if [ "$LANDED" -gt 1 ]');
-
-    expect(at).toBeLessThan(steps.findIndex((s) => s.name === "Mark blocked on failure"));
-    expect(step?.if).toBe("needs.gate.result == 'success' && needs.gate.outputs.finishing == 'true' && success()");
-    expect(conditionOf(PRD, step as Step)).toContain("needs.gate.outputs.refused != 'true'");
-    expect(step?.env?.["PRD_PR"]).toBe("${{ needs.gate.outputs.prd_pr }}");
-    expect(step?.env?.["LANDED"]).toBe("${{ needs.gate.outputs.landed }}");
-    expect(step?.env?.["GH_TOKEN"]).toBe("${{ steps.token.outputs.token }}");
-    expect(step?.env?.["TOKEN_SOURCE"]).toBe("${{ steps.token.outputs.source }}");
-    expect(many).toContain('mark="<!-- agent:final-review requested -->"');
-    expect(many.indexOf("gh api -X PATCH")).toBeLessThan(many.indexOf('--add-label "agent:review"'));
-    expect(many.slice(many.indexOf("else"))).toContain('gh pr ready "$PRD_PR"');
-    expect(many.slice(many.indexOf("else"))).not.toContain("agent:review");
-    expect(run.indexOf('"$TOKEN_SOURCE" != "app"')).toBeLessThan(run.indexOf("gh pr edit"));
-    expect(bashFunctionBody(run, "block")).toContain('> "${RUNNER_TEMP}/failure_reason.txt"');
-    expect(code().filter((l) => /\bgh pr (merge|review)\b/.test(l))).toEqual([]);
-  });
-
-  /**
-   * Every stop of the PRD PR steps fails into `Mark blocked on failure` with
-   * a reason file, rather than commenting from the step. The gate's stops are
-   * `implement-prd:gate`'s throws, which the CLI writes the reason file for.
-   */
-  it.each(["handover"])("%s blocks through the reason file, not a comment of its own", (id) => {
-    const body = bashFunctionBody(runOf(PRD, id), "block");
-
-    expect(body).toContain('> "${RUNNER_TEMP}/failure_reason.txt"');
-    expect(body).toContain("exit 1");
-    expect(body).not.toContain("gh ");
-    expect(body).not.toContain("refused=");
   });
 
   /**
@@ -8289,25 +8207,12 @@ describe("a trigger label is on while its run works, and off when it ends", () =
   // Update-branch's is `update-branch:gate`'s (#481), whose tests hold the
   // order.
 
-  /**
-   * And a hand-off takes the run's own label off before it adds the next
-   * step's, in the same step and only on its success path, so the issue or
-   * pull request never carries both. Fix's is `fix:publish`'s (#468),
-   * update-branch's `update-branch:publish`'s (#484), implement's
-   * `implement:publish`'s (#492), and implement-prd's review request
-   * `implement-prd:publish`'s (#503), whose tests hold the order of their
-   * writes.
-   */
-  it.each([
-    ["implement-prd.yml", "handover", 'gh issue edit "$ISSUE_NUMBER" --remove-label "agent:implement"', 'gh pr edit "$PRD_PR" --add-label "agent:review"'],
-  ])("%s: %s takes its own label off before it adds the next", (name, step, removal, add) => {
-    const found = stepsOf(fileOf(name)).find((s) => s.name === step || s.id === step);
-    const run = found?.run ?? "";
-
-    expect(found?.if ?? "").toContain("success()");
-    expect(run.indexOf(removal)).toBeGreaterThanOrEqual(0);
-    expect(run.indexOf(add)).toBeGreaterThan(run.indexOf(removal));
-  });
+  // A hand-off takes the run's own label off before it adds the next
+  // step's, so the issue or pull request never carries both. Fix's is
+  // `fix:publish`'s (#468), update-branch's `update-branch:publish`'s (#484),
+  // implement's `implement:publish`'s (#492), and implement-prd's review
+  // request and hand-over `implement-prd:publish`'s (#503, #504), whose tests
+  // hold the order of their writes.
 
   /**
    * A review whose pull request moved while it worked says so, and what acts
@@ -8528,34 +8433,15 @@ describe("the PRD chain's progress", () => {
    * workflows, which run no toolchain, and held equal here to the one copy
    * the renderer uses.
    */
-  it("spells the list's markers and the final review's mark as the renderer does", () => {
-    const handover = runOf(PRD, "handover");
-
-    // The PRD PR's own list is `implement-prd:publish`'s since #503, which
-    // spells nothing: the renderer does.
+  it("spells the list's markers as the renderer does", () => {
+    // The PRD PR's own list and the finishing run's final-review mark are
+    // `implement-prd:publish`'s since #503 and #504, which spells nothing:
+    // the renderer and `shared/record.ts` do.
     const stopped = stepsOf(PRD).find((s) => s.name === "Show the stopped slice in the progress list");
     expect(stopped?.env?.["PROGRESS_START"]).toBe(PROGRESS_START);
     expect(stopped?.env?.["PROGRESS_END"]).toBe(PROGRESS_END);
     expect(stopped?.env?.["STATUS_START"]).toBe(STATUS_START);
     expect(stopped?.env?.["STATUS_END"]).toBe(STATUS_END);
-    expect(handover).toContain(`mark="${FINAL_REVIEW_MARK}"`);
-    expect(handover).toContain(`end="${PROGRESS_END}"`);
-    expect(handover).toContain(`status_start="${STATUS_START}"`);
-    expect(handover).toContain(`status_end="${STATUS_END}"`);
-    expect(handover).toContain(`quoted=$'\\n> '`);
-    const prUrl = "${SERVER_URL}/${GH_REPO}/pull/${PRD_PR}";
-    expect(handover).toContain(
-      `lines="${finalReviewRequestedLines(prUrl).replace(`\n${FINAL_REVIEW_MARK}\n`, "")}"$'\\n'"\${mark}"$'\\n'`,
-    );
-    expect(handover).toContain(
-      `\${status_start}\${quoted}${renderPrdStatus({
-        subIssues: [{ number: 1, state: "OPEN" }, { number: 2, state: "OPEN" }],
-        ranges: { slices: [], next: null, current: null },
-        verdict: "none",
-        running: { kind: "review" },
-        finalReview: "requested",
-      }).replace("2", "${SUBS}")}\${quoted}\${status_end}`,
-    );
   });
 
   /**
@@ -8693,7 +8579,7 @@ describe("the PRD chain's progress", () => {
     const advance = fs.readFileSync(path.join("review", "advance.ts"), "utf8");
     const constants = (text: string): string[] => [...text.matchAll(/\.addLabel\([^,]+, ([A-Z_]+)\)/g)].map(([, name]) => name ?? "");
 
-    expect(new Set(added(prd))).toEqual(new Set(["agent:blocked", "agent:review"]));
+    expect(new Set(added(prd))).toEqual(new Set(["agent:blocked"]));
     // The gate's probe re-adds the label the run holds, and a refusal blocks (#498).
     expect(constants(gate)).toEqual(["IMPLEMENT_LABEL", "BLOCKED_LABEL"]);
     expect(constants(advance)).toEqual(["IMPLEMENT_LABEL"]);
@@ -10147,7 +10033,7 @@ describe("rescue and resume for fix and implement-prd", () => {
 
     expect(COMMANDS["implement-prd:publish"].inputs).toHaveProperty("RESCUE_BRANCH");
     expect(jobNamed(PRD, "publish").env?.["RESCUE_BRANCH"]).toBe("agent/rescue/prd-${{ github.event.issue.number }}");
-    expect(publish?.if).toContain("(needs.gate.outputs.build == 'false' || needs.implement-prd.result == 'success') && success()");
+    expect(publish?.if).toContain("(needs.gate.outputs.finishing == 'true' || needs.gate.outputs.build == 'false' || needs.implement-prd.result == 'success') && success()");
     expect(steps.find((s) => s.name === "Delete the rescue branch")).toBeUndefined();
   });
 

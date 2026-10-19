@@ -13,6 +13,7 @@ import { loopAccounts } from "../shared/loop-accounts.js";
 import { renderPullRequestFrame } from "../shared/pr-frame.js";
 import { readBranchLog } from "../shared/prd-round.js";
 import {
+  finalReviewRequestedLines,
   renderPrdStatus,
   renderProgressList,
   spliceProgressList,
@@ -24,6 +25,7 @@ import {
   CLOSES_END,
   CLOSES_START,
   closesBlock,
+  FINAL_REVIEW_MARK,
   FIX_LABEL,
   IMPLEMENT_LABEL,
   PROGRESS_END,
@@ -48,6 +50,8 @@ interface Published {
   pr?: number;
   /** Whether `agent:review` went on. */
   requested: boolean;
+  /** Whether the finishing run handed the PRD PR over: marked ready, or its final review asked for. */
+  handedOver: boolean;
 }
 
 /**
@@ -56,8 +60,9 @@ interface Published {
  * commits, pushes them to the PRD branch and deletes the rescue branch; then,
  * on a build and on the run that only opens a missing PRD PR (`BUILD`
  * false), it opens the PRD PR or reuses it, with its progress list and
- * status line, and asks for its review, in that order. The finishing run's
- * hand-over is still the publish job's step.
+ * status line, and asks for its review, in that order. On the finishing
+ * run (`FINISHING` true, #504) it builds and pushes nothing and hands the PRD
+ * PR over instead: see `handOver`.
  *
  * **The bundle is checked before anything is made from it**, against facts
  * the agent could not reach: it is there, intact, holds exactly the PRD
@@ -106,12 +111,16 @@ export const publish = async (inputs: Inputs, io: Io): Promise<void> => {
   const { "prd-issue.json": snapshot } = readDirectory(COMMANDS["implement-prd:publish"].inputs.GATE_DIR, inputs.GATE_DIR, {
     "prd-issue.json": SNAPSHOT,
   });
+  if (inputs.FINISHING === "true") {
+    await handOver(inputs, io, parent, snapshot.subIssues.nodes);
+    return;
+  }
 
   let built: { readonly sub: number; readonly marked: string; readonly lease: Lease } | undefined;
   let fetched: string;
   let head: string;
   if (build) {
-    const sub = numbered(inputs.SUB);
+    const sub = numbered(inputs.SUB, "SUB", "a sub-issue number");
     const started = commit(inputs.BASE_SHA, "BASE_SHA");
     const bundled = readDirectory(COMMANDS["implement-prd:publish"].inputs.BUNDLE_DIR, inputs.BUNDLE_DIR, { "branch.bundle": present });
     if (bundled["branch.bundle"] === undefined) {
@@ -145,7 +154,7 @@ export const publish = async (inputs: Inputs, io: Io): Promise<void> => {
   }
 
   const { loop } = io.writers(LIMITS);
-  const state: Published = { pushed: false, requested: false };
+  const state: Published = { pushed: false, requested: false, handedOver: false };
   const record = (): void => io.outputs.writeJson("published.json", state);
   record();
 
@@ -439,6 +448,132 @@ const requestReview = async (inputs: Inputs, io: Io, parent: number, pr: number,
 };
 
 /**
+ * **The finishing run's hand-over** (#504): every sub-issue is built and the
+ * last slice's round approved, so the PRD PR leaves the chain. A human merges
+ * it; the loop never merges it and never approves.
+ *
+ * One slice landed means its round was a review of the whole PRD PR already,
+ * and of the same lines, so the PRD PR is marked ready and no second review
+ * runs. More than one means a **final review**: `requestFinalReview`.
+ * `LANDED` counts the slices that landed before the upgrade too (pre-upgrade
+ * compatibility, removable under #224): no round on the PRD PR reviewed them,
+ * so one slice built beside them is not a review of the whole PRD PR.
+ *
+ * Refused, before any write, where the loop's token is the workflow token:
+ * GitHub does not let it mark a draft ready, and a label added with it starts
+ * no review, so half a hand-over is not attempted.
+ */
+const handOver = async (inputs: Inputs, io: Io, parent: number, subIssues: Chain["subIssues"]): Promise<void> => {
+  const pr = numbered(inputs.PRD_PR, "PRD_PR", "a pull request number");
+  const landed = numbered(inputs.LANDED, "LANDED", "a count of slices landed");
+  if (!startsRuns(inputs)) {
+    throw new Error(
+      `Couldn't hand PRD PR #${pr} over, because neither the loop's App nor \`AGENT_PAT\` is set and GitHub doesn't let the default token mark a draft ready or start a review. Every sub-issue is built. Set up one of them; trying again resumes the handover and builds nothing.`,
+    );
+  }
+  const { loop } = io.writers(LIMITS);
+  const state: Published = { pushed: false, pr, requested: false, handedOver: false };
+  const record = (): void => io.outputs.writeJson("published.json", state);
+  record();
+
+  if (landed > 1) {
+    await requestFinalReview(inputs, loop, parent, pr, subIssues);
+    state.requested = true;
+  } else {
+    try {
+      await loop.markReadyForReview(pr);
+    } catch (error) {
+      if (!(error instanceof WriteFailed)) throw error;
+      throw new Error(`Couldn't mark PRD PR #${pr} ready for review. Trying again resumes the handover and builds nothing.`, { cause: error });
+    }
+    console.log(`Marked PRD PR #${pr} ready: its one slice's round was the review of the whole PR.`);
+  }
+  state.handedOver = true;
+  record();
+};
+
+/**
+ * The final review, asked for. First the record that it is requested, in the
+ * PRD PR's progress list, which a review of the PRD PR reads it from: the
+ * final review's row and the `agent:final-review requested` mark written in
+ * front of the end marker of the list the last slice's round left, every
+ * slice approved, which is the list rendered for the final review requested
+ * (`finalReviewRequestedLines`); a body with no list, one opened before #246,
+ * gets the mark at its end. And the status line, where the body has exactly
+ * one. The record goes first, so the review the label starts finds it, and a
+ * body that has the mark already, a retry's, is not written again.
+ *
+ * The body is read as `$(gh pr view …)` read it, its trailing line breaks
+ * dropped, so the bytes written are the ones the shell step wrote.
+ *
+ * Then `agent:implement` off the parent and `agent:review` off and on the PRD
+ * PR, as `requestReview`. The mark is what `implement-prd:gate` calls the PRD
+ * finished by, so where the label does not go on, the body this run marked is
+ * put back before the command stops: left in, the retry would be refused as
+ * finished with no final review ever asked for. Then the review's start
+ * comment on the PRD PR (#298), with this run's link, since no sub-issue
+ * holds one for it.
+ */
+const requestFinalReview = async (inputs: Inputs, loop: Writer, parent: number, pr: number, subIssues: Chain["subIssues"]): Promise<void> => {
+  const { GITHUB_SERVER_URL: server, GITHUB_REPOSITORY: repo } = inputs;
+  const prUrl = server !== "" && repo !== "" ? `${server}/${repo}/pull/${pr}` : undefined;
+  const status = statusBlock(
+    renderPrdStatus({ subIssues, ranges: sliceRanges([], subIssues), verdict: "approval", running: { kind: "review" }, finalReview: "requested" }),
+  );
+  let before: string | undefined;
+  try {
+    await loop.editPullRequest(pr, {
+      body: (live) => {
+        const body = live.replace(/\n+$/, "");
+        if (body.includes(FINAL_REVIEW_MARK)) return undefined;
+        before = body;
+        const requested = body.includes(PROGRESS_END)
+          ? body.replace(PROGRESS_END, () => `${finalReviewRequestedLines(prUrl)}${PROGRESS_END}`)
+          : `${body}\n\n${FINAL_REVIEW_MARK}`;
+        return spliceStatus(requested, status) ?? requested;
+      },
+    });
+  } catch (error) {
+    if (!(error instanceof WriteFailed)) throw error;
+    throw new Error(`Couldn't note on PRD PR #${pr} that its final review is due, so it wasn't requested. Trying again builds nothing.`, {
+      cause: error,
+    });
+  }
+
+  await tolerated(inWriteLog(`Could not take \`${IMPLEMENT_LABEL}\` off #${parent}.`), () => loop.removeLabel(parent, IMPLEMENT_LABEL));
+  await tolerated(
+    inWriteLog(`Could not take \`${REVIEW_LABEL}\` off PRD PR #${pr} before adding it.`),
+    () => loop.removeLabel(pr, REVIEW_LABEL),
+  );
+  try {
+    await loop.addLabel(pr, REVIEW_LABEL);
+  } catch (error) {
+    if (!(error instanceof WriteFailed)) throw error;
+    const marked = before;
+    if (marked !== undefined) {
+      try {
+        await loop.editPullRequest(pr, { body: () => marked });
+      } catch (restore) {
+        if (!(restore instanceof WriteFailed)) throw restore;
+        throw new Error(
+          `Couldn't add \`${REVIEW_LABEL}\` to PRD PR #${pr}, and couldn't take back out the note that its final review is due. Add \`${REVIEW_LABEL}\` to PRD PR #${pr} by hand.`,
+          { cause: error },
+        );
+      }
+    }
+    throw new Error(
+      `Couldn't add \`${REVIEW_LABEL}\` to PRD PR #${pr}, so its final review was not requested. Trying again resumes the handover and builds nothing.`,
+      { cause: error },
+    );
+  }
+  const total = subIssues.length;
+  console.log(`Asked for the final review of PRD PR #${pr}, over its ${total} slices.`);
+  await tolerated(inWriteLog(`Could not post the final review's start comment on PRD PR #${pr}.`), () =>
+    loop.comment(pr, `**Final review of all ${total} slices started** · [Workflow run](${inputs.RUN_URL})`),
+  );
+};
+
+/**
  * `message` marked as sub-issue `sub`'s: every `Agent-Slice` line in it
  * dropped, in any case, wherever it sits, and one naming `sub` added to the
  * trailer block git's own parser reads, the message's last paragraph. Where
@@ -491,15 +626,18 @@ const deleteRescue = async (io: Io, loop: Writer, rescue: string): Promise<void>
  * every one with the loop's token: the PRD branch's push and the rescue
  * branch's deletion; the PRD PR opened, or its progress list written into it,
  * and the slice's chapter marker on one it opened; and `agent:review` on it,
- * after `agent:implement` off the parent and `agent:review` off it. Anything
- * else is refused and stops it.
+ * after `agent:implement` off the parent and `agent:review` off it. On the
+ * finishing run, the final review's mark and, where the label does not go
+ * on, its restore, the review's start comment, or the PRD PR marked ready.
+ * Anything else is refused and stops it.
  */
 const LIMITS: Limits = {
   pushRef: 1,
   deleteRef: 1,
   openPullRequest: 1,
-  editPullRequest: 1,
-  comment: 1,
+  editPullRequest: 2,
+  markReadyForReview: 1,
+  comment: 2,
   removeLabel: 2,
   addLabel: 1,
 };
@@ -529,8 +667,8 @@ const SNAPSHOT = json(
 /** `text` cut to `max` characters, as bash's `${title:0:256}` cut it: by code point, never mid-character. */
 const cut = (value: string, max: number): string => Array.from(value).slice(0, max).join("");
 
-const numbered = (value: string): number => {
-  if (!/^[1-9][0-9]{0,9}$/.test(value)) throw new Error(`SUB is ${JSON.stringify(value)}, which is not a sub-issue number.`);
+const numbered = (value: string, name: string, what: string): number => {
+  if (!/^[1-9][0-9]{0,9}$/.test(value)) throw new Error(`${name} is ${JSON.stringify(value)}, which is not ${what}.`);
   return Number(value);
 };
 

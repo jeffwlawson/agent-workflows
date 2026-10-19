@@ -5,7 +5,6 @@ import * as path from "node:path";
 import { describe, expect, it } from "vitest";
 import { parse } from "yaml";
 import {
-  OPENING_STATUS,
   renderPrdStatus,
   renderProgressList,
   showBuilding,
@@ -19,8 +18,8 @@ import { summaryBlock } from "../review/pr-summary.js";
 import { sliceRanges } from "../shared/slice-ranges.js";
 import { SUBPROCESS_TIMEOUT } from "../vitest.config.js";
 import {
-  DRAFT_NOTE_END,
-  DRAFT_NOTE_START,
+  CLOSES_END,
+  CLOSES_START,
   PROGRESS_END,
   PROGRESS_START,
   STATUS_END,
@@ -32,10 +31,12 @@ import {
 /**
  * The pull request body's writers that are still shell (#218), run as the
  * real `run:` blocks read out of the workflows under `bash -e`, against a `gh`
- * that records what it was sent: the **frame** a PRD PR's opening run writes
- * once, and the splices of the progress list and the status line. A regular
- * pull request's frame is `implement:publish`'s since #492, rendered by
- * `shared/pr-frame.ts` and held by `tests/pr-frame.test.ts`. The review's
+ * that records what it was sent: the splices of the progress list and the
+ * status line a stopped build run writes back. Every frame is rendered by
+ * `shared/pr-frame.ts` and held by `tests/pr-frame.test.ts`: a regular pull
+ * request's, `implement:publish`'s since #492, and a PRD PR's,
+ * `implement-prd:publish`'s since #503, which also splices a reused PRD PR's
+ * list and status line (`tests/implement-prd/publish.test.ts`). The review's
  * summary, and a regular pull request's status line, are `review:publish`'s,
  * and its tests hold them (`tests/review/publish.test.ts`).
  *
@@ -143,8 +144,6 @@ const runStep = (
   return outcome;
 };
 
-const RUN_URL = "https://github.com/acme/widgets/actions/runs/4242";
-
 /** A PRD of two slices, the first approved and the second in review. */
 const PROGRESS_SUBS = [
   { number: 15, title: "One", state: "OPEN" as const },
@@ -164,159 +163,6 @@ const PROGRESS: ProgressInputs = {
   finalReview: "not requested",
 };
 
-/**
- * The preflight's snapshot of the PRD, #14: #15 closed before the upgrade
- * with no slice range, and #16 open.
- */
-const SNAPSHOT = { subIssues: { nodes: [{ number: 15, state: "CLOSED" }, { number: 16, state: "OPEN" }] } };
-
-/** The PRD PR's `Closes` block, which `implement-prd` owns and the review splices around. */
-const CLOSES_START = "<!-- agent:closes -->";
-const CLOSES_END = "<!-- /agent:closes -->";
-
-/**
- * The frames, exactly as the issue settled them. Written once by the run that
- * opens the pull request, and never again by anything.
- */
-describe.skipIf(!CAN_RUN)("the frame a pull request opens with", () => {
-  it("opens a PRD PR with the note and its status line, the summary, the progress table, then the Closes line", () => {
-    const outcome = runStep(
-      stepRun("implement-prd", "publish", "Open or reuse the PRD PR"),
-      {
-        ISSUE_NUMBER: "14",
-        ISSUE_TITLE: "A PRD",
-        RUN_URL,
-        BASE_REF: "main",
-        PRD_BRANCH: "agent/prd-14-a-prd",
-        TOKEN_SOURCE: "pat",
-        SUB: "15",
-        SUB_K: "1",
-        SUBS: "2",
-        PROGRESS_START,
-        PROGRESS_END,
-        STATUS_START,
-        STATUS_END,
-      },
-      {
-        "prd-issue.json": JSON.stringify({
-          subIssues: { nodes: [{ number: 15, state: "OPEN" }, { number: 16, state: "OPEN" }] },
-        }),
-        "progress.md": renderProgressList(PROGRESS),
-        "status.md": statusBlock("**🔍 Reviewing slice 1 of 2** · #15"),
-      },
-    );
-
-    expect(outcome.status, outcome.stdout).toBe(0);
-    expect(outcome.gh.at(-1)).toBe("pr comment 31 --body **Slice 1 of 2 · #15 started**");
-    expect(outcome.sent).toBe(
-      [
-        "> [!NOTE]",
-        `> ${statusBlock("**🔍 Reviewing slice 1 of 2** · #15")}`,
-        ">",
-        `> ${DRAFT_NOTE_START}The agent loop builds PRD #14 here, one sub-issue at a time, and reviews each on this PR before starting the next. It stays a draft until every slice is done. Don't merge it before then.${DRAFT_NOTE_END} Built by the agent loop from PRD #14, one sub-issue per slice. Comment here to steer it; your notes outside the loop's blocks are never edited.`,
-        "",
-        "---",
-        "",
-        "## Summary",
-        "",
-        SUMMARY_START,
-        "_The final review will summarize the whole PRD here._",
-        SUMMARY_END,
-        "",
-        "---",
-        "",
-        renderProgressList(PROGRESS),
-        "",
-        CLOSES_START,
-        "Closes #14, closes #15, closes #16",
-        CLOSES_END,
-        "",
-      ].join("\n"),
-    );
-  });
-});
-
-/**
- * The progress list's two writers in a workflow (#246), each splicing a list a
- * runner rendered into the PRD PR's body: the build run that reuses a PRD PR
- * once its slice is pushed, and the build run that stops after its runner
- * showed the slice building (the third, at every ending of a review's round,
- * is `review:advance`'s, held in `tests/review/advance.test.ts`). Both
- * keep the rule `spliceProgressList` keeps, and are held to it here: every
- * byte outside the markers kept, a list appended to a body with none, and
- * half a list, or two, not written.
- */
-describe.skipIf(!CAN_RUN)("the progress list is spliced into the PRD PR's body", () => {
-  const list = renderProgressList(PROGRESS);
-  const stale = renderProgressList({ ...PROGRESS, running: null, verdict: "approval" });
-  const bodies: readonly [string, string | null][] = [
-    ["a body with a list", `${CLOSES_START}\nCloses #14\n${CLOSES_END}\n\n${stale}\n\nMine.\r\n`],
-    ["a body with none", `${CLOSES_START}\nCloses #14\n${CLOSES_END}\n\nMine.`],
-    ["a body ending in a newline", "Mine.\n"],
-    ["no body", null],
-    ["half a list", `Mine.\n${PROGRESS_START}\nrest`],
-    ["two lists", `${stale}\n${stale}`],
-  ];
-
-  const reuse = (body: string | null, fail = "", files: Record<string, string> = {}): Outcome =>
-    runStep(
-      stepRun("implement-prd", "publish", "Open or reuse the PRD PR"),
-      {
-        ISSUE_NUMBER: "14",
-        ISSUE_TITLE: "A PRD",
-        BASE_REF: "main",
-        PRD_BRANCH: "agent/prd-14-a-prd",
-        TOKEN_SOURCE: "pat",
-        SUB: "16",
-        SUB_K: "2",
-        SUBS: "2",
-        PROGRESS_START,
-        PROGRESS_END,
-        STATUS_START,
-        STATUS_END,
-        GH_PR_LIST: "201",
-        GH_FAIL: fail,
-      },
-      {
-        "pr.json": JSON.stringify({ number: 201, body }),
-        "progress.md": list,
-        "prd-issue.json": JSON.stringify(SNAPSHOT),
-        ...files,
-      },
-    );
-
-  /**
-   * A body with no `Closes` marker at all is one an older release opened
-   * (#248), and gets the block at its end, from the snapshot, with no
-   * line for a sub-issue closed before the upgrade.
-   */
-  const reused = (body: string | null): string | undefined => {
-    const spliced = spliceProgressList(body ?? "", list);
-    if (spliced === undefined || (body ?? "").includes(CLOSES_START)) return spliced;
-    return `${spliced}\n\n${CLOSES_START}\nCloses #14, closes #16\n${CLOSES_END}`;
-  };
-
-  it.each(bodies)("a build run reusing the PRD PR over %s keeps spliceProgressList's rule", (_case, body) => {
-    const outcome = reuse(body);
-    const expected = reused(body);
-
-    expect(outcome.status, outcome.stdout).toBe(0);
-    expect(outcome.gh.some((call) => call.startsWith("pr create"))).toBe(false);
-    if (expected === undefined) {
-      expect(outcome.sent).toBeUndefined();
-      expect(outcome.stdout).toContain("half a progress list, or two");
-    } else {
-      expect(JSON.parse(outcome.sent ?? "{}")).toEqual({ body: expected });
-    }
-  });
-
-  it("a build run reusing the PRD PR goes on with a warning where the list cannot be written", () => {
-    const outcome = reuse("Mine.", "patch");
-
-    expect(outcome.status, outcome.stdout).toBe(0);
-    expect(outcome.stdout).toContain("::warning::Could not write PRD PR #201's progress list");
-  });
-});
 
 /**
  * A build run that stops after its runner showed the slice building writes
@@ -508,32 +354,10 @@ describe.skipIf(!CAN_RUN)("an old slices table in the PRD PR's body", () => {
   };
 
   it("survives every rewrite of the body, unchanged", () => {
-    const reused = runStep(
-      stepRun("implement-prd", "publish", "Open or reuse the PRD PR"),
-      {
-        ISSUE_NUMBER: "14",
-        ISSUE_TITLE: "A PRD",
-        BASE_REF: "main",
-        PRD_BRANCH: "agent/prd-14-a-prd",
-        TOKEN_SOURCE: "pat",
-        SUB: "16",
-        SUB_K: "2",
-        SUBS: "2",
-        PROGRESS_START,
-        PROGRESS_END,
-        STATUS_START,
-        STATUS_END,
-        GH_PR_LIST: "201",
-      },
-      {
-        "pr.json": JSON.stringify({ number: 201, body: OLD }),
-        "progress.md": list,
-        "prd-issue.json": JSON.stringify(SNAPSHOT),
-      },
-    );
-    expect(reused.status, reused.stdout).toBe(0);
-    const afterReuse = keepsTable((JSON.parse(reused.sent ?? "{}") as { body?: string }).body);
-    expect(afterReuse).toBe(`${OLD}\n${list}\n\n${CLOSES_START}\nCloses #14, closes #16\n${CLOSES_END}`);
+    // The build run's reuse, which `implement-prd:publish` makes by the same
+    // splice and appends the block to (`tests/implement-prd/publish.test.ts`
+    // holds it to that).
+    const afterReuse = keepsTable(`${OLD}\n${list}\n\n${CLOSES_START}\nCloses #14, closes #16\n${CLOSES_END}`);
 
     // The advance's write, which `review:advance` makes by the same splice
     // (`tests/review/advance.test.ts` holds it to that).
@@ -552,37 +376,6 @@ describe.skipIf(!CAN_RUN)("an old slices table in the PRD PR's body", () => {
     const afterStopped = keepsTable((JSON.parse(stopped.sent ?? "{}") as { body?: string }).body);
 
     keepsTable(spliceBlock(afterStopped, SUMMARY, summaryBlock("The PRD.", HEAD, true), "append"));
-  }, 3 * SUBPROCESS_TIMEOUT);
-
-  /** The block goes in only where no `Closes` marker is: a body with one is left to the splice alone. */
-  it("gets the Closes block once, on the first build run that reuses the PRD PR", () => {
-    const withBlock = `${CLOSES_START}\nCloses #14\nCloses #16\n${CLOSES_END}\n\n${OLD}`;
-    const outcome = runStep(
-      stepRun("implement-prd", "publish", "Open or reuse the PRD PR"),
-      {
-        ISSUE_NUMBER: "14",
-        ISSUE_TITLE: "A PRD",
-        BASE_REF: "main",
-        PRD_BRANCH: "agent/prd-14-a-prd",
-        TOKEN_SOURCE: "pat",
-        SUB: "16",
-        SUB_K: "2",
-        SUBS: "2",
-        PROGRESS_START,
-        PROGRESS_END,
-        STATUS_START,
-        STATUS_END,
-        GH_PR_LIST: "201",
-      },
-      {
-        "pr.json": JSON.stringify({ number: 201, body: withBlock }),
-        "progress.md": list,
-        "prd-issue.json": JSON.stringify(SNAPSHOT),
-      },
-    );
-
-    expect(outcome.status, outcome.stdout).toBe(0);
-    expect(JSON.parse(outcome.sent ?? "{}")).toEqual({ body: spliceProgressList(withBlock, list) });
   });
 });
 
@@ -608,37 +401,6 @@ describe.skipIf(!CAN_RUN)("the status line is spliced into the note", () => {
     const spliced = spliceProgressList(body, list) ?? "";
     return spliceStatus(spliced, line) ?? spliced;
   };
-
-  it.each(bodies)("a build run reusing the PRD PR over %s keeps spliceStatus's rule", (_case, body) => {
-    const withCloses = `${body}\n\n${CLOSES_START}\nCloses #14, closes #16\n${CLOSES_END}`;
-    const outcome = runStep(
-      stepRun("implement-prd", "publish", "Open or reuse the PRD PR"),
-      {
-        ISSUE_NUMBER: "14",
-        ISSUE_TITLE: "A PRD",
-        BASE_REF: "main",
-        PRD_BRANCH: "agent/prd-14-a-prd",
-        TOKEN_SOURCE: "pat",
-        SUB: "16",
-        SUB_K: "2",
-        SUBS: "2",
-        PROGRESS_START,
-        PROGRESS_END,
-        STATUS_START,
-        STATUS_END,
-        GH_PR_LIST: "201",
-      },
-      {
-        "pr.json": JSON.stringify({ number: 201, body: withCloses }),
-        "progress.md": list,
-        "status.md": status,
-        "prd-issue.json": JSON.stringify(SNAPSHOT),
-      },
-    );
-
-    expect(outcome.status, outcome.stdout).toBe(0);
-    expect(JSON.parse(outcome.sent ?? "{}")).toEqual({ body: expected(withCloses, status) });
-  });
 
   it.each(bodies)("a stopped build run over %s keeps spliceStatus's rule", (_case, body) => {
     const outcome = runStep(

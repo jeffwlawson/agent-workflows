@@ -308,8 +308,6 @@ export const RUNNERS = {
     },
     outputs: [
       ...EVERY_SUBCOMMAND_OUTPUTS,
-      "progress.md",
-      "status.md",
       "progress_stopped.md",
       "status_stopped.md",
       "progress_stopped_pushed.md",
@@ -661,6 +659,31 @@ const IMPLEMENT_PRD_BUNDLE = {
 } as const satisfies CommandContract;
 
 /**
+ * `implement-prd:gate`, declared ahead of `COMMANDS` so that
+ * `implement-prd:publish` can read its outputs (`readsFromCommand`). See
+ * `COMMANDS`.
+ */
+const IMPLEMENT_PRD_GATE = {
+  inputs: {
+    ...EVERY_SUBCOMMAND,
+    ISSUE_NUMBER: REQUIRED,
+    ISSUE_TITLE: REQUIRED,
+    ISSUE_STATE: REQUIRED,
+    BASE_REF: REQUIRED,
+    RUN_URL: REQUIRED,
+    GITHUB_SERVER_URL: EMPTY,
+  },
+  outputs: [
+    ...EVERY_SUBCOMMAND_OUTPUTS,
+    "gate.json",
+    "prd-issue.json",
+    "progress_unbuilt.md",
+    "status_unbuilt.md",
+    WRITE_LOG,
+  ],
+} as const satisfies CommandContract;
+
+/**
  * `implement-prd:publish`, declared ahead of `COMMANDS` so that the commands
  * after it in the publish job can read its outputs. See `COMMANDS`.
  */
@@ -668,13 +691,23 @@ const IMPLEMENT_PRD_PUBLISH = {
   inputs: {
     ...EVERY_SUBCOMMAND,
     ...LOOP,
+    ...LOOP_ACCOUNTS,
+    ...PULL_REQUEST_LINK,
+    ISSUE_NUMBER: REQUIRED,
+    ISSUE_TITLE: REQUIRED,
     BASE_REF: REQUIRED,
     PRD_BRANCH: REQUIRED,
     PRD_TIP: EMPTY,
-    BASE_SHA: REQUIRED,
-    SUB: REQUIRED,
+    BUILD: { required: true, accepts: ["true", "false"] },
+    BASE_SHA: EMPTY,
+    SUB: EMPTY,
     RESCUE_BRANCH: REQUIRED,
     CHECKOUT: REQUIRED,
+    HEAD_WAIT_SECONDS: { required: false, default: "60" },
+    HEAD_POLL_SECONDS: { required: false, default: "5" },
+    GATE_DIR: readsFromCommand("implement-prd:gate", IMPLEMENT_PRD_GATE, {
+      "prd-issue.json": "always",
+    }),
     BUNDLE_DIR: readsFromCommand("implement-prd:bundle", IMPLEMENT_PRD_BUNDLE, {
       "branch.bundle": "sometimes",
     }),
@@ -1104,25 +1137,7 @@ export const COMMANDS = {
     },
     outputs: [...EVERY_SUBCOMMAND_OUTPUTS, WRITE_LOG],
   },
-  "implement-prd:gate": {
-    inputs: {
-      ...EVERY_SUBCOMMAND,
-      ISSUE_NUMBER: REQUIRED,
-      ISSUE_TITLE: REQUIRED,
-      ISSUE_STATE: REQUIRED,
-      BASE_REF: REQUIRED,
-      RUN_URL: REQUIRED,
-      GITHUB_SERVER_URL: EMPTY,
-    },
-    outputs: [
-      ...EVERY_SUBCOMMAND_OUTPUTS,
-      "gate.json",
-      "prd-issue.json",
-      "progress_unbuilt.md",
-      "status_unbuilt.md",
-      WRITE_LOG,
-    ],
-  },
+  "implement-prd:gate": IMPLEMENT_PRD_GATE,
   "implement-prd:prepare": IMPLEMENT_PRD_PREPARE,
   "implement-prd:bundle": IMPLEMENT_PRD_BUNDLE,
   "implement-prd:publish": IMPLEMENT_PRD_PUBLISH,

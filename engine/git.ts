@@ -167,6 +167,17 @@ export interface BundleHead {
   readonly commit: string;
 }
 
+/**
+ * One commit of a first-parent log: its parents, in git's order, and the
+ * values of each trailer key asked for, as git's own trailer parser reads
+ * them, by key, with no entry for a key the commit does not carry.
+ */
+export interface LoggedCommit {
+  readonly sha: string;
+  readonly parents: readonly string[];
+  readonly trailers: Readonly<Record<string, readonly string[]>>;
+}
+
 /** What git can tell a command without a token. */
 export interface GitReader {
   /**
@@ -186,6 +197,13 @@ export interface GitReader {
    * which files a commit touches there. Both have to be in the repository.
    */
   changedPaths(from: string, to: string, under: string): Promise<readonly string[]>;
+  /**
+   * The commits of `head`'s first-parent history that `base`'s lacks, newest
+   * first, as `git log --first-parent` lists them, each with the values of
+   * the trailer keys in `keys`. The keys are the caller's: the engine spells
+   * no record string. Both have to be in the repository.
+   */
+  firstParentLog(base: string, head: string, keys: readonly string[]): Promise<readonly LoggedCommit[]>;
 }
 
 /** The reader over `repository`. */
@@ -211,6 +229,27 @@ export const gitReader = (repository: GitRepository): GitReader => {
     },
     changedPaths: async (from, to, under) =>
       (await git(["diff", "--name-only", "-z", from, to, "--", under])).split("\0").filter((p) => p !== ""),
+    firstParentLog: async (base, head, keys) => {
+      // A unit separator between fields, a group separator between a key's
+      // values and a record separator between commits: none can be in a sha,
+      // and git's trailer parser folds a value onto one line.
+      const fields = ["%H", "%P", ...keys.map((key) => `%(trailers:key=${key},valueonly,separator=%x1d)`)];
+      const log = await git(["log", "--first-parent", `--format=${fields.join("%x1f")}%x1e`, `${base}..${head}`, "--"]);
+      return log
+        .split("\x1e")
+        .map((record) => record.replace(/^\n/, ""))
+        .filter((record) => record !== "")
+        .map((record) => {
+          const [sha = "", parents = "", ...values] = record.split("\x1f");
+          const trailers = Object.fromEntries(
+            keys.flatMap((key, i) => {
+              const found = (values[i] ?? "").split("\x1d").map((value) => value.trim()).filter((value) => value !== "");
+              return found.length === 0 ? [] : [[key, found]];
+            }),
+          );
+          return { sha, parents: parents.split(" ").filter((parent) => parent !== ""), trailers };
+        });
+    },
     verifyBundle: async (path) => {
       await git(["bundle", "verify", "--quiet", path]);
       const listed = await git(["bundle", "unbundle", path]);

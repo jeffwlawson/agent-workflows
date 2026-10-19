@@ -64,18 +64,17 @@ const MERGED = INPUTS.MERGED;
 /**
  * The PRD PR's progress list (#246), a table since #298 with the status line
  * beside it, rendered from the PRD branch as it stands, the parent's
- * sub-issues and the rounds on the PRD PR: with this slice **in review**, left
- * in `progress.md` for the step that asks for its round once the slice is
- * pushed, with its status line in `status.md`. That one is rendered over the
- * branch with this slice's commits on it, which is what the push puts there;
- * they are not made yet, so its row links no diff until its round ends.
+ * sub-issues and the rounds on the PRD PR, for a run that stops: two of them,
+ * for `Show the stopped slice in the progress list` to write over the list the
+ * gate showed this slice building in (#312): `progress_stopped.md` with
+ * nothing pushed, this slice not started and the head's verdict as it now
+ * stands, and `progress_stopped_pushed.md` with this slice pushed and parked,
+ * since no round of it is running, each with its `status_` twin. The second is
+ * rendered over the branch with this slice's commits on it, which is what the
+ * push puts there; they are not made yet, so its row links no diff.
  *
- * And for a run that stops, two more, for `Show the stopped slice in the
- * progress list` to write over the list the gate showed this slice building
- * in (#312): `progress_stopped.md` with nothing pushed, this slice not started
- * and the head's verdict as it now stands, and `progress_stopped_pushed.md`
- * with this slice pushed and parked, since no round of it is running, each
- * with its `status_` twin.
+ * The list of a slice that finished is `implement-prd:publish`'s to render
+ * (#503), from the branch it pushed.
  *
  * Nothing here writes the PRD PR's body: this job's token reads only (#308),
  * and the gate wrote the building list before the agent's job started. Never
@@ -105,11 +104,10 @@ const writeProgress = (): void => {
     const prUrl = PRD_PR !== "" && server && repo ? `${server}/${repo}/pull/${PRD_PR}` : undefined;
     const common = { subIssues, finalReview: "not requested" as const, prUrl, rounds };
     // Over a fixed set, so each name is one the declaration lists.
-    const write = (name: "" | "_stopped" | "_stopped_pushed", inputs: ProgressInputs): void => {
+    const write = (name: "_stopped" | "_stopped_pushed", inputs: ProgressInputs): void => {
       writeText(`progress${name}.md`, renderProgressList(inputs));
       writeText(`status${name}.md`, statusBlock(renderPrdStatus(inputs)));
     };
-    write("", { ...common, ranges: pushed, verdict: "none", running: { kind: "review" } });
     write("_stopped", { ...common, ranges, verdict: MERGED === "" ? "approval" : "none", running: null });
     write("_stopped_pushed", { ...common, ranges: pushed, verdict: "none", running: null });
   } catch (error) {

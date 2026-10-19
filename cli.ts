@@ -384,7 +384,7 @@ export const SUBCOMMANDS: Readonly<Record<string, Subcommand>> = {
   "implement-prd:publish": writingCommand(
     "implement-prd:publish",
     async () => (await import("./implement-prd/publish.js")).publish,
-    "Mark a built slice's commits with its Agent-Slice trailer, push them to the PRD branch, and delete the rescue branch (no model).",
+    "Mark a built slice's commits with its Agent-Slice trailer and push them, then open or reuse the PRD PR and ask for its review (no model).",
   ),
   "implement-prd:catch-up": writingCommand(
     "implement-prd:catch-up",

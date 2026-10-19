@@ -13,17 +13,7 @@ import {
 } from "../shared/progress-list.js";
 import { sliceRanges } from "../shared/slice-ranges.js";
 import { SUBPROCESS_TIMEOUT } from "../vitest.config.js";
-import {
-  DRAFT_NOTE_END,
-  DRAFT_NOTE_START,
-  FINAL_REVIEW_MARK,
-  PROGRESS_END,
-  PROGRESS_START,
-  STATUS_END,
-  STATUS_START,
-  SUMMARY_END,
-  SUMMARY_START,
-} from "../shared/record.js";
+import { FINAL_REVIEW_MARK } from "../shared/record.js";
 
 /**
  * Runs `implement-prd`'s shell steps (the real `run:` blocks, read out of
@@ -32,10 +22,11 @@ import {
  * before that step became `review:collect-checks` (#421), for this reason: a
  * string assertion passes on a step `gh` refuses (#28).
  *
- * What it executes is the step that opens or reuses the PRD PR, and the
- * finishing run's handover of it. The preflight's state table and the start
- * comments are `implement-prd:gate`'s since #498, and the note on the
- * approved slice since #499, and are executed in `tests/implement-prd/`.
+ * What it executes is the finishing run's handover of the PRD PR. The
+ * preflight's state table and the start comments are `implement-prd:gate`'s
+ * since #498, the note on the approved slice since #499, and the PRD PR
+ * opened or reused since #503, `implement-prd:publish`'s, and are executed in
+ * `tests/implement-prd/`.
  *
  * Skipped where `bash`, `jq` or `node` are not on PATH, as that file is.
  */
@@ -244,112 +235,6 @@ const writes = (outcome: Outcome): string[][] => outcome.writes.map((line) => JS
 
 const prWrites = (outcome: Outcome): string[][] => writes(outcome).filter((argv) => argv[0] === "pr");
 
-const runPrdPr = (pulls: readonly Record<string, unknown>[], states?: readonly string[]): Outcome =>
-  runStep("prd_pr", {
-    pulls,
-    ...(states === undefined ? {} : { issue: issue(states) }),
-    env: { PRD_BRANCH, TOKEN_SOURCE: "pat", SUB: "", SUB_K: "", SUBS: "3" },
-  });
-
-/**
- * The PRD PR: opened as a draft by the run that builds the first slice, found
- * by its **head** by every run after.
- */
-describe.skipIf(!CAN_RUN)("agent-implement-prd's PRD PR, executed", () => {
-  it("opens it as a draft from the PRD branch into the base", () => {
-    const outcome = runPrdPr(BYSTANDERS);
-    const creates = prWrites(outcome).filter((argv) => argv[1] === "create");
-
-    expect(outcome.status, outcome.stdout).toBe(0);
-    expect(creates).toHaveLength(1);
-    expect(creates[0]?.slice(0, 7)).toEqual(["pr", "create", "--draft", "--base", "main", "--head", PRD_BRANCH]);
-    expect(outcome.output).toContain("number=300\n");
-  });
-
-  /**
-   * The frame, byte for byte, in the order #298 settled: the note, opening
-   * with the status line; the summary; the progress table, which a run that
-   * built nothing has none of and says when it is written; and the `Closes`
-   * line at the bottom, closing the parent and every open sub-issue when the
-   * PRD PR merges, and nothing before. A closed sub-issue gets no reference.
-   */
-  it("writes the note, the summary, the table and the Closes line with the parent and every open sub-issue", () => {
-    const outcome = runPrdPr(BYSTANDERS, ["OPEN", "CLOSED", "OPEN", "OPEN"]);
-
-    expect(outcome.temp("prd-pr-body.md")).toBe(
-      [
-        "> [!NOTE]",
-        `> ${STATUS_START}`,
-        "> **🔍 In review:** the slices built so far.",
-        `> ${STATUS_END}`,
-        ">",
-        `> ${DRAFT_NOTE_START}The agent loop builds PRD #${PARENT} here, one sub-issue at a time, and reviews each on this PR before starting the next. It stays a draft until every slice is done. Don't merge it before then.${DRAFT_NOTE_END} Built by the agent loop from PRD #${PARENT}, one sub-issue per slice. Comment here to steer it; your notes outside the loop's blocks are never edited.`,
-        "",
-        "---",
-        "",
-        "## Summary",
-        "",
-        SUMMARY_START,
-        "_The final review will summarize the whole PRD here._",
-        SUMMARY_END,
-        "",
-        "---",
-        "",
-        PROGRESS_START,
-        "_The progress table is written when this slice's review round ends._",
-        PROGRESS_END,
-        "",
-        "<!-- agent:closes -->",
-        `Closes #${PARENT}, closes #172, closes #174, closes #175`,
-        "<!-- /agent:closes -->",
-        "",
-      ].join("\n"),
-    );
-  });
-
-  /**
-   * A build run opens the PRD PR with the table and the status line its
-   * runner rendered, this slice in review, and the slice's chapter marker.
-   */
-  it("opens it with the progress table and status line the runner rendered, and the slice's chapter marker", () => {
-    const inputs: ProgressInputs = {
-      subIssues: [{ number: 172, state: "OPEN" }],
-      ranges: sliceRanges([{ sha: "a", parents: ["b"], slice: 172 }], [{ number: 172, state: "OPEN" }]),
-      verdict: "none",
-      running: { kind: "review" },
-      finalReview: "not requested",
-    };
-    const list = renderProgressList(inputs);
-    const status = statusBlock(renderPrdStatus(inputs));
-    const outcome = runStep("prd_pr", {
-      pulls: BYSTANDERS,
-      env: { PRD_BRANCH, TOKEN_SOURCE: "pat", SUB: "172", SUB_K: "1", SUBS: "3" },
-      files: { "progress.md": list, "status.md": status },
-    });
-
-    expect(outcome.status, outcome.stdout).toBe(0);
-    expect(outcome.temp("prd-pr-body.md")).toContain(`> [!NOTE]\n> ${status}\n>\n`);
-    expect(outcome.temp("prd-pr-body.md")).toContain(`${SUMMARY_END}\n\n---\n\n${list}\n\n<!-- agent:closes -->`);
-    expect(prWrites(outcome).at(-1)).toEqual(["pr", "comment", "300", "--body", "**Slice 1 of 3 · #172 started**"]);
-  });
-
-  it("reuses the PRD PR a run before it opened, rather than a second", () => {
-    const outcome = runPrdPr([...BYSTANDERS, PRD_PR]);
-
-    expect(outcome.status).toBe(0);
-    expect(prWrites(outcome)).toEqual([]);
-    expect(outcome.output).toContain("number=201\n");
-  });
-
-  it("refuses to guess between two open PRs from the PRD branch", () => {
-    const outcome = runPrdPr([...BYSTANDERS, PRD_PR, pull(205, PRD_BRANCH, "release")]);
-
-    expect(outcome.status).toBe(1);
-    expect(outcome.reason).toContain("#201, #205");
-    expect(prWrites(outcome)).toEqual([]);
-  });
-});
-
 /** The handover, handed PRD PR #201 and how many slices landed, as the finishing run has them. */
 /** What the handover reads besides the scenario: its PRD PR, the server, and the run it links. */
 const HANDOVER_ENV = {
@@ -530,7 +415,7 @@ describe.skipIf(!CAN_RUN)("agent-implement-prd's handover, executed", () => {
  * The contract the replay stands on for the steps above, against the real
  * binary: the flags parse and every `--json` field exists.
  */
-describe.skipIf(!onPath("gh"))("gh accepts the calls the PRD PR and handover steps compose", () => {
+describe.skipIf(!onPath("gh"))("gh accepts the calls the handover step composes", () => {
   const attempt = (args: readonly string[]): ReturnType<typeof spawnSync> =>
     spawnSync("gh", [...args], {
       encoding: "utf8",
@@ -539,16 +424,12 @@ describe.skipIf(!onPath("gh"))("gh accepts the calls the PRD PR and handover ste
     });
 
   it.each([
-    ["pr list --head", ["pr", "list", "--state", "open", "--head", PRD_BRANCH, "--limit", "100", "--json", "number"]],
     ["pr view --json body", ["pr", "view", "201", "--json", "body", "--jq", ".body"]],
     ["api -X PATCH pulls", ["api", "-X", "PATCH", `repos/${GH_REPO}/pulls/201`, "-f", "body=x"]],
     ["pr edit --remove-label", ["pr", "edit", "201", "--remove-label", "agent:review"]],
     ["pr edit --add-label", ["pr", "edit", "201", "--add-label", "agent:review"]],
     ["pr ready", ["pr", "ready", "201"]],
   ])("%s", (_name: string, args: readonly string[]) => {
-    expect(stepById("prd_pr").run ?? "").toContain(
-      'gh pr list --state open --head "$PRD_BRANCH" --limit 100 --json number',
-    );
     expect(stepById("handover").run ?? "").toContain('gh pr view "$PRD_PR" --json body --jq \'.body\'');
 
     const result = attempt(args);

@@ -200,7 +200,7 @@ const preflight = async (parent: number, inputs: Inputs, io: Io): Promise<Ruling
       `This PRD's sub-issue list came back with ${subIssues.length} of its ${shape.subIssues} sub-issues, so nothing was built. Add \`${IMPLEMENT_LABEL}\` again.`,
     );
   }
-  // Kept for `Open or reuse the PRD PR`, which writes its `Closes` lines from
+  // Kept for `implement-prd:publish`, which writes its `Closes` lines from
   // the same snapshot every branch below rules on, in the shape the shell
   // query it replaced gave it.
   io.outputs.writeJson("prd-issue.json", {

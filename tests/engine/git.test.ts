@@ -376,6 +376,35 @@ describe("changedPaths", () => {
 });
 
 /**
+ * The first-parent log (#503), in `work`: a merge's second parent's history
+ * left out, each trailer key's values as git's own parser reads them, and a
+ * key a commit lacks absent.
+ */
+describe("firstParentLog", { timeout: 10 * SUBPROCESS_TIMEOUT }, () => {
+  it("lists the first-parent commits base lacks, newest first, with their parents and the trailer values asked for", async () => {
+    const side = commit("side\n\nKey: #9", base);
+    const first = commit("first\n\nBody text.\n\nKey: #3\nOther: x", base);
+    const merge = git(work, "commit-tree", git(work, "write-tree"), "-p", first, "-p", side, "-m", "Merge side\n\nOther: y\nOther: z");
+    const last = commit("last\n\nKey: #4 is not a line on its own\n\nnot: a trailer block, said in prose", merge);
+
+    const log = await gitReader({ dir: work, env }).firstParentLog(base, last, ["Key", "Other"]);
+
+    expect(log).toEqual([
+      { sha: last, parents: [merge], trailers: {} },
+      { sha: merge, parents: [first, side], trailers: { Other: ["y", "z"] } },
+      { sha: first, parents: [base], trailers: { Key: ["#3"], Other: ["x"] } },
+    ]);
+  });
+
+  it("is empty where head is base, and throws where the repository does not hold a commit", async () => {
+    const reader = gitReader({ dir: work, env });
+
+    expect(await reader.firstParentLog(next, next, ["Key"])).toEqual([]);
+    await expect(reader.firstParentLog(base, "f".repeat(40), ["Key"])).rejects.toBeInstanceOf(GitError);
+  });
+});
+
+/**
  * The merge of a base branch into a pull request's (#481), against a real
  * origin and a clone of it checked out at the pull request's head, as a
  * workflow's checkout leaves it: detached. Each case spawns git about a

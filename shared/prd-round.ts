@@ -1,3 +1,4 @@
+import type { GitReader } from "../engine/git.js";
 import { gh, git } from "./common.js";
 import { isWorkflowBot, type LoopAccounts } from "./loop-accounts.js";
 import { renderMergeDanger, type MergeDanger } from "./merge-danger.js";
@@ -515,6 +516,25 @@ export const readPrdBranch = (repo: string, parent: string, base: string): PrdBr
     });
   return { subIssues, log, ranges: sliceRanges(log, subIssues) };
 };
+
+/**
+ * The PRD branch's first-parent log from `base` to `head`, newest first, as
+ * `sliceRanges` reads it, through the engine's git reader: how a command that
+ * holds a checkout reads the slices (`implement-prd:publish`), where a runner
+ * reads them with `readPrdBranch`. The same reading of each commit: its slice
+ * is the first `Agent-Slice` value's number, and it is a catch-up merge where
+ * it carries `Agent-Catch-Up`.
+ */
+export const readBranchLog = async (git: Pick<GitReader, "firstParentLog">, base: string, head: string): Promise<BranchCommit[]> =>
+  (await git.firstParentLog(base, head, [SLICE_TRAILER, CATCH_UP_TRAILER])).map((commit) => {
+    const number = /#(\d+)/.exec(commit.trailers[SLICE_TRAILER]?.[0] ?? "")?.[1];
+    return {
+      sha: commit.sha,
+      parents: commit.parents,
+      slice: number === undefined ? null : Number(number),
+      catchUp: (commit.trailers[CATCH_UP_TRAILER] ?? []).length > 0,
+    };
+  });
 
 /**
  * The slice a slice round reviews, read off the PRD branch by `readPrdBranch`.

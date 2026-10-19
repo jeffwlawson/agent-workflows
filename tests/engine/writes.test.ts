@@ -385,21 +385,49 @@ describe("githubReader", () => {
       commit_id: SHA,
       body: `review ${n}`,
       user: { login: "github-actions[bot]" },
+      submitted_at: "2026-01-01T00:00:00Z",
     });
     const { transport, sent } = recording((s) =>
       "rest" in s && s.rest.path.endsWith("page=1")
         ? Array.from({ length: 100 }, (_, i) => review(i))
-        : [{ html_url: "u", commit_id: null, body: null, user: null }],
+        : [{ html_url: "u", commit_id: null, body: null, user: null, submitted_at: null }],
     );
 
     const reviews = await githubReader(REPO, transport).reviews(7);
 
     expect(reviews).toHaveLength(101);
-    expect(reviews[0]).toEqual({ url: "https://github.com/o/r/pull/7#pullrequestreview-0", commit: SHA, body: "review 0", author: "github-actions[bot]" });
+    expect(reviews[0]).toEqual({
+      url: "https://github.com/o/r/pull/7#pullrequestreview-0",
+      commit: SHA,
+      body: "review 0",
+      author: "github-actions[bot]",
+      submittedAt: "2026-01-01T00:00:00Z",
+    });
     expect(reviews[100]).toEqual({ url: "u", commit: "", body: "", author: "" });
     expect(sent.map((s) => ("rest" in s ? s.rest.path : ""))).toEqual([
       "/repos/o/r/pulls/7/reviews?per_page=100&page=1",
       "/repos/o/r/pulls/7/reviews?per_page=100&page=2",
+    ]);
+  });
+
+  /** The label is the caller's: the engine spells none, and reads every page of the timeline for it. */
+  it("reads when a label was added, each time it was, off every page of the events, and nothing else", async () => {
+    const labelled = (label: string, at: string) => ({ event: "labeled", label: { name: label }, created_at: at });
+    const { transport, sent } = recording((s) =>
+      "rest" in s && s.rest.path.endsWith("page=1")
+        ? [
+            labelled("agent:fix", "2026-01-01T00:00:00Z"),
+            { event: "unlabeled", label: { name: "agent:fix" }, created_at: "2026-01-01T00:01:00Z" },
+            labelled("agent:review", "2026-01-01T00:02:00Z"),
+            ...Array.from({ length: 97 }, () => ({ event: "commented", created_at: "2026-01-01T00:03:00Z" })),
+          ]
+        : [labelled("agent:fix", "2026-01-02T00:00:00Z"), { event: "labeled", label: null, created_at: "x" }],
+    );
+
+    expect(await githubReader(REPO, transport).labelledAt(7, "agent:fix")).toEqual(["2026-01-01T00:00:00Z", "2026-01-02T00:00:00Z"]);
+    expect(sent.map((s) => ("rest" in s ? s.rest.path : ""))).toEqual([
+      "/repos/o/r/issues/7/events?per_page=100&page=1",
+      "/repos/o/r/issues/7/events?per_page=100&page=2",
     ]);
   });
 

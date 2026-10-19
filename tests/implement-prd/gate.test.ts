@@ -321,7 +321,7 @@ describe("implement-prd:gate finds the PRD branch and the PRD PR", () => {
     expect(reads.find((r) => r.method === "branchesStarting")?.args).toEqual(["agent/prd-171-"]);
   });
 
-  /** What `Open or reuse the PRD PR` writes its `Closes` lines from, in the shape the shell query gave it. */
+  /** What `implement-prd:publish` writes its `Closes` lines from, in the shape the shell query gave it. */
   it("leaves its snapshot of the PRD for the publish job", async () => {
     setSubIssues("CLOSED", "OPEN");
 

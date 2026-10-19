@@ -33,6 +33,8 @@ export interface Review {
   readonly body: string;
   /** The login that posted it. */
   readonly author: string;
+  /** When it was submitted, where GitHub says: a pending review has no time. */
+  readonly submittedAt?: string;
 }
 
 /** A check run on a commit. `conclusion` is `null` until it completes. */
@@ -164,6 +166,12 @@ export interface GitHubReader {
   /** Every review on the pull request, oldest first, as the endpoint documents. */
   reviews(number: number): Promise<readonly Review[]>;
   /**
+   * When `label` was added to the issue or pull request, each time it was,
+   * oldest first, off its timeline's events. The label is the caller's: the
+   * engine spells no record string.
+   */
+  labelledAt(number: number, label: string): Promise<readonly string[]>;
+  /**
    * Every comment on the pull request's conversation, oldest first: what a
    * conversation comment target is checked against, and where its author and
    * link are read from (#468).
@@ -228,6 +236,7 @@ interface RawReview {
   readonly commit_id: string | null;
   readonly body: string | null;
   readonly user: { readonly login: string } | null;
+  readonly submitted_at?: string | null;
 }
 
 interface RawWorkflowRun {
@@ -456,11 +465,26 @@ export const githubReader = (repo: string, transport: Transport): GitHubReader =
           path: `/repos/${repo}/pulls/${number}/reviews?per_page=100&page=${page}`,
         })) as readonly RawReview[];
         reviews.push(
-          ...raw.map((r) => ({ url: r.html_url, commit: r.commit_id ?? "", body: r.body ?? "", author: r.user?.login ?? "" })),
+          ...raw.map((r) => ({
+            url: r.html_url,
+            commit: r.commit_id ?? "",
+            body: r.body ?? "",
+            author: r.user?.login ?? "",
+            ...(typeof r.submitted_at === "string" ? { submittedAt: r.submitted_at } : {}),
+          })),
         );
         if (raw.length < 100) return reviews;
       }
     },
+    labelledAt: async (number, label) =>
+      (
+        await paged(
+          `/repos/${repo}/issues/${number}/events`,
+          (page) => page as readonly { readonly event: string; readonly label?: { readonly name: string } | null; readonly created_at: string }[],
+        )
+      )
+        .filter((event) => event.event === "labeled" && event.label?.name === label)
+        .map((event) => event.created_at),
     conversationComments: async (number) => {
       const comments: ConversationComment[] = [];
       for (let after: string | null = null; ; ) {

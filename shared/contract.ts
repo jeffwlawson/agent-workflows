@@ -803,6 +803,36 @@ const REVIEW_RED_CHECK_PLACE = {
  *   the branch's current tip, empty where it does not exist. It declares no
  *   loop token. `gate.json` is its decision, `proceed`, written as soon as it
  *   decides and however it ends, with `branch`, `base` and `tip` once read.
+ * - `implement-prd:gate` refuses, defers or claims a PRD parent before any
+ *   checkout, and decides what the run does: build the next slice, only
+ *   open a missing PRD PR, or hand a finished one over. An issue with no
+ *   sub-issues is `implement`'s and is deferred without a write. It reads
+ *   the shape, the sub-issues, the PRD branch by its stem, the old slice PRs
+ *   into it, the commits it has over `BASE_REF`, the PRD PR, its head's
+ *   verdict and, on a first build, every sub-issue's links, and the parent's
+ *   blockers; `ISSUE_STATE` is the parent as the label's event saw it, and
+ *   `ISSUE_TITLE` names a PRD branch that does not exist yet. One it claims
+ *   has the permission probe, `agent:blocked` off and the start comments,
+ *   the sub-issue's linking `RUN_URL`; past an approval, the note on the
+ *   approved slice, linking its head under `GITHUB_SERVER_URL`; and on a
+ *   build with a PRD PR, the slice building in its progress list. It
+ *   declares no loop token. `gate.json` is its decision, `proceed`, written
+ *   as soon as it decides and however it ends, with the decision and its
+ *   facts beside it on a run it claims; `prd-issue.json` is the parent's
+ *   snapshot, which the publish job writes the PRD PR's `Closes` lines from;
+ *   and `progress_unbuilt.md` and `status_unbuilt.md` are the progress list
+ *   and status line the building row replaced, which the publish job writes
+ *   back where the run stops before the runner renders its own.
+ * - `implement-prd:catch-up` brings the PRD branch up to date with
+ *   `BASE_REF` before a slice is built, in `CHECKOUT`, as the loop's
+ *   committer: `PRD_BRANCH` fetched at its tip, or, where `PRD_TIP`, the tip
+ *   the gate read, is empty, made at the base, and the base merged in with
+ *   the `Agent-Catch-Up` trailer naming `SUB`. A clean merge is pushed with
+ *   the loop's token, leased on `PRD_TIP`; a conflicting one parks the chain
+ *   with a comment on the parent, `ISSUE_NUMBER`, naming `agent:update-branch`
+ *   on `PRD_PR` where there is one, and takes `agent:implement` off.
+ *   `catch-up.json` is whether it parked, the merge it pushed, where it
+ *   pushed one, and the tip it left the branch at, where it did not park.
  * - `implement:prepare` creates the agent's `BRANCH` in `CHECKOUT` at
  *   `BASE_SHA`, the commit the gate read `BASE_REF` at, and checks it out,
  *   with the loop's committer as the checkout's identity. A checkout that
@@ -997,6 +1027,39 @@ export const COMMANDS = {
       }),
     },
     outputs: [...EVERY_SUBCOMMAND_OUTPUTS, WRITE_LOG],
+  },
+  "implement-prd:gate": {
+    inputs: {
+      ...EVERY_SUBCOMMAND,
+      ISSUE_NUMBER: REQUIRED,
+      ISSUE_TITLE: REQUIRED,
+      ISSUE_STATE: REQUIRED,
+      BASE_REF: REQUIRED,
+      RUN_URL: REQUIRED,
+      GITHUB_SERVER_URL: EMPTY,
+    },
+    outputs: [
+      ...EVERY_SUBCOMMAND_OUTPUTS,
+      "gate.json",
+      "prd-issue.json",
+      "progress_unbuilt.md",
+      "status_unbuilt.md",
+      WRITE_LOG,
+    ],
+  },
+  "implement-prd:catch-up": {
+    inputs: {
+      ...EVERY_SUBCOMMAND,
+      ...LOOP,
+      ISSUE_NUMBER: REQUIRED,
+      BASE_REF: REQUIRED,
+      PRD_BRANCH: REQUIRED,
+      PRD_TIP: EMPTY,
+      PRD_PR: EMPTY,
+      SUB: REQUIRED,
+      CHECKOUT: REQUIRED,
+    },
+    outputs: [...EVERY_SUBCOMMAND_OUTPUTS, "catch-up.json", WRITE_LOG],
   },
   "review:gate": {
     inputs: {

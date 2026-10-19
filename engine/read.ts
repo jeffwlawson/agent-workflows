@@ -78,6 +78,32 @@ export interface IssueShape {
   readonly labels: readonly string[];
 }
 
+/** One of an issue's sub-issues, as the sub-issues list gives it, its state in GraphQL's spelling. */
+export interface SubIssue {
+  readonly number: number;
+  readonly title: string;
+  readonly state: "OPEN" | "CLOSED";
+}
+
+/** A branch and the commit it points at. */
+export interface BranchRef {
+  readonly name: string;
+  readonly tip: string;
+}
+
+/** An open pull request, as far as telling its branches apart needs it. */
+export interface PullRequestBranches {
+  readonly number: number;
+  readonly head: string;
+  readonly base: string;
+}
+
+/** An issue another is blocked by, and whether it is still open. */
+export interface Blocker {
+  readonly number: number;
+  readonly open: boolean;
+}
+
 /** A pull request as far as a link to it needs it. */
 export interface PullRequestLink {
   readonly number: number;
@@ -93,8 +119,31 @@ export interface GitHubReader {
    * no sub-issues.
    */
   issueShape(number: number): Promise<IssueShape>;
+  /**
+   * The issue's sub-issues, in the list's order, which is the order a PRD's
+   * chain builds them in: every page, past 100. An answer that holds no issue
+   * throws, rather than reading as an issue with none, so a failed read can
+   * never look like a chain whose every slice landed.
+   */
+  subIssues(number: number): Promise<readonly SubIssue[]>;
   /** The issues blocking the issue, by its `blocked_by` relations, that are still open, as the endpoint lists them. */
   openBlockers(number: number): Promise<readonly number[]>;
+  /** Every issue blocking the issue, by its `blocked_by` relations, open or closed, as the endpoint lists them. */
+  blockedBy(number: number): Promise<readonly Blocker[]>;
+  /** The body of every comment on the issue, oldest first. */
+  issueComments(number: number): Promise<readonly string[]>;
+  /**
+   * Every branch whose name starts with `prefix`, with its tip. The prefix is
+   * the caller's, as a pattern is: a branch name is a record string.
+   */
+  branchesStarting(prefix: string): Promise<readonly BranchRef[]>;
+  /**
+   * The open pull requests from `head`, a branch of this repository, or into
+   * `base`, or both, as the list endpoint filters them, with their branches.
+   */
+  openPullRequests(filter: { readonly head?: string; readonly base?: string }): Promise<readonly PullRequestBranches[]>;
+  /** The message of every commit `head` has and `base` lacks, as the compare API lists them, every page. */
+  commitMessages(base: string, head: string): Promise<readonly string[]>;
   /**
    * Every open pull request whose body `pattern` matches, newest first. The
    * pattern is the caller's: the engine spells no record string, and which
@@ -239,6 +288,23 @@ interface ShapeAnswer {
   } | null;
 }
 
+interface SubIssuePage {
+  readonly repository: {
+    readonly issue: {
+      readonly subIssues: {
+        readonly nodes: readonly SubIssue[];
+        readonly pageInfo: { readonly hasNextPage: boolean; readonly endCursor: string | null };
+      };
+    } | null;
+  } | null;
+}
+
+const SUB_ISSUES = `query($owner:String!,$name:String!,$number:Int!,$after:String){
+  repository(owner:$owner,name:$name){issue(number:$number){
+    subIssues(first:100,after:$after){nodes{number title state} pageInfo{hasNextPage endCursor}}
+  }}
+}`;
+
 /** The first hundred labels, as the shell pre-flight this replaced read them. */
 const ISSUE_SHAPE = `query($owner:String!,$name:String!,$number:Int!){
   repository(owner:$owner,name:$name){issue(number:$number){
@@ -272,6 +338,53 @@ export const githubReader = (repo: string, transport: Transport): GitHubReader =
         labels: issue.labels.nodes.map((label) => label.name),
       };
     },
+    subIssues: async (number) => {
+      const all: SubIssue[] = [];
+      for (let after: string | null = null; ; ) {
+        const data = (await transport.graphql(SUB_ISSUES, { owner, name, number, after })) as SubIssuePage | undefined;
+        const page = data?.repository?.issue?.subIssues;
+        if (page === undefined) throw new Error(`The sub-issues of issue #${number} came back empty.`);
+        all.push(...page.nodes.map((node) => ({ number: node.number, title: node.title, state: node.state })));
+        if (!page.pageInfo.hasNextPage || page.pageInfo.endCursor === null) return all;
+        after = page.pageInfo.endCursor;
+      }
+    },
+    blockedBy: async (number) =>
+      (
+        await paged(
+          `/repos/${repo}/issues/${number}/dependencies/blocked_by`,
+          (page) => page as readonly { readonly number: number; readonly state: string }[],
+        )
+      ).map((issue) => ({ number: issue.number, open: issue.state === "open" })),
+    issueComments: async (number) =>
+      (await paged(`/repos/${repo}/issues/${number}/comments`, (page) => page as readonly { readonly body: string | null }[])).map(
+        (comment) => comment.body ?? "",
+      ),
+    branchesStarting: async (prefix) => {
+      const ref = prefix.split("/").map(encodeURIComponent).join("/");
+      const raw = (await transport.rest({ method: "GET", path: `/repos/${repo}/git/matching-refs/heads/${ref}` })) as readonly {
+        readonly ref: string;
+        readonly object: { readonly sha: string };
+      }[];
+      return raw.map((found) => ({ name: found.ref.replace(/^refs\/heads\//, ""), tip: found.object.sha }));
+    },
+    openPullRequests: async (filter) => {
+      const query = [
+        "state=open",
+        ...(filter.head === undefined ? [] : [`head=${encodeURIComponent(`${owner}:${filter.head}`)}`]),
+        ...(filter.base === undefined ? [] : [`base=${encodeURIComponent(filter.base)}`]),
+      ].join("&");
+      return (
+        await paged(
+          `/repos/${repo}/pulls?${query}`,
+          (page) => page as readonly { readonly number: number; readonly head: { readonly ref: string }; readonly base: { readonly ref: string } }[],
+        )
+      ).map((pr) => ({ number: pr.number, head: pr.head.ref, base: pr.base.ref }));
+    },
+    commitMessages: async (base, head) =>
+      paged(`/repos/${repo}/compare/${encodeURIComponent(base)}...${encodeURIComponent(head)}`, (page) =>
+        (page as { readonly commits: readonly { readonly commit: { readonly message: string } }[] }).commits.map((c) => c.commit.message),
+      ),
     openBlockers: async (number) =>
       (
         await paged(

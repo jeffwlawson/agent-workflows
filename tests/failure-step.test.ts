@@ -26,7 +26,9 @@ import { SUBPROCESS_TIMEOUT } from "../vitest.config.js";
  * fix's: `fix:conclude` says how its run ended (#469), and
  * `tests/fix/conclude.test.ts` holds those. Nor is update-branch's:
  * `update-branch:conclude` says how its run ended (#485), and
- * `tests/update-branch/conclude.test.ts` holds those. What stays here of each
+ * `tests/update-branch/conclude.test.ts` holds those. Nor is implement's:
+ * `implement:conclude` says how its run ended (#493), and
+ * `tests/implement/conclude.test.ts` holds those. What stays here of each
  * is the half that is still YAML, the agent's job's own measure of whether it
  * ran out of time, which only Actions' clock knows.
  *
@@ -50,7 +52,6 @@ interface Workflow {
  * no variable is set: today's value, which a timeout comment has to name.
  */
 const CASES = [
-  { command: "implement", label: "agent:implement", step: "Mark blocked on failure", minutes: 30, blocks: true },
   { command: "implement-prd", label: "agent:implement", step: "Mark blocked on failure", minutes: 30, blocks: true },
   // No `agent:blocked` on a merged pull request, on a failure or otherwise:
   // there is no pipeline left there to block (see the step's own note).
@@ -65,7 +66,6 @@ type Case = (typeof CASES)[number];
  * it ended from `needs`.
  */
 const JOB: Readonly<Record<string, string>> = {
-  implement: "publish",
   "implement-prd": "publish",
 };
 
@@ -283,7 +283,6 @@ describe.skipIf(!CAN_RUN)("a failure step says whether the run failed, timed out
    * no word of why, nor blocked while it still reads as a run in progress.
    */
   const TRIGGER: Readonly<Record<string, string>> = {
-    implement: "issue edit 135 --remove-label agent:implement",
     "implement-prd": "issue edit 135 --remove-label agent:implement",
   };
 
@@ -306,7 +305,7 @@ describe.skipIf(!CAN_RUN)("a failure step says whether the run failed, timed out
    * decided the issue was its own: that may be the sibling's event, and the
    * sibling's run holds the label while it works.
    */
-  it.each(CASES.filter((c) => c.command === "implement" || c.command === "implement-prd"))(
+  it.each(CASES.filter((c) => c.command === "implement-prd"))(
     "$command: leaves the label on where the preflight never decided",
     (c: Case) => {
       const outcome = run(c, "failure", 120, String(c.minutes), "");
@@ -317,50 +316,13 @@ describe.skipIf(!CAN_RUN)("a failure step says whether the run failed, timed out
   );
 
   /**
-   * `implement:gate` writes its reason on the gate's runner, so a gate that
-   * failed after claiming the run, at the probe or a read after it, reaches
-   * this step as `GATE_REASON` (#490): said where no reason file came, and
-   * never over one that did.
-   */
-  it("implement: says the reason the gate failed with, where no reason file came", () => {
-    const implement = CASES.find((c) => c.command === "implement") as Case;
-    const reason = "Couldn't add `agent:implement` to #135, which it already carries.";
-    const gate = { GATE_RESULT: "failure", AGENT_RESULT: "skipped", GATE_REASON: reason };
-
-    const told = run(implement, "failure", 120, String(implement.minutes), "false", {}, gate);
-    expect(told.comment).toContain(`stopped:** ${reason}\n`);
-    expect(told.gh).toContain(TRIGGER["implement"]);
-
-    const filed = run(implement, "failure", 120, String(implement.minutes), "false", undefined, gate);
-    expect(filed.comment).toContain("The runner wrote this.");
-    expect(filed.comment).not.toContain(reason);
-  }, 2 * SUBPROCESS_TIMEOUT);
-
-  /**
-   * `implement:prepare` and `implement:bundle` write their reasons in
-   * directories of their own (#491), which the download puts under
-   * `prepare/` and `bundle/`: each is said, and a failure that left one is
-   * never measured against the clock as a stop.
-   */
-  it.each(["prepare", "bundle"])("implement: says the reason implement:%s wrote in its own directory", (dir) => {
-    const implement = CASES.find((c) => c.command === "implement") as Case;
-    const reason = `The ${dir} step wrote this.`;
-
-    const told = run(implement, "failure", implement.minutes * 60, String(implement.minutes), "false", {
-      [`${dir}/failure_reason.txt`]: `${reason}\n`,
-    });
-    expect(told.comment).toContain(`stopped:** ${reason}\n`);
-    expect(told.comment).not.toContain("timed out");
-  });
-
-  /**
    * A split run's publish job reads the agent's job's end from `needs`, not
    * from its own status, and a job that reached its limit may read there as
    * failed. A runner that was killed wrote no reason, so a failure without
    * one is measured against the clock too; a failure with one never is.
-   * implement's since #307, and implement-prd's since #308.
+   * implement-prd's since #308.
    */
-  describe.each(["implement", "implement-prd"])("%s, reported from its publish job", (command) => {
+  describe.each(["implement-prd"])("%s, reported from its publish job", (command) => {
     const implement = CASES.find((c) => c.command === command) as Case;
 
     it("says a run that failed at its limit with no reason timed out", () => {
@@ -450,7 +412,7 @@ describe.skipIf(!CAN_RUN)("review hands over how its job ended", () => {
  * `fix:conclude` and `update-branch:conclude` read the answer only where a
  * cancel or a failure left no reason.
  */
-describe.skipIf(!CAN_RUN).each(["fix", "update-branch"])("%s's agent job hands over whether it timed out", (command) => {
+describe.skipIf(!CAN_RUN).each(["fix", "update-branch", "implement"])("%s's agent job hands over whether it timed out", (command) => {
   const FIX = [command, command, "Measure how the agent's job ended"] as const;
 
   it.each(["cancelled", "failure"] as const)("says a job that ended %s at its limit timed out", (status) => {

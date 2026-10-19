@@ -21,7 +21,10 @@ import { SUBPROCESS_TIMEOUT } from "../vitest.config.js";
  * and `tests/fix/conclude.test.ts` holds those. Nor is update-branch's:
  * `update-branch:conclude` takes `agent:update-branch` off and asks for it
  * again (#485), and `tests/update-branch/conclude.test.ts` holds those, its
- * update-branch-only cases among them.
+ * update-branch-only cases among them. Nor is implement's:
+ * `implement:conclude` takes `agent:implement` off (#493), and
+ * `tests/implement/conclude.test.ts` holds those. implement-prd's stays until
+ * its own move (#477).
  *
  * Skipped where `bash` is not on PATH.
  */
@@ -45,7 +48,6 @@ const STEP = "Always remove the trigger label";
  * writes every label, the agent's job holding no token that writes.
  */
 const JOB: Readonly<Record<string, string>> = {
-  implement: "publish",
   "implement-prd": "publish",
 };
 
@@ -90,7 +92,6 @@ const run = (command: string, scenario: Scenario = {}): { status: number | null;
 };
 
 const TRIGGERS = [
-  ["implement", "agent:implement", "issue edit 135"],
   ["implement-prd", "agent:implement", "issue edit 135"],
 ] as const;
 

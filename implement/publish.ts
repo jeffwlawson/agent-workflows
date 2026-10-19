@@ -30,7 +30,7 @@ interface Published {
  * It checks the agent's bundle, pushes it, opens the draft pull request with
  * its frame, links it on the issue, and hands it to the review, in that order
  * and with the text the loop has always written. What happens after it, the
- * failure comment and the trigger label, is the publish job's later steps'.
+ * failure comment and the trigger label, is `implement:conclude`'s.
  *
  * **The bundle is checked before anything is pushed from it**, against facts
  * the gate established and the agent could not reach: it is there, intact,

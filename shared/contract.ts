@@ -600,8 +600,8 @@ const UPDATE_BRANCH_PUBLISH = {
 
 /**
  * `implement:bundle`, declared ahead of `COMMANDS` so that
- * `implement:publish` can read its outputs (`readsFromCommand`). See
- * `COMMANDS`.
+ * `implement:publish` and `implement:conclude` can read its outputs
+ * (`readsFromCommand`). See `COMMANDS`.
  */
 const IMPLEMENT_BUNDLE = {
   inputs: {
@@ -611,6 +611,48 @@ const IMPLEMENT_BUNDLE = {
     BASE_SHA: REQUIRED,
   },
   outputs: [...EVERY_SUBCOMMAND_OUTPUTS, "branch.bundle"],
+} as const satisfies CommandContract;
+
+/**
+ * `implement:prepare`, declared ahead of `COMMANDS` so that
+ * `implement:conclude` can read its outputs (`readsFromCommand`). See
+ * `COMMANDS`.
+ */
+const IMPLEMENT_PREPARE = {
+  inputs: {
+    ...TOKENLESS,
+    CHECKOUT: REQUIRED,
+    BRANCH: REQUIRED,
+    BASE_REF: REQUIRED,
+    BASE_SHA: REQUIRED,
+  },
+  outputs: [...EVERY_SUBCOMMAND_OUTPUTS],
+} as const satisfies CommandContract;
+
+/**
+ * `implement:publish`, declared ahead of `COMMANDS` so that
+ * `implement:conclude` can read its outputs (`readsFromCommand`). See
+ * `COMMANDS`.
+ */
+const IMPLEMENT_PUBLISH = {
+  inputs: {
+    ...EVERY_SUBCOMMAND,
+    ...LOOP,
+    ISSUE_NUMBER: REQUIRED,
+    ISSUE_TITLE: REQUIRED,
+    BASE_REF: REQUIRED,
+    BRANCH: REQUIRED,
+    BASE_SHA: REQUIRED,
+    BRANCH_TIP: EMPTY,
+    RUN_URL: REQUIRED,
+    CHECKOUT: REQUIRED,
+    HEAD_WAIT_SECONDS: { required: false, default: "60" },
+    HEAD_POLL_SECONDS: { required: false, default: "5" },
+    BUNDLE_DIR: readsFromCommand("implement:bundle", IMPLEMENT_BUNDLE, {
+      "branch.bundle": "sometimes",
+    }),
+  },
+  outputs: [...EVERY_SUBCOMMAND_OUTPUTS, "published.json", WRITE_LOG],
 } as const satisfies CommandContract;
 
 /**
@@ -923,36 +965,38 @@ export const COMMANDS = {
     },
     outputs: [...EVERY_SUBCOMMAND_OUTPUTS, "gate.json", WRITE_LOG],
   },
-  "implement:prepare": {
-    inputs: {
-      ...TOKENLESS,
-      CHECKOUT: REQUIRED,
-      BRANCH: REQUIRED,
-      BASE_REF: REQUIRED,
-      BASE_SHA: REQUIRED,
-    },
-    outputs: [...EVERY_SUBCOMMAND_OUTPUTS],
-  },
+  "implement:prepare": IMPLEMENT_PREPARE,
   "implement:bundle": IMPLEMENT_BUNDLE,
-  "implement:publish": {
+  "implement:publish": IMPLEMENT_PUBLISH,
+  "implement:conclude": {
     inputs: {
       ...EVERY_SUBCOMMAND,
-      ...LOOP,
       ISSUE_NUMBER: REQUIRED,
-      ISSUE_TITLE: REQUIRED,
-      BASE_REF: REQUIRED,
-      BRANCH: REQUIRED,
-      BASE_SHA: REQUIRED,
-      BRANCH_TIP: EMPTY,
       RUN_URL: REQUIRED,
-      CHECKOUT: REQUIRED,
-      HEAD_WAIT_SECONDS: { required: false, default: "60" },
-      HEAD_POLL_SECONDS: { required: false, default: "5" },
+      REFUSED: { required: false, default: "", accepts: ["true", "false"] },
+      GATE_RESULT: { required: true, accepts: RESULTS },
+      GATE_REASON: EMPTY,
+      AGENT_RESULT: { required: true, accepts: RESULTS },
+      TIMED_OUT: EMPTY,
+      TIMEOUT_MINUTES: EMPTY,
+      MINT_OUTCOME: EMPTY,
+      DOWNLOAD_OUTCOME: EMPTY,
+      PUBLISH_OUTCOME: EMPTY,
+      PUBLISH_DIR: readsFromCommand("implement:publish", IMPLEMENT_PUBLISH, {
+        "published.json": "sometimes",
+        "failure_reason.txt": "sometimes",
+      }),
+      PREPARE_DIR: readsFromCommand("implement:prepare", IMPLEMENT_PREPARE, {
+        "failure_reason.txt": "sometimes",
+      }),
+      IMPLEMENT_DIR: readsFrom("implement", {
+        "failure_reason.txt": "sometimes",
+      }),
       BUNDLE_DIR: readsFromCommand("implement:bundle", IMPLEMENT_BUNDLE, {
-        "branch.bundle": "sometimes",
+        "failure_reason.txt": "sometimes",
       }),
     },
-    outputs: [...EVERY_SUBCOMMAND_OUTPUTS, "published.json", WRITE_LOG],
+    outputs: [...EVERY_SUBCOMMAND_OUTPUTS, WRITE_LOG],
   },
   "review:gate": {
     inputs: {

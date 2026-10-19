@@ -381,6 +381,11 @@ export const SUBCOMMANDS: Readonly<Record<string, Subcommand>> = {
     async () => (await import("./implement/publish.js")).publish,
     "Push an implement run's commits, open its draft pull request and ask for its review (no model).",
   ),
+  "implement:conclude": writingCommand(
+    "implement:conclude",
+    async () => (await import("./implement/conclude.js")).conclude,
+    "End an implement run however it ended: its failure comment and its labels (no model).",
+  ),
   "implement-prd": runner("implement-prd", () => import("./implement-prd/implement-prd.js")),
   init: {
     kind: "install",

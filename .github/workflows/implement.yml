@@ -250,10 +250,10 @@ jobs:
           [ -f "$file" ] || { echo "implement:gate wrote no gate.json; this run decided nothing."; exit 0; }
           jq -r 'to_entries[] | "\(.key)=\(.value)"' "$file" >> "$GITHUB_OUTPUT"
 
-      # The clock the failure step reads a time limit off (#220). A job that
-      # reaches its `timeout-minutes` is cancelled, not failed, and nothing in
-      # the `needs` context says which cancellation it was, so that step
-      # compares how long the agent's job could have run with its limit. Last
+      # The clock the agent's job measures its time limit against (#220). A
+      # job that reaches its `timeout-minutes` is cancelled, not failed, and
+      # nothing in the `needs` context says which cancellation it was, so that
+      # job's last step compares how long it could have run with its limit. Last
       # in this job, so it starts as near the agent's job as a step here can,
       # and is read from this job's outputs rather than the agent's, which a
       # step there could rewrite.
@@ -271,8 +271,8 @@ jobs:
     # is not. `vars` is among the contexts this key may read, and in a called
     # workflow it resolves against the caller's repository. `fromJSON` because
     # a variable is a string and this key wants a number; a value that is not
-    # one fails the job before any step, which `doctor` reports. The failure
-    # step in `publish` names the same figure.
+    # one fails the job before any step, which `doctor` reports.
+    # `implement:conclude` names the same figure.
     timeout-minutes: ${{ fromJSON(vars.AGENT_TIMEOUT_MINUTES || '30') }}
     # Its one output: whether it ran out of time. See *Measure how the agent's
     # job ended*. Everything else it hands over is the artifact.
@@ -573,8 +573,7 @@ jobs:
       # job's runner, after the agent, so it is the agent's to rewrite like any
       # output here; it decides nothing but which of two sentences a stopped
       # run's comment gives, and never stands in for a reason the runner wrote.
-      # Nothing reads it yet: the failure step still reads the clock itself,
-      # until `implement:conclude` takes its place.
+      # `implement:conclude` reads it as `TIMED_OUT`.
       - name: Measure how the agent's job ended
         id: outcome
         if: always()
@@ -593,10 +592,10 @@ jobs:
   publish:
     needs: [gate, implement]
     # `always()`, so a failed, cancelled or timed-out agent is still reported
-    # and its trigger label still taken off — the steps that did that sat at
-    # the end of one job before, under the same `always()`. Not where the gate
-    # was skipped (another label's event) or refused or deferred: that run
-    # said what it had to, or must say nothing.
+    # and its trigger label still taken off. Not where the gate was skipped
+    # (another label's event) or refused or deferred: that run said what it
+    # had to, or must say nothing. A gate that died before deciding leaves
+    # `refused` empty and comes through, so it is still reported.
     if: vars.AGENT_ORCHESTRATOR != 'service' && always() && needs.gate.result != 'skipped' && needs.gate.outputs.refused != 'true'
     runs-on: ubuntu-latest
     # A clone, a push and some API calls, and a bounded wait for the PR's head.
@@ -605,16 +604,16 @@ jobs:
       contents: write
       issues: write
       pull-requests: write
-      # The package `implement:publish` runs from, installed by `npm exec`.
-      # GitHub Packages has no anonymous install, and the caller already
-      # grants it.
+      # The package `implement:publish` and `implement:conclude` run from,
+      # installed by `npm exec`. GitHub Packages has no anonymous install, and
+      # the caller already grants it.
       packages: read
 
+    # **No job-level `GH_TOKEN`.** A token is handed to the steps that write
+    # with it and to no other, so the checkout, the Node setup, the download
+    # and the upload hold none.
     env:
       ISSUE_NUMBER: ${{ github.event.issue.number }}
-      ISSUE_TITLE: ${{ github.event.issue.title }}
-      BASE_REF: ${{ inputs.default-branch }}
-      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       GH_REPO: ${{ github.repository }}
       RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
 
@@ -637,9 +636,9 @@ jobs:
       # **The one checkout**, of the base branch, wherever the gate claimed
       # the run: what `implement:publish` checks the bundle in and pushes
       # from. Nothing the agent touched is on this runner, and no credential
-      # is left in it: the push passes its token itself. `always()`, so the
-      # ending that reads the bundle once `implement:conclude` takes the
-      # failure step's place (#489) never checks it in an empty workspace.
+      # is left in it: the push passes its token itself. `always()` wherever
+      # the gate claimed the run, so no ending ever checks an empty workspace
+      # (#473's last bug).
       - name: Checkout the base branch
         if: always() && needs.gate.outputs.refused == 'false'
         uses: actions/checkout@v7
@@ -648,10 +647,11 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
 
-      # The Node `implement:publish` runs on, and the registry it installs
-      # from. A version rather than a version file, since nothing of the
-      # adopter's runs here: the one the package's `engines.node` names, which
-      # `tests/workflows.test.ts` holds it to.
+      # The Node both commands run on, and the registry they install from. A
+      # version rather than a version file, since nothing of the adopter's
+      # runs here: the one the package's `engines.node` names, which
+      # `tests/workflows.test.ts` holds it to. `always()`, since conclude runs
+      # on every ending.
       - name: Set up Node for the package
         if: always()
         uses: actions/setup-node@v7
@@ -661,12 +661,15 @@ jobs:
           scope: "@jeffwlawson"
           package-manager-cache: false
 
-      # Into `RUNNER_TEMP`, where the failure step looks for the runner's
-      # reason file as it did when the agent ran in this job, and the bundle
-      # and the commands' reason files under `prepare/` and `bundle/`.
-      # `always()`, so a mint that failed still hands the failure step the
-      # runner's reason. Tolerated: an agent's job that was killed before its
-      # upload leaves nothing to fetch, and the failure step still has to run.
+      # Into a directory of its own under `RUNNER_TEMP`, where both commands
+      # look for `implement:bundle`'s files under `bundle/`, and
+      # `implement:conclude` for the runner's reason file at the top and
+      # `implement:prepare`'s under `prepare/`, where each wrote them. Its own,
+      # so nothing another step writes at `RUNNER_TEMP`, the mint's reason
+      # file among them, reads as the runner's. `always()`, so a mint that
+      # failed still hands conclude the runner's reason. Tolerated: an agent's
+      # job that was killed before its upload leaves nothing to fetch, and
+      # `implement:conclude`, told this step's outcome, still has to run.
       - name: Fetch what the agent handed over
         id: fetch
         if: always() && needs.gate.outputs.refused == 'false'
@@ -674,7 +677,7 @@ jobs:
         uses: actions/download-artifact@v8
         with:
           name: agent-implement
-          path: ${{ runner.temp }}
+          path: ${{ runner.temp }}/agent-implement
 
       # The success path (#492): the bundle checked, the push, the draft PR
       # with its frame, the link on the issue, and the review request, in that
@@ -697,7 +700,7 @@ jobs:
       # Where the loop's token is the workflow's, the label still goes on and
       # it warns. From `RUNNER_TEMP`, so no `.npmrc` of the checkout is read,
       # and working in the checkout. Its reason file goes in a directory of
-      # its own, which the failure step reads.
+      # its own, which `implement:conclude` reads.
       - name: Publish the PR
         id: publish
         if: needs.implement.result == 'success' && success()
@@ -707,130 +710,72 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           LOOP_TOKEN: ${{ steps.token.outputs.token }}
           LOOP_TOKEN_SOURCE: ${{ steps.token.outputs.source }}
+          ISSUE_TITLE: ${{ github.event.issue.title }}
+          BASE_REF: ${{ inputs.default-branch }}
           OUTPUT_DIR: ${{ runner.temp }}/publish
-          BUNDLE_DIR: ${{ runner.temp }}/bundle
+          BUNDLE_DIR: ${{ runner.temp }}/agent-implement/bundle
           CHECKOUT: ${{ github.workspace }}
           BRANCH: ${{ needs.gate.outputs.branch }}
           BASE_SHA: ${{ needs.gate.outputs.base }}
           BRANCH_TIP: ${{ needs.gate.outputs.tip }}
         run: npm exec --prefix "$RUNNER_TEMP" --yes --package=@jeffwlawson/agent-workflows@0.8.8 -- agent-workflows implement:publish
 
-      # Any of the three jobs: `gate` failing (this job's own `if:` lets a
-      # failed gate through, since its `refused` is `!= 'true'` there), the
-      # agent's job failing, timing out or being cancelled, or a step here.
-      # `failure()` in this job sees an ancestor job's failure too, but not a
-      # cancelled one, so the agent's result is read by name. Refusals exit 0
-      # and a deferral sets `refused`, so neither reaches this job at all.
+      # Every ending, success included, and the label however the run ended
+      # (#493): the failure comment with the reason and the retry the ending
+      # calls for (#220, #253), naming the PR where publish opened one before
+      # it stopped, then `agent:implement` off where the gate decided the run
+      # was its own (#236), then `agent:blocked`, in the loop's one order.
+      # `implement/conclude.ts` says why each is as it is.
       #
-      # A gate that fails hard — the shape query erroring on a schema or
-      # permissions mismatch — exits before writing its decision, and that
-      # is the run that most needs this comment: nothing on the issue,
-      # `agent:implement` still attached, and a red run nobody is watching.
+      # `always()`: the ending is the point of it. Told the facts, not the
+      # conclusions: how the gate and the agent's job ended, the gate's
+      # decision and reason, whether the agent's job ran out of time and its
+      # limit, and the outcome of each step above, so the package works out
+      # which ending this is. It reads `implement:publish`'s `published.json`
+      # and reason from publish's directory, and `implement:prepare`'s, the
+      # runner's and `implement:bundle`'s from the hand-over, each from its
+      # own producer's directory and each on its own.
       #
-      # In the loop's one order (#236): the comment, then this run's own label
-      # off, then `agent:blocked`. The removal only where the preflight decided
-      # the issue was this run's, for the last step's reason below.
-      - name: Mark blocked on failure
-        if: always() && (failure() || cancelled() || needs.gate.result != 'success' || needs.implement.result != 'success')
+      # Given the workflow's token, which every write it makes is made with.
+      # From `RUNNER_TEMP`, so no `.npmrc` of the checkout is read.
+      - name: Conclude the run
+        if: always()
+        working-directory: ${{ runner.temp }}
         env:
-          # How each job ahead of this one ended, and this job's own status for
-          # a cancel that lands while it runs. `job.status` rather than
-          # `cancelled()`, which GitHub allows only in an `if:`.
-          GATE_RESULT: ${{ needs.gate.result }}
-          AGENT_RESULT: ${{ needs.implement.result }}
-          JOB_STATUS: ${{ job.status }}
-          JOB_STARTED: ${{ needs.gate.outputs.started }}
+          NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          OUTPUT_DIR: ${{ runner.temp }}/conclude
+          PUBLISH_DIR: ${{ runner.temp }}/publish
+          PREPARE_DIR: ${{ runner.temp }}/agent-implement/prepare
+          IMPLEMENT_DIR: ${{ runner.temp }}/agent-implement
+          BUNDLE_DIR: ${{ runner.temp }}/agent-implement/bundle
           REFUSED: ${{ needs.gate.outputs.refused }}
-          # The sentence `implement:gate` failed with, where it failed after
-          # claiming the run: written on the gate's runner, so it reaches this
-          # one as an output rather than a file.
+          GATE_RESULT: ${{ needs.gate.result }}
+          # The sentence `implement:gate` failed with, where it wrote one:
+          # written on the gate's runner, so it reaches this one as an output
+          # rather than a file.
           GATE_REASON: ${{ needs.gate.outputs.failure-reason }}
+          AGENT_RESULT: ${{ needs.implement.result }}
+          TIMED_OUT: ${{ needs.implement.outputs.timed-out }}
           TIMEOUT_MINUTES: ${{ vars.AGENT_TIMEOUT_MINUTES || '30' }}
-        run: |
-          reason="It stopped without giving a reason. The workflow run's log has the details."
-          # Each producer's reason file, where the download put it: at the
-          # top, this job's own or the runner's, then `implement:prepare`'s
-          # and `implement:bundle`'s, each in a directory of its own, and
-          # `implement:publish`'s in its own. The first found is the reason.
-          reason_file=""
-          for file in "${RUNNER_TEMP}/failure_reason.txt" "${RUNNER_TEMP}/prepare/failure_reason.txt" "${RUNNER_TEMP}/bundle/failure_reason.txt" "${RUNNER_TEMP}/publish/failure_reason.txt"; do
-            if [ -z "$reason_file" ] && [ -f "$file" ]; then reason_file="$file"; fi
-          done
-          if [ -n "$reason_file" ]; then
-            reason=$(cat "$reason_file")
-          elif [ -n "${GATE_REASON:-}" ]; then
-            reason="$GATE_REASON"
-          fi
-          # Cancelled is not failed (#220), and a job that reached its limit
-          # is cancelled too. What tells the two apart is the clock `gate`
-          # started just before the agent's job: a timed-out job ran its whole
-          # limit, and the time since that clock is at least that. A reason
-          # file is not read on either; what wrote one was stopped, not
-          # failing. The labels and the retry are a failure's, word for word.
-          #
-          # The clock is read on a failure that left no reason file too: the
-          # agent's result here is the `needs` context's, not the job status
-          # the clock was first compared against, and a runner that wrote no
-          # reason did not end on its own terms either way.
-          # The limit is compared only where it is a positive integer: `fromJSON`
-          # accepts `1.5` and `1e1`, which bash arithmetic refuses, and under
-          # `bash -e` that would end this step before its comment. A limit the
-          # step cannot compare reads as a cancel, which is still said.
-          stopped=false
-          if [ "$JOB_STATUS" = "cancelled" ] || [ "$GATE_RESULT" = "cancelled" ] || [ "$AGENT_RESULT" = "cancelled" ]; then
-            stopped=true
-            reason="It was cancelled before it finished, by hand or by GitHub."
-          elif [ "$AGENT_RESULT" = "failure" ] && [ -z "$reason_file" ]; then
-            stopped=true
-          fi
-          if [ "$stopped" = "true" ]; then
-            if [ -n "${JOB_STARTED:-}" ] && [[ "$TIMEOUT_MINUTES" =~ ^[1-9][0-9]*$ ]] && [ $(( $(date +%s) - JOB_STARTED )) -ge $(( TIMEOUT_MINUTES * 60 - 60 )) ]; then
-              reason="It timed out after ${TIMEOUT_MINUTES} minutes. The repository variable \`AGENT_TIMEOUT_MINUTES\` raises the limit."
-            fi
-          fi
-          # One pattern for every run that stopped (#253): the reason as a
-          # sentence, starting with a capital and ending in a full stop, then
-          # the run and what to do.
-          reason="${reason^}"
-          case "$reason" in *[.!?]) ;; *) reason="${reason}." ;; esac
-          # The label comes off in the last step since #236, so adding it is
-          # the retry. Not after a preflight that died before deciding: that
-          # run leaves the label on (see the last step), and adding a label
-          # that is already present fires no event.
-          retry="To try again, add \`agent:implement\`."
-          if [ "$REFUSED" != "false" ]; then
-            retry="To try again, remove \`agent:implement\` if it is still on this issue, then add it."
-          fi
-          body_file="${RUNNER_TEMP}/failure-comment.md"
-          printf '**`agent:implement` stopped:** %s\n\n[Workflow run](%s) · %s\n' "$reason" "$RUN_URL" "$retry" > "$body_file"
-          gh issue comment "$ISSUE_NUMBER" --body-file "$body_file" || echo "::warning::Could not post the failure comment on #${ISSUE_NUMBER}."
-          if [ "$REFUSED" = "false" ]; then
-            gh issue edit "$ISSUE_NUMBER" --remove-label "agent:implement" || true
-          fi
-          gh issue edit "$ISSUE_NUMBER" --add-label "agent:blocked" || true
+          MINT_OUTCOME: ${{ steps.token.outcome }}
+          DOWNLOAD_OUTCOME: ${{ steps.fetch.outcome }}
+          PUBLISH_OUTCOME: ${{ steps.publish.outcome }}
+        run: npm exec --prefix "$RUNNER_TEMP" --yes --package=@jeffwlawson/agent-workflows@0.8.8 -- agent-workflows implement:conclude
 
-      # The trigger label comes off however the run ends (#236): success,
-      # failure, timeout or cancel, so it never outlives the run that decided
-      # the issue was its own. `== 'false'`, unlike the failure step above: a
-      # refusal took it off already, a deferral must not touch it, and nor
-      # must a preflight that died before deciding, since that run may be the
-      # one that would have deferred, and `agent-implement-prd` owns that label event
-      # and holds the label while it works. Such a run leaves it on, as it
-      # always has, and the failure comment says to remove it before re-adding.
-      - name: Always remove the trigger label
-        if: always() && needs.gate.outputs.refused == 'false'
-        run: gh issue edit "$ISSUE_NUMBER" --remove-label "agent:implement" || true
-
-      # Every write `implement:publish` made, one line each as it landed, and
-      # a last line for how it ended (ADR 0005), kept for whoever audits the
-      # run, by the path it declares. `always()`, since a run that stopped is
-      # the one a log is read for, and nothing of a command that never ran.
-      - name: Keep the write log
+      # Every write the two commands made, one line each as it landed, and a
+      # last line for how each ended (ADR 0005), kept for whoever audits the
+      # run. One artifact, each command's log by the path it declares, and no
+      # wildcard. `always()`, since a run that stopped is the one a log is
+      # read for, and nothing of a command that never ran.
+      - name: Keep the write logs
         if: always()
         uses: actions/upload-artifact@v7
         with:
           name: agent-implement-write-log
-          path: ${{ runner.temp }}/publish/write_log.jsonl
+          path: |
+            ${{ runner.temp }}/publish/write_log.jsonl
+            ${{ runner.temp }}/conclude/write_log.jsonl
           if-no-files-found: ignore
           retention-days: 7
           overwrite: true

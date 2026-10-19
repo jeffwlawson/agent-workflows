@@ -59,7 +59,7 @@ cannot check is one only an orchestrator's author will catch.
   `review`, `fix` and `update-branch`. It reads its inputs from the environment, starts the agent,
   and writes files and commits. It is not the agent.
 - **Command.** A subcommand that does an orchestrator's work on the record and starts no agent,
-  named `<workflow>:<step>`: `fix:gate`, `fix:prepare`, `fix:bundle`, `fix:publish`, `fix:conclude`, `follow-ups:file`, `implement:gate`, `implement:prepare`, `implement:bundle`, `implement:publish`, `review:gate`, `review:budget`,
+  named `<workflow>:<step>`: `fix:gate`, `fix:prepare`, `fix:bundle`, `fix:publish`, `fix:conclude`, `follow-ups:file`, `implement:gate`, `implement:prepare`, `implement:bundle`, `implement:publish`, `implement:conclude`, `review:gate`, `review:budget`,
   `review:collect-checks`, `review:red-check-place`, `review:red-check-classify`, `review:publish`,
   `review:conclude`, `review:advance`, `update-branch:gate`, `update-branch:merge`,
   `update-branch:prepare`, `update-branch:bundle`, `update-branch:publish` and
@@ -139,7 +139,7 @@ The inputs every runner reads, set once for any of them:
 |---|---|---|---|
 | `OUTPUT_DIR` | required | | The directory the runner writes its files into (§2.3). |
 | `GH_REPO` | required | | The repository, `owner/name`. Required rather than left to whatever `gh` infers. |
-| `GH_TOKEN` | required | | The token `gh` reads. The runners only read with it, `fix:prepare` reads and fetches the rescue branch with it, and `update-branch:merge`, `update-branch:prepare` and `update-branch:publish` fetch the base branch with it; `follow-ups:file` files issues with it, `implement:gate` makes its refusals, its start comment and its label transitions with it, `implement:publish` the link on the issue with it, and `review:publish` posts the review, the summary and the verdict with it, `review:conclude` its comments, its error verdict and the labels nothing fires on, `review:advance` a PRD PR's progress list and its notes there, `fix:gate` its refusals and its label transitions, `fix:publish` its thread replies, its comments and notes, and the rescue branch's deletion, `fix:conclude` its failure comment, the rescue-set-aside note where `fix:publish` did not post it, and `agent:fix` off and `agent:blocked` on, `update-branch:gate` its refusal and its label transitions, `update-branch:publish` the verdict it carries over, its comment, and the comment that no review will start, and `update-branch:conclude` its failure comment, `agent:update-branch` off and `agent:blocked` on, and the comment that no refresh of a moved head will start. |
+| `GH_TOKEN` | required | | The token `gh` reads. The runners only read with it, `fix:prepare` reads and fetches the rescue branch with it, and `update-branch:merge`, `update-branch:prepare` and `update-branch:publish` fetch the base branch with it; `follow-ups:file` files issues with it, `implement:gate` makes its refusals, its start comment and its label transitions with it, `implement:publish` the link on the issue with it, `implement:conclude` its failure comment, `agent:implement` off and `agent:blocked` on, and `review:publish` posts the review, the summary and the verdict with it, `review:conclude` its comments, its error verdict and the labels nothing fires on, `review:advance` a PRD PR's progress list and its notes there, `fix:gate` its refusals and its label transitions, `fix:publish` its thread replies, its comments and notes, and the rescue branch's deletion, `fix:conclude` its failure comment, the rescue-set-aside note where `fix:publish` did not post it, and `agent:fix` off and `agent:blocked` on, `update-branch:gate` its refusal and its label transitions, `update-branch:publish` the verdict it carries over, its comment, and the comment that no review will start, and `update-branch:conclude` its failure comment, `agent:update-branch` off and `agent:blocked` on, and the comment that no refresh of a moved head will start. |
 
 A command that runs where no token is held, as the red check's two do beside the pull request's own
 code, `fix:bundle`, `update-branch:bundle` and `implement:bundle` do after the agent and
@@ -571,9 +571,9 @@ it does not trust is left out of what the agent is shown. Nothing else of the re
 > to the publish job as one artifact, and its last step measures whether it ran out of time, as its
 > `timed-out` output. A publish job mints the loop's token, checks the default branch out and runs
 > `implement:publish`, which checks the bundle, pushes `BRANCH`, opens a draft pull request into
-> the default branch, links it on the issue, and adds `agent:review` to it; its failure step, where
-> the gate failed after claiming the run, posts the sentence the gate failed with, and otherwise the
-> first reason file it finds, `implement:publish`'s among them.
+> the default branch, links it on the issue, and adds `agent:review` to it; then, `always()`,
+> `implement:conclude`, which ends every run: the failure comment and `agent:blocked` where the run
+> stopped, and `agent:implement` off wherever the gate decided the run was its own.
 
 ### `implement:gate`
 
@@ -640,10 +640,10 @@ the probe still says it went ahead, and one that died before deciding writes non
 > label's event's, and `GH_TOKEN` is the job's own, with `issues: write`, held by this step alone.
 > `OUTPUT_DIR` is `runner.temp`. A glue step copies `gate.json` into step outputs, `always()`, and
 > the job's `refused` output is `false` where `proceed` is `true`, `true` where it is `false`, and
-> empty where there is none: a gate that died before deciding, which the failure step reads as
-> such. `branch`, `base` and `tip` become the job's outputs of the same names. The same step copies
+> empty where there is none: a gate that died before deciding, which `implement:conclude` reads
+> as such. `branch`, `base` and `tip` become the job's outputs of the same names. The same step copies
 > `implement:gate`'s `failure_reason.txt`, where it wrote one, into the job's `failure-reason`
-> output, which the publish job's failure step posts where no reason file reached it. The job
+> output, which `implement:conclude` posts as `GATE_REASON` where no reason file reached it. The job
 > fails where the command does, so a failed probe never starts the agent's job.
 
 ### `implement:prepare`
@@ -806,7 +806,89 @@ add fails the command, naming it.
 > `GH_TOKEN` and the loop's. `BRANCH`, `BASE_SHA` and `BRANCH_TIP` are the gate job's `branch`,
 > `base` and `tip` outputs, never a file the agent's job wrote; `BUNDLE_DIR` is where the agent's
 > artifact puts `implement:bundle`'s directory, and `OUTPUT_DIR` a directory of its own under
-> `runner.temp`, whose reason file the failure step reads and whose write log the job keeps.
+> `runner.temp`, whose files `implement:conclude` reads and whose write log the job keeps.
+
+### `implement:conclude`
+
+Ends every implement run, success included, in the loop's one order: the failure comment, then
+`agent:implement` off, then `agent:blocked`. It runs no model and needs no checkout. It is told how
+the run went rather than reading it off which steps ran: the gate's decision, result and reason,
+the agent's job's result, whether that job ran out of time, and the outcome of each step the
+orchestrator ran before it, and it works out the ending from them. Each is one of:
+
+- **A refusal or a deferral** (`REFUSED` is `true`): nothing, since the gate said it and took the
+  label off, or says nothing by design.
+- **A run that finished**: the gate, the agent's job and every step before this one.
+  `agent:implement` off, except where `published.json` says `implement:publish` asked for the
+  review, since it took the label off before it did. Every other word of it is publish's.
+- **A run that stopped**, after a gate that decided the run was its own (`REFUSED` is `false`): the
+  failure comment, `` **`agent:implement` stopped:** `` and the reason as a sentence, the run's
+  link, and the retry; then `agent:implement` off, then `agent:blocked`.
+- **A gate that did not decide** (`REFUSED` is empty): the same comment and `agent:blocked`, and
+  `agent:implement` is **left on**: that run may have been the event `implement-prd` answers, which
+  holds the label while it works.
+
+The reason is, where the gate, the agent's job or a step was cancelled, a cancel, or the time limit
+where `TIMED_OUT` is `true`. Otherwise the first `failure_reason.txt` written, of the runner's,
+`implement:prepare`'s, `implement:bundle`'s and `implement:publish`'s; then a fixed sentence where
+the mint failed; then `GATE_REASON`; then, where the agent's job failed, the time limit where
+`TIMED_OUT` is `true`; then a fixed sentence where the agent finished and the download failed; and
+failing all of those, that it gave no reason. The retry is `` It opened PR #<pr> before it stopped,
+so adding `agent:implement` again would be refused. Fix the problem above, then add `agent:review`
+to PR #<pr>. `` where `published.json` names a pull request; after a gate that did not decide,
+`` To try again, remove `agent:implement` if it is still on this issue, then add it. ``, since
+adding a label already there fires nothing; and `` To try again, add `agent:implement`. ``
+otherwise.
+
+Each directory is read on its own, so a file that does not read is a warning and is read as not
+written, and costs the comment no reason another producer gave. Every write is tolerated: one
+GitHub refuses is a warning, so a run that cannot comment still takes its label off. Every write is
+made with `GH_TOKEN`.
+
+#### Inputs
+
+| Input | Kind | Default | What it is |
+|---|---|---|---|
+| `ISSUE_NUMBER` | required | | The issue. |
+| `RUN_URL` | required | | The run's page, which the failure comment links. |
+| `REFUSED` | optional | `""` | Accepts `true` or `false`: `false` where the gate claimed the run, `true` where it refused or deferred. Empty is a gate that died before it decided. |
+| `GATE_RESULT` | required | | How the gate's job ended: `success`, `failure`, `cancelled` or `skipped`. |
+| `GATE_REASON` | optional | `""` | The sentence `implement:gate` failed with, where it wrote one. |
+| `AGENT_RESULT` | required | | How the agent's job ended: `success`, `failure`, `cancelled` or `skipped`. |
+| `TIMED_OUT` | optional | `""` | `true` where the agent's job ran its whole limit. |
+| `TIMEOUT_MINUTES` | optional | `""` | That limit, for the comment. |
+| `MINT_OUTCOME` | optional | `""` | The outcome of minting the loop's token: `success`, `failure`, `cancelled` or `skipped`. Empty is not run. |
+| `DOWNLOAD_OUTCOME` | optional | `""` | The same, for fetching the agent's hand-over. |
+| `PUBLISH_OUTCOME` | optional | `""` | The same, for `implement:publish`. |
+| `PUBLISH_DIR` | directory | | `implement:publish`'s `OUTPUT_DIR`. Reads `published.json` (where written) and `failure_reason.txt` (where written). |
+| `PREPARE_DIR` | directory | | `implement:prepare`'s `OUTPUT_DIR`. Reads `failure_reason.txt` (where written). |
+| `IMPLEMENT_DIR` | directory | | The `implement` runner's `OUTPUT_DIR`. Reads `failure_reason.txt` (where written). |
+| `BUNDLE_DIR` | directory | | `implement:bundle`'s `OUTPUT_DIR`. Reads `failure_reason.txt` (where written). |
+
+#### Outputs
+
+| Output | When it is written |
+|---|---|
+| `write_log.jsonl` | Every write as it lands, one JSON line each, and a last line for how the command ended, as `review:conclude`'s. Not written where it wrote nothing. |
+
+**`doctor` cannot check this.** These tables are the command's, for the reason §6 gives.
+
+#### What it reads from the record
+
+Nothing: what it says comes from its inputs and its directories.
+
+**`doctor` cannot check this.** The record is written by the orchestrator's posting code, for the reason §4.3 gives.
+
+> **Actions orchestrator:** the publish job's step after `implement:publish`, run `always()`, from
+> `RUNNER_TEMP`, as are the Node setup and the upload around it, and the checkout and the download
+> wherever the gate claimed the run. It is told the gate's `refused` output, result and
+> `failure-reason` output, which the gate job's glue step copies from `implement:gate`'s reason
+> file, the agent's job's result and its `timed-out` output, the limit as `AGENT_TIMEOUT_MINUTES` or
+> 30, and the outcomes of the mint, the download and `implement:publish`. `PUBLISH_DIR` is
+> `implement:publish`'s `OUTPUT_DIR`, and `PREPARE_DIR`, `IMPLEMENT_DIR` and `BUNDLE_DIR` where the
+> agent's artifact is downloaded, a directory of its own under `runner.temp`, so the mint's reason
+> file is never read as the runner's. It is handed the workflow token alone. Both commands' write
+> logs are uploaded `always()`.
 
 ## 7. `implement-prd`
 

@@ -10,7 +10,7 @@
  */
 import { GitError, type BundleHead, type GitReader } from "../../engine/git.js";
 import { GitHubError, isServerError } from "../../engine/github.js";
-import type { CheckRun, CommitStatus, ConversationComment, GitHubReader, PullRequest, WorkflowRun } from "../../engine/read.js";
+import type { CheckRun, CommitStatus, ConversationComment, GitHubReader, PullRequest, SubIssue, WorkflowRun } from "../../engine/read.js";
 import {
   createWriters,
   ReadBackFailed,
@@ -45,7 +45,10 @@ export interface FakePullRequest {
  */
 export interface FakeIssue {
   parent?: number;
+  /** How many sub-issues it has: the length of `children` where a test lists them. */
   subIssues: number;
+  /** Its sub-issues, in the list's order, where a test lists them. */
+  children?: SubIssue[];
   blockedBy: { readonly number: number; readonly state: "open" | "closed" }[];
 }
 
@@ -72,6 +75,8 @@ export interface FakeGitHub {
   readonly commits: Map<number, string[]>;
   /** The compare API's `status`, by `<base>...<head>`. A pair not here is not found. */
   readonly comparisons: Map<string, string>;
+  /** The messages of the commits `<head>` has and `<base>` lacks, by `<base>...<head>`. A pair not here is not found. */
+  readonly ranges: Map<string, string[]>;
   /** Per commit, its check runs. A commit not here has none. */
   readonly checkRuns: Map<string, CheckRun[]>;
   /** Per commit, the workflow runs whose head it is. A commit not here has none. */
@@ -136,6 +141,7 @@ export const fakeGitHub = (pullRequests: readonly Partial<FakePullRequest>[] = [
   branches: new Map(),
   commits: new Map(),
   comparisons: new Map(),
+  ranges: new Map(),
   checkRuns: new Map(),
   workflowRuns: new Map(),
   jobLogs: new Map(),
@@ -188,7 +194,39 @@ export const fakeReader = (github: FakeGitHub): { readonly reader: GitHubReader;
     issueShape: async (number) => {
       reads.push({ method: "issueShape", args: [number] });
       const issue = issueOf(github, number);
-      return { parent: issue.parent, subIssues: issue.subIssues, labels: [...(github.issueLabels.get(number) ?? [])] };
+      return {
+        parent: issue.parent,
+        subIssues: issue.children?.length ?? issue.subIssues,
+        labels: [...(github.issueLabels.get(number) ?? [])],
+      };
+    },
+    subIssues: async (number) => {
+      reads.push({ method: "subIssues", args: [number] });
+      return [...(issueOf(github, number).children ?? [])];
+    },
+    blockedBy: async (number) => {
+      reads.push({ method: "blockedBy", args: [number] });
+      return issueOf(github, number).blockedBy.map((blocker) => ({ number: blocker.number, open: blocker.state === "open" }));
+    },
+    issueComments: async (number) => {
+      reads.push({ method: "issueComments", args: [number] });
+      return github.comments.filter((comment) => comment.issue === number).map((comment) => comment.body);
+    },
+    branchesStarting: async (prefix) => {
+      reads.push({ method: "branchesStarting", args: [prefix] });
+      return [...github.branches].filter(([name]) => name.startsWith(prefix)).map(([name, tip]) => ({ name, tip }));
+    },
+    openPullRequests: async (filter) => {
+      reads.push({ method: "openPullRequests", args: [filter] });
+      return [...github.pullRequests.values()]
+        .filter((pr) => pr.state === "open" && (filter.head === undefined || pr.headRef === filter.head) && (filter.base === undefined || pr.baseRef === filter.base))
+        .map((pr) => ({ number: pr.number, head: pr.headRef ?? "", base: pr.baseRef ?? "" }));
+    },
+    commitMessages: async (base, head) => {
+      reads.push({ method: "commitMessages", args: [base, head] });
+      const messages = github.ranges.get(`${base}...${head}`);
+      if (messages === undefined) throw new GitHubError(`compare ${base}...${head}: 404 Not Found`, 404);
+      return [...messages];
     },
     openBlockers: async (number) => {
       reads.push({ method: "openBlockers", args: [number] });

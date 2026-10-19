@@ -491,6 +491,109 @@ describe("githubReader", () => {
     expect(await githubReader(REPO, transport).openPullRequest("agent/x", "develop")).toBeUndefined();
   });
 
+  /** The chain's order is the list's, so a read that reorders or stops at a page would build the wrong slice. */
+  it("reads an issue's sub-issues in list order, every page past 100", async () => {
+    const node = (number: number) => ({ number, title: `Slice ${number}`, state: number % 2 === 0 ? "OPEN" : "CLOSED" });
+    const { transport, sent } = recording((s) =>
+      "variables" in s && s.variables["after"] === null
+        ? { repository: { issue: { subIssues: { nodes: Array.from({ length: 100 }, (_, i) => node(200 - i)), pageInfo: { hasNextPage: true, endCursor: "c1" } } } } }
+        : { repository: { issue: { subIssues: { nodes: [node(1)], pageInfo: { hasNextPage: false, endCursor: "c2" } } } } },
+    );
+
+    const subIssues = await githubReader(REPO, transport).subIssues(9);
+
+    expect(subIssues).toHaveLength(101);
+    expect([subIssues[0], subIssues[99], subIssues[100]]).toEqual([
+      { number: 200, title: "Slice 200", state: "OPEN" },
+      { number: 101, title: "Slice 101", state: "CLOSED" },
+      { number: 1, title: "Slice 1", state: "CLOSED" },
+    ]);
+    expect(sent.map((s) => ("variables" in s ? s.variables : {}))).toEqual([
+      { owner: "o", name: "r", number: 9, after: null },
+      { owner: "o", name: "r", number: 9, after: "c1" },
+    ]);
+  });
+
+  /** "No answer" read as "no sub-issues" is a chain whose every slice landed. */
+  it.each([
+    ["no issue", { repository: { issue: null } }],
+    ["no repository", { repository: null }],
+    ["no data", undefined],
+  ])("throws on a sub-issue answer holding %s, rather than returning none", async (_, answer) => {
+    const { transport } = recording(() => answer);
+
+    await expect(githubReader(REPO, transport).subIssues(9)).rejects.toThrow("The sub-issues of issue #9 came back empty.");
+  });
+
+  it("throws on a failed sub-issue read rather than returning what it had", async () => {
+    let calls = 0;
+    const { transport } = recording(() => {
+      calls += 1;
+      if (calls > 1) throw new GitHubError("graphql: something");
+      return { repository: { issue: { subIssues: { nodes: [{ number: 1, title: "", state: "OPEN" }], pageInfo: { hasNextPage: true, endCursor: "c" } } } } };
+    });
+
+    await expect(githubReader(REPO, transport).subIssues(9)).rejects.toThrow("graphql: something");
+  });
+
+  it("reads every issue an issue is blocked by, open or closed", async () => {
+    const { transport, sent } = recording(() => [
+      { number: 3, state: "open" },
+      { number: 4, state: "closed" },
+    ]);
+
+    expect(await githubReader(REPO, transport).blockedBy(9)).toEqual([
+      { number: 3, open: true },
+      { number: 4, open: false },
+    ]);
+    expect(paths(sent)).toEqual(["/repos/o/r/issues/9/dependencies/blocked_by?per_page=100&page=1"]);
+  });
+
+  it("reads the body of every comment on an issue, every page", async () => {
+    const { transport, sent } = recording((s) =>
+      "rest" in s && s.rest.path.endsWith("page=1") ? Array.from({ length: 100 }, () => ({ body: "x" })) : [{ body: null }, { body: "last" }],
+    );
+
+    const bodies = await githubReader(REPO, transport).issueComments(9);
+
+    expect(bodies).toHaveLength(102);
+    expect(bodies.slice(100)).toEqual(["", "last"]);
+    expect(paths(sent)).toEqual(["/repos/o/r/issues/9/comments?per_page=100&page=1", "/repos/o/r/issues/9/comments?per_page=100&page=2"]);
+  });
+
+  it("reads the branches whose name starts with a prefix, with their tips", async () => {
+    const { transport, sent } = recording(() => [{ ref: "refs/heads/agent/prd-17-a", object: { sha: SHA } }]);
+
+    expect(await githubReader(REPO, transport).branchesStarting("agent/prd-17-")).toEqual([{ name: "agent/prd-17-a", tip: SHA }]);
+    expect(paths(sent)).toEqual(["/repos/o/r/git/matching-refs/heads/agent/prd-17-"]);
+  });
+
+  it("reads the open pull requests from a head, or into a base, with their branches", async () => {
+    const { transport, sent } = recording(() => [{ number: 5, head: { ref: "agent/x" }, base: { ref: "main" } }]);
+    const reader = githubReader(REPO, transport);
+
+    expect(await reader.openPullRequests({ head: "agent/x" })).toEqual([{ number: 5, head: "agent/x", base: "main" }]);
+    await reader.openPullRequests({ base: "agent/prd-1-a" });
+    expect(paths(sent)).toEqual([
+      "/repos/o/r/pulls?state=open&head=o%3Aagent%2Fx&per_page=100&page=1",
+      "/repos/o/r/pulls?state=open&base=agent%2Fprd-1-a&per_page=100&page=1",
+    ]);
+  });
+
+  it("reads the message of every commit a head has over a base, every page", async () => {
+    const { transport, sent } = recording((s) =>
+      "rest" in s && s.rest.path.endsWith("page=1")
+        ? { status: "ahead", commits: Array.from({ length: 100 }, (_, i) => ({ commit: { message: `m${i}` } })) }
+        : { status: "ahead", commits: [{ commit: { message: "last" } }] },
+    );
+
+    const messages = await githubReader(REPO, transport).commitMessages("main", SHA);
+
+    expect(messages).toHaveLength(101);
+    expect(messages[100]).toBe("last");
+    expect(paths(sent)).toEqual([`/repos/o/r/compare/main...${SHA}?per_page=100&page=1`, `/repos/o/r/compare/main...${SHA}?per_page=100&page=2`]);
+  });
+
   it("reads how one commit relates to another", async () => {
     const { transport, sent } = recording(() => ({ status: "ahead" }));
 

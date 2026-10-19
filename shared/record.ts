@@ -183,6 +183,13 @@ export const FINAL_REVIEW_MARK = "<!-- agent:final-review requested -->";
  * progress table, and rendered from the same state, so the two cannot
  * disagree. It links the latest review where the chain waits on it.
  */
+/**
+ * The chain's first run's comment on the PRD parent, saying which sub-issue
+ * it builds first, ends with this: a retry of a first run that stopped finds
+ * the comment it posted by it, and posts no second (`implement-prd:gate`).
+ */
+export const PRD_STARTED_MARK = "<!-- agent:prd-started -->";
+
 export const STATUS_START = "<!-- agent:status -->";
 
 export const STATUS_END = "<!-- /agent:status -->";
@@ -294,14 +301,29 @@ export const ISSUE_BRANCH_PREFIX = "agent/issue-";
  * so `toLowerCase`, which turns `İ` into an ASCII `i`, would name another
  * branch.
  */
-export const issueBranch = (issue: number, title: string): string => {
-  const slug = title
+export const issueBranch = (issue: number, title: string): string => `${ISSUE_BRANCH_PREFIX}${issue}-${slugOf(title)}`;
+
+/**
+ * The stable half of every PRD branch of parent `parent`, `agent/prd-<parent>-`,
+ * with the dash that stops #17 matching #171's branch: what the PRD branch is
+ * found by, since the slug half comes from an editable title.
+ */
+export const prdBranchStem = (parent: number): string => `${PRD_BRANCH_PREFIX}${parent}-`;
+
+/**
+ * The PRD branch a chain's first run names for parent `parent`, its slug from
+ * `title` as `issueBranch`'s is. Only ever the name of a branch that does not
+ * exist yet: a chain already started is found by `prdBranchStem`.
+ */
+export const prdBranch = (parent: number, title: string): string => `${prdBranchStem(parent)}${slugOf(title)}`;
+
+/** A branch's slug, as the shell steps the commands replaced wrote it. */
+const slugOf = (title: string): string =>
+  title
     .replace(/[A-Z]/g, (letter) => letter.toLowerCase())
     .replace(/[^a-z0-9]+/g, "-")
     .replace(/^-+|-+$/g, "")
     .slice(0, 50);
-  return `${ISSUE_BRANCH_PREFIX}${issue}-${slug}`;
-};
 
 /**
  * What a pull request's body says to close issue `issue` with, as a match:
@@ -315,6 +337,14 @@ export const closingReference = (issue: number): RegExp => new RegExp(String.raw
 
 /** The trailer key a build run's commits carry, as `Agent-Slice: #<sub>`. */
 export const SLICE_TRAILER = "Agent-Slice";
+
+/**
+ * A line of a commit message that is an `Agent-Slice` trailer, the sub-issue
+ * it names as its group: the key in any case, as git's own parser reads it,
+ * and nothing else on the line. Global and multiline, for `matchAll` over a
+ * whole message.
+ */
+export const SLICE_TRAILER_LINE = new RegExp(String.raw`^${SLICE_TRAILER}:[ \t]*#([0-9]+)[ \t]*$`, "gim");
 
 /**
  * The trailer key `implement-prd`'s own merge of the default branch carries,

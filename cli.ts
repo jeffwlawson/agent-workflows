@@ -366,6 +366,11 @@ export const SUBCOMMANDS: Readonly<Record<string, Subcommand>> = {
     async () => (await import("./implement/gate.js")).gate,
     "Refuse or defer an implement run on an issue of the wrong shape, or claim it and name its branch (no model).",
   ),
+  "implement-prd:gate": writingCommand(
+    "implement-prd:gate",
+    async () => (await import("./implement-prd/gate.js")).gate,
+    "Refuse or defer an implement-prd run on a PRD parent, or claim it and decide its slice (no model).",
+  ),
   "implement:prepare": command(
     "implement:prepare",
     async () => (await import("./implement/prepare.js")).prepare,

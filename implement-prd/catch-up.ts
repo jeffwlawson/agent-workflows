@@ -1,5 +1,5 @@
 import { FetchFailed, GitError, type Merged } from "../engine/git.js";
-import { WriteFailed, type Limits } from "../engine/writer.js";
+import { WriteFailed, type Limits, type Writer } from "../engine/writer.js";
 import { describe, issueNumber, tolerated } from "../shared/command-helpers.js";
 import type { MergingCheckoutIo } from "../shared/command-io.js";
 import type { COMMANDS } from "../shared/contract.js";
@@ -135,7 +135,7 @@ const park = async (
   base: string,
   branch: string,
   conflicts: readonly string[],
-  workflow: ReturnType<Io["writers"]>["workflow"],
+  workflow: Writer,
   record: (caughtUp: CaughtUp) => void,
 ): Promise<void> => {
   record({ parked: true });

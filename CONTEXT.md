@@ -449,8 +449,8 @@ it `update-branch:conclude`, and `update-branch.yml` runs no inline shell that d
 agent's job `implement:prepare`, its bundling `implement:bundle`, its publish job's success path
 `implement:publish` and the ending after it `implement:conclude`, and `implement.yml` runs no
 inline shell that decides. **Two reusables still run their steps as inline shell**:
-`implement-prd`, whose gate job's work alone is a command so far, `implement-prd:gate` (PRD
-#496), and `follow-ups`, whose filing alone is a command, `follow-ups:file`. Until a step has
+`implement-prd`, whose gate and catch-up jobs' work alone is commands so far, `implement-prd:gate`
+and `implement-prd:catch-up` (PRD #496), and `follow-ups`, whose filing alone is a command, `follow-ups:file`. Until a step has
 moved, a fix to it still goes in its YAML.
 
 **A runner** is the part of the package that does an agent's work: TypeScript plus a prompt, invoked
@@ -463,7 +463,7 @@ that reads or changes the PR or issue, or decides anything, and starts no agent.
 way a runner is, as one subcommand with no arguments and its whole input in the environment, and
 fails the way a runner does. It is named `<workflow>:<step>`, such as `review:publish`, so a bare
 name is always a runner. `fix:gate`, `fix:prepare`, `fix:bundle`, `fix:publish`, `fix:conclude`, `follow-ups:file`,
-`implement:gate`, `implement:prepare`, `implement:bundle`, `implement:publish`, `implement:conclude`, `implement-prd:gate`, `review:gate`,
+`implement:gate`, `implement:prepare`, `implement:bundle`, `implement:publish`, `implement:conclude`, `implement-prd:gate`, `implement-prd:catch-up`, `review:gate`,
 `review:budget`, `review:collect-checks`, `review:red-check-place`, `review:red-check-classify`,
 `review:publish`, `review:conclude`, `review:advance`, `update-branch:gate`, `update-branch:merge`,
 `update-branch:prepare`, `update-branch:bundle`, `update-branch:publish` and

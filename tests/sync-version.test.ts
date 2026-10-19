@@ -192,8 +192,8 @@ const REF_COUNT = 2 * Object.values(CALLERS_PER_FILE).reduce((sum, n) => sum + n
  * resolves the loop's token names `loop-token` (#319, #320): implement's
  * publish job, implement-prd's catch-up and publish jobs, fix's and
  * update-branch's publish jobs, and review's `time-limit`, `post-review` and
- * `advance` jobs. Eight, beside the twenty-nine `npm exec` pins, the six `npm
- * install`s and the twelve callers, so the release rewrites fifty-five pins
+ * `advance` jobs. Eight, beside the thirty `npm exec` pins, the six `npm
+ * install`s and the twelve callers, so the release rewrites fifty-six pins
  * in ten files. Review's advance named `advance-prd` too, until it became
  * `review:advance` (#423).
  */
@@ -211,7 +211,8 @@ const ACTION_COUNT = Object.values(ACTION_SITES).reduce((sum, actions) => sum + 
  * file: one per reusable workflow but `fix.yml`, `update-branch.yml`,
  * `implement.yml` and `implement-prd.yml`, the
  * runner's or the filing command's, `implement-prd:gate` (#498),
- * `implement-prd:catch-up` (#500) and `implement-prd:publish` (#502) in `implement-prd.yml`, and in `review.yml` `review:gate` (#420), `review:budget` (#331),
+ * `implement-prd:catch-up` (#500), `implement-prd:publish` (#502) and
+ * `implement-prd:conclude` (#505) in `implement-prd.yml`, and in `review.yml` `review:gate` (#420), `review:budget` (#331),
  * `review:collect-checks` (#421), `review:red-check-place` and
  * `review:red-check-classify` (#422), `review:publish` (#417),
  * `review:conclude` (#419) and `review:advance` (#423) beside the runner,
@@ -230,7 +231,7 @@ const ACTION_COUNT = Object.values(ACTION_SITES).reduce((sum, actions) => sum + 
 const PACKAGE_SITES: Readonly<Record<string, number>> = {
   ".github/workflows/fix.yml": 5,
   ".github/workflows/follow-ups.yml": 1,
-  ".github/workflows/implement-prd.yml": 3,
+  ".github/workflows/implement-prd.yml": 4,
   ".github/workflows/implement.yml": 5,
   ".github/workflows/review.yml": 9,
   ".github/workflows/update-branch.yml": 6,
@@ -318,7 +319,7 @@ describe("the version propagator rewrites every pin", () => {
     );
 
     expect(() => syncVersion(TARGET, root)).toThrow(
-      /implement-prd\.yml: expected 6 version pins \[package, package, package, install, action, action\], found 5 \[package, package, package, install, action\]/,
+      /implement-prd\.yml: expected 7 version pins \[package, package, package, package, install, action, action\], found 6 \[package, package, package, package, install, action\]/,
     );
   });
 

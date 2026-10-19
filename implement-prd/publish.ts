@@ -7,7 +7,7 @@ import { describe, inWriteLog, issueNumber, seconds, tolerated } from "../shared
 import type { RewritingCheckoutIo } from "../shared/command-io.js";
 import { COMMANDS } from "../shared/contract.js";
 import type { InputValues } from "../shared/env.js";
-import { choice, count, json, list, nullable, object, readDirectory, text, type Parser } from "../shared/hand-over.js";
+import { readDirectory } from "../shared/hand-over.js";
 import { waitForHead } from "../shared/head-wait.js";
 import { loopAccounts } from "../shared/loop-accounts.js";
 import { renderPullRequestFrame } from "../shared/pr-frame.js";
@@ -36,6 +36,7 @@ import {
 } from "../shared/record.js";
 import { roundCounts, type RoundCounts } from "../shared/round-header.js";
 import { sliceRanges } from "../shared/slice-ranges.js";
+import { present, SNAPSHOT } from "./hand-over.js";
 
 type Declared = (typeof COMMANDS)["implement-prd:publish"];
 type Inputs = InputValues<Declared["inputs"]>;
@@ -641,28 +642,6 @@ const LIMITS: Limits = {
   removeLabel: 2,
   addLabel: 1,
 };
-
-/** A file read for being there, and nothing more: the bundle's bytes are git's to check. */
-const present: Parser<true> = () => true;
-
-/**
- * The gate's snapshot of the PRD, `prd-issue.json`, in the shape it writes:
- * the sub-issues every branch of the gate ruled on, in the list's order, of
- * which the progress list and the `Closes` block read the numbers and states.
- */
-const SNAPSHOT = json(
-  object({
-    parent: nullable(count({ min: 1, max: Number.MAX_SAFE_INTEGER })),
-    labels: object({ nodes: list(object({ name: text }), { max: 100 }) }),
-    subIssues: object({
-      totalCount: count({ min: 0, max: 100 }),
-      nodes: list(
-        object({ number: count({ min: 1, max: Number.MAX_SAFE_INTEGER }), title: text, state: choice(["OPEN", "CLOSED"] as const) }),
-        { max: 100 },
-      ),
-    }),
-  }),
-);
 
 /** `text` cut to `max` characters, as bash's `${title:0:256}` cut it: by code point, never mid-character. */
 const cut = (value: string, max: number): string => Array.from(value).slice(0, max).join("");

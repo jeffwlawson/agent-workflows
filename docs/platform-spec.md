@@ -59,7 +59,7 @@ cannot check is one only an orchestrator's author will catch.
   `review`, `fix` and `update-branch`. It reads its inputs from the environment, starts the agent,
   and writes files and commits. It is not the agent.
 - **Command.** A subcommand that does an orchestrator's work on the record and starts no agent,
-  named `<workflow>:<step>`: `fix:gate`, `fix:prepare`, `fix:bundle`, `fix:publish`, `fix:conclude`, `follow-ups:file`, `implement:gate`, `implement:prepare`, `implement:bundle`, `implement:publish`, `implement:conclude`, `implement-prd:gate`, `implement-prd:catch-up`, `implement-prd:prepare`, `implement-prd:bundle`, `implement-prd:publish`, `review:gate`, `review:budget`,
+  named `<workflow>:<step>`: `fix:gate`, `fix:prepare`, `fix:bundle`, `fix:publish`, `fix:conclude`, `follow-ups:file`, `implement:gate`, `implement:prepare`, `implement:bundle`, `implement:publish`, `implement:conclude`, `implement-prd:gate`, `implement-prd:catch-up`, `implement-prd:prepare`, `implement-prd:bundle`, `implement-prd:publish`, `implement-prd:conclude`, `review:gate`, `review:budget`,
   `review:collect-checks`, `review:red-check-place`, `review:red-check-classify`, `review:publish`,
   `review:conclude`, `review:advance`, `update-branch:gate`, `update-branch:merge`,
   `update-branch:prepare`, `update-branch:bundle`, `update-branch:publish` and
@@ -139,7 +139,7 @@ The inputs every runner reads, set once for any of them:
 |---|---|---|---|
 | `OUTPUT_DIR` | required | | The directory the runner writes its files into (§2.3). |
 | `GH_REPO` | required | | The repository, `owner/name`. Required rather than left to whatever `gh` infers. |
-| `GH_TOKEN` | required | | The token `gh` reads. The runners only read with it, `fix:prepare` reads and fetches the rescue branch with it, and `update-branch:merge`, `update-branch:prepare` and `update-branch:publish` fetch the base branch with it; `follow-ups:file` files issues with it, `implement:gate` makes its refusals, its start comment and its label transitions with it, `implement:publish` the link on the issue with it, `implement:conclude` its failure comment, `agent:implement` off and `agent:blocked` on, `implement-prd:gate` its refusals, its start comments, its label transitions, the approved slice's note and the PRD PR's building row, `implement-prd:catch-up` fetches the PRD branch and the base branch with it and parks the chain with it, `implement-prd:prepare` reads and fetches the PRD branch and the rescue branch with it, `implement-prd:publish` fetches the base branch and the PRD branch and reads the rescue branch's tip, the open pull requests from the PRD branch and a reused PRD PR's rounds and head with it, and `review:publish` posts the review, the summary and the verdict with it, `review:conclude` its comments, its error verdict and the labels nothing fires on, `review:advance` a PRD PR's progress list and its notes there, `fix:gate` its refusals and its label transitions, `fix:publish` its thread replies, its comments and notes, and the rescue branch's deletion, `fix:conclude` its failure comment, the rescue-set-aside note where `fix:publish` did not post it, and `agent:fix` off and `agent:blocked` on, `update-branch:gate` its refusal and its label transitions, `update-branch:publish` the verdict it carries over, its comment, and the comment that no review will start, and `update-branch:conclude` its failure comment, `agent:update-branch` off and `agent:blocked` on, and the comment that no refresh of a moved head will start. |
+| `GH_TOKEN` | required | | The token `gh` reads. The runners only read with it, `fix:prepare` reads and fetches the rescue branch with it, and `update-branch:merge`, `update-branch:prepare` and `update-branch:publish` fetch the base branch with it; `follow-ups:file` files issues with it, `implement:gate` makes its refusals, its start comment and its label transitions with it, `implement:publish` the link on the issue with it, `implement:conclude` its failure comment, `agent:implement` off and `agent:blocked` on, `implement-prd:gate` its refusals, its start comments, its label transitions, the approved slice's note and the PRD PR's building row, `implement-prd:catch-up` fetches the PRD branch and the base branch with it and parks the chain with it, `implement-prd:prepare` reads and fetches the PRD branch and the rescue branch with it, `implement-prd:publish` fetches the base branch and the PRD branch and reads the rescue branch's tip, the open pull requests from the PRD branch and a reused PRD PR's rounds and head with it, `implement-prd:conclude` its set-aside note, its failure comment, `agent:implement` off and `agent:blocked` on, and fetches the base branch and the PRD branch and reads the rescue branch's tip and the PRD PR's rounds with it, and `review:publish` posts the review, the summary and the verdict with it, `review:conclude` its comments, its error verdict and the labels nothing fires on, `review:advance` a PRD PR's progress list and its notes there, `fix:gate` its refusals and its label transitions, `fix:publish` its thread replies, its comments and notes, and the rescue branch's deletion, `fix:conclude` its failure comment, the rescue-set-aside note where `fix:publish` did not post it, and `agent:fix` off and `agent:blocked` on, `update-branch:gate` its refusal and its label transitions, `update-branch:publish` the verdict it carries over, its comment, and the comment that no review will start, and `update-branch:conclude` its failure comment, `agent:update-branch` off and `agent:blocked` on, and the comment that no refresh of a moved head will start. |
 
 A command that runs where no token is held, as the red check's two do beside the pull request's own
 code, `fix:bundle`, `update-branch:bundle`, `implement:bundle` and `implement-prd:bundle` do after the agent and
@@ -445,7 +445,8 @@ the body has no `Closes` marker. `review:publish` writes
 the summary block, its marks and a regular pull request's status line from `review`'s hand-over,
 `review:advance` a PRD PR's progress list and status line from `review`'s park hand-over,
 `implement-prd:gate` the building row and status line of the slice a build run starts, as
-`showBuilding` in `shared/progress-list.ts` builds them, and the
+`showBuilding` in `shared/progress-list.ts` builds them, `implement-prd:conclude` the stopped
+slice's progress list and status line, rendered from the PRD branch as the run left it, and the
 other blocks are written from a runner's output files. A runner reads them back from the
 body.
 
@@ -455,7 +456,7 @@ body.
 | `<!-- agent:summary-head <sha> -->` | Inside the summary: the commit it was written at, which decides whether it is due again. | `review` |
 | `<!-- agent:summary-final -->` | Inside the summary: the final review wrote it. | `review` |
 | `Closes #<n>`, `Fixes #<n>`, `Resolves #<n>` | The issue the pull request delivers, whose criteria a review checks. | `review` |
-| `<!-- agent:progress -->` … `<!-- /agent:progress -->`, `<!-- agent:status -->` … `<!-- /agent:status -->` | A PRD PR's progress list and its status line, rendered by `shared/progress-list.ts`. Written by `implement-prd:publish` with the slice in review, into the frame of a PRD PR it opens and over the blocks of one it reuses; then by `review:advance` at each round's end. | nothing: a view of the chain, re-rendered by the next writer |
+| `<!-- agent:progress -->` … `<!-- /agent:progress -->`, `<!-- agent:status -->` … `<!-- /agent:status -->` | A PRD PR's progress list and its status line, rendered by `shared/progress-list.ts`. Written by `implement-prd:publish` with the slice in review, into the frame of a PRD PR it opens and over the blocks of one it reuses; by `implement-prd:conclude` where a build run stops, rendered from the PRD branch's trailers as the run left it (#325); then by `review:advance` at each round's end. | nothing: a view of the chain, re-rendered by the next writer |
 | `<!-- agent:closes -->` … `<!-- /agent:closes -->` | A PRD PR's `Closes` line: the parent and every sub-issue still open. Written by `implement-prd:publish`, as `closesBlock` in `shared/record.ts` spells it, in the frame, and appended to a reused PRD PR an older release opened, whose body has no `Closes` marker. | `review`, through `Closes #<n>`; `implement-prd:publish`, for whether a reused body has the block |
 | `<!-- agent:draft-note -->` … `<!-- /agent:draft-note -->` | A PRD PR's note that it stays a draft until every slice is done. Written by `implement-prd:publish` in the frame. | `review`, whose final review's write of the summary removes it |
 | `\| <k> · #<sub> \| 🔨 Building \| – \| – \| – \|`, `**🔨 Building slice <k> of <n>** · #<sub>` | In a PRD PR's `<!-- agent:progress -->` and `<!-- agent:status -->` blocks: the row and the status line of slice `<k>`, sub-issue `<sub>`, while a build run builds it, as the renderer renders them. Written by `implement-prd:gate`. | nothing: a view of the chain, re-rendered by the next writer |
@@ -483,6 +484,7 @@ only a status whose creator is the loop's identity (§4.1).
 | `agent/issue-<n>-<slug>` | The branch, and so the pull request's head, an `implement` run builds issue `<n>` on. `<slug>` is the issue's title, lowercased in ASCII alone, every run of anything but `[a-z0-9]` one `-`, the ends trimmed, then cut to 50, which can leave a trailing `-`. A retry lands on the branch an earlier run named. | named by `implement:gate`, as `ISSUE_BRANCH_PREFIX` and `issueBranch` in `shared/record.ts` spell it; pushed by `implement:publish`, from `implement:bundle`'s `branch.bundle`, leased on the tip the gate read | `implement:gate`, for its tip |
 | `agent/prd-<parent>-<slug>` | A PRD branch, and so a PRD PR, of parent issue `<parent>`. A pull request whose head does not match is an ordinary one. Found by its stable half, `agent/prd-<parent>-`, so a retitled parent keeps its chain; `<slug>` is made as an issue branch's is, and names only a branch that does not exist yet. | named by `implement-prd:gate`, as `prdBranchStem` and `prdBranch` in `shared/record.ts` spell it; pushed by `implement-prd:catch-up`, its merge of the default branch, and `implement-prd:publish`, a slice | `review`, `fix`; `implement-prd:gate`, for its tip and the slices on it |
 | `agent/rescue/fix-<n>` | An earlier stopped fix run's commits on pull request `<n>`, its `RESCUE_BRANCH` (§9). Deleted, under a lease, by a run that succeeds. | `fix:conclude`, from `fix:bundle`'s `branch.bundle`; deleted by `fix:publish` | `fix:prepare`, which fetches it for the runner as `refs/rescue/…` |
+| `agent/rescue/prd-<parent>` | An earlier stopped implement-prd run's commits on PRD parent `<parent>`, its `RESCUE_BRANCH` (§7). Deleted, under a lease, by a run that pushes its slice. | `implement-prd:conclude`, from `implement-prd:bundle`'s `branch.bundle`, leased on its tip as read; deleted by `implement-prd:publish` | `implement-prd:prepare`, which fetches it for the runner as `refs/rescue/…` |
 | `refs/rescue/<RESCUE_BRANCH>` | An earlier stopped run's commits, fetched for the runner to resume from (§7, §9). | `fix:prepare` for `fix`, and `implement-prd:prepare` for `implement-prd`, from the rescue branch | `implement-prd`, `fix` |
 
 **Label events.**
@@ -938,29 +940,18 @@ earlier run of this PRD left commits on `RESCUE_BRANCH`, that branch fetched to
 | `BRANCH` | required | | The PRD branch. |
 | `BASE_REF` | required | | The default branch. |
 | `RESCUE_BRANCH` | required | | Where an earlier run of this PRD that stopped left its commits. |
-| `PRD_PR` | optional | `""` | The PRD PR. Empty on the first slice, which opens it. |
-| `MERGED` | optional | `""` | Set where the orchestrator merged the default branch in before this run. |
-| `GITHUB_SERVER_URL` | optional | `""` | With `GITHUB_REPOSITORY`, the link to the pull request. Empty renders none. |
-| `GITHUB_REPOSITORY` | optional | `""` | See `GITHUB_SERVER_URL`. |
 
 ### Outputs
 
 | Output | When it is written |
 |---|---|
-| `progress_stopped.md` | The progress list, where this run stopped before it finished. |
-| `status_stopped.md` | Its status line, to match. |
-| `progress_stopped_pushed.md` | The progress list, where this run stopped and its commits were pushed anyway. |
-| `status_stopped_pushed.md` | Its status line, to match. |
-| `rescue_ignored.md` | Signals by existing: a rescue branch was found and set aside. The note says so. |
+| `rescue_ignored.json` | Where a rescue branch was found and set aside because the PRD branch moved since it was saved: `branch`, the rescue branch, and `movedPast`, its tip. `implement-prd:conclude` says so. |
 
 **`doctor` cannot check this.** These tables are the runner's, for the reason §6 gives.
 
 ### What it reads from the record
 
 - The parent's and the sub-issue's bodies and comments, through `isTrustedAuthor` (§4.1).
-- The PRD branch's `Agent-Slice` and `Agent-Catch-Up` trailers (§4.3), for which slices are built.
-- The PRD PR's rounds, where `PRD_PR` is set: its reviews headed `## Agent review` by the loop's
-  identity, and each time `agent:fix` was added, for the progress list's counts.
 - `refs/rescue/<RESCUE_BRANCH>`, where it exists, to resume from.
 
 **`doctor` cannot check this.** The record is written by the orchestrator's posting code, for the reason §4.3 gives.
@@ -976,14 +967,17 @@ earlier run of this PRD left commits on `RESCUE_BRANCH`, that branch fetched to
 > The agent's job installs the package once, before the adopter's toolchain and `setup`, and runs
 > its binary by path: `implement-prd:prepare`, which checks the PRD branch out at the tip the
 > catch-up left and fetches the rescue branch, then the runner, then, however it ended,
-> `implement-prd:bundle`; it hands the bundle, unmarked, and every reason file over as an artifact.
+> `implement-prd:bundle`; it hands the bundle, unmarked, every reason file and the rescue it set
+> aside over as an artifact, and its last step measures whether it ran out of time.
 > A publish job runs `implement-prd:publish` where the agent's job succeeded, which marks the
 > slice's commits with the `Agent-Slice` trailer, pushes them to the PRD branch and deletes the
 > rescue branch, then opens the PRD PR as a draft the first time or reuses it, writing its progress
 > list and status line, and adds `agent:review`; and on a run that only opens a missing PRD PR,
 > which does the last two alone; and on the finishing run, which hands the PRD PR over: marked
-> ready, or its final review recorded and `agent:review` added. A run that fails
-> has its commits pushed to `RESCUE_BRANCH`, and the `stopped` lists written.
+> ready, or its final review recorded and `agent:review` added. Then, however the run ended,
+> `implement-prd:conclude`: a run that stopped has its commits pushed to `RESCUE_BRANCH`, its
+> failure comment and `agent:blocked`, and, on a build, the stopped slice's row written back from
+> the PRD branch; every run the gate decided has `agent:implement` taken off.
 
 > **Service orchestrator:** the chain moves on only when a review ends on an approval and
 > `review:advance` puts `agent:implement` back on the parent. An orchestrator that does not run it
@@ -1042,7 +1036,7 @@ out and before the agent's job. It runs no model and needs no checkout. In order
   it. Tolerated, and so is every read it makes: a warning, and the run goes on.
 - **The building row**, on a build with a PRD PR: the slice's row in the progress list and the
   status line, spliced into the live body as the renderer renders them with the slice building.
-  The blocks it replaces are written first, as `progress_unbuilt.md` and `status_unbuilt.md`. Half
+  A run that stops after it has the row written back by `implement-prd:conclude`. Half
   a progress marker pair, or two, or no row for the slice, leaves the body as it stands with a
   warning, and no list leaves it with a line saying so. Tolerated.
 
@@ -1067,8 +1061,6 @@ them has to start a run. A refusal or a deferral is a decision, and the command 
 |---|---|
 | `gate.json` | Where it decided: `proceed`, `true` where the run goes ahead and `false` where it refused or deferred, as a string. On a run it claims, beside it: `decision`, `build`, `open-only` or `finishing`; `prdBranch`, `prdBranchExists` and `prdTip`, empty where the branch does not exist; `prdPr`, where one is open; `landed`, every slice landed, those before the upgrade included; `total`, the sub-issues; on a build, `slice`, its `number`, `position` from 1 and `title`; and past an approval, `approved`, the approved slice's `number`, the head's `sha` and the approving `review`'s link. Written the moment it decides, and again however it ends: one that died before deciding writes none where an input could not be read, and `{}` where it failed after that. |
 | `prd-issue.json` | Once the sub-issues are read: the parent's labels and its sub-issues, each with its number, title and state, as the shell query this replaced gave them. |
-| `progress_unbuilt.md` | Where the building row is written: the progress list it replaced, markers and all. |
-| `status_unbuilt.md` | Beside it, where the body carries a status line: the status line it replaced, markers and all. |
 | `write_log.jsonl` | Every write as it lands, one JSON line each, and a last line for how the command ended, as `review:conclude`'s. Not written where it wrote nothing. |
 
 **`doctor` cannot check this.** These tables are the command's, for the reason §6 gives.
@@ -1097,9 +1089,8 @@ them has to start a run. A refusal or a deferral is a decision, and the command 
 > before deciding; `build` and `finishing` are read off `decision`; `prd_branch`,
 > `prd_branch_exists`, `prd_tip`, `prd_pr`, `landed`, `subs`, `sub`, `sub_k` and `sub_title` off
 > the rest. The same step copies the command's `failure_reason.txt`, where it wrote one, into the
-> job's `failure-reason`, and the job uploads that file, `prd-issue.json`, `progress_unbuilt.md`
-> and `status_unbuilt.md` for the publish job, whose *Show the stopped slice* writes the two lists
-> back where the run stops before the runner renders its own. The job
+> job's `failure-reason`, which `implement-prd:conclude` is told as `GATE_REASON`, and the job
+> uploads `prd-issue.json` for the publish job's two commands. The job
 > fails where the command does, so a failed probe never starts the catch-up or the agent's job.
 
 ### `implement-prd:catch-up`
@@ -1410,12 +1401,140 @@ nothing. ``
 > `npm exec` from `RUNNER_TEMP`, handed the workflow token as `GH_TOKEN` and the loop's.
 > `CHECKOUT` is the workspace; `PRD_BRANCH`, `PRD_TIP`, `BUILD`, `FINISHING`, `PRD_PR`, `LANDED`
 > and `SUB` are the gate job's outputs, `RUN_URL` the job's, `BASE_SHA` the catch-up job's `head`,
-> `GATE_DIR` where the gate's artifact puts its `prd-issue.json`, and `BUNDLE_DIR` where the agent's
-> job's artifact puts `implement-prd:bundle`'s files. `OUTPUT_DIR` is a directory of its own under
-> `runner.temp`. A glue step copies `published.json`'s `head` and `pr` into step outputs, which the
-> shell steps after it read: the failure comment and the rescue read `head` as the slice pushed,
-> and the failure comment and the stopped slice's list `pr` as the PRD PR. The write log is kept
-> as an artifact.
+> `GATE_DIR` where the gate's artifact is downloaded, and `BUNDLE_DIR` where the agent's job's
+> artifact puts `implement-prd:bundle`'s files, each artifact in a directory of its own under
+> `runner.temp`. `OUTPUT_DIR` is a directory of its own there too, which `implement-prd:conclude`
+> reads. The write log is kept as an artifact, beside conclude's.
+### `implement-prd:conclude`
+
+Ends every implement-prd run the gate did not refuse or defer, success included, in the loop's one
+order: every result posted, then `agent:implement` off, then `agent:blocked`, then the progress
+list. It runs no model, and runs in a checkout of the repository. It is told how the run went rather
+than reading it off which steps ran: the gate's decision, result and reason, the catch-up's and the
+agent's job's results, whether that job ran out of time, and the outcome of the mint, the agent's
+download and `implement-prd:publish`, and it works out the ending from them. First, wherever the
+runner wrote `rescue_ignored.json`, the note that the rescue was set aside (#303), on
+`ISSUE_NUMBER`: `` **`agent:implement` started fresh:** `` and that the PRD branch has moved since.
+Then the ending, one of:
+
+- **A refusal or a deferral** (`REFUSED` is `true`): nothing, not the note either.
+- **A run that finished**: the gate, the catch-up and the agent's job where they ran, the mint and
+  publish. `agent:implement` off, even where publish took it off before it asked for the review,
+  since that removal is tolerated and may have failed (#494).
+- **A chain the catch-up parked**: a build whose agent's job was skipped behind a catch-up that
+  succeeded. The catch-up said so; `agent:implement` off, and the stopped slice's row.
+- **A run that stopped**, after a gate that decided the run was its own (`REFUSED` is `false`):
+  on a build where `published.json` says nothing was pushed and a bundle arrived, the bundle checked
+  in `CHECKOUT` as publish checks it and its tip pushed to `RESCUE_BRANCH` with the loop's token,
+  leased on that branch's tip as read, or on its not existing on a 404; a check that fails, a read
+  or a push that fails, and a loop token not minted, are each a warning and rescue nothing. Then
+  the failure comment, `` **`agent:implement` stopped:** ``, the reason as a sentence, then
+  `It was handing the PRD PR over, with every sub-issue built.` on the finishing run or
+  `It was building sub-issue #<SUB>.` where `SUB` is set, the run's link and the retry; then
+  `agent:implement` off; then `agent:blocked`; then, on a build, the stopped slice's row.
+- **A gate that did not decide** (`REFUSED` is empty, in either shape `gate.json` leaves it, none or
+  one with no `proceed`): the same comment and `agent:blocked`, and `agent:implement` is **left
+  on**: that run may have been the event `implement` answers, which holds the label while it works.
+
+The reason is, where the gate, the catch-up, the agent's job, the mint or publish was cancelled, a
+cancel, or the time limit where `TIMED_OUT` is `true`. Otherwise the first given, of `GATE_REASON`
+and the `failure_reason.txt` of `implement-prd:catch-up`, the runner, `implement-prd:publish`,
+`implement-prd:prepare` and `implement-prd:bundle`; then a fixed sentence where the mint failed;
+then, where the agent's job failed, the time limit where `TIMED_OUT` is `true`; then a fixed
+sentence where the agent finished and the download failed; and failing all of those, that it gave
+no reason. The retry is `` To try again, add `agent:implement`. ``, or on the finishing run
+`` To try again, add `agent:implement`; it resumes the handover and builds nothing. ``; after a gate
+that did not decide, `` To try again, remove `agent:implement` if it is still on this issue, then
+add it. ``; where `MERGED` is set, nothing was pushed and there is a PRD PR, that the default
+branch's merge has no review yet and to add `agent:review` to it; and where the slice was pushed,
+that it won't be built again, and to add `agent:review` to the PRD PR, or `agent:implement` where
+there is none. A rescue is named beside any of those, and is the retry where the plain one was.
+
+**The stopped slice's row** (#246, #325), on a build that did not finish, where the gate decided,
+into the PRD PR `published.json` names or `PRD_PR`: `BASE_REF` and `PRD_BRANCH` fetched with
+`GH_TOKEN`, and the progress list and status line rendered from the slices read off the PRD
+branch's first-parent log since `BASE_REF`, the gate's snapshot of the sub-issues, and the PRD PR's
+reviews and each time `agent:fix` was added to it, with nothing running. The latest slice on the
+branch is parked where this run pushed its slice, or `MERGED` is set, a catch-up merge no review
+has seen, and approved otherwise, which is what the gate built on. Spliced into the live body with
+the loop's token, the status line where the body has exactly one; a body with no list is left
+alone, and half a list, or two, is left with a warning. No PRD PR, no snapshot, no loop token, a
+branch that cannot be read and a failed edit are each a warning, or a line, and write nothing.
+
+Each file of each directory is read on its own, so a file that does not read is a warning and is
+read as not written, and costs the comment nothing another file gave. Every write is tolerated:
+one GitHub refuses is a warning. The note, the comment and the labels are made with `GH_TOKEN`.
+
+#### Inputs
+
+| Input | Kind | Default | What it is |
+|---|---|---|---|
+| `LOOP_TOKEN` | optional | `""` | The loop's token, which the rescue and the row are written with. Empty where it was not minted, and neither is written. |
+| `LOOP_TOKEN_SOURCE` | optional | `""` | Where `LOOP_TOKEN` came from: `app`, `pat` or `workflow`. |
+| `AGENT_LOOP_LOGINS` | optional | `""` | The loop's accounts, a comma-separated list, recognised beside `github-actions[bot]` (§4.1). Empty is that one alone. This is trust. |
+| `GITHUB_SERVER_URL` | optional | `""` | With `GITHUB_REPOSITORY`, the link to the PRD PR's diffs in its progress list. Empty renders none. |
+| `GITHUB_REPOSITORY` | optional | `""` | See `GITHUB_SERVER_URL`. |
+| `ISSUE_NUMBER` | required | | The PRD parent. |
+| `BASE_REF` | required | | The default branch, which the slices are read over and the retry names. |
+| `RUN_URL` | required | | The run's page, which the failure comment links. |
+| `RESCUE_BRANCH` | required | | Where a stopped run's commits are pushed, and the rescue the runner set aside has to name. |
+| `CHECKOUT` | required | | A checkout of the repository holding `BASE_SHA`, the bundle is checked and the branch read in. |
+| `REFUSED` | optional | `""` | Accepts `true` or `false`: `false` where the gate claimed the run, `true` where it refused or deferred. Empty is a gate that died before it decided. |
+| `BUILD` | optional | `""` | Accepts `true` or `false`: whether the gate decided this run builds a slice. Empty where it did not decide. |
+| `FINISHING` | optional | `""` | Accepts `true` or `false`: whether the gate decided this is the finishing run. |
+| `PRD_BRANCH` | optional | `""` | The PRD branch, the gate's `prdBranch`: what the bundle has to hold, and what is read for the row. |
+| `PRD_PR` | optional | `""` | The PRD PR the gate found, where `published.json` names none. |
+| `SUB` | optional | `""` | The sub-issue this run builds, which the comment names. |
+| `BASE_SHA` | optional | `""` | The PRD branch's tip as `implement-prd:catch-up` left it, which the bundle has to build on. |
+| `MERGED` | optional | `""` | The catch-up's merge of the default branch, where it pushed one. |
+| `GATE_RESULT` | required | | How the gate's job ended: `success`, `failure`, `cancelled` or `skipped`. |
+| `GATE_REASON` | optional | `""` | The sentence `implement-prd:gate` failed with, where it wrote one. |
+| `CATCH_UP_RESULT` | required | | How the catch-up's job ended: `success`, `failure`, `cancelled` or `skipped`. |
+| `AGENT_RESULT` | required | | How the agent's job ended: `success`, `failure`, `cancelled` or `skipped`. |
+| `TIMED_OUT` | optional | `""` | `true` where the agent's job ran its whole limit. |
+| `TIMEOUT_MINUTES` | optional | `""` | That limit, for the comment. |
+| `MINT_OUTCOME` | optional | `""` | The outcome of minting the loop's token: `success`, `failure`, `cancelled` or `skipped`. Empty is not run. |
+| `DOWNLOAD_OUTCOME` | optional | `""` | The same, for fetching the agent's hand-over. |
+| `PUBLISH_OUTCOME` | optional | `""` | The same, for `implement-prd:publish`. |
+| `GATE_DIR` | directory | | `implement-prd:gate`'s `OUTPUT_DIR`. Reads `prd-issue.json` (where written). |
+| `CATCH_UP_DIR` | directory | | `implement-prd:catch-up`'s `OUTPUT_DIR`. Reads `failure_reason.txt` (where written). |
+| `PREPARE_DIR` | directory | | `implement-prd:prepare`'s `OUTPUT_DIR`. Reads `failure_reason.txt` (where written). |
+| `IMPLEMENT_PRD_DIR` | directory | | The `implement-prd` runner's `OUTPUT_DIR`. Reads `failure_reason.txt` (where written) and `rescue_ignored.json` (where written). |
+| `BUNDLE_DIR` | directory | | `implement-prd:bundle`'s `OUTPUT_DIR`. Reads `branch.bundle` (where written) and `failure_reason.txt` (where written). |
+| `PUBLISH_DIR` | directory | | `implement-prd:publish`'s `OUTPUT_DIR`. Reads `published.json` (where written) and `failure_reason.txt` (where written). |
+
+#### Outputs
+
+| Output | When it is written |
+|---|---|
+| `write_log.jsonl` | Every write as it lands, one JSON line each, and a last line for how the command ended, as `review:conclude`'s. Not written where it wrote nothing. |
+
+**`doctor` cannot check this.** These tables are the command's, for the reason §6 gives.
+
+#### What it reads from the record
+
+- `RESCUE_BRANCH`'s tip, for the rescue's lease; a 404 is none.
+- `BASE_REF` and `PRD_BRANCH`, fetched, and the PRD branch's `Agent-Slice` and `Agent-Catch-Up`
+  trailers (§4.3), for the stopped slice's row.
+- The PRD PR's reviews headed `## Agent review` by the loop's identity, and each time `agent:fix`
+  was added to it, for the row's counts; and its live body, for the `agent:progress` and
+  `agent:status` blocks.
+
+**`doctor` cannot check this.** The record is written by the orchestrator's posting code, for the reason §4.3 gives.
+
+> **Actions orchestrator:** the publish job's step after `implement-prd:publish`, run `always()`,
+> from `RUNNER_TEMP`, as are the Node setup and the write logs' upload around it, and the checkout
+> wherever the gate claimed the run, so the bundle is never checked in an empty workspace (#473).
+> Each job's artifact is downloaded `always()` into a directory of its own under `runner.temp`: the
+> agent's job's, where `IMPLEMENT_PRD_DIR` is, with `PREPARE_DIR` and `BUNDLE_DIR` under it, the
+> catch-up's, `CATCH_UP_DIR`, and the gate's, `GATE_DIR`; `PUBLISH_DIR` is publish's `OUTPUT_DIR`.
+> So the mint's reason file, written at `runner.temp`, is never read as a producer's. It is told
+> the gate's `refused`, `build`, `finishing`, `prd_branch`, `prd_pr`, `sub` and `failure-reason`
+> outputs and result, the catch-up's `head`, `merged` and result, the agent's job's result and its
+> `timed-out` output, which that job's last step measures off the gate's clock, the limit as
+> `AGENT_TIMEOUT_MINUTES` or 30, and the outcomes of the mint, the agent's download and
+> `implement-prd:publish`. It is handed the workflow token as `GH_TOKEN` and the loop's. Nothing of
+> the agent's job is read but its artifact and `timed-out`.
 
 ## 8. `review`
 

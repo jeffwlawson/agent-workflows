@@ -386,6 +386,11 @@ export const SUBCOMMANDS: Readonly<Record<string, Subcommand>> = {
     async () => (await import("./implement-prd/publish.js")).publish,
     "Mark a built slice's commits with its Agent-Slice trailer and push them, then open or reuse the PRD PR and ask for its review (no model).",
   ),
+  "implement-prd:conclude": writingCommand(
+    "implement-prd:conclude",
+    async () => (await import("./implement-prd/conclude.js")).conclude,
+    "End an implement-prd run however it ended: its rescue, its failure comment, its labels and the stopped slice's row (no model).",
+  ),
   "implement-prd:catch-up": writingCommand(
     "implement-prd:catch-up",
     async () => (await import("./implement-prd/catch-up.js")).catchUp,

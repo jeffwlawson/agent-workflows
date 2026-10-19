@@ -257,12 +257,11 @@ export interface CommandContract {
  *   run that could not say must not claim a fix round started.
  * - `FIX_ROUNDS_SPENT` and `FIX_ROUND_BUDGET` are counted by the same step,
  *   and a stop on a spent budget is recorded only where both are numbers.
- * - `PRD_PR` is empty on a PRD's first slice, which opens it.
  *
  * And the files each writes:
  *
- * - `implement-prd`'s `progress${name}.md` and `status${name}.md` are over
- *   `name` in `""`, `_stopped` and `_stopped_pushed`.
+ * - `implement-prd`'s `rescue_ignored.json` is the rescue it set aside, as
+ *   `fix`'s is: data, which `implement-prd:conclude` writes the note from.
  * - `review`'s `park.json` and `progress.json`, on a PRD PR, are what
  *   `review:advance` parks the chain and writes the progress table from, as
  *   data (ADR 0007): written before the agent runs, and again once the
@@ -302,18 +301,8 @@ export const RUNNERS = {
       BRANCH: REQUIRED,
       BASE_REF: REQUIRED,
       RESCUE_BRANCH: REQUIRED,
-      PRD_PR: EMPTY,
-      MERGED: EMPTY,
-      ...PULL_REQUEST_LINK,
     },
-    outputs: [
-      ...EVERY_SUBCOMMAND_OUTPUTS,
-      "progress_stopped.md",
-      "status_stopped.md",
-      "progress_stopped_pushed.md",
-      "status_stopped_pushed.md",
-      "rescue_ignored.md",
-    ],
+    outputs: [...EVERY_SUBCOMMAND_OUTPUTS, "rescue_ignored.json"],
   },
   review: {
     inputs: {
@@ -677,10 +666,28 @@ const IMPLEMENT_PRD_GATE = {
     ...EVERY_SUBCOMMAND_OUTPUTS,
     "gate.json",
     "prd-issue.json",
-    "progress_unbuilt.md",
-    "status_unbuilt.md",
     WRITE_LOG,
   ],
+} as const satisfies CommandContract;
+
+/**
+ * `implement-prd:catch-up`, declared ahead of `COMMANDS` so that
+ * `implement-prd:conclude` can read its outputs (`readsFromCommand`). See
+ * `COMMANDS`.
+ */
+const IMPLEMENT_PRD_CATCH_UP = {
+  inputs: {
+    ...EVERY_SUBCOMMAND,
+    ...LOOP,
+    ISSUE_NUMBER: REQUIRED,
+    BASE_REF: REQUIRED,
+    PRD_BRANCH: REQUIRED,
+    PRD_TIP: EMPTY,
+    PRD_PR: EMPTY,
+    SUB: REQUIRED,
+    CHECKOUT: REQUIRED,
+  },
+  outputs: [...EVERY_SUBCOMMAND_OUTPUTS, "catch-up.json", WRITE_LOG],
 } as const satisfies CommandContract;
 
 /**
@@ -909,10 +916,8 @@ const REVIEW_RED_CHECK_PLACE = {
  *   declares no loop token. `gate.json` is its decision, `proceed`, written
  *   as soon as it decides and however it ends, with the decision and its
  *   facts beside it on a run it claims; `prd-issue.json` is the parent's
- *   snapshot, which the publish job writes the PRD PR's `Closes` lines from;
- *   and `progress_unbuilt.md` and `status_unbuilt.md` are the progress list
- *   and status line the building row replaced, which the publish job writes
- *   back where the run stops before the runner renders its own.
+ *   snapshot, which the publish job writes the PRD PR's `Closes` lines and
+ *   its progress list from.
  * - `implement-prd:catch-up` brings the PRD branch up to date with
  *   `BASE_REF` before a slice is built, in `CHECKOUT`, as the loop's
  *   committer: `PRD_BRANCH` fetched at its tip, or, where `PRD_TIP`, the tip
@@ -950,6 +955,25 @@ const REVIEW_RED_CHECK_PLACE = {
  *   and hands `PRD_PR` over instead: marked ready where `LANDED` is one
  *   slice, or its final review asked for, refused where the loop's token is
  *   the workflow token. `published.json` says whether it handed over.
+ * - `implement-prd:conclude` ends every run the gate did not refuse or
+ *   defer, success included, as `fix:conclude` does: the rescue the runner
+ *   set aside, said on `ISSUE_NUMBER`; where the run stopped with nothing
+ *   pushed to `PRD_BRANCH`, `implement-prd:bundle`'s bundle, checked in
+ *   `CHECKOUT` against `BASE_SHA`, pushed to `RESCUE_BRANCH` with the loop's
+ *   token, leased on its tip as read; the failure comment, linking `RUN_URL`,
+ *   naming `SUB` or the hand-over `FINISHING` says it was, with the retry the
+ *   ending calls for; `agent:implement` off wherever the gate decided
+ *   (`REFUSED` `false`); `agent:blocked` where it stopped; and, on a build
+ *   that did not finish, the stopped slice's row in the progress list of the
+ *   PRD PR, `published.json`'s or `PRD_PR`, rendered from `PRD_BRANCH`'s
+ *   trailers over `BASE_REF` as fetched, the gate's snapshot of the
+ *   sub-issues and the PRD PR's rounds, with the current slice parked where
+ *   this run pushed its slice or `MERGED`, the catch-up's merge, and
+ *   approved otherwise. It is told how the gate, the catch-up and the
+ *   agent's job ended, the gate's decision and reason, whether the agent's
+ *   job ran out of time and its limit, and the outcome of the mint, the
+ *   download and publish, and reads each producer's files from its own
+ *   directory, one file at a time.
  * - `implement:prepare` creates the agent's `BRANCH` in `CHECKOUT` at
  *   `BASE_SHA`, the commit the gate read `BASE_REF` at, and checks it out,
  *   with the loop's committer as the checkout's identity. A checkout that
@@ -1149,20 +1173,59 @@ export const COMMANDS = {
   "implement-prd:prepare": IMPLEMENT_PRD_PREPARE,
   "implement-prd:bundle": IMPLEMENT_PRD_BUNDLE,
   "implement-prd:publish": IMPLEMENT_PRD_PUBLISH,
-  "implement-prd:catch-up": {
+  "implement-prd:conclude": {
     inputs: {
       ...EVERY_SUBCOMMAND,
-      ...LOOP,
+      ...LOOP_IF_MINTED,
+      ...LOOP_ACCOUNTS,
+      ...PULL_REQUEST_LINK,
       ISSUE_NUMBER: REQUIRED,
       BASE_REF: REQUIRED,
-      PRD_BRANCH: REQUIRED,
-      PRD_TIP: EMPTY,
-      PRD_PR: EMPTY,
-      SUB: REQUIRED,
+      RUN_URL: REQUIRED,
+      RESCUE_BRANCH: REQUIRED,
       CHECKOUT: REQUIRED,
+      REFUSED: { required: false, default: "", accepts: ["true", "false"] },
+      BUILD: { required: false, default: "", accepts: ["true", "false"] },
+      FINISHING: { required: false, default: "", accepts: ["true", "false"] },
+      PRD_BRANCH: EMPTY,
+      PRD_PR: EMPTY,
+      SUB: EMPTY,
+      BASE_SHA: EMPTY,
+      MERGED: EMPTY,
+      GATE_RESULT: { required: true, accepts: RESULTS },
+      GATE_REASON: EMPTY,
+      CATCH_UP_RESULT: { required: true, accepts: RESULTS },
+      AGENT_RESULT: { required: true, accepts: RESULTS },
+      TIMED_OUT: EMPTY,
+      TIMEOUT_MINUTES: EMPTY,
+      MINT_OUTCOME: EMPTY,
+      DOWNLOAD_OUTCOME: EMPTY,
+      PUBLISH_OUTCOME: EMPTY,
+      GATE_DIR: readsFromCommand("implement-prd:gate", IMPLEMENT_PRD_GATE, {
+        "prd-issue.json": "sometimes",
+      }),
+      CATCH_UP_DIR: readsFromCommand("implement-prd:catch-up", IMPLEMENT_PRD_CATCH_UP, {
+        "failure_reason.txt": "sometimes",
+      }),
+      PREPARE_DIR: readsFromCommand("implement-prd:prepare", IMPLEMENT_PRD_PREPARE, {
+        "failure_reason.txt": "sometimes",
+      }),
+      IMPLEMENT_PRD_DIR: readsFrom("implement-prd", {
+        "failure_reason.txt": "sometimes",
+        "rescue_ignored.json": "sometimes",
+      }),
+      BUNDLE_DIR: readsFromCommand("implement-prd:bundle", IMPLEMENT_PRD_BUNDLE, {
+        "branch.bundle": "sometimes",
+        "failure_reason.txt": "sometimes",
+      }),
+      PUBLISH_DIR: readsFromCommand("implement-prd:publish", IMPLEMENT_PRD_PUBLISH, {
+        "published.json": "sometimes",
+        "failure_reason.txt": "sometimes",
+      }),
     },
-    outputs: [...EVERY_SUBCOMMAND_OUTPUTS, "catch-up.json", WRITE_LOG],
+    outputs: [...EVERY_SUBCOMMAND_OUTPUTS, WRITE_LOG],
   },
+  "implement-prd:catch-up": IMPLEMENT_PRD_CATCH_UP,
   "review:gate": {
     inputs: {
       ...EVERY_SUBCOMMAND,

@@ -246,8 +246,8 @@ jobs:
       finishing: ${{ steps.state.outputs.finishing }}
       started: ${{ steps.clock.outputs.started }}
       # The sentence `implement-prd:gate` failed with, where it failed, for
-      # the failure comment. The publish job reads the same file from the
-      # gate's artifact today.
+      # `implement-prd:conclude`'s failure comment: written on this runner, so
+      # it reaches the publish job as an output rather than a file.
       failure-reason: ${{ steps.state.outputs.failure-reason }}
 
     steps:
@@ -362,32 +362,27 @@ jobs:
           fi
 
       # The gate's snapshot of the PRD, which `implement-prd:publish`
-      # writes its `Closes` lines from, and the reason file the gate writes
-      # where it fails, handed to `publish`, which reports it, with the
-      # progress list and status line the gate's building row replaced, for
-      # `Show the stopped slice in the progress list`. `always()`,
-      # for the reason; not on a refusal or a deferral, which hand nothing on.
+      # writes its `Closes` lines and progress list from, and
+      # `implement-prd:conclude` the stopped slice's row. `always()`, so a
+      # gate that claimed the run and then failed still hands it on; not on a
+      # refusal or a deferral, which hand nothing on. The gate's reason goes
+      # on as this job's `failure-reason` output, not in a file.
       - name: Hand the PRD's snapshot on
         if: always() && steps.state.outputs.proceed != 'false'
         uses: actions/upload-artifact@v7
         with:
           name: agent-implement-prd-gate
-          path: |
-            ${{ runner.temp }}/prd-issue.json
-            ${{ runner.temp }}/failure_reason.txt
-            ${{ runner.temp }}/progress_unbuilt.md
-            ${{ runner.temp }}/status_unbuilt.md
+          path: ${{ runner.temp }}/prd-issue.json
           if-no-files-found: ignore
           retention-days: 7
           overwrite: true
 
-      # The clock the failure step reads a time limit off (#220). A job that
-      # reaches its `timeout-minutes` is cancelled, not failed, and nothing in
-      # the `needs` context says which cancellation it was, so that step
-      # compares how long the agent's job could have run with its limit. Last
-      # in this job, so it starts as near the agent's job as a step here can,
-      # and is read from this job's outputs rather than the agent's, which a
-      # step there could rewrite.
+      # The clock the agent's job measures its time limit off (#220). A job
+      # that reaches its `timeout-minutes` is cancelled, not failed, and
+      # nothing in the `needs` context says which cancellation it was, so that
+      # job's last step compares how long it could have run with its limit.
+      # Last in this job, so it starts as near the agent's job as a step here
+      # can.
       - name: Start the agent's clock
         if: steps.state.outputs.proceed == 'true'
         id: clock
@@ -516,8 +511,8 @@ jobs:
             out("head"; .head)
           ' "$file" >> "$GITHUB_OUTPUT"
 
-      # The reason file the command writes where it fails, for `publish` to
-      # report.
+      # The reason file the command writes where it fails, for
+      # `implement-prd:conclude` to report.
       - name: Hand the reason on
         if: failure()
         uses: actions/upload-artifact@v7
@@ -537,8 +532,9 @@ jobs:
     # is not. `vars` is among the contexts this key may read, and in a called
     # workflow it resolves against the caller's repository. `fromJSON` because
     # a variable is a string and this key wants a number; a value that is not
-    # one fails the job before any step, which `doctor` reports. The failure
-    # step in `publish` names the same figure.
+    # one fails the job before any step, which `doctor` reports. The last
+    # step here measures against the same figure, and `implement-prd:conclude`
+    # names it.
     timeout-minutes: ${{ fromJSON(vars.AGENT_TIMEOUT_MINUTES || '30') }}
     # **Read-only, and no PAT or App secret named anywhere in this job.** Not
     # even in a step that never runs: a secret is delivered to every job whose
@@ -552,8 +548,10 @@ jobs:
       # so this is needed even though the package is public — and, being a
       # bound, it grants nothing without the caller's own `packages: read`.
       packages: read
-      # The runner reads the PRD PR's rounds for its progress list.
-      pull-requests: read
+    outputs:
+      # Whether this job ran out of time, as its last step measured it, for
+      # `implement-prd:conclude`'s comment. It decides nothing.
+      timed-out: ${{ steps.outcome.outputs.timed-out }}
 
     env:
       ISSUE_NUMBER: ${{ github.event.issue.number }}
@@ -699,14 +697,6 @@ jobs:
           BRANCH: ${{ needs.gate.outputs.prd_branch }}
           SUB_NUMBER: ${{ needs.gate.outputs.sub }}
           SUB_TITLE: ${{ needs.gate.outputs.sub_title }}
-          # The PRD PR, whose rounds the runner counts in the progress lists
-          # it renders for a run that stops (#246); empty on the first slice,
-          # which opens it.
-          PRD_PR: ${{ needs.gate.outputs.prd_pr }}
-          # The merge of the default branch pushed before it, which leaves the
-          # PRD PR's head unreviewed: the list a stopped run writes back shows
-          # the slice before this one parked, not approved.
-          MERGED: ${{ needs.catch_up.outputs.merged }}
           OUTPUT_DIR: ${{ runner.temp }}
         # The binary *Install the package* linked, run by its path, from the
         # checkout, where the runner does its git work, as `implement.yml`'s
@@ -822,9 +812,8 @@ jobs:
 
       # `implement-prd:prepare`'s reason file on a failure, under `prepare/`;
       # `implement-prd:bundle`'s files, the bundle and its reason file on a
-      # failure, under `bundle/`; and the runner's reason file, progress lists
-      # and status lines for `publish` to write, and its set-aside note, at the
-      # top: exactly the files each declares. One artifact, `always()`,
+      # failure, under `bundle/`; and the runner's reason file and the rescue
+      # it set aside, as data, at the top: exactly the files each declares. One artifact, `always()`,
       # because a failed run is one of the outcomes `publish` reports, and any
       # of them may be missing. The paths' common directory is `runner.temp`,
       # so `prepare/` and `bundle/` stay as they are in the artifact and where
@@ -846,14 +835,35 @@ jobs:
             ${{ runner.temp }}/bundle/branch.bundle
             ${{ runner.temp }}/bundle/failure_reason.txt
             ${{ runner.temp }}/failure_reason.txt
-            ${{ runner.temp }}/progress_stopped.md
-            ${{ runner.temp }}/status_stopped.md
-            ${{ runner.temp }}/progress_stopped_pushed.md
-            ${{ runner.temp }}/status_stopped_pushed.md
-            ${{ runner.temp }}/rescue_ignored.md
+            ${{ runner.temp }}/rescue_ignored.json
           if-no-files-found: ignore
           retention-days: 7
           overwrite: true
+
+      # Glue only Actions can do (ADR 0003): whether this job ran out of time
+      # (#220), handed to `implement-prd:conclude` as `timed-out`, as
+      # `implement.yml`'s agent job hands it. A job that reaches its
+      # `timeout-minutes` is cancelled, or may read as failed, and nothing in
+      # the `needs` context says which cancellation it was, so what tells them
+      # apart is the clock the gate started just before the jobs that build:
+      # a timed-out job ran its whole limit. Last, so it measures as late as a
+      # step here can. The limit is compared only where it is a positive
+      # integer: `fromJSON` accepts `1.5` and `1e1`, which bash arithmetic
+      # refuses. With no token, like every step after the agent.
+      - name: Measure how the agent's job ended
+        id: outcome
+        if: always()
+        env:
+          GH_TOKEN: ""
+          JOB_STATUS: ${{ job.status }}
+          JOB_STARTED: ${{ needs.gate.outputs.started }}
+          TIMEOUT_MINUTES: ${{ vars.AGENT_TIMEOUT_MINUTES || '30' }}
+        run: |
+          timed_out=false
+          if [ "$JOB_STATUS" != "success" ] && [ -n "${JOB_STARTED:-}" ] && [[ "$TIMEOUT_MINUTES" =~ ^[1-9][0-9]*$ ]] && [ $(( $(date +%s) - JOB_STARTED )) -ge $(( TIMEOUT_MINUTES * 60 - 60 )) ]; then
+            timed_out=true
+          fi
+          echo "timed-out=${timed_out}" >> "$GITHUB_OUTPUT"
 
   publish:
     needs: [gate, catch_up, implement-prd]
@@ -862,7 +872,9 @@ jobs:
     # (the finishing run, or one that only opens a missing PRD PR), where the
     # two jobs before this one are skipped, does its work at all. Not where
     # the gate was skipped (another label's event) or refused or deferred:
-    # that run said what it had to, or must say nothing.
+    # that run said what it had to, or must say nothing. A gate that died
+    # before deciding leaves `refused` empty and comes through, so it is
+    # still reported.
     if: vars.AGENT_ORCHESTRATOR != 'service' && always() && needs.gate.result != 'skipped' && needs.gate.outputs.refused != 'true'
     runs-on: ubuntu-latest
     # A clone, a push and some API calls, and a bounded wait for the PR's head.
@@ -871,9 +883,9 @@ jobs:
       contents: write
       issues: write
       pull-requests: write
-      # Installing the package `implement-prd:publish` runs from, by `npm
-      # exec`. GitHub Packages has no anonymous install, and both caller sets
-      # already grant it.
+      # Installing the package `implement-prd:publish` and
+      # `implement-prd:conclude` run from, by `npm exec`. GitHub Packages has
+      # no anonymous install, and both caller sets already grant it.
       packages: read
 
     env:
@@ -887,33 +899,41 @@ jobs:
       RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
 
     steps:
-      # Into `RUNNER_TEMP`, where every step below looks for the files it reads
-      # as it did when the run was one job: the agent's first, then the
-      # catch-up's and the gate's, which no agent touched. Each tolerated: a
-      # job that was skipped, or killed before its upload, leaves nothing to
-      # fetch, and the failure step still has to run.
+      # Each job's artifact into a directory of its own under `RUNNER_TEMP`,
+      # where both commands look for each producer's files: the agent's job's
+      # first, the runner's at the top and `implement-prd:prepare`'s and
+      # `implement-prd:bundle`'s under `prepare/` and `bundle/`, then the
+      # catch-up's and the gate's, which no agent touched. Its own, so nothing
+      # another step writes at `RUNNER_TEMP`, the mint's reason file among
+      # them, reads as another producer's. `always()`, so each is fetched
+      # however the jobs before ended. Each tolerated: a job that was skipped,
+      # or killed before its upload, leaves nothing to fetch, and
+      # `implement-prd:conclude`, told the agent's download's outcome, still
+      # has to run.
       - name: Fetch what the agent handed over
-        if: needs.gate.outputs.build == 'true'
+        id: fetch
+        if: always() && needs.gate.outputs.build == 'true'
         continue-on-error: true
         uses: actions/download-artifact@v8
         with:
           name: agent-implement-prd
-          path: ${{ runner.temp }}
+          path: ${{ runner.temp }}/agent-implement-prd
 
       - name: Fetch what the catch-up handed over
-        if: needs.catch_up.result == 'failure'
+        if: always() && needs.catch_up.result == 'failure'
         continue-on-error: true
         uses: actions/download-artifact@v8
         with:
           name: agent-implement-prd-catch-up
-          path: ${{ runner.temp }}
+          path: ${{ runner.temp }}/agent-implement-prd-catch-up
 
       - name: Fetch what the gate handed over
+        if: always()
         continue-on-error: true
         uses: actions/download-artifact@v8
         with:
           name: agent-implement-prd-gate
-          path: ${{ runner.temp }}
+          path: ${{ runner.temp }}/agent-implement-prd-gate
 
       # The token every write below that the workflow token cannot make is
       # made with: the loop's App's, `AGENT_PAT`, or the workflow token, in
@@ -929,38 +949,28 @@ jobs:
           agent-pat: ${{ secrets.AGENT_PAT }}
           github-token: ${{ secrets.GITHUB_TOKEN }}
 
-      # A rescue branch the runner set aside because the PRD branch moved
-      # since it was saved (#303), said on the PRD however the run ends, so
-      # work nobody built on is not dropped silently. The runner writes the
-      # note; it is absent on every other run.
-      - name: Say the rescue was set aside
-        if: always()
-        run: |
-          note="${RUNNER_TEMP}/rescue_ignored.md"
-          [ -f "$note" ] || exit 0
-          gh issue comment "$ISSUE_NUMBER" --body-file "$note" \
-            || echo "::warning::Could not say on #${ISSUE_NUMBER} that ${RESCUE_BRANCH} was set aside."
-
-      # Wherever the gate claimed the run, so a step after the agent's job
-      # stopped, the rescue's included, never checks a bundle in an empty
-      # workspace (#473's last bug): the prerequisite of the bundle is the tip
-      # `catch_up` left, which every full checkout of the repository has.
+      # Wherever the gate claimed the run, so no ending, the rescue's
+      # included, ever checks a bundle in an empty workspace (#473's last
+      # bug): the prerequisite of the bundle is the tip `catch_up` left, which
+      # every full checkout of the repository has.
       - name: Checkout the base branch
         if: always() && needs.gate.outputs.refused == 'false'
         uses: actions/checkout@v7
         with:
           ref: ${{ inputs.default-branch }}
           fetch-depth: 0
-          # Nothing the agent touched is on this runner, and the command below
-          # passes its tokens on its own git commands, as everywhere else.
+          # Nothing the agent touched is on this runner, and the commands
+          # below pass their tokens on their own git commands, as everywhere
+          # else.
           persist-credentials: false
 
-      # The Node the command runs on, and the registry it installs from. A
+      # The Node both commands run on, and the registry they install from. A
       # version rather than a version file, since nothing of the adopter's
       # runs here: the one the package's `engines.node` names, which
-      # `tests/workflows.test.ts` holds it to.
+      # `tests/workflows.test.ts` holds it to. `always()`, since conclude runs
+      # on every ending, a gate that died before deciding included.
       - name: Set up Node for the package
-        if: always() && needs.gate.outputs.refused == 'false'
+        if: always()
         uses: actions/setup-node@v7
         with:
           node-version: "24"
@@ -989,14 +999,14 @@ jobs:
       # recorded in its body and asked for, and refused on the workflow
       # token. `implement-prd/publish.ts` says why each is as it is.
       #
-      # The steps here that act on a build read the agent's job's result, and
-      # the ones a run that builds nothing does too read the gate's, by name:
+      # It acts on a build only where the agent's job succeeded, and on a run
+      # that builds nothing only where the gate did, each read by name:
       # GitHub documents an ancestor job's failure as seen by `failure()`, and
       # says nothing of `success()`, in a job that runs `always()`.
       #
       # From `RUNNER_TEMP`, so no `.npmrc` of the checkout is read, and
-      # working in the checkout. Into a directory of its own, for the failure
-      # step below to find its reason file in.
+      # working in the checkout. Into a directory of its own, which
+      # `implement-prd:conclude` reads.
       - name: Publish the slice
         id: publish
         if: needs.gate.result == 'success' && (needs.gate.outputs.finishing == 'true' || needs.gate.outputs.build == 'false' || needs.implement-prd.result == 'success') && success()
@@ -1007,11 +1017,10 @@ jobs:
           LOOP_TOKEN: ${{ steps.token.outputs.token }}
           LOOP_TOKEN_SOURCE: ${{ steps.token.outputs.source }}
           OUTPUT_DIR: ${{ runner.temp }}/publish
-          BUNDLE_DIR: ${{ runner.temp }}/bundle
-          # Where the gate's artifact puts its `prd-issue.json`: the
-          # sub-issues the progress list and the `Closes` block are written
-          # from.
-          GATE_DIR: ${{ runner.temp }}
+          BUNDLE_DIR: ${{ runner.temp }}/agent-implement-prd/bundle
+          # The gate's `prd-issue.json`: the sub-issues the progress list and
+          # the `Closes` block are written from.
+          GATE_DIR: ${{ runner.temp }}/agent-implement-prd-gate
           CHECKOUT: ${{ github.workspace }}
           PRD_BRANCH: ${{ needs.gate.outputs.prd_branch }}
           PRD_TIP: ${{ needs.gate.outputs.prd_tip }}
@@ -1028,333 +1037,82 @@ jobs:
           SUB: ${{ needs.gate.outputs.sub }}
         run: npm exec --prefix "$RUNNER_TEMP" --yes --package=@jeffwlawson/agent-workflows@0.8.8 -- agent-workflows implement-prd:publish
 
-      # Glue only Actions can do (ADR 0003): what the command published,
-      # copied from its `published.json` into step outputs under the names the
-      # steps below read: `head`, the commit it pushed, which tells the
-      # failure step and the rescue that the slice was pushed, and `pr`, the
-      # PRD PR it opened or reused, which the failure step and the stopped
-      # slice's list name. Nothing where it wrote no `published.json`, and
-      # each only where it is set.
-      - name: Hand the push on
-        id: push
+      # **Every ending, success included** (#505): the rescue the runner set
+      # aside, said on the PRD (#303); a stopped build's commits rescued to
+      # the rescue branch, leased on its tip, where nothing was pushed to the
+      # PRD branch; the failure comment with the reason and the retry the
+      # ending calls for (#220, #253), naming the sub-issue or the hand-over;
+      # `agent:implement` off wherever the gate decided the run was its own
+      # (#236), even where publish took it off, since that removal is
+      # tolerated; `agent:blocked`; and the stopped slice's row in the PRD
+      # PR's progress list, rendered from the PRD branch's trailers as the run
+      # left it (#325). In the loop's one order. `implement-prd/conclude.ts`
+      # says why each is as it is.
+      #
+      # `always()`: the ending is the point of it. Told the facts, not the
+      # conclusions: how the gate, the catch-up and the agent's job ended, the
+      # gate's decision, facts and reason, the catch-up's head and merge,
+      # whether the agent's job ran out of time and its limit, and the outcome
+      # of the mint, the agent's download and publish, so the package works
+      # out which ending this is. Nothing from the agent's job but that
+      # measure and its artifact. Each producer's files it reads from that
+      # producer's own directory, one file at a time.
+      #
+      # Given both tokens: the workflow's, which it comments and labels with,
+      # and the loop's, which it rescues and writes the list with, and which
+      # is empty where the mint failed. From `RUNNER_TEMP`, so no `.npmrc` of
+      # the checkout is read, and working in the checkout.
+      - name: Conclude the run
         if: always()
-        run: |
-          file="${RUNNER_TEMP}/publish/published.json"
-          [ -f "$file" ] || exit 0
-          jq -r '(if .pushed == true and .head != null then "head=\(.head)" else empty end), (if .pr != null then "pr=\(.pr)" else empty end)' "$file" >> "$GITHUB_OUTPUT"
+        working-directory: ${{ runner.temp }}
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          LOOP_TOKEN: ${{ steps.token.outputs.token }}
+          LOOP_TOKEN_SOURCE: ${{ steps.token.outputs.source }}
+          OUTPUT_DIR: ${{ runner.temp }}/conclude
+          CHECKOUT: ${{ github.workspace }}
+          GATE_DIR: ${{ runner.temp }}/agent-implement-prd-gate
+          CATCH_UP_DIR: ${{ runner.temp }}/agent-implement-prd-catch-up
+          PREPARE_DIR: ${{ runner.temp }}/agent-implement-prd/prepare
+          IMPLEMENT_PRD_DIR: ${{ runner.temp }}/agent-implement-prd
+          BUNDLE_DIR: ${{ runner.temp }}/agent-implement-prd/bundle
+          PUBLISH_DIR: ${{ runner.temp }}/publish
+          REFUSED: ${{ needs.gate.outputs.refused }}
+          BUILD: ${{ needs.gate.outputs.build }}
+          FINISHING: ${{ needs.gate.outputs.finishing }}
+          PRD_BRANCH: ${{ needs.gate.outputs.prd_branch }}
+          PRD_PR: ${{ needs.gate.outputs.prd_pr }}
+          SUB: ${{ needs.gate.outputs.sub }}
+          BASE_SHA: ${{ needs.catch_up.outputs.head }}
+          # The merge of the default branch the catch-up pushed, which leaves
+          # the PRD PR's head unreviewed.
+          MERGED: ${{ needs.catch_up.outputs.merged }}
+          GATE_RESULT: ${{ needs.gate.result }}
+          # The sentence `implement-prd:gate` failed with, where it wrote one.
+          GATE_REASON: ${{ needs.gate.outputs.failure-reason }}
+          CATCH_UP_RESULT: ${{ needs.catch_up.result }}
+          AGENT_RESULT: ${{ needs.implement-prd.result }}
+          TIMED_OUT: ${{ needs.implement-prd.outputs.timed-out }}
+          TIMEOUT_MINUTES: ${{ vars.AGENT_TIMEOUT_MINUTES || '30' }}
+          MINT_OUTCOME: ${{ steps.token.outcome }}
+          DOWNLOAD_OUTCOME: ${{ steps.fetch.outcome }}
+          PUBLISH_OUTCOME: ${{ steps.publish.outcome }}
+        run: npm exec --prefix "$RUNNER_TEMP" --yes --package=@jeffwlawson/agent-workflows@0.8.8 -- agent-workflows implement-prd:conclude
 
-      # `implement-prd:publish`'s record of every write it made, kept as an
-      # artifact (ADR 0005): what each said, which token made it, and how the
-      # command ended. `always()`, so a run that failed keeps its log too.
-      - name: Keep the write log
-        if: always() && needs.gate.outputs.refused == 'false'
+      # Every write the two commands made, one line each as it landed, and a
+      # last line for how each ended (ADR 0005), kept for whoever audits the
+      # run. One artifact, each command's log by the path it declares, and no
+      # wildcard. `always()`, since a run that stopped is the one a log is
+      # read for, and nothing of a command that never ran.
+      - name: Keep the write logs
+        if: always()
         uses: actions/upload-artifact@v7
         with:
           name: agent-implement-prd-write-log
-          path: ${{ runner.temp }}/publish/write_log.jsonl
+          path: |
+            ${{ runner.temp }}/publish/write_log.jsonl
+            ${{ runner.temp }}/conclude/write_log.jsonl
           if-no-files-found: ignore
           retention-days: 7
           overwrite: true
-
-      # Any of the four jobs: `gate` failing (this job's own `if:` lets a
-      # failed gate through, since its `refused` is `!= 'true'` there), the
-      # catch-up failing, the agent's job failing, timing out or being
-      # cancelled, or a step here. `failure()` in this job sees an ancestor
-      # job's failure too, but not a cancelled one, so each result is read by
-      # name. A skipped job is not one of them: the catch-up and the agent's
-      # job are skipped on a run that builds nothing, and the agent's on a
-      # parked chain.
-      #
-      # `!= 'true'`, not `== 'false'`: `implement-prd:gate` that throws before
-      # deciding writes no `proceed`, so the gate job's `refused` is `''`, and
-      # `''` is not `'false'`; an equality gate would skip this step precisely
-      # when the PRD most needed the comment. Refusals and deferrals succeed
-      # and set `refused` to `true`, so neither reaches this job at all; a
-      # throw is what lands here, with the reason the CLI wrote for it.
-      #
-      # In the loop's one order (#236): the comment, then this run's own label
-      # off, then `agent:blocked`. The removal only where the gate decided
-      # the issue was this run's, for the last step's reason below.
-      #
-      # Ahead of it, the rescue (#303): a run that stopped with commits the PRD
-      # branch does not have keeps them on a side branch, and the comment
-      # names it, from the checkout above.
-      #
-      # **To a side branch with a fixed name, never to the PRD branch.** A
-      # commit pushed there would stand on the PRD PR's head unverified, with
-      # no verdict and without the `Agent-Slice` trailer
-      # `implement-prd:publish` gives a finished run's, so rescued work
-      # reaches the PRD branch only through the resumed run's own push, after
-      # its verify.
-      # Nothing else: no PRD PR, no review asked for, no label.
-      #
-      # Only where the gate claimed a build, the run stopped (the agent's
-      # job failed, timed out or was cancelled, or a step here failed), and
-      # nothing was pushed to the PRD branch. The bundle is checked as
-      # `implement-prd:publish` checks it, and a bundle that fails a check is
-      # not rescued: no bundle at all is a run with no commits ahead of the tip it
-      # started from, which pushes nothing.
-      #
-      # `--force-with-lease`, against the rescue as this step reads it: a run
-      # that stops again overwrites the earlier rescue, which it started from
-      # and so holds all of, and nothing that moved it in between is lost
-      # silently. With the loop's token, as the PRD branch is pushed, since the
-      # agent's commits may touch a workflow file.
-      - name: Rescue the agent's commits
-        id: rescue
-        if: always() && needs.gate.outputs.refused == 'false' && needs.gate.outputs.build == 'true' && (cancelled() || failure() || needs.implement-prd.result == 'failure' || needs.implement-prd.result == 'cancelled') && steps.push.outputs.head == ''
-        continue-on-error: true
-        env:
-          PRD_BRANCH: ${{ needs.gate.outputs.prd_branch }}
-          BASE_SHA: ${{ needs.catch_up.outputs.head }}
-          PUSH_TOKEN: ${{ steps.token.outputs.token }}
-        run: |
-          set -euo pipefail
-          bundle="${RUNNER_TEMP}/bundle/branch.bundle"
-
-          skip() {
-            echo "::warning::$1 Nothing was rescued."
-            exit 0
-          }
-
-          if [ ! -f "$bundle" ]; then
-            echo "No commits ahead of the tip this run started from, so there is nothing to rescue."
-            exit 0
-          fi
-          git bundle verify --quiet "$bundle" || skip "The agent's commits arrived damaged or incomplete."
-          git bundle unbundle "$bundle" > /dev/null || skip "The agent's commits arrived damaged or incomplete."
-          heads=$(git bundle list-heads "$bundle")
-          if [ "$(wc -l <<< "$heads")" -ne 1 ] || [ "$(cut -d' ' -f2 <<< "$heads")" != "refs/heads/${PRD_BRANCH}" ]; then
-            skip "The agent's commits arrived on a branch other than \`${PRD_BRANCH}\`, or beside other branches."
-          fi
-          tip=$(cut -d' ' -f1 <<< "$heads")
-          git merge-base --is-ancestor "$BASE_SHA" "$tip" \
-            || skip "The agent's commits don't build on \`${PRD_BRANCH}\` as this run left it."
-
-          # The rescue as it stands, read with the job's token, is what the
-          # lease holds the push to; none is the lease that it must not exist.
-          read=$(printf 'x-access-token:%s' "$GH_TOKEN" | base64 | tr -d '\n')
-          echo "::add-mask::${read}"
-          remote=$(git -c "http.extraHeader=AUTHORIZATION: basic ${read}" ls-remote origin "refs/heads/${RESCUE_BRANCH}")
-          current=$(printf '%s\n' "$remote" | awk -v ref="refs/heads/${RESCUE_BRANCH}" '$2 == ref { print $1 }')
-          auth=$(printf 'x-access-token:%s' "$PUSH_TOKEN" | base64 | tr -d '\n')
-          echo "::add-mask::${auth}"
-          git -c "http.extraHeader=AUTHORIZATION: basic ${auth}" push --force-with-lease="refs/heads/${RESCUE_BRANCH}:${current}" origin "${tip}:refs/heads/${RESCUE_BRANCH}"
-          echo "Rescued $(git rev-list --count "${BASE_SHA}..${tip}") commit(s) to ${RESCUE_BRANCH}."
-          echo "branch=${RESCUE_BRANCH}" >> "$GITHUB_OUTPUT"
-
-      - name: Mark blocked on failure
-        if: always() && (failure() || cancelled() || needs.gate.result != 'success' || needs.catch_up.result == 'failure' || needs.catch_up.result == 'cancelled' || needs.implement-prd.result == 'failure' || needs.implement-prd.result == 'cancelled')
-        env:
-          # How each job ahead of this one ended, and this job's own status for
-          # a cancel that lands while it runs. `job.status` rather than
-          # `cancelled()`, which GitHub allows only in an `if:`.
-          GATE_RESULT: ${{ needs.gate.result }}
-          CATCH_UP_RESULT: ${{ needs.catch_up.result }}
-          AGENT_RESULT: ${{ needs.implement-prd.result }}
-          JOB_STATUS: ${{ job.status }}
-          JOB_STARTED: ${{ needs.gate.outputs.started }}
-          REFUSED: ${{ needs.gate.outputs.refused }}
-          TIMEOUT_MINUTES: ${{ vars.AGENT_TIMEOUT_MINUTES || '30' }}
-          SUB: ${{ needs.gate.outputs.sub }}
-          PUSHED: ${{ steps.push.outputs.head }}
-          MERGED: ${{ needs.catch_up.outputs.merged }}
-          PRD_PR: ${{ steps.push.outputs.pr || needs.gate.outputs.prd_pr }}
-          FINISHING: ${{ needs.gate.outputs.finishing }}
-          RESCUED: ${{ steps.rescue.outputs.branch }}
-        run: |
-          reason="It stopped without giving a reason. The workflow run's log has the details."
-          # The reason files, in the order they are read: this job's, the
-          # gate's, the catch-up's and the runner's at the top, then
-          # `implement-prd:publish`'s in its own directory, then
-          # `implement-prd:prepare`'s and `implement-prd:bundle`'s, each in the
-          # directory of its own the agent's job handed it over in.
-          reason_file=""
-          for file in "${RUNNER_TEMP}/failure_reason.txt" "${RUNNER_TEMP}/publish/failure_reason.txt" "${RUNNER_TEMP}/prepare/failure_reason.txt" "${RUNNER_TEMP}/bundle/failure_reason.txt"; do
-            if [ -f "$file" ]; then
-              reason_file="$file"
-              break
-            fi
-          done
-          if [ -n "$reason_file" ]; then
-            reason=$(cat "$reason_file")
-          fi
-          # Cancelled is not failed (#220), and a job that reached its limit
-          # is cancelled too. What tells the two apart is the clock `gate`
-          # started just before the jobs that build: a timed-out job ran its
-          # whole limit, and the time since that clock is at least that. A
-          # reason file is not read on either; what wrote one was stopped, not
-          # failing. The labels and the retry are a failure's, word for word.
-          #
-          # The clock is read on a failure that left no reason file too: the
-          # agent's result here is the `needs` context's, and a runner that
-          # wrote no reason did not end on its own terms either way.
-          # The limit is compared only where it is a positive integer: `fromJSON`
-          # accepts `1.5` and `1e1`, which bash arithmetic refuses, and under
-          # `bash -e` that would end this step before its comment. A limit the
-          # step cannot compare reads as a cancel, which is still said.
-          stopped=false
-          if [ "$JOB_STATUS" = "cancelled" ] || [ "$GATE_RESULT" = "cancelled" ] || [ "$CATCH_UP_RESULT" = "cancelled" ] || [ "$AGENT_RESULT" = "cancelled" ]; then
-            stopped=true
-            reason="It was cancelled before it finished, by hand or by GitHub."
-          elif [ "$AGENT_RESULT" = "failure" ] && [ -z "$reason_file" ]; then
-            stopped=true
-          fi
-          if [ "$stopped" = "true" ]; then
-            if [ -n "${JOB_STARTED:-}" ] && [[ "$TIMEOUT_MINUTES" =~ ^[1-9][0-9]*$ ]] && [ $(( $(date +%s) - JOB_STARTED )) -ge $(( TIMEOUT_MINUTES * 60 - 60 )) ]; then
-              reason="It timed out after ${TIMEOUT_MINUTES} minutes. The repository variable \`AGENT_TIMEOUT_MINUTES\` raises the limit."
-            fi
-          fi
-          # One pattern for every run that stopped (#253): the reason as a
-          # sentence, starting with a capital and ending in a full stop, then
-          # the run and what to do.
-          reason="${reason^}"
-          case "$reason" in *[.!?]) ;; *) reason="${reason}." ;; esac
-          # The label comes off in the last step since #236, so adding it is
-          # the retry.
-          #
-          # The finishing run built nothing, so there is no sub-issue to retry.
-          # What a retry does instead is resume the handover, since its gate
-          # still passes, so it is still the remedy, and says so.
-          retry="To try again, add \`agent:implement\`."
-          if [ "${FINISHING}" = "true" ]; then
-            reason="${reason} It was handing the PRD PR over, with every sub-issue built."
-            retry="To try again, add \`agent:implement\`; it resumes the handover and builds nothing."
-          elif [ -n "${SUB}" ]; then
-            reason="${reason} It was building sub-issue #${SUB}."
-          fi
-          # Not after a gate that died before deciding: that run leaves
-          # the label on (see the last step), and adding a label that is
-          # already present fires no event.
-          if [ "$REFUSED" != "false" ]; then
-            retry="To try again, remove \`agent:implement\` if it is still on this issue, then add it."
-          fi
-          # Adding the label is the right retry for most of the ways this run
-          # can stop, and the wrong one once the slice is pushed: the PRD
-          # branch then holds it, so the retry does not build it again, and
-          # its gate refuses while the slice has no review. What is left is
-          # the review, so say where to ask for it. With no PRD PR open yet,
-          # the retry is still the remedy: it opens one and asks for the
-          # review, and builds nothing.
-          #
-          # Nor once the default branch is merged in and pushed, with the
-          # slice not: the PRD PR's head is then that merge, which no review
-          # has seen, so the gate refuses the retry too. Its review is the way
-          # on, a round of the slice already built, whose approval moves the
-          # chain on by itself.
-          if [ -z "${PUSHED}" ] && [ -n "${MERGED}" ] && [ -n "${PRD_PR}" ]; then
-            retry="The default branch \`${BASE_REF}\` was merged into the PRD branch before it stopped, and that merge has no review yet, so adding \`agent:implement\` would be refused. Add \`agent:review\` to PRD PR #${PRD_PR}; the chain moves on once it recommends approval."
-          fi
-          if [ -n "${PUSHED}" ]; then
-            if [ -n "${PRD_PR}" ]; then
-              retry="Sub-issue #${SUB} was built and pushed to the PRD branch before it stopped, so it won't be built again. Add \`agent:review\` to PRD PR #${PRD_PR} if it doesn't have it."
-            else
-              retry="Sub-issue #${SUB} was built and pushed to the PRD branch before it stopped, so it won't be built again. To open the PRD PR and ask for its review, add \`agent:implement\`."
-            fi
-          fi
-          # A rescue (#303) is named whatever else the retry says, and is the
-          # retry where nothing else was: adding the label resumes from it.
-          if [ -n "${RESCUED:-}" ]; then
-            if [ "$retry" = "To try again, add \`agent:implement\`." ]; then
-              retry="Its commits so far are saved on \`${RESCUED}\`. To resume from them, add \`agent:implement\`."
-            else
-              retry="${retry} Its commits so far are saved on \`${RESCUED}\`, and the next \`agent:implement\` run resumes from them."
-            fi
-          fi
-          body_file="${RUNNER_TEMP}/failure-comment.md"
-          printf '**`agent:implement` stopped:** %s\n\n[Workflow run](%s) · %s\n' "$reason" "$RUN_URL" "$retry" > "$body_file"
-          gh issue comment "$ISSUE_NUMBER" --body-file "$body_file" || echo "::warning::Could not post the failure comment on #${ISSUE_NUMBER}."
-          if [ "$REFUSED" = "false" ]; then
-            gh issue edit "$ISSUE_NUMBER" --remove-label "agent:implement" || true
-          fi
-          gh issue edit "$ISSUE_NUMBER" --add-label "agent:blocked" || true
-
-      # A build run that stops leaves no slice building (#246). The gate
-      # showed this sub-issue building in the PRD PR's progress list before
-      # the catch-up started (#312), and a run that parks, fails or is
-      # cancelled after that starts no round, so no advance job writes the
-      # list again. This writes back the one the runner rendered for a stopped
-      # run: the sub-issue not started where nothing of it was pushed, and
-      # parked where it was, with its review the way on, as the comment above
-      # says. Where the runner never got that far (the catch-up parked or
-      # failed, or the agent's job died before its runner rendered anything),
-      # nothing of the slice was pushed, and it writes back the list and the
-      # status line the gate replaced instead.
-      #
-      # Only where one of those exists, and the gate keeps its own before it
-      # writes the building list, so a list that never showed the slice
-      # building is left alone. Spliced as every writer of the list splices it
-      # (`spliceProgressList`, held equal by a test). Never fails the job, and
-      # after the comment and the labels: the list is a view of the chain.
-      - name: Show the stopped slice in the progress list
-        if: always() && needs.gate.outputs.refused == 'false' && needs.gate.outputs.build == 'true' && (failure() || cancelled() || needs.catch_up.result != 'success' || needs.implement-prd.result != 'success')
-        env:
-          PUSHED: ${{ steps.push.outputs.head }}
-          PRD_PR: ${{ steps.push.outputs.pr || needs.gate.outputs.prd_pr }}
-          GH_TOKEN: ${{ steps.token.outputs.token }}
-          # `PROGRESS_START`, `PROGRESS_END`, `STATUS_START` and `STATUS_END`
-          # in `shared/progress-list.ts`; a test holds them equal.
-          PROGRESS_START: "<!-- agent:progress -->"
-          PROGRESS_END: "<!-- /agent:progress -->"
-          STATUS_START: "<!-- agent:status -->"
-          STATUS_END: "<!-- /agent:status -->"
-        run: |
-          set -uo pipefail
-          list="${RUNNER_TEMP}/progress_stopped.md"
-          status="${RUNNER_TEMP}/status_stopped.md"
-          if [ ! -f "$list" ]; then
-            list="${RUNNER_TEMP}/progress_unbuilt.md"
-            status="${RUNNER_TEMP}/status_unbuilt.md"
-          fi
-          if [ -n "$PUSHED" ]; then
-            list="${RUNNER_TEMP}/progress_stopped_pushed.md"
-            status="${RUNNER_TEMP}/status_stopped_pushed.md"
-          fi
-          [ -f "$status" ] || status=/dev/null
-          if [ -z "$PRD_PR" ] || [ ! -f "$list" ]; then
-            echo "No progress list shows this slice building, so none is written."
-            exit 0
-          fi
-          current="${RUNNER_TEMP}/progress_pr.json"
-          request="${RUNNER_TEMP}/progress_edit.json"
-          if ! gh api "repos/{owner}/{repo}/pulls/${PRD_PR}" > "$current"; then
-            echo "::warning::Could not read PRD PR #${PRD_PR}, so its progress list still shows the slice building."
-            exit 0
-          fi
-          jq --rawfile block "$list" --rawfile status "$status" '
-            def splice($b; $s; $e; $block; $append):
-              if $b == "" then (if $append then $block else $b end)
-              else
-                ($b | split($s)) as $starts
-                | ($b | split($e)) as $ends
-                | if ($starts | length) == 1 and ($ends | length) == 1 then
-                    (if $append then $b + (if ($b | endswith("\n")) then "\n" else "\n\n" end) + $block else $b end)
-                  elif ($starts | length) == 2 and ($ends | length) == 2 and ($starts[1] | split($e) | length) == 2 then
-                    $starts[0] + $block + ($starts[1] | split($e))[1]
-                  else null end
-              end;
-            (.body // "") as $b
-            | splice($b; env.PROGRESS_START; env.PROGRESS_END; $block; true) as $body
-            | (if $body == null or $status == "" then $body
-               else (splice($body; env.STATUS_START; env.STATUS_END; $status; false) // $body) end) as $body
-            | if $body == null then {} else {body: $body} end
-          ' "$current" > "$request" || { echo "::warning::Could not compose PRD PR #${PRD_PR}'s progress list, so it still shows the slice building."; exit 0; }
-          if [ "$(jq -r 'has("body")' "$request")" != "true" ]; then
-            echo "::warning::PRD PR #${PRD_PR}'s body carries half a progress list, or two, so it was not written. Restore the missing marker, or delete the markers and the text between them, and the next ending of a round writes it again."
-            exit 0
-          fi
-          gh api --method PATCH "repos/{owner}/{repo}/pulls/${PRD_PR}" --input "$request" > /dev/null \
-            && echo "Wrote PRD PR #${PRD_PR}'s progress list: the slice stopped$([ -n "$PUSHED" ] && echo ' after its push')." \
-            || echo "::warning::Could not write PRD PR #${PRD_PR}'s progress list, so it still shows the slice building. GitHub's reply is above."
-
-      # The trigger label comes off however the run ends (#236): success,
-      # failure, timeout or cancel, so it never outlives the run that decided
-      # the issue was its own. `== 'false'`, unlike the failure step above: a
-      # refusal took it off already, a deferral must not touch it, and nor
-      # must a gate that died before deciding, since that run may be the
-      # one that would have deferred, and `agent-implement` owns that label event
-      # and holds the label while it works. Such a run leaves it on, as it
-      # always has, and the failure comment says to remove it before re-adding.
-      - name: Always remove the trigger label
-        if: always() && needs.gate.outputs.refused == 'false'
-        run: gh issue edit "$ISSUE_NUMBER" --remove-label "agent:implement" || true

@@ -449,9 +449,12 @@ it `update-branch:conclude`, and `update-branch.yml` runs no inline shell that d
 `implement` (PRD #489): its gate job's work is `implement:gate`, the branch's creation in its
 agent's job `implement:prepare`, its bundling `implement:bundle`, its publish job's success path
 `implement:publish` and the ending after it `implement:conclude`, and `implement.yml` runs no
-inline shell that decides. **Two reusables still run their steps as inline shell**:
-`implement-prd`, whose gate and catch-up jobs' work alone is commands so far, `implement-prd:gate`
-and `implement-prd:catch-up` (PRD #496), and `follow-ups`, whose filing alone is a command, `follow-ups:file`. Until a step has
+inline shell that decides. So has `implement-prd` (PRD #496, PRD #497): its gate job's work is
+`implement-prd:gate`, its catch-up job's `implement-prd:catch-up`, the PRD branch's preparation in
+its agent's job `implement-prd:prepare`, its bundling `implement-prd:bundle`, its publish job's
+success path `implement-prd:publish` and the ending after it `implement-prd:conclude`, and
+`implement-prd.yml` runs no inline shell that decides. **One reusable still runs its steps as
+inline shell**: `follow-ups`, whose filing alone is a command, `follow-ups:file`. Until a step has
 moved, a fix to it still goes in its YAML.
 
 **A runner** is the part of the package that does an agent's work: TypeScript plus a prompt, invoked
@@ -464,12 +467,13 @@ that reads or changes the PR or issue, or decides anything, and starts no agent.
 way a runner is, as one subcommand with no arguments and its whole input in the environment, and
 fails the way a runner does. It is named `<workflow>:<step>`, such as `review:publish`, so a bare
 name is always a runner. `fix:gate`, `fix:prepare`, `fix:bundle`, `fix:publish`, `fix:conclude`, `follow-ups:file`,
-`implement:gate`, `implement:prepare`, `implement:bundle`, `implement:publish`, `implement:conclude`, `implement-prd:gate`, `implement-prd:catch-up`, `review:gate`,
+`implement:gate`, `implement:prepare`, `implement:bundle`, `implement:publish`, `implement:conclude`, `implement-prd:gate`, `implement-prd:catch-up`,
+`implement-prd:prepare`, `implement-prd:bundle`, `implement-prd:publish`, `implement-prd:conclude`, `review:gate`,
 `review:budget`, `review:collect-checks`, `review:red-check-place`, `review:red-check-classify`,
 `review:publish`, `review:conclude`, `review:advance`, `update-branch:gate`, `update-branch:merge`,
 `update-branch:prepare`, `update-branch:bundle`, `update-branch:publish` and
 `update-branch:conclude` are the commands today; every other step a command will be still runs as
-YAML shell, in the two reusables that have not moved. A command that
+YAML shell, in the one reusable that has not moved. A command that
 only decides or reads, as `review:gate` does before the review job's checkout (#420),
 `review:budget` does for the fix-round budget after it (#331) and `review:collect-checks` does
 for the CI wait (#421), is handed the GitHub reader and no writer, and what it settles leaves it

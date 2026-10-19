@@ -139,7 +139,7 @@ The inputs every runner reads, set once for any of them:
 |---|---|---|---|
 | `OUTPUT_DIR` | required | | The directory the runner writes its files into (§2.3). |
 | `GH_REPO` | required | | The repository, `owner/name`. Required rather than left to whatever `gh` infers. |
-| `GH_TOKEN` | required | | The token `gh` reads. The runners only read with it, `fix:prepare` reads and fetches the rescue branch with it, and `update-branch:merge`, `update-branch:prepare` and `update-branch:publish` fetch the base branch with it; `follow-ups:file` files issues with it, `implement:gate` makes its refusals, its start comment and its label transitions with it, `implement:publish` the link on the issue with it, `implement:conclude` its failure comment, `agent:implement` off and `agent:blocked` on, `implement-prd:gate` its refusals, its start comments and its label transitions, and `review:publish` posts the review, the summary and the verdict with it, `review:conclude` its comments, its error verdict and the labels nothing fires on, `review:advance` a PRD PR's progress list and its notes there, `fix:gate` its refusals and its label transitions, `fix:publish` its thread replies, its comments and notes, and the rescue branch's deletion, `fix:conclude` its failure comment, the rescue-set-aside note where `fix:publish` did not post it, and `agent:fix` off and `agent:blocked` on, `update-branch:gate` its refusal and its label transitions, `update-branch:publish` the verdict it carries over, its comment, and the comment that no review will start, and `update-branch:conclude` its failure comment, `agent:update-branch` off and `agent:blocked` on, and the comment that no refresh of a moved head will start. |
+| `GH_TOKEN` | required | | The token `gh` reads. The runners only read with it, `fix:prepare` reads and fetches the rescue branch with it, and `update-branch:merge`, `update-branch:prepare` and `update-branch:publish` fetch the base branch with it; `follow-ups:file` files issues with it, `implement:gate` makes its refusals, its start comment and its label transitions with it, `implement:publish` the link on the issue with it, `implement:conclude` its failure comment, `agent:implement` off and `agent:blocked` on, `implement-prd:gate` its refusals, its start comments, its label transitions, the approved slice's note and the PRD PR's building row, and `review:publish` posts the review, the summary and the verdict with it, `review:conclude` its comments, its error verdict and the labels nothing fires on, `review:advance` a PRD PR's progress list and its notes there, `fix:gate` its refusals and its label transitions, `fix:publish` its thread replies, its comments and notes, and the rescue branch's deletion, `fix:conclude` its failure comment, the rescue-set-aside note where `fix:publish` did not post it, and `agent:fix` off and `agent:blocked` on, `update-branch:gate` its refusal and its label transitions, `update-branch:publish` the verdict it carries over, its comment, and the comment that no review will start, and `update-branch:conclude` its failure comment, `agent:update-branch` off and `agent:blocked` on, and the comment that no refresh of a moved head will start. |
 
 A command that runs where no token is held, as the red check's two do beside the pull request's own
 code, `fix:bundle`, `update-branch:bundle` and `implement:bundle` do after the agent and
@@ -431,13 +431,16 @@ string the agent wrote, so the agent cannot forge one of those through a review.
 | `<summary><b>Acceptance criteria</b>` | A review body's criteria group, its `- **Changed:**` and `- **Unmet:**` lines. | `review:publish`, from `review`'s `review_body.json` | `review`, on later rounds of the same slice |
 | `<!--{"version",…,"location","pr","seq"}-->` | The body of a filed follow-up issue. | `follow-ups:file`, which files it | `follow-ups:file`, to not file one twice |
 | `<!-- agent:prd-started -->` | The end of a PRD chain's first run's comment on the parent, saying which sub-issue it builds first. | `implement-prd:gate`, as `PRD_STARTED_MARK` in `shared/record.ts` spells it | `implement-prd:gate`, to not post it twice on a retry |
+| `<!-- agent:slice-approved <sha> -->` | The end of the note on an approved slice's sub-issue, `<sha>` the PRD PR head it was approved on. | `implement-prd:gate`, past an approval, as `sliceApprovedMark` in `shared/record.ts` spells it | `implement-prd:gate`, to not post it twice on a retry |
 
 **Markers in a pull request's body.** The orchestrator writes the body, and a regular pull
 request's is written by `implement:publish`, as `renderPullRequestFrame` in `shared/pr-frame.ts`
 spells it: the note with the status line between its markers, the run link, the `---` rule, the
 summary block with its placeholder, and `Closes #<n>`. `review:publish` writes
 the summary block, its marks and a regular pull request's status line from `review`'s hand-over,
-`review:advance` a PRD PR's progress list and status line from `review`'s park hand-over, and the
+`review:advance` a PRD PR's progress list and status line from `review`'s park hand-over,
+`implement-prd:gate` the building row and status line of the slice a build run starts, as
+`showBuilding` in `shared/progress-list.ts` builds them, and the
 other blocks are written from a runner's output files. A runner reads them back from the
 body.
 
@@ -447,6 +450,7 @@ body.
 | `<!-- agent:summary-head <sha> -->` | Inside the summary: the commit it was written at, which decides whether it is due again. | `review` |
 | `<!-- agent:summary-final -->` | Inside the summary: the final review wrote it. | `review` |
 | `Closes #<n>`, `Fixes #<n>`, `Resolves #<n>` | The issue the pull request delivers, whose criteria a review checks. | `review` |
+| `\| <k> · #<sub> \| 🔨 Building \| – \| – \| – \|`, `**🔨 Building slice <k> of <n>** · #<sub>` | In a PRD PR's `<!-- agent:progress -->` and `<!-- agent:status -->` blocks: the row and the status line of slice `<k>`, sub-issue `<sub>`, while a build run builds it, as the renderer renders them. Written by `implement-prd:gate`. | nothing: a view of the chain, re-rendered by the next writer |
 | `<!-- agent:final-review requested -->` | A PRD PR's body: the finishing run asked for the final review. | `review`, as the final review; `implement-prd:gate`, as `FINAL_REVIEW_MARK` in `shared/record.ts` spells it, to call a PRD of more than one slice finished |
 
 **Commit status contexts.** Read off each of the pull request's commits, newest first, counting
@@ -957,8 +961,7 @@ earlier run of this PRD left commits on `RESCUE_BRANCH`, that branch fetched to
 > **Actions orchestrator:** a gate job runs `implement-prd:gate` first, before anything is checked
 > out, which defers to `implement`, refuses the run on the parent, or claims it and decides what it
 > does; a glue step copies its decision and facts into the job's outputs, which every later job
-> reads, and the job's last step starts the agent's clock. Between them, the note on the approved
-> slice and the building row in the progress list are still shell steps of that job.
+> reads, and the job's last step starts the agent's clock.
 > A publish job adds the `Agent-Slice` trailer to the slice's commits,
 > pushes the PRD branch, opens the PRD PR as a draft the first time or reuses it, writes the
 > progress list and status line into its body, and adds `agent:review`. A run that fails has its
@@ -1012,6 +1015,18 @@ out and before the agent's job. It runs no model and needs no checkout. In order
   `<!-- agent:prd-started -->` (§4.3), unless a comment on the parent already carries it; the
   sub-issue's, linking `RUN_URL`; and, where the PRD PR is open, its chapter marker,
   `**Slice <k> of <n> · #<sub> started**`.
+- **The approved slice's note**, past an approval, on a build or a finishing run, on the approved
+  slice's sub-issue: `**Slice approved:**`, built in the head, linked under
+  `GITHUB_SERVER_URL`, and reviewed on the PRD PR, linking the review the verdict links; then the
+  `- **Changed:**` and `- **Unmet:**` lines of the approving review's criteria group (§4.3), or
+  that none were, or that the review could not be read; ending with
+  `<!-- agent:slice-approved <sha> -->` (§4.3), unless a comment on the sub-issue already carries
+  it. Tolerated, and so is every read it makes: a warning, and the run goes on.
+- **The building row**, on a build with a PRD PR: the slice's row in the progress list and the
+  status line, spliced into the live body as the renderer renders them with the slice building.
+  The blocks it replaces are written first, as `progress_unbuilt.md` and `status_unbuilt.md`. Half
+  a progress marker pair, or two, or no row for the slice, leaves the body as it stands with a
+  warning, and no list leaves it with a line saying so. Tolerated.
 
 Every failed read but the parent's blockers fails the command with a sentence naming what could not
 be read: "could not look" is never "nothing there". Every write is made with `GH_TOKEN`: none of
@@ -1026,6 +1041,7 @@ them has to start a run. A refusal or a deferral is a decision, and the command 
 | `ISSUE_STATE` | required | | The parent's state as the event saw it: `open` or `closed`. |
 | `BASE_REF` | required | | The default branch, which the built slices are read over. |
 | `RUN_URL` | required | | The run's page, which the sub-issue's start comment links. |
+| `GITHUB_SERVER_URL` | optional | `""` | With `GH_REPO`, the link to the approved head in the approved slice's note. Empty renders the commit unlinked. |
 
 #### Outputs
 
@@ -1033,6 +1049,8 @@ them has to start a run. A refusal or a deferral is a decision, and the command 
 |---|---|
 | `gate.json` | Where it decided: `proceed`, `true` where the run goes ahead and `false` where it refused or deferred, as a string. On a run it claims, beside it: `decision`, `build`, `open-only` or `finishing`; `prdBranch`, `prdBranchExists` and `prdTip`, empty where the branch does not exist; `prdPr`, where one is open; `landed`, every slice landed, those before the upgrade included; `total`, the sub-issues; on a build, `slice`, its `number`, `position` from 1 and `title`; and past an approval, `approved`, the approved slice's `number`, the head's `sha` and the approving `review`'s link. Written the moment it decides, and again however it ends: one that died before deciding writes none where an input could not be read, and `{}` where it failed after that. |
 | `prd-issue.json` | Once the sub-issues are read: the parent's labels and its sub-issues, each with its number, title and state, as the shell query this replaced gave them. |
+| `progress_unbuilt.md` | Where the building row is written: the progress list it replaced, markers and all. |
+| `status_unbuilt.md` | Beside it, where the body carries a status line: the status line it replaced, markers and all. |
 | `write_log.jsonl` | Every write as it lands, one JSON line each, and a last line for how the command ended, as `review:conclude`'s. Not written where it wrote nothing. |
 
 **`doctor` cannot check this.** These tables are the command's, for the reason §6 gives.
@@ -1046,6 +1064,9 @@ them has to start a run. A refusal or a deferral is a decision, and the command 
 - The `agent-review` status on the PRD PR's head (§4.3).
 - The issues each sub-issue and the parent are blocked by.
 - The parent's comments, for `<!-- agent:prd-started -->`.
+- Past an approval, the approved sub-issue's comments, for `<!-- agent:slice-approved <sha> -->`,
+  and the PRD PR's reviews, for the approving one's criteria group.
+- On a build with a PRD PR, its live body, for the `agent:progress` and `agent:status` blocks.
 
 **`doctor` cannot check this.** The record is written by the orchestrator's posting code, for the reason §4.3 gives.
 
@@ -1057,9 +1078,10 @@ them has to start a run. A refusal or a deferral is a decision, and the command 
 > `proceed` is `true`, `true` where it is `false`, and empty where there is none, a gate that died
 > before deciding; `build` and `finishing` are read off `decision`; `prd_branch`,
 > `prd_branch_exists`, `prd_tip`, `prd_pr`, `landed`, `subs`, `sub`, `sub_k` and `sub_title` off
-> the rest; and the approved slice becomes the step outputs the approved-slice note reads. The same
-> step copies the command's `failure_reason.txt`, where it wrote one, into the job's
-> `failure-reason`, and the job uploads that file and `prd-issue.json` for the publish job. The job
+> the rest. The same step copies the command's `failure_reason.txt`, where it wrote one, into the
+> job's `failure-reason`, and the job uploads that file, `prd-issue.json`, `progress_unbuilt.md`
+> and `status_unbuilt.md` for the publish job, whose *Show the stopped slice* writes the two lists
+> back where the run stops before the runner renders its own. The job
 > fails where the command does, so a failed probe never starts the catch-up or the agent's job.
 
 ## 8. `review`

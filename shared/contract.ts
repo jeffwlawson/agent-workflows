@@ -813,11 +813,16 @@ const REVIEW_RED_CHECK_PLACE = {
  *   blockers; `ISSUE_STATE` is the parent as the label's event saw it, and
  *   `ISSUE_TITLE` names a PRD branch that does not exist yet. One it claims
  *   has the permission probe, `agent:blocked` off and the start comments,
- *   the sub-issue's linking `RUN_URL`. It declares no loop token.
- *   `gate.json` is its decision, `proceed`, written as soon as it decides and
- *   however it ends, with the decision and its facts beside it on a run it
- *   claims; `prd-issue.json` is the parent's snapshot, which the publish job
- *   writes the PRD PR's `Closes` lines from.
+ *   the sub-issue's linking `RUN_URL`; past an approval, the note on the
+ *   approved slice, linking its head under `GITHUB_SERVER_URL`; and on a
+ *   build with a PRD PR, the slice building in its progress list. It
+ *   declares no loop token. `gate.json` is its decision, `proceed`, written
+ *   as soon as it decides and however it ends, with the decision and its
+ *   facts beside it on a run it claims; `prd-issue.json` is the parent's
+ *   snapshot, which the publish job writes the PRD PR's `Closes` lines from;
+ *   and `progress_unbuilt.md` and `status_unbuilt.md` are the progress list
+ *   and status line the building row replaced, which the publish job writes
+ *   back where the run stops before the runner renders its own.
  * - `implement:prepare` creates the agent's `BRANCH` in `CHECKOUT` at
  *   `BASE_SHA`, the commit the gate read `BASE_REF` at, and checks it out,
  *   with the loop's committer as the checkout's identity. A checkout that
@@ -1021,8 +1026,16 @@ export const COMMANDS = {
       ISSUE_STATE: REQUIRED,
       BASE_REF: REQUIRED,
       RUN_URL: REQUIRED,
+      GITHUB_SERVER_URL: EMPTY,
     },
-    outputs: [...EVERY_SUBCOMMAND_OUTPUTS, "gate.json", "prd-issue.json", WRITE_LOG],
+    outputs: [
+      ...EVERY_SUBCOMMAND_OUTPUTS,
+      "gate.json",
+      "prd-issue.json",
+      "progress_unbuilt.md",
+      "status_unbuilt.md",
+      WRITE_LOG,
+    ],
   },
   "review:gate": {
     inputs: {

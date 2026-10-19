@@ -5,8 +5,17 @@ import type { Limits } from "../../engine/writer.js";
 import { gate } from "../../implement-prd/gate.js";
 import type { CommandIo, Token } from "../../shared/command-io.js";
 import { COMMANDS } from "../../shared/contract.js";
-import { VERDICTS } from "../../shared/review-output.js";
-import { BLOCKED_LABEL, FINAL_REVIEW_MARK, IMPLEMENT_LABEL, PRD_STARTED_MARK } from "../../shared/record.js";
+import { renderPrdStatus, renderProgressList, spliceProgressList, statusBlock, type ProgressInputs } from "../../shared/progress-list.js";
+import { renderCriteriaGroup, VERDICTS, type CriterionResult } from "../../shared/review-output.js";
+import {
+  BLOCKED_LABEL,
+  FINAL_REVIEW_MARK,
+  IMPLEMENT_LABEL,
+  PRD_STARTED_MARK,
+  PROGRESS_START,
+  sliceApprovedMark,
+} from "../../shared/record.js";
+import { sliceRanges } from "../../shared/slice-ranges.js";
 import { fakeGitHub, fakeReader, fakeWriters, type FakeGitHub } from "../engine/fakes.js";
 
 /**
@@ -39,6 +48,8 @@ let reader: GitHubReader;
 let reads: ReturnType<typeof fakeReader>["reads"];
 let decided: unknown;
 let snapshot: unknown;
+/** The progress list and status line the building row replaced, as the gate kept them. */
+let kept: Record<string, string>;
 let logged: string[];
 
 /** The PRD's sub-issues, #172 on, in `states`, each with no links. */
@@ -110,6 +121,7 @@ beforeEach(() => {
   ({ reader, reads } = fakeReader(github));
   decided = undefined;
   snapshot = undefined;
+  kept = {};
   logged = [];
   vi.spyOn(console, "log").mockImplementation((line: unknown) => {
     logged.push(String(line));
@@ -131,6 +143,7 @@ const INPUTS = (over: Partial<Inputs> = {}): Inputs => ({
   ISSUE_STATE: "open",
   BASE_REF: "main",
   RUN_URL,
+  GITHUB_SERVER_URL: "https://github.com",
   ...over,
 });
 
@@ -149,7 +162,10 @@ const run = async (inputs: Inputs = INPUTS(), github_: GitHubReader = reader): P
         else if (name === "prd-issue.json") snapshot = structuredClone(value);
         else throw new Error(`wrote ${name}`);
       },
-      writeText: () => {},
+      writeText: (name, value) => {
+        if (name !== "progress_unbuilt.md" && name !== "status_unbuilt.md") throw new Error(`wrote ${name}`);
+        kept[name] = value;
+      },
       writeBytes: () => {},
       appendLine: () => {},
     },
@@ -218,7 +234,7 @@ describe("implement-prd:gate leaves an issue with no sub-issues to implement", (
   it("asks for the limits it writes within", async () => {
     await run();
 
-    expect(asked).toEqual({ comment: 3, removeLabel: 2, addLabel: 2 });
+    expect(asked).toEqual({ comment: 4, removeLabel: 2, addLabel: 2, editPullRequest: 1 });
   });
 });
 
@@ -487,7 +503,7 @@ describe("implement-prd:gate on the chain's state", () => {
     expect(reads.map((r) => r.method)).not.toContain("commitStatuses");
   });
 
-  it("makes the finishing run once every sub-issue is built and the head is approved, commenting nowhere", async () => {
+  it("makes the finishing run once every sub-issue is built and the head is approved, starting nothing but noting the last slice", async () => {
     github.issueLabels.set(PARENT, [IMPLEMENT_LABEL, BLOCKED_LABEL]);
     onBranch([172, 173, 174]);
     prdPr();
@@ -497,7 +513,11 @@ describe("implement-prd:gate on the chain's state", () => {
 
     expect(decided).toMatchObject({ proceed: "true", decision: "finishing", landed: 3, prdPr: 201, approved: { number: 174 } });
     expect(decided).not.toHaveProperty("slice");
-    expect(writes()).toEqual([`workflow addLabel #${PARENT} ${IMPLEMENT_LABEL}`, `workflow removeLabel #${PARENT} ${BLOCKED_LABEL}`]);
+    expect(writes()).toEqual([
+      `workflow addLabel #${PARENT} ${IMPLEMENT_LABEL}`,
+      `workflow removeLabel #${PARENT} ${BLOCKED_LABEL}`,
+      expect.stringMatching(/^workflow comment #174 \*\*Slice approved:\*\* /),
+    ]);
     expect(logged).toContain(`Every sub-issue of #${PARENT} is built; finishing it.`);
   });
 
@@ -724,10 +744,12 @@ describe("implement-prd:gate claims a run it goes ahead on", () => {
 
     await run();
 
-    expect(comments()).toEqual([
+    expect(comments().slice(0, 2)).toEqual([
       [173, `**\`agent:implement\` started:** Building now on PRD PR #201 · [Workflow run](${RUN_URL})`],
       [201, "**Slice 2 of 3 · #173 started**"],
     ]);
+    // Then the note on the slice approved, #172.
+    expect(comments().map(([n]) => n)).toEqual([173, 201, 172]);
   });
 
   it("does not post the first run's comment on the parent twice on a retry", async () => {
@@ -761,5 +783,235 @@ describe("implement-prd:gate claims a run it goes ahead on", () => {
     );
     expect(decided).toMatchObject({ proceed: "true", decision: "build", slice: { number: 172 } });
     expect(comments()).toEqual([]);
+  });
+});
+
+/**
+ * The note on the approved slice (#246), carried over by behaviour from the
+ * retired shell step's cases in `tests/implement-prd-preflight.test.ts`: a
+ * build past an approval of #173's round, with #174 next.
+ */
+describe("implement-prd:gate notes the approved slice", () => {
+  beforeEach(() => {
+    onBranch([172, 173]);
+    prdPr();
+    approve();
+  });
+
+  /** An approving review's body, its #214 record rendered as the review renders it. */
+  const approving = (criteria: readonly CriterionResult[]): void => {
+    github.reviews.push({
+      token: "workflow",
+      pullRequestId: "PR_201",
+      commit: HEAD,
+      body: ["## Agent review", "", "Approved.", "", renderCriteriaGroup(criteria) ?? "", "", "Footer."].join("\n"),
+      threads: [],
+      url: REVIEW_URL,
+    });
+  };
+  const notes = (): [number, string][] => comments().filter(([, body]) => body.startsWith("**Slice approved:**"));
+
+  it("notes the approved slice on its sub-issue, with the criteria the approving round changed or left unmet", async () => {
+    approving([
+      { id: "C1", text: "It renders every state.", status: "met" },
+      { id: "C2", text: "It survives the splice.", status: "changed", reason: "the splice moved" },
+      { id: "C3", text: "No label is added.", status: "unmet" },
+    ]);
+
+    await run();
+
+    expect(notes()).toEqual([
+      [
+        173,
+        [
+          `**Slice approved:** built in [\`eeeeeee\`](https://github.com/acme/widgets/commit/${HEAD}), [reviewed](${REVIEW_URL}) on PRD PR #201. This sub-issue stays open until the PRD PR merges.`,
+          "",
+          "**Acceptance criteria changed or unmet:**",
+          "",
+          "- **Changed:** It survives the splice. · the splice moved",
+          "- **Unmet:** No label is added.",
+          "",
+          `<!-- agent:slice-approved ${HEAD} -->`,
+        ].join("\n"),
+      ],
+    ]);
+    // After the start comments, as the shell step ran after them.
+    expect(comments().map(([n]) => n)).toEqual([174, 201, 173]);
+  });
+
+  /** A retry past the same approval, after a run that failed, posts no second note. */
+  it("notes an approved head once", async () => {
+    approving([]);
+    github.comments.push({ token: "workflow", issue: 173, body: `**Slice approved:** …\n\n${sliceApprovedMark(HEAD)}` });
+
+    await run();
+
+    expect(notes()).toHaveLength(1);
+    expect(logged).toContain(`Sub-issue #173 already has its approved-slice note for ${HEAD}.`);
+  });
+
+  it("says none changed or went unmet where the approving round met every criterion", async () => {
+    approving([{ id: "C1", text: "It renders every state.", status: "met" }]);
+
+    await run();
+
+    expect(notes()[0]?.[1]).toContain("\n\n**Acceptance criteria changed or unmet:** none.\n\n<!-- agent:slice-approved");
+  });
+
+  it("still notes the slice, saying so, where the approving review cannot be read", async () => {
+    await run(INPUTS(), throwing("reviews"));
+
+    expect(logged).toContain(`::warning::Could not read the review that approved sub-issue #173 (${REVIEW_URL}), so its note does not list the criteria.`);
+    expect(notes()[0]?.[1]).toContain("the approving review couldn't be read");
+    expect(decided).toMatchObject({ proceed: "true", slice: { number: 174 } });
+  });
+
+  it("says it is reviewed on the PRD PR, unlinked, where the verdict links no review", async () => {
+    verdictOnHead("success", VERDICTS["approval recommended"].description, null);
+
+    await run();
+
+    expect(notes()[0]?.[1]).toContain(", reviewed on PRD PR #201. This sub-issue");
+    expect(logged).toContain("::warning::Could not read the review that approved sub-issue #173 (no link), so its note does not list the criteria.");
+  });
+
+  it("goes on with a warning where the note cannot be posted", async () => {
+    github.fails = (write) => write.type === "comment";
+
+    await run();
+
+    expect(logged).toContain("::warning::Could not post the approved-slice note on sub-issue #173. The run goes on.");
+    expect(decided).toMatchObject({ proceed: "true", slice: { number: 174 } });
+  });
+});
+
+/**
+ * The slice **building** in the PRD PR's progress list and status line
+ * (#312), carried over by behaviour from the retired shell step's cases in
+ * `tests/pr-body-steps.test.ts`: #173, slice 2 of 3, past #172's approval.
+ * What it writes is what the renderer renders with the slice building.
+ */
+describe("implement-prd:gate shows the slice building", () => {
+  const SUBS = [
+    { number: 172, title: "Slice 1", state: "OPEN" as const },
+    { number: 173, title: "Slice 2", state: "OPEN" as const },
+    { number: 174, title: "Slice 3", state: "OPEN" as const },
+  ];
+  const prUrl = "https://github.com/acme/widgets/pull/201";
+  const approved: ProgressInputs = {
+    subIssues: SUBS,
+    ranges: sliceRanges([{ sha: "0123456789abcdef", parents: ["fedcba9876543210"], slice: 172 }], SUBS),
+    verdict: "approval",
+    running: null,
+    finalReview: "not requested",
+    prUrl,
+    rounds: {
+      slices: { 172: { reviews: 2, fixes: 1, latestReview: `${prUrl}#pullrequestreview-9` } },
+      final: { reviews: 0, fixes: 0 },
+      all: { reviews: 2, fixes: 1 },
+    },
+  };
+  const building: ProgressInputs = { ...approved, running: { kind: "build", subIssue: 173 } };
+  const frame = (inputs: ProgressInputs): string =>
+    [`> [!NOTE]\n> ${statusBlock(renderPrdStatus(inputs))}\n> Mine.`, "## Summary\n\nx", renderProgressList(inputs), "Closes #171\n"].join("\n\n");
+
+  const withBody = (body: string): void => {
+    onBranch([172]);
+    prdPr({ body });
+    approve();
+  };
+  const body = (): string | undefined => github.pullRequests.get(201)?.body;
+  const edits = (): string[] => writes().filter((w) => w.includes("editPullRequest"));
+
+  it("writes the table and the status line the renderer renders with the slice building", async () => {
+    withBody(frame(approved));
+
+    await run();
+
+    expect(body()).toBe(frame(building));
+    expect(renderProgressList(building)).toContain("| 2 · #173 | 🔨 Building | – | – | – |");
+    expect(renderPrdStatus(building)).toBe("**🔨 Building slice 2 of 3** · #173");
+    expect(kept).toEqual({
+      "progress_unbuilt.md": renderProgressList(approved),
+      "status_unbuilt.md": statusBlock(renderPrdStatus(approved)),
+    });
+    expect(edits()).toEqual(["workflow editPullRequest #201"]);
+    expect(logged).toContain("PRD PR #201's progress list shows sub-issue #173 building.");
+  });
+
+  it("writes the table alone where the note has no status line, as the splice leaves one", async () => {
+    const before = `Mine.\n\n${renderProgressList(approved)}`;
+    withBody(before);
+
+    await run();
+
+    expect(body()).toBe(spliceProgressList(before, renderProgressList(building)));
+    expect(kept).toEqual({ "progress_unbuilt.md": renderProgressList(approved) });
+  });
+
+  it.each([
+    ["half a list", `Mine.\n${PROGRESS_START}\nrest`, "::warning::PRD PR #201's body carries half a progress list, or two, so it was not written."],
+    [
+      "two lists",
+      `${renderProgressList(approved)}\n${renderProgressList(approved)}`,
+      "::warning::PRD PR #201's body carries half a progress list, or two, so it was not written.",
+    ],
+    [
+      "a list without the slice's row",
+      renderProgressList({ ...approved, subIssues: SUBS.slice(0, 1) }),
+      "::warning::PRD PR #201's progress list has no row for sub-issue #173 as slice 2, so it was not written.",
+    ],
+  ])("leaves %s alone, with a warning, and keeps nothing to write back", async (_case, before, warning) => {
+    withBody(before);
+
+    await run();
+
+    expect(body()).toBe(before);
+    expect(logged.some((line) => line.startsWith(warning))).toBe(true);
+    expect(kept).toEqual({});
+    expect(decided).toMatchObject({ proceed: "true", slice: { number: 173 } });
+  });
+
+  it("writes nothing to a body with no list", async () => {
+    withBody("Mine.");
+
+    await run();
+
+    expect(body()).toBe("Mine.");
+    expect(kept).toEqual({});
+    expect(logged).toContain("PRD PR #201's body carries no progress list, so none shows sub-issue #173 building.");
+  });
+
+  it("goes on with a warning where the PRD PR cannot be written", async () => {
+    withBody(frame(approved));
+    github.fails = (write) => write.type === "editPullRequest";
+
+    await run();
+
+    expect(body()).toBe(frame(approved));
+    expect(logged).toContain(
+      "::warning::Could not write PRD PR #201's progress list, so it does not show sub-issue #173 building. GitHub's reply is in the write log.",
+    );
+    expect(decided).toMatchObject({ proceed: "true", slice: { number: 173 } });
+  });
+
+  it("writes no list on a first slice, with no PRD PR, nor on a finishing run", async () => {
+    await run();
+    expect(edits()).toEqual([]);
+
+    github = fakeGitHub([]);
+    github.issues.set(PARENT, { subIssues: 0, blockedBy: [] });
+    github.issueLabels.set(PARENT, [IMPLEMENT_LABEL]);
+    setSubIssues("OPEN", "OPEN", "OPEN");
+    ({ reader } = fakeReader(github));
+    onBranch([172, 173, 174]);
+    prdPr({ body: frame(approved) });
+    approve();
+
+    await run();
+
+    expect(decided).toMatchObject({ decision: "finishing" });
+    expect(edits()).toEqual([]);
+    expect(body()).toBe(frame(approved));
   });
 });

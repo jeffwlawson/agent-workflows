@@ -277,8 +277,11 @@ jobs:
       # `Agent-Slice` trailers; the PRD PR; the decision table, the approval
       # gate included; and, on a build, the "blocked by" links. A run it
       # claims has the permission probe, `agent:blocked` off and the start
-      # comments. `implement-prd/gate.ts` says why each is as it is, and which
-      # failed read stops the run and which goes ahead.
+      # comments; past an approval, the note on the approved slice; and on a
+      # build with a PRD PR, the slice building in its progress list (#499),
+      # written here because this job runs no agent and the agent's job
+      # reads only (#308). `implement-prd/gate.ts` says why each is as it is,
+      # and which failed read stops the run and which goes ahead.
       #
       # `ISSUE_STATE` is the parent as the label's event saw it, and
       # `ISSUE_TITLE` names a PRD branch that does not exist yet; everything
@@ -300,7 +303,9 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GH_REPO: ${{ github.repository }}
           # This run's page, linked from the start comment on the sub-issue
-          # and from the failure comment on the parent (#205).
+          # and from the failure comment on the parent (#205). The approved
+          # slice's note links its head under `GITHUB_SERVER_URL`, which
+          # Actions gives every step.
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
           # `GITHUB_TOKEN`, carrying the `packages: read` the caller granted:
           # there is no anonymous install.
@@ -312,7 +317,7 @@ jobs:
 
       # Glue only Actions can do (ADR 0003): the gate's decision and facts,
       # copied into step outputs under the names the later jobs have always
-      # read, and the approved slice the note below reads. `always()`, so a
+      # read. `always()`, so a
       # gate that decided to go ahead and then failed, at the probe, still
       # says so; nothing where it wrote no `gate.json`, or one with no
       # `proceed`, which `refused` reads as a gate that died before deciding.
@@ -345,10 +350,7 @@ jobs:
             out("landed"; .landed),
             out("subs"; .total),
             out("sub"; .slice.number),
-            out("sub_k"; .slice.position),
-            out("approved_sub"; .approved.number),
-            out("approved_sha"; .approved.sha),
-            out("approved_review"; .approved.review)
+            out("sub_k"; .slice.position)
           ' "$file" >> "$GITHUB_OUTPUT"
           if [ "$(jq 'has("slice")' "$file")" = "true" ]; then
             delimiter="TITLE_$(date +%s%N)_${RANDOM}"
@@ -359,167 +361,11 @@ jobs:
             } >> "$GITHUB_OUTPUT"
           fi
 
-      # The approved slice, on its own sub-issue (#246): the run the advance
-      # job started has passed its gate, so the slice the PRD PR's head was
-      # approved on is done with, and its sub-issue records what shipped for
-      # it, while the sub-issue itself stays open until the PRD PR merges.
-      # Built in the approved head, reviewed on the PRD PR, and the criteria
-      # the approving round's record (#214) says changed or went unmet, or
-      # that none did.
-      #
-      # The record is the approving review's body, which the verdict links,
-      # read for the lines its *Acceptance criteria* group gives a changed or
-      # unmet criterion (`renderCriteriaGroup` in `shared/review-output.ts`; a
-      # test renders the group and reads it back through this step). Never
-      # fails the run: a note that cannot be read or posted says so in a
-      # warning, and the chain goes on.
-      - name: Note the approved slice
-        id: approved_note
-        if: steps.state.outputs.proceed == 'true' && steps.state.outputs.approved_sub != ''
-        env:
-          APPROVED_SUB: ${{ steps.state.outputs.approved_sub }}
-          APPROVED_SHA: ${{ steps.state.outputs.approved_sha }}
-          APPROVED_REVIEW: ${{ steps.state.outputs.approved_review }}
-          PRD_PR: ${{ steps.state.outputs.prd_pr }}
-          SERVER_URL: ${{ github.server_url }}
-          # Until this step moves into the command (#496's next slice).
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          GH_REPO: ${{ github.repository }}
-        run: |
-          set -uo pipefail
-          # Once per approved head: a retry past the same approval, after a
-          # run that failed, finds the note it posted and posts no second.
-          mark="<!-- agent:slice-approved ${APPROVED_SHA} -->"
-          posted=$(gh api "repos/${GH_REPO}/issues/${APPROVED_SUB}/comments" --paginate \
-            --jq "[.[] | select(.body // \"\" | contains(\"${mark}\"))] | length" | jq -s 'add // 0') || posted=""
-          if [ -n "$posted" ] && [ "$posted" -gt 0 ]; then
-            echo "Sub-issue #${APPROVED_SUB} already has its approved-slice note for ${APPROVED_SHA}."
-            exit 0
-          fi
-          criteria="**Acceptance criteria changed or unmet:** none."
-          body=""
-          if [[ "$APPROVED_REVIEW" =~ \#pullrequestreview-([0-9]+)$ ]]; then
-            body=$(gh api "repos/${GH_REPO}/pulls/${PRD_PR}/reviews/${BASH_REMATCH[1]}" --jq '.body // ""') || body=""
-          fi
-          if [ -z "$body" ]; then
-            criteria="**Acceptance criteria changed or unmet:** the approving review couldn't be read, so they aren't listed here; its *Acceptance criteria* section has them."
-            echo "::warning::Could not read the review that approved sub-issue #${APPROVED_SUB} (${APPROVED_REVIEW:-no link}), so its note does not list the criteria."
-          else
-            listed=$(awk '
-              /<summary><b>Acceptance criteria<\/b>/ { inside = 1; next }
-              inside && /^<\/details>/ { inside = 0 }
-              inside && /^- \*\*(Changed|Unmet):\*\* / { print }
-            ' <<< "$body")
-            if [ -n "$listed" ]; then
-              criteria=$(printf '**Acceptance criteria changed or unmet:**\n\n%s' "$listed")
-            fi
-          fi
-          review="reviewed on PRD PR #${PRD_PR}"
-          [ -n "$APPROVED_REVIEW" ] && review="[reviewed](${APPROVED_REVIEW}) on PRD PR #${PRD_PR}"
-          note=$(printf '**Slice approved:** built in [`%s`](%s/%s/commit/%s), %s. This sub-issue stays open until the PRD PR merges.\n\n%s\n\n%s' \
-            "${APPROVED_SHA:0:7}" "$SERVER_URL" "$GH_REPO" "$APPROVED_SHA" "$review" "$criteria" "$mark")
-          gh issue comment "$APPROVED_SUB" --body "$note" \
-            || echo "::warning::Could not post the approved-slice note on sub-issue #${APPROVED_SUB}. The run goes on."
-
-      # The slice **building** in the PRD PR's progress table and status line
-      # (#246, #312), written here because this job runs no agent: the agent's
-      # job reads only (#308). Only on a run that builds, once this run has
-      # claimed its slice and before any agent starts; with no PRD PR yet, the
-      # first slice's, there is no table to write.
-      #
-      # No toolchain runs here, so this does not render: it rewrites the
-      # slice's row and the status line in the table the last round's ending
-      # left, and the result is what `renderProgressList` and `renderPrdStatus`
-      # render with the slice building, held equal by a test. A slice with no
-      # range has no counts and no diff, so its row is the same whatever the
-      # rest of the table says. A body with half a list, or two, is left alone,
-      # as is one whose list has no row for the slice, each with a warning.
-      #
-      # The table and status line it replaces are kept, as `progress_unbuilt.md`
-      # and `status_unbuilt.md`, and handed to `publish`, before the write: a
-      # list that shows the slice building always has one to undo it, for a run
-      # that stops before the runner renders its own (`Show the stopped slice in
-      # the progress list`). Never fails the run: the list is a view of the
-      # chain, and a slice is worth more than it.
-      - name: Show the slice building in the progress list
-        if: steps.state.outputs.proceed == 'true' && steps.state.outputs.build == 'true' && steps.state.outputs.prd_pr != ''
-        env:
-          SUB: ${{ steps.state.outputs.sub }}
-          SUB_K: ${{ steps.state.outputs.sub_k }}
-          SUBS: ${{ steps.state.outputs.subs }}
-          PRD_PR: ${{ steps.state.outputs.prd_pr }}
-          # Until this step moves into the command (#496's next slice).
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          GH_REPO: ${{ github.repository }}
-          # `PROGRESS_START`, `PROGRESS_END`, `STATUS_START` and `STATUS_END`
-          # in `shared/progress-list.ts`; a test holds them equal.
-          PROGRESS_START: "<!-- agent:progress -->"
-          PROGRESS_END: "<!-- /agent:progress -->"
-          STATUS_START: "<!-- agent:status -->"
-          STATUS_END: "<!-- /agent:status -->"
-        run: |
-          set -uo pipefail
-          current="${RUNNER_TEMP}/progress_pr.json"
-          composed="${RUNNER_TEMP}/progress_building.json"
-          request="${RUNNER_TEMP}/progress_edit.json"
-          if ! gh api "repos/{owner}/{repo}/pulls/${PRD_PR}" > "$current"; then
-            echo "::warning::Could not read PRD PR #${PRD_PR}, so its progress list does not show sub-issue #${SUB} building."
-            exit 0
-          fi
-          # The row and the line `renderProgressList` and `renderPrdStatus`
-          # give a slice that is building.
-          prefix="| ${SUB_K} · #${SUB} |"
-          row="${prefix} 🔨 Building | – | – | – |"
-          line="**🔨 Building slice ${SUB_K} of ${SUBS}** · #${SUB}"
-          jq --arg prefix "$prefix" --arg row "$row" --arg line "$line" '
-            def block($b; $s; $e):
-              ($b | split($s)) as $starts
-              | ($b | split($e)) as $ends
-              | if ($starts | length) == 1 and ($ends | length) == 1 then {}
-                elif ($starts | length) == 2 and ($ends | length) == 2 and ($starts[1] | split($e) | length) == 2 then
-                  {before: $starts[0], inside: ($starts[1] | split($e))[0], after: ($starts[1] | split($e))[1]}
-                else null end;
-            (.body // "") as $b
-            | block($b; env.PROGRESS_START; env.PROGRESS_END) as $list
-            | if $list == null then {outcome: "half"}
-              elif ($list | has("inside") | not) then {outcome: "none"}
-              elif ([$list.inside | split("\n")[] | select(startswith($prefix))] | length) != 1 then {outcome: "no row"}
-              else
-                ($list.before + env.PROGRESS_START
-                  + ($list.inside | split("\n") | map(if startswith($prefix) then $row else . end) | join("\n"))
-                  + env.PROGRESS_END + $list.after) as $body
-                | block($body; env.STATUS_START; env.STATUS_END) as $status
-                | {outcome: "write", progress: (env.PROGRESS_START + $list.inside + env.PROGRESS_END)}
-                  + if ($status | type) == "object" and ($status | has("inside")) then
-                      {status: (env.STATUS_START + $status.inside + env.STATUS_END),
-                       body: ($status.before + env.STATUS_START + "\n> " + $line + "\n> " + env.STATUS_END + $status.after)}
-                    else {body: $body} end
-              end
-          ' "$current" > "$composed" || { echo "::warning::Could not compose PRD PR #${PRD_PR}'s progress list, so it does not show sub-issue #${SUB} building."; exit 0; }
-          case "$(jq -r '.outcome' "$composed")" in
-            half)
-              echo "::warning::PRD PR #${PRD_PR}'s body carries half a progress list, or two, so it was not written. Restore the missing marker, or delete the markers and the text between them, and the next ending of a round writes it again."
-              exit 0 ;;
-            none)
-              echo "PRD PR #${PRD_PR}'s body carries no progress list, so none shows sub-issue #${SUB} building."
-              exit 0 ;;
-            "no row")
-              echo "::warning::PRD PR #${PRD_PR}'s progress list has no row for sub-issue #${SUB} as slice ${SUB_K}, so it was not written. The next ending of a round writes it again."
-              exit 0 ;;
-          esac
-          jq -j '.progress' "$composed" > "${RUNNER_TEMP}/progress_unbuilt.md"
-          if [ "$(jq -r 'has("status")' "$composed")" = "true" ]; then
-            jq -j '.status' "$composed" > "${RUNNER_TEMP}/status_unbuilt.md"
-          fi
-          jq '{body}' "$composed" > "$request"
-          gh api --method PATCH "repos/{owner}/{repo}/pulls/${PRD_PR}" --input "$request" > /dev/null \
-            && echo "PRD PR #${PRD_PR}'s progress list shows sub-issue #${SUB} building." \
-            || echo "::warning::Could not write PRD PR #${PRD_PR}'s progress list, so it does not show sub-issue #${SUB} building. GitHub's reply is above."
-
       # The gate's snapshot of the PRD, which `Open or reuse the PRD PR`
       # writes its `Closes` lines from, and the reason file the gate writes
       # where it fails, handed to `publish`, which reports it, with the
-      # progress list and status line the step above replaced. `always()`,
+      # progress list and status line the gate's building row replaced, for
+      # `Show the stopped slice in the progress list`. `always()`,
       # for the reason; not on a refusal or a deferral, which hand nothing on.
       - name: Hand the PRD's snapshot on
         if: always() && steps.state.outputs.proceed != 'false'

@@ -4518,9 +4518,10 @@ describe("agent-implement's gate is `implement:gate`, before any checkout", () =
 });
 
 /**
- * Implement-prd's gate is `implement-prd:gate` (#498): the partition, the
- * refusals in their order and wording, the PRD branch, the slice choice, the
- * decision table, the links, the probe and the start comments, executed in
+ * Implement-prd's gate is `implement-prd:gate` (#498, #499): the partition,
+ * the refusals in their order and wording, the PRD branch, the slice choice,
+ * the decision table, the links, the probe, the start comments, the note on
+ * the approved slice and the slice building in the progress list, executed in
  * `tests/implement-prd/gate.test.ts` and `tests/implement-prd/chain.test.ts`.
  * What is held here is the wiring: the job's steps, which hold a token, the
  * grant the install spends, the hand-over, and the glue that keeps the job's
@@ -4530,27 +4531,20 @@ describe("agent-implement-prd's gate is `implement-prd:gate`, before any checkou
   const gateJob = (): Job => jobNamed(PRD, "gate");
   const gateStep = (): Step | undefined => gateJob().steps?.find((s) => s.id === "gate");
   const copyStep = (): Step | undefined => gateJob().steps?.find((s) => s.id === "state");
-  /** The two steps that still write from shell, until #496's next slice moves them into the command. */
-  const STILL_SHELL = ["Note the approved slice", "Show the slice building in the progress list"];
 
   /**
-   * The Node the command runs on, the command, ungated, the glue, the two
-   * steps still in shell, the hand-over and the clock. *Preflight* and
-   * *Transition labels* are gone into the command.
+   * The Node the command runs on, the command, ungated, the glue, the
+   * hand-over and the clock. *Preflight*, *Transition labels*, *Note the
+   * approved slice* and *Show the slice building in the progress list* are
+   * gone into the command.
    */
-  it("is the Node, the command, its glue, the two shell steps, the hand-over and the clock", () => {
+  it("is the Node, the command, its glue, the hand-over and the clock", () => {
     const steps = gateJob().steps ?? [];
 
     expect(steps.map((s) => [s.name, s.id, s.if])).toEqual([
       ["Set up Node for the gate", undefined, undefined],
       ["Refuse or claim the PRD", "gate", undefined],
       ["Hand the gate's decision to the job", "state", "always()"],
-      ["Note the approved slice", "approved_note", "steps.state.outputs.proceed == 'true' && steps.state.outputs.approved_sub != ''"],
-      [
-        "Show the slice building in the progress list",
-        undefined,
-        "steps.state.outputs.proceed == 'true' && steps.state.outputs.build == 'true' && steps.state.outputs.prd_pr != ''",
-      ],
       ["Hand the PRD's snapshot on", undefined, "always() && steps.state.outputs.proceed != 'false'"],
       ["Start the agent's clock", "clock", "steps.state.outputs.proceed == 'true'"],
     ]);
@@ -4559,15 +4553,16 @@ describe("agent-implement-prd's gate is `implement-prd:gate`, before any checkou
     );
     expect(stepsOf(PRD).map((s) => s.name)).not.toContain("Transition labels");
     expect(stepsOf(PRD).map((s) => s.id)).not.toContain("preflight");
+    expect(stepsOf(PRD).map((s) => s.id)).not.toContain("approved_note");
+    expect(stepsOf(PRD).map((s) => s.name)).not.toContain("Show the slice building in the progress list");
   });
 
   /**
    * A token only where something writes: the command, with the workflow
-   * token it reads and writes with and the same token for the install, and
-   * the two steps still in shell. The job sets none for every step, and names
-   * no PAT and no App.
+   * token it reads and writes with and the same token for the install. The
+   * job sets none for every step, and names no PAT and no App.
    */
-  it("hands a token to the command step, and the two steps still in shell, alone", () => {
+  it("hands a token to the command step alone", () => {
     const gate = gateJob();
 
     expect(gate.env).toBeUndefined();
@@ -4575,10 +4570,6 @@ describe("agent-implement-prd's gate is `implement-prd:gate`, before any checkou
     expect(gateStep()?.env?.["NODE_AUTH_TOKEN"]).toBe("${{ secrets.GITHUB_TOKEN }}");
     for (const step of gate.steps ?? []) {
       if (step.id === "gate") continue;
-      if (STILL_SHELL.includes(step.name ?? "")) {
-        expect(step.env?.["GH_TOKEN"], step.name).toBe("${{ secrets.GITHUB_TOKEN }}");
-        continue;
-      }
       expect(step.run ?? "", step.name).not.toMatch(/\bgh |\bgit |GH_TOKEN|secrets\./);
       expect(JSON.stringify(step.env ?? {}), step.name).not.toMatch(/secrets\./);
       expect(JSON.stringify(step.with ?? {}), step.name).not.toMatch(/secrets\./);
@@ -4622,13 +4613,13 @@ describe("agent-implement-prd's gate is `implement-prd:gate`, before any checkou
   });
 
   /**
-   * The snapshot and the reason the command declares, and the two lists the
-   * building step still saves, handed to the publish job.
+   * The snapshot, the reason and the two lists the building row replaced,
+   * each declared by the command, handed to the publish job.
    */
   it("hands the publish job the files the gate writes", () => {
     const upload = (gateJob().steps ?? []).find((s) => s.name === "Hand the PRD's snapshot on");
     const outputs: readonly string[] = COMMANDS["implement-prd:gate"].outputs;
-    const handed = [...outputs.filter((file) => !["gate.json", "write_log.jsonl"].includes(file)), "progress_unbuilt.md", "status_unbuilt.md"];
+    const handed = outputs.filter((file) => !["gate.json", "write_log.jsonl"].includes(file));
 
     expect(upload?.with?.["name"]).toBe("agent-implement-prd-gate");
     expect(upload?.with?.["if-no-files-found"]).toBe("ignore");
@@ -4683,7 +4674,7 @@ describe("agent-implement-prd's gate is `implement-prd:gate`, before any checkou
       return fs.readFileSync(output, "utf8");
     };
 
-    it("copies a build's facts, the slice's title and the approved slice", () => {
+    it("copies a build's facts and the slice's title, and not the approved slice, which the gate notes itself", () => {
       const out = glue({
         "gate.json": JSON.stringify({
           proceed: "true",
@@ -4699,7 +4690,7 @@ describe("agent-implement-prd's gate is `implement-prd:gate`, before any checkou
         }),
       });
 
-      expect(out).toMatch(/^proceed=true\nbuild=true\nfinishing=false\nprd_branch=agent\/prd-171-a\nprd_branch_exists=true\nprd_tip=abc\nprd_pr=201\nlanded=1\nsubs=3\nsub=173\nsub_k=2\napproved_sub=172\napproved_sha=def\napproved_review=https:\/\/r\nsub_title<<TITLE_\S+\nSlice \$\(two\) `x`\nTITLE_\S+\n$/);
+      expect(out).toMatch(/^proceed=true\nbuild=true\nfinishing=false\nprd_branch=agent\/prd-171-a\nprd_branch_exists=true\nprd_tip=abc\nprd_pr=201\nlanded=1\nsubs=3\nsub=173\nsub_k=2\nsub_title<<TITLE_\S+\nSlice \$\(two\) `x`\nTITLE_\S+\n$/);
     });
 
     it("copies a finishing run's, with no slice and an empty tip kept", () => {
@@ -8143,12 +8134,11 @@ describe("the PRD chain's progress", () => {
     const handover = runOf(PRD, "handover");
 
     const stopped = stepsOf(PRD).find((s) => s.name === "Show the stopped slice in the progress list");
-    const building = stepsOf(PRD).find((s) => s.name === "Show the slice building in the progress list");
-    for (const env of [prdPr?.env, stopped?.env, building?.env]) {
+    for (const env of [prdPr?.env, stopped?.env]) {
       expect(env?.["PROGRESS_START"]).toBe(PROGRESS_START);
       expect(env?.["PROGRESS_END"]).toBe(PROGRESS_END);
     }
-    for (const env of [prdPr?.env, stopped?.env, building?.env]) {
+    for (const env of [prdPr?.env, stopped?.env]) {
       expect(env?.["STATUS_START"]).toBe(STATUS_START);
       expect(env?.["STATUS_END"]).toBe(STATUS_END);
     }
@@ -8259,28 +8249,19 @@ describe("the PRD chain's progress", () => {
   });
 
   /**
-   * The gate shows the slice building (#312), in a job that runs no agent and
-   * already holds the write scope: only on a run that builds and has a PRD PR,
-   * after the run claims its slice, and handing what it replaced to `publish`
-   * on the artifact that is uploaded however the gate ends. The runner writes
-   * nothing to the PRD PR's body.
+   * The gate shows the slice building (#312), as `implement-prd:gate` since
+   * #499, in a job that runs no agent and already holds the write scope,
+   * handing what it replaced to `publish` on the artifact that is uploaded
+   * however the gate ends. The runner writes nothing to the PRD PR's body.
    */
   it("shows the slice building from the gate, never from the agent's job", () => {
     const gate = jobNamed(PRD, "gate");
-    const names = (gate.steps ?? []).map((s) => s.name ?? "");
-    const step = (gate.steps ?? []).find((s) => s.name === "Show the slice building in the progress list");
     const upload = (gate.steps ?? []).find((s) => s.name === "Hand the PRD's snapshot on");
     const implement = fs.readFileSync("implement-prd/implement-prd.ts", "utf8");
+    const outputs: readonly string[] = COMMANDS["implement-prd:gate"].outputs;
 
-    expect(step?.if).toBe(
-      "steps.state.outputs.proceed == 'true' && steps.state.outputs.build == 'true' && steps.state.outputs.prd_pr != ''",
-    );
-    expect(names.indexOf("Show the slice building in the progress list")).toBeGreaterThan(names.indexOf("Hand the gate's decision to the job"));
-    expect(names.indexOf("Show the slice building in the progress list")).toBeLessThan(names.indexOf("Hand the PRD's snapshot on"));
-    expect(step?.run).toContain("set -uo pipefail");
-    expect(step?.run).not.toContain("set -e");
-    expect(JSON.stringify(step)).not.toContain("AGENT_PAT");
     expect(gate.permissions?.["pull-requests"]).toBe("write");
+    expect(outputs).toEqual(expect.arrayContaining(["progress_unbuilt.md", "status_unbuilt.md"]));
     for (const file of ["progress_unbuilt.md", "status_unbuilt.md"]) {
       expect(String(upload?.with?.["path"] ?? "")).toContain(`\${{ runner.temp }}/${file}`);
     }
@@ -8351,22 +8332,6 @@ describe("the PRD chain's progress", () => {
     expect(constants(gate)).toEqual(["IMPLEMENT_LABEL", "BLOCKED_LABEL"]);
     expect(constants(advance)).toEqual(["IMPLEMENT_LABEL"]);
     for (const text of [prd, gate, advance]) expect(text).not.toMatch(/gh issue close|state=closed|closeIssue/);
-  });
-
-  /**
-   * The approved-slice note never fails a run: the comment and the read of
-   * the approving review each end in a warning, and the step is not `-e`.
-   */
-  it("notes the approved slice without being able to fail the run", () => {
-    const step = stepsOf(PRD).find((s) => s.id === "approved_note");
-    const run = step?.run ?? "";
-
-    expect(step?.if).toBe("steps.state.outputs.proceed == 'true' && steps.state.outputs.approved_sub != ''");
-    expect(run).toContain("set -uo pipefail");
-    expect(run).not.toContain("set -e");
-    expect(run).toMatch(/gh issue comment "\$APPROVED_SUB" --body "\$note" \\\n\s*\|\| echo "::warning::/);
-    const names = stepsOf(PRD).map((s) => s.name ?? "");
-    expect(names.indexOf("Note the approved slice")).toBe(names.indexOf("Hand the gate's decision to the job") + 1);
   });
 });
 

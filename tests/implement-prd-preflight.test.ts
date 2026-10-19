@@ -11,7 +11,6 @@ import {
   statusBlock,
   type ProgressInputs,
 } from "../shared/progress-list.js";
-import { renderCriteriaGroup, type CriterionResult } from "../shared/review-output.js";
 import { sliceRanges } from "../shared/slice-ranges.js";
 import { SUBPROCESS_TIMEOUT } from "../vitest.config.js";
 import {
@@ -33,10 +32,10 @@ import {
  * before that step became `review:collect-checks` (#421), for this reason: a
  * string assertion passes on a step `gh` refuses (#28).
  *
- * What it executes is the note on the approved slice, the step that opens or
- * reuses the PRD PR, and the finishing run's handover of it. The preflight's
- * state table and the start comments are `implement-prd:gate`'s since #498,
- * and are executed in `tests/implement-prd/`.
+ * What it executes is the step that opens or reuses the PRD PR, and the
+ * finishing run's handover of it. The preflight's state table and the start
+ * comments are `implement-prd:gate`'s since #498, and the note on the
+ * approved slice since #499, and are executed in `tests/implement-prd/`.
  *
  * Skipped where `bash`, `jq` or `node` are not on PATH, as that file is.
  */
@@ -55,8 +54,8 @@ interface Workflow {
 }
 
 const stepById = (id: string): Step => {
-  // Across the run's jobs (#308): the approved note is the gate's, the PRD
-  // PR and the handover the publish job's.
+  // Across the run's jobs (#308): the PRD PR and the handover are the
+  // publish job's.
   const step = Object.values((parse(fs.readFileSync(PRD, "utf8")) as Workflow).jobs)
     .flatMap((job) => job.steps ?? [])
     .find((s) => s.id === id);
@@ -348,97 +347,6 @@ describe.skipIf(!CAN_RUN)("agent-implement-prd's PRD PR, executed", () => {
     expect(outcome.status).toBe(1);
     expect(outcome.reason).toContain("#201, #205");
     expect(prWrites(outcome)).toEqual([]);
-  });
-});
-
-const RUN_URL = "https://github.com/acme/widgets/actions/runs/4242";
-const REVIEW_URL = "https://github.com/acme/widgets/pull/201#pullrequestreview-123";
-
-/** Every comment a step posted, as `[issue, body]`. */
-const comments = (outcome: Outcome): [string, string][] =>
-  writes(outcome)
-    .filter((argv) => argv[0] === "issue" && argv[1] === "comment")
-    .map((argv) => [argv[2] ?? "", argv.at(-1) ?? ""]);
-
-/**
- * Progress without labels (#246): the run past an approval notes the approved
- * slice on its sub-issue. Executed, against the same replay. The start
- * comments are `implement-prd:gate`'s since #498, in
- * `tests/implement-prd/gate.test.ts`.
- */
-describe.skipIf(!CAN_RUN)("agent-implement-prd's progress comments, executed", () => {
-  const HEAD = "0123456789abcdef0123456789abcdef01234567";
-  const NOTE = { APPROVED_SUB: "173", APPROVED_SHA: HEAD, APPROVED_REVIEW: REVIEW_URL, PRD_PR: "201", SERVER_URL: "https://github.com" };
-  /** An approving review's body, its #214 record rendered as the review renders it. */
-  const reviewBody = (criteria: readonly CriterionResult[]): string =>
-    ["## Agent review", "", "Approved.", "", renderCriteriaGroup(criteria) ?? "", "", "Footer."].join("\n");
-
-  it("notes the approved slice on its sub-issue, with the criteria the approving round changed or left unmet", () => {
-    const outcome = runStep("approved_note", {
-      env: NOTE,
-      reviews: {
-        "123": {
-          body: reviewBody([
-            { id: "C1", text: "It renders every state.", status: "met" },
-            { id: "C2", text: "It survives the splice.", status: "changed", reason: "the splice moved" },
-            { id: "C3", text: "No label is added.", status: "unmet" },
-          ]),
-        },
-      },
-    });
-    const posted = comments(outcome);
-
-    expect(outcome.status, outcome.stdout).toBe(0);
-    expect(posted).toHaveLength(1);
-    expect(posted[0]?.[0]).toBe("173");
-    expect(posted[0]?.[1]).toBe(
-      [
-        `**Slice approved:** built in [\`0123456\`](https://github.com/${GH_REPO}/commit/${HEAD}), [reviewed](${REVIEW_URL}) on PRD PR #201. This sub-issue stays open until the PRD PR merges.`,
-        "",
-        "**Acceptance criteria changed or unmet:**",
-        "",
-        "- **Changed:** It survives the splice. · the splice moved",
-        "- **Unmet:** No label is added.",
-        "",
-        `<!-- agent:slice-approved ${HEAD} -->`,
-      ].join("\n"),
-    );
-  });
-
-  /** A retry past the same approval, after a run that failed, posts no second note. */
-  it("notes an approved head once", () => {
-    const outcome = runStep("approved_note", {
-      env: NOTE,
-      comments: { "173": [{ body: "Started." }, { body: `**Slice approved:** …\n\n<!-- agent:slice-approved ${HEAD} -->` }] },
-    });
-
-    expect(outcome.status, outcome.stdout).toBe(0);
-    expect(comments(outcome)).toEqual([]);
-    expect(outcome.stdout).toContain("already has its approved-slice note");
-  });
-
-  it("says none changed or went unmet where the approving round met every criterion", () => {
-    const outcome = runStep("approved_note", {
-      env: NOTE,
-      reviews: { "123": { body: reviewBody([{ id: "C1", text: "It renders every state.", status: "met" }]) } },
-    });
-
-    expect(comments(outcome)[0]?.[1]).toContain("\n\n**Acceptance criteria changed or unmet:** none.\n\n<!-- agent:slice-approved");
-  });
-
-  it("still notes the slice, saying so, where the approving review cannot be read", () => {
-    const outcome = runStep("approved_note", { env: NOTE });
-
-    expect(outcome.status, outcome.stdout).toBe(0);
-    expect(outcome.stdout).toContain("::warning::Could not read the review that approved sub-issue #173");
-    expect(comments(outcome)[0]?.[1]).toContain("the approving review couldn't be read");
-  });
-
-  it("goes on with a warning where the note cannot be posted", () => {
-    const outcome = runStep("approved_note", { env: { ...NOTE, GH_REPLAY_COMMENT_FAILURE: "1" } });
-
-    expect(outcome.status, outcome.stdout).toBe(0);
-    expect(outcome.stdout).toContain("::warning::Could not post the approved-slice note on sub-issue #173.");
   });
 });
 

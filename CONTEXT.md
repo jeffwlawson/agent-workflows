@@ -449,7 +449,7 @@ it `update-branch:conclude`, and `update-branch.yml` runs no inline shell that d
 agent's job `implement:prepare`, its bundling `implement:bundle`, its publish job's success path
 `implement:publish` and the ending after it `implement:conclude`, and `implement.yml` runs no
 inline shell that decides. **Two reusables still run their steps as inline shell**:
-`implement-prd`, whose gate's decision alone is a command so far, `implement-prd:gate` (PRD
+`implement-prd`, whose gate job's work alone is a command so far, `implement-prd:gate` (PRD
 #496), and `follow-ups`, whose filing alone is a command, `follow-ups:file`. Until a step has
 moved, a fix to it still goes in its YAML.
 

@@ -178,18 +178,25 @@ export const PROGRESS_END = "<!-- /agent:progress -->";
 export const FINAL_REVIEW_MARK = "<!-- agent:final-review requested -->";
 
 /**
- * The **status line** (#298): one line at the top of the PRD PR's note, saying
- * where the chain is now, between its own markers. Workflow-owned like the
- * progress table, and rendered from the same state, so the two cannot
- * disagree. It links the latest review where the chain waits on it.
- */
-/**
  * The chain's first run's comment on the PRD parent, saying which sub-issue
  * it builds first, ends with this: a retry of a first run that stopped finds
  * the comment it posted by it, and posts no second (`implement-prd:gate`).
  */
 export const PRD_STARTED_MARK = "<!-- agent:prd-started -->";
 
+/**
+ * The end of the note on an approved slice's sub-issue, naming the head it
+ * was approved on: a retry past the same approval finds the note it posted by
+ * it, and posts no second (`implement-prd:gate`).
+ */
+export const sliceApprovedMark = (sha: string): string => `<!-- agent:slice-approved ${sha} -->`;
+
+/**
+ * The **status line** (#298): one line at the top of the PRD PR's note, saying
+ * where the chain is now, between its own markers. Workflow-owned like the
+ * progress table, and rendered from the same state, so the two cannot
+ * disagree. It links the latest review where the chain waits on it.
+ */
 export const STATUS_START = "<!-- agent:status -->";
 
 export const STATUS_END = "<!-- /agent:status -->";

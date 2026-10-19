@@ -1,20 +1,24 @@
 import type { GitHubReader, SubIssue } from "../engine/read.js";
 import { WriteFailed, type Limits, type Writer } from "../engine/writer.js";
-import { describe, issueNumber, tolerated } from "../shared/command-helpers.js";
+import { describe, inWriteLog, issueNumber, tolerated } from "../shared/command-helpers.js";
 import type { CommandIo } from "../shared/command-io.js";
 import type { COMMANDS } from "../shared/contract.js";
 import type { InputValues } from "../shared/env.js";
+import { showBuilding } from "../shared/progress-list.js";
 import {
   BLOCKED_LABEL,
   IMPLEMENT_LABEL,
   PRD_STARTED_MARK,
   prdBranch,
   prdBranchStem,
+  sliceApprovedMark,
   VERDICT_CONTEXT,
 } from "../shared/record.js";
+import { readCriteriaChanges } from "../shared/review-output.js";
 import {
   afterVerdict,
   blockerRefusal,
+  type Approved,
   chainOf,
   decide,
   linkRefusal,
@@ -54,7 +58,9 @@ interface Decided {
  * anything is checked out. Whether this run goes ahead, said on the parent
  * where it does not; which slice it builds, or whether it only opens a
  * missing PRD PR or hands a finished one over; the permission probe;
- * `agent:blocked` off; and the start comments.
+ * `agent:blocked` off; the start comments; past an approval, the note on the
+ * approved slice (#499); and on a build with a PRD PR, the slice building in
+ * its progress list.
  *
  * `gate.json` is its decision, `proceed`, written the moment it is decided
  * and again however this ends, as `implement:gate`'s is: a gate that died
@@ -108,6 +114,11 @@ export const gate = async (inputs: Inputs, io: Io): Promise<void> => {
       );
     }
     await claim(parent, inputs, io.github, workflow, { chain, branch: branch.name, pr, next });
+    if (pr === undefined) return;
+    if (approved !== undefined) await noteApproved(inputs, io.github, workflow, pr.number, approved);
+    if (next !== undefined) {
+      await showSliceBuilding(io, workflow, pr.number, { position: next.position, subIssue: next.subIssue.number, total: chain.subIssues.length });
+    }
   } finally {
     io.outputs.writeJson("gate.json", decided);
   }
@@ -374,6 +385,116 @@ const claim = async (
 };
 
 /**
+ * **The approved slice, on its own sub-issue** (#246): the run past an
+ * approval has passed its gate, so the slice the PRD PR's head was approved on
+ * is done with, and its sub-issue records what shipped for it, while it stays
+ * open until the PRD PR merges. Built in the approved head, reviewed on the
+ * PRD PR, and the criteria the approving round's record (#214) says changed
+ * or went unmet, read back from the approving review's body, which the
+ * verdict links, by `readCriteriaChanges`, or that none did.
+ *
+ * Once per approved head, by its mark: a retry past the same approval, after
+ * a run that failed, finds the note it posted. A tolerated write: a note that
+ * cannot be read or posted says so in a warning, and the chain goes on.
+ */
+const noteApproved = async (inputs: Inputs, github: GitHubReader, workflow: Writer, pr: number, approved: Approved): Promise<void> => {
+  const { subIssue: sub, sha, review } = approved;
+  const mark = sliceApprovedMark(sha);
+  try {
+    if ((await github.issueComments(sub)).some((body) => body.includes(mark))) {
+      console.log(`Sub-issue #${sub} already has its approved-slice note for ${sha}.`);
+      return;
+    }
+  } catch (error) {
+    console.log(`::warning::Could not read the comments on sub-issue #${sub}, so its approved-slice note may be posted twice. ${describe(error)}`);
+  }
+  const id = /#pullrequestreview-([0-9]+)$/.exec(review)?.[1];
+  let body = "";
+  if (id !== undefined) {
+    try {
+      body = (await github.reviews(pr)).find((posted) => posted.url.endsWith(`#pullrequestreview-${id}`))?.body ?? "";
+    } catch (error) {
+      console.log(`Could not read the reviews on PRD PR #${pr}: ${describe(error)}`);
+    }
+  }
+  let criteria = "**Acceptance criteria changed or unmet:** none.";
+  if (body === "") {
+    criteria =
+      "**Acceptance criteria changed or unmet:** the approving review couldn't be read, so they aren't listed here; its *Acceptance criteria* section has them.";
+    console.log(`::warning::Could not read the review that approved sub-issue #${sub} (${review || "no link"}), so its note does not list the criteria.`);
+  } else {
+    const changes = readCriteriaChanges(body) ?? [];
+    if (changes.length > 0) {
+      const lines = changes.map((change) => `- **${change.status === "changed" ? "Changed" : "Unmet"}:** ${change.line}`);
+      criteria = `**Acceptance criteria changed or unmet:**\n\n${lines.join("\n")}`;
+    }
+  }
+  const short = `\`${sha.slice(0, 7)}\``;
+  const commit = inputs.GITHUB_SERVER_URL === "" ? short : `[${short}](${inputs.GITHUB_SERVER_URL}/${inputs.GH_REPO}/commit/${sha})`;
+  const reviewed = review === "" ? `reviewed on PRD PR #${pr}` : `[reviewed](${review}) on PRD PR #${pr}`;
+  await tolerated(`Could not post the approved-slice note on sub-issue #${sub}. The run goes on.`, () =>
+    workflow.comment(
+      sub,
+      `**Slice approved:** built in ${commit}, ${reviewed}. This sub-issue stays open until the PRD PR merges.\n\n${criteria}\n\n${mark}`,
+    ),
+  );
+};
+
+/**
+ * **The slice building** in the PRD PR's progress list and status line (#246,
+ * #312), written here because the gate runs no agent: the agent's job reads
+ * only (#308). Spliced into the live body, as `showBuilding` builds it from
+ * the slice alone. A body with half a list, or two, or a list with no row for
+ * the slice, is left as it stands, with a warning, and one with no list is
+ * left with a line saying so.
+ *
+ * The list and status line it replaces are kept first, as
+ * `progress_unbuilt.md` and `status_unbuilt.md`: a list that shows the slice
+ * building always has one to undo it, for a run that stops before the runner
+ * renders its own (publish's *Show the stopped slice in the progress list*).
+ * A tolerated write: the list is a view of the chain, and a slice is worth
+ * more than it.
+ */
+const showSliceBuilding = async (
+  io: Io,
+  workflow: Writer,
+  pr: number,
+  slice: { readonly position: number; readonly subIssue: number; readonly total: number },
+): Promise<void> => {
+  const sub = slice.subIssue;
+  let shown: ReturnType<typeof showBuilding> | undefined;
+  const wrote = await tolerated(inWriteLog(`Could not write PRD PR #${pr}'s progress list, so it does not show sub-issue #${sub} building.`), () =>
+    workflow.editPullRequest(pr, {
+      body: (live) => {
+        shown = showBuilding(live, slice);
+        if (shown.kind !== "write") return undefined;
+        io.outputs.writeText("progress_unbuilt.md", shown.progress);
+        if (shown.status !== undefined) io.outputs.writeText("status_unbuilt.md", shown.status);
+        return shown.body;
+      },
+    }),
+  );
+  if (!wrote) return;
+  switch (shown?.kind) {
+    case "half":
+      console.log(
+        `::warning::PRD PR #${pr}'s body carries half a progress list, or two, so it was not written. Restore the missing marker, or delete the markers and the text between them, and the next ending of a round writes it again.`,
+      );
+      return;
+    case "none":
+      console.log(`PRD PR #${pr}'s body carries no progress list, so none shows sub-issue #${sub} building.`);
+      return;
+    case "no row":
+      console.log(
+        `::warning::PRD PR #${pr}'s progress list has no row for sub-issue #${sub} as slice ${slice.position}, so it was not written. The next ending of a round writes it again.`,
+      );
+      return;
+    default:
+      console.log(`PRD PR #${pr}'s progress list shows sub-issue #${sub} building.`);
+  }
+};
+
+/**
  * A refusal, in the loop's one order (#236): the comment first, then this
  * run's own label off, then `agent:blocked` where it is durable, so the label
  * that names the next step goes on last. Each write is tolerated: a comment
@@ -408,7 +529,8 @@ const OLD_SLICE_PREFIX = "agent/slice-";
 /**
  * What the gate may write, and how many of each (ADR 0005). A refusal is one
  * comment, `agent:implement` off and, where durable, `agent:blocked` on; a
- * run that goes ahead is the probe's `agent:implement`, `agent:blocked` off
- * and at most three start comments. Never both.
+ * run that goes ahead is the probe's `agent:implement`, `agent:blocked` off,
+ * at most three start comments and the approved slice's note, and the one
+ * edit that shows the slice building. Never both.
  */
-const LIMITS: Limits = { comment: 3, removeLabel: 2, addLabel: 2 };
+const LIMITS: Limits = { comment: 4, removeLabel: 2, addLabel: 2, editPullRequest: 1 };

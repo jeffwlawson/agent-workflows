@@ -819,8 +819,8 @@ orchestrator ran before it, and it works out the ending from them. Each is one o
 - **A refusal or a deferral** (`REFUSED` is `true`): nothing, since the gate said it and took the
   label off, or says nothing by design.
 - **A run that finished**: the gate, the agent's job and every step before this one.
-  `agent:implement` off, except where `published.json` says `implement:publish` asked for the
-  review, since it took the label off before it did. Every other word of it is publish's.
+  `agent:implement` off, even where `implement:publish` took it off before it asked for the
+  review, since that removal is tolerated and may have failed. Every other word of it is publish's.
 - **A run that stopped**, after a gate that decided the run was its own (`REFUSED` is `false`): the
   failure comment, `` **`agent:implement` stopped:** `` and the reason as a sentence, the run's
   link, and the retry; then `agent:implement` off, then `agent:blocked`.

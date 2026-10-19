@@ -16,8 +16,8 @@ type Io = CommandIo<Declared["outputs"]>;
  * then `agent:blocked`.
  *
  * - **A run that finished**, `implement:publish` included: `agent:implement`
- *   off, where publish did not already take it off. Every other word of a
- *   finished run is publish's.
+ *   off, again where publish took it off already, since publish's removal is
+ *   tolerated. Every other word of a finished run is publish's.
  * - **A run that stopped**, any of its three jobs, after a gate that decided
  *   the issue was its own: the failure comment, with the reason and the
  *   retry; `agent:implement` off; `agent:blocked`. Where publish opened a pull
@@ -71,9 +71,10 @@ export const conclude = async (inputs: Inputs, io: Io): Promise<void> => {
   const state = published["published.json"];
 
   if (ending.kind === "finished") {
-    // Publish takes the label off before it asks for the review (#236), so
-    // there is nothing left to take off once it has asked.
-    if (state?.requested === true) return;
+    // Publish takes the label off before it asks for the review (#236), but
+    // that removal is tolerated and may have failed, so it comes off here
+    // again, as on every decided run: removing a label that is absent is
+    // already done.
     await removeTrigger(issue, workflow);
     return;
   }

@@ -491,14 +491,30 @@ describe("implement:conclude takes the trigger label off however a decided run e
     expect(comments()).toEqual([]);
   });
 
-  /** Publish takes the label off before it asks for the review (#236), so a finished run has nothing left to do. */
-  it("does nothing on a run that finished where publish took it off", async () => {
+  /**
+   * Publish takes the label off before it asks for the review (#236), but
+   * that removal is tolerated, so a finished run takes it off again: always
+   * removed after a decided gate, whatever publish managed.
+   */
+  it("takes it off a run that finished where publish's own removal failed", async () => {
     published({ pushed: true, pr: PR, requested: true });
 
     await run();
 
-    expect(writes()).toEqual([]);
+    expect(writes()).toEqual([`workflow removeLabel ${ISSUE} ${IMPLEMENT_LABEL}`]);
+    expect(github.issueLabels.get(ISSUE)).toEqual([]);
     expect(comments()).toEqual([]);
+  });
+
+  it("removes it again, harmlessly, where publish already took it off", async () => {
+    published({ pushed: true, pr: PR, requested: true });
+    github.issueLabels.set(ISSUE, []);
+
+    await run();
+
+    expect(writes()).toEqual([`workflow removeLabel ${ISSUE} ${IMPLEMENT_LABEL}`]);
+    expect(github.issueLabels.get(ISSUE)).toEqual([]);
+    expect(warnings()).toEqual([]);
   });
 
   it("does nothing after a refusal or a deferral, which the gate said or must not", async () => {

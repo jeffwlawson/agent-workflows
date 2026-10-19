@@ -2,6 +2,7 @@ import * as path from "node:path";
 import { GitError } from "../engine/git.js";
 import { ReadBackFailed, WriteFailed, type Lease, type Limits, type Writer } from "../engine/writer.js";
 import { checkBundle } from "../shared/bundle.js";
+import { describe, inWriteLog, issueNumber, seconds, tolerated } from "../shared/command-helpers.js";
 import type { CheckoutIo } from "../shared/command-io.js";
 import { COMMANDS } from "../shared/contract.js";
 import type { InputValues } from "../shared/env.js";
@@ -105,8 +106,8 @@ export const publish = async (inputs: Inputs, io: Io): Promise<void> => {
   // before the review is asked for. A warning where it cannot be posted: the
   // pull request is open either way, and the review must still be requested.
   await tolerated(
+    inWriteLog(`Could not comment PR #${pr} on #${issue}.`),
     () => workflow.comment(issue, `**\`${IMPLEMENT_LABEL}\` opened PR #${pr}:** [Workflow run](${inputs.RUN_URL})`),
-    `Could not comment PR #${pr} on #${issue}.`,
   );
 
   // Step 4: the review, once the pull request shows the pushed head (#229).
@@ -175,8 +176,11 @@ const requestReview = async (inputs: Inputs, io: Io, issue: number, pr: number, 
     waitSeconds: seconds(inputs.HEAD_WAIT_SECONDS, "HEAD_WAIT_SECONDS"),
     pollSeconds: seconds(inputs.HEAD_POLL_SECONDS, "HEAD_POLL_SECONDS"),
   });
-  await tolerated(() => loop.removeLabel(issue, IMPLEMENT_LABEL), `Could not take \`${IMPLEMENT_LABEL}\` off #${issue}.`);
-  await tolerated(() => loop.removeLabel(pr, REVIEW_LABEL), `Could not take \`${REVIEW_LABEL}\` off PR #${pr} before adding it.`);
+  await tolerated(inWriteLog(`Could not take \`${IMPLEMENT_LABEL}\` off #${issue}.`), () => loop.removeLabel(issue, IMPLEMENT_LABEL));
+  await tolerated(
+    inWriteLog(`Could not take \`${REVIEW_LABEL}\` off PR #${pr} before adding it.`),
+    () => loop.removeLabel(pr, REVIEW_LABEL),
+  );
   try {
     await loop.addLabel(pr, REVIEW_LABEL);
   } catch (error) {
@@ -198,37 +202,11 @@ const requestReview = async (inputs: Inputs, io: Io, issue: number, pr: number, 
  */
 const LIMITS: Limits = { pushRef: 1, openPullRequest: 1, addLabel: 1, comment: 1, removeLabel: 2 };
 
-/**
- * A write the loop can live without: made, or said as a warning where GitHub
- * refused it. A write past its limit is still thrown: that is our own bug,
- * never one to read past.
- */
-const tolerated = async (write: () => Promise<unknown>, warning: string): Promise<void> => {
-  try {
-    await write();
-  } catch (error) {
-    if (!(error instanceof WriteFailed)) throw error;
-    console.log(`::warning::${warning} GitHub's reply is in the write log.`);
-  }
-};
-
 /** A file read for being there, and nothing more: the bundle's bytes are git's to check. */
 const present: Parser<true> = () => true;
 
 /** `text` cut to `max` characters, as bash's `${title:0:256}` cut it: by code point, never mid-character. */
 const cut = (text: string, max: number): string => Array.from(text).slice(0, max).join("");
-
-const describe = (error: unknown): string => (error instanceof Error ? error.message : String(error));
-
-const seconds = (value: string, name: string): number => {
-  if (!/^[0-9]{1,6}$/.test(value)) throw new Error(`${name} is ${JSON.stringify(value)}, which is not a number of seconds.`);
-  return Number(value);
-};
-
-const issueNumber = (value: string): number => {
-  if (!/^[1-9][0-9]{0,9}$/.test(value)) throw new Error(`ISSUE_NUMBER is ${JSON.stringify(value)}, which is not an issue number.`);
-  return Number(value);
-};
 
 const commit = (value: string, name: string): string => {
   if (!/^[0-9a-f]{40}$/.test(value)) {

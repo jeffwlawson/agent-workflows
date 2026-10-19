@@ -2,6 +2,7 @@ import * as path from "node:path";
 import { GitHubError } from "../engine/github.js";
 import { WriteFailed, type Lease, type Limits, type Writer } from "../engine/writer.js";
 import { checkBundle } from "../shared/bundle.js";
+import { describe, pullRequestNumber, tolerated } from "../shared/command-helpers.js";
 import type { CheckoutIo } from "../shared/command-io.js";
 import { workflowRunUrl } from "../shared/common.js";
 import { COMMANDS } from "../shared/contract.js";
@@ -322,21 +323,7 @@ const failureComment = (inputs: Inputs, reason: string, retry: string): string =
  * run's own push fail its lease anyway, which is `agent:blocked` and a
  * human's call.
  */
-const removeTrigger = (pr: number, workflow: Writer): Promise<void> => tolerated(undefined, () => workflow.removeLabel(pr, FIX_LABEL));
-
-/**
- * A write the loop can live without: a failure is said as `warning`, where
- * there is one, and stays in the write log as a failure its last line does not
- * name. Anything but a failed write, a limit reached included, still stops.
- */
-const tolerated = async (warning: string | undefined, write: () => Promise<unknown>): Promise<void> => {
-  try {
-    await write();
-  } catch (error) {
-    if (!(error instanceof WriteFailed)) throw error;
-    if (warning !== undefined) console.log(`::warning::${warning}`);
-  }
-};
+const removeTrigger = (pr: number, workflow: Writer): Promise<boolean> => tolerated(undefined, () => workflow.removeLabel(pr, FIX_LABEL));
 
 /**
  * What conclude may write, and how many of each (ADR 0005): the rescue push,
@@ -346,13 +333,6 @@ const tolerated = async (warning: string | undefined, write: () => Promise<unkno
 const LIMITS: Limits = { pushRef: 1, comment: 2, removeLabel: 1, addLabel: 1 };
 
 const FLAG = choice([true, false]);
-
-const describe = (error: unknown): string => (error instanceof Error ? error.message : String(error));
-
-const pullRequestNumber = (value: string): number => {
-  if (!/^[1-9][0-9]{0,9}$/.test(value)) throw new Error(`PR_NUMBER is ${JSON.stringify(value)}, which is not a pull request number.`);
-  return Number(value);
-};
 
 const commit = (value: string): string => {
   if (!/^[0-9a-f]{40}$/.test(value)) {

@@ -1,6 +1,7 @@
 import { GitHubError } from "../engine/github.js";
 import type { GitHubReader } from "../engine/read.js";
 import { WriteFailed, type Limits, type Writer } from "../engine/writer.js";
+import { describe, issueNumber, tolerated } from "../shared/command-helpers.js";
 import type { CommandIo } from "../shared/command-io.js";
 import type { COMMANDS } from "../shared/contract.js";
 import type { InputValues } from "../shared/env.js";
@@ -245,20 +246,6 @@ const read = async (what: string, fetch: () => Promise<string>): Promise<string>
 };
 
 /**
- * A write the loop can live without: a failure is said as `warning`, where
- * there is one, and stays in the write log as a failure its last line does not
- * name. Anything but a failed write, a limit reached included, still stops.
- */
-const tolerated = async (warning: string | undefined, write: () => Promise<unknown>): Promise<void> => {
-  try {
-    await write();
-  } catch (error) {
-    if (!(error instanceof WriteFailed)) throw error;
-    if (warning !== undefined) console.log(`::warning::${warning}`);
-  }
-};
-
-/**
  * What the gate may write, and how many of each (ADR 0005). A refusal is one
  * comment, `agent:implement` off and, on a shape, `agent:blocked` on; a run
  * that goes ahead is the probe's `agent:implement`, `agent:blocked` off and
@@ -266,9 +253,3 @@ const tolerated = async (warning: string | undefined, write: () => Promise<unkno
  */
 const LIMITS: Limits = { comment: 2, removeLabel: 2, addLabel: 2 };
 
-const describe = (error: unknown): string => (error instanceof Error ? error.message : String(error));
-
-const issueNumber = (value: string): number => {
-  if (!/^[1-9][0-9]{0,9}$/.test(value)) throw new Error(`ISSUE_NUMBER is ${JSON.stringify(value)}, which is not an issue number.`);
-  return Number(value);
-};

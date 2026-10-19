@@ -1,4 +1,5 @@
-import { WriteFailed, type Limits, type Writer } from "../engine/writer.js";
+import type { Limits, Writer } from "../engine/writer.js";
+import { describe, issueNumber, tolerated } from "../shared/command-helpers.js";
 import type { CommandIo } from "../shared/command-io.js";
 import { COMMANDS, type DirectoryFiles, type DirectoryInput } from "../shared/contract.js";
 import type { InputValues } from "../shared/env.js";
@@ -214,22 +215,8 @@ const failureComment = (inputs: Inputs, reason: string, retry: string): string =
  * The trigger label comes off however a decided run ends (#236), so it never
  * outlives the run that decided the issue was its own.
  */
-const removeTrigger = (issue: number, workflow: Writer): Promise<void> =>
+const removeTrigger = (issue: number, workflow: Writer): Promise<boolean> =>
   tolerated(undefined, () => workflow.removeLabel(issue, IMPLEMENT_LABEL));
-
-/**
- * A write the loop can live without: a failure is said as `warning`, where
- * there is one, and stays in the write log as a failure its last line does not
- * name. Anything but a failed write, a limit reached included, still stops.
- */
-const tolerated = async (warning: string | undefined, write: () => Promise<unknown>): Promise<void> => {
-  try {
-    await write();
-  } catch (error) {
-    if (!(error instanceof WriteFailed)) throw error;
-    if (warning !== undefined) console.log(`::warning::${warning}`);
-  }
-};
 
 /**
  * What conclude may write, and how many of each (ADR 0005): the failure
@@ -239,9 +226,3 @@ const LIMITS: Limits = { comment: 1, removeLabel: 1, addLabel: 1 };
 
 const FLAG = choice([true, false]);
 
-const describe = (error: unknown): string => (error instanceof Error ? error.message : String(error));
-
-const issueNumber = (value: string): number => {
-  if (!/^[1-9][0-9]{0,9}$/.test(value)) throw new Error(`ISSUE_NUMBER is ${JSON.stringify(value)}, which is not an issue number.`);
-  return Number(value);
-};

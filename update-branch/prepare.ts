@@ -1,4 +1,5 @@
 import { BaseMoved, FetchFailed } from "../engine/git.js";
+import { describe } from "../shared/command-helpers.js";
 import type { MergingIo } from "../shared/command-io.js";
 import type { COMMANDS } from "../shared/contract.js";
 import type { InputValues } from "../shared/env.js";
@@ -53,4 +54,3 @@ export const prepare = async (inputs: Inputs, io: Io): Promise<void> => {
   console.log(`Conflicts merging ${base} (${merged.base}) again, for the agent, in: ${merged.conflicts.join(" ")}`);
 };
 
-const describe = (error: unknown): string => (error instanceof Error ? error.message : String(error));

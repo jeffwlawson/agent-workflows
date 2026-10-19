@@ -1,4 +1,5 @@
 import { GitHubError } from "../engine/github.js";
+import { describe } from "../shared/command-helpers.js";
 import type { FetchingIo } from "../shared/command-io.js";
 import type { COMMANDS } from "../shared/contract.js";
 import type { InputValues } from "../shared/env.js";
@@ -51,4 +52,3 @@ export const prepare = async (inputs: Inputs, io: Io): Promise<void> => {
   console.log(`Fetched ${branch}, which an earlier run left, for the runner to resume from.`);
 };
 
-const describe = (error: unknown): string => (error instanceof Error ? error.message : String(error));

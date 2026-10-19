@@ -1,5 +1,6 @@
 import type { PullRequest } from "../engine/read.js";
 import { WriteFailed, type Limits, type Writer } from "../engine/writer.js";
+import { describe, pullRequestNumber, tolerated } from "../shared/command-helpers.js";
 import type { CommandIo } from "../shared/command-io.js";
 import { workflowRunUrl } from "../shared/common.js";
 import { COMMANDS } from "../shared/contract.js";
@@ -236,7 +237,7 @@ const stopped = async (inputs: Inputs, { pr, workflow }: Say, comment: string): 
  * and before every hand-off (#257): `fix` and `update-branch` wait while it is
  * on, so it coming off is what tells them the review is posted.
  */
-const removeTrigger = ({ pr, workflow }: Say): Promise<void> => tolerated(undefined, () => workflow.removeLabel(pr, REVIEW_LABEL));
+const removeTrigger = ({ pr, workflow }: Say): Promise<boolean> => tolerated(undefined, () => workflow.removeLabel(pr, REVIEW_LABEL));
 
 /**
  * Ready for review, on a posted review. Draft means "the automated pipeline
@@ -461,20 +462,6 @@ const startFixRound = async (
 };
 
 /**
- * A write the loop can live without: a failure is said as `warning`, where
- * there is one, and stays in the write log as a failure its last line does not
- * name. Anything but a failed write, a limit reached included, still stops.
- */
-const tolerated = async (warning: string | undefined, write: () => Promise<unknown>): Promise<void> => {
-  try {
-    await write();
-  } catch (error) {
-    if (!(error instanceof WriteFailed)) throw error;
-    if (warning !== undefined) console.log(`::warning::${warning}`);
-  }
-};
-
-/**
  * What conclude may write, and how many of each (ADR 0005): three removals
  * (`agent:blocked`, `agent:review` and `agent:fix` before it is added), one
  * label added (`agent:blocked`, `agent:review` or `agent:fix`, never two),
@@ -486,9 +473,3 @@ const LIMITS: Limits = { removeLabel: 3, addLabel: 1, comment: 2, markReadyForRe
 
 const LINK = matching(/https?:\/\/[^\s<>()]+/, "a link");
 
-const describe = (error: unknown): string => (error instanceof Error ? error.message : String(error));
-
-const pullRequestNumber = (value: string): number => {
-  if (!/^[1-9][0-9]{0,9}$/.test(value)) throw new Error(`PR_NUMBER is ${JSON.stringify(value)}, which is not a pull request number.`);
-  return Number(value);
-};

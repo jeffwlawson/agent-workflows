@@ -3,6 +3,7 @@ import { GitHubError } from "../engine/github.js";
 import { GitError } from "../engine/git.js";
 import { WriteFailed, type Limits, type Writer } from "../engine/writer.js";
 import { checkBundle } from "../shared/bundle.js";
+import { describe, inWriteLog, pullRequestNumber, seconds, tolerated } from "../shared/command-helpers.js";
 import type { CheckoutIo } from "../shared/command-io.js";
 import { COMMANDS } from "../shared/contract.js";
 import type { InputValues } from "../shared/env.js";
@@ -95,8 +96,8 @@ export const publish = async (inputs: Inputs, io: Io): Promise<void> => {
   // Recorded once it went up, so `fix:conclude` says it wherever this did not.
   if (rescue !== undefined) {
     const noted = await tolerated(
+      inWriteLog(`Could not say on PR #${pr} that ${rescue.branch} was set aside.`),
       () => workflow.comment(pr, setAsideNote(rescue.branch)),
-      `Could not say on PR #${pr} that ${rescue.branch} was set aside.`,
     );
     if (noted) {
       state.rescueNoted = true;
@@ -115,7 +116,7 @@ export const publish = async (inputs: Inputs, io: Io): Promise<void> => {
   if (nothing) {
     state.nothingToDo = true;
     record();
-    await tolerated(() => workflow.comment(pr, NOTHING_TO_DO), `Could not post the nothing-to-do note on PR #${pr}.`);
+    await tolerated(inWriteLog(`Could not post the nothing-to-do note on PR #${pr}.`), () => workflow.comment(pr, NOTHING_TO_DO));
     return;
   }
 
@@ -155,11 +156,11 @@ export const publish = async (inputs: Inputs, io: Io): Promise<void> => {
   // the write is `reply`, and this command's limits name no other.
   for (const outcome of handOver["thread_outcomes.json"] ?? []) {
     await tolerated(
+      inWriteLog(`Could not reply to review thread ${outcome.threadId}.`),
       async () => {
         await workflow.reply({ threadId: outcome.threadId, body: outcome.reply });
         console.log(`Replied to ${outcome.threadId} (${outcome.status}).`);
       },
-      `Could not reply to review thread ${outcome.threadId}.`,
     );
   }
 
@@ -174,8 +175,8 @@ export const publish = async (inputs: Inputs, io: Io): Promise<void> => {
     console.log("No conversation comment outcomes, so there is nothing to record.");
   } else {
     await tolerated(
+      inWriteLog(`Could not post the conversation comment outcomes on PR #${pr}.`),
       () => workflow.comment(pr, headed(header, conversation)),
-      `Could not post the conversation comment outcomes on PR #${pr}.`,
     );
   }
 
@@ -184,8 +185,8 @@ export const publish = async (inputs: Inputs, io: Io): Promise<void> => {
   // and the runner caps and dedupes the list.
   for (const [i, comment] of (handOver["top_level_comments.json"] ?? []).entries()) {
     await tolerated(
+      inWriteLog(`Could not post top-level comment ${i} on PR #${pr}.`),
       () => workflow.comment(pr, headed(header, renderTopLevelComment(comment.body))),
-      `Could not post top-level comment ${i} on PR #${pr}.`,
     );
   }
 
@@ -195,8 +196,8 @@ export const publish = async (inputs: Inputs, io: Io): Promise<void> => {
   // rule on.
   for (const [i, note] of (handOver["out_of_scope_notes.json"] ?? []).entries()) {
     const posted = await tolerated(
+      inWriteLog(`Could not post out-of-scope note ${i} on PR #${pr}.`),
       () => workflow.comment(pr, headed(header, renderOutOfScopeNote(note))),
-      `Could not post out-of-scope note ${i} on PR #${pr}.`,
     );
     if (posted && !state.notesPosted) {
       state.notesPosted = true;
@@ -215,8 +216,8 @@ export const publish = async (inputs: Inputs, io: Io): Promise<void> => {
     await requestReview(inputs, io, pr, loop, workflow, state.head);
   } else {
     await tolerated(
+      inWriteLog(`Could not mark PR #${pr} ready for review. If neither the loop's App nor AGENT_PAT is set this is expected: GITHUB_TOKEN cannot do it. Mark it ready by hand.`),
       () => loop.markReadyForReview(pr),
-      `Could not mark PR #${pr} ready for review. If neither the loop's App nor AGENT_PAT is set this is expected: GITHUB_TOKEN cannot do it. Mark it ready by hand.`,
     );
   }
 };
@@ -292,8 +293,8 @@ const deleteRescue = async (io: Io, workflow: Writer, rescue: string): Promise<v
     return;
   }
   const deleted = await tolerated(
+    inWriteLog(`Could not delete ${rescue}. The next run sets it aside; delete it by hand.`),
     () => workflow.deleteRef({ ref: `refs/heads/${rescue}`, lease: { tip } }),
-    `Could not delete ${rescue}. The next run sets it aside; delete it by hand.`,
   );
   if (deleted) console.log(`Deleted ${rescue}: this run succeeded.`);
 };
@@ -326,8 +327,11 @@ const requestReview = async (
       pollSeconds: seconds(inputs.HEAD_POLL_SECONDS, "HEAD_POLL_SECONDS"),
     });
   }
-  await tolerated(() => loop.removeLabel(pr, FIX_LABEL), `Could not take \`${FIX_LABEL}\` off PR #${pr}.`);
-  await tolerated(() => loop.removeLabel(pr, REVIEW_LABEL), `Could not take \`${REVIEW_LABEL}\` off PR #${pr} before adding it.`);
+  await tolerated(inWriteLog(`Could not take \`${FIX_LABEL}\` off PR #${pr}.`), () => loop.removeLabel(pr, FIX_LABEL));
+  await tolerated(
+    inWriteLog(`Could not take \`${REVIEW_LABEL}\` off PR #${pr} before adding it.`),
+    () => loop.removeLabel(pr, REVIEW_LABEL),
+  );
   try {
     await loop.addLabel(pr, REVIEW_LABEL);
   } catch (error) {
@@ -338,7 +342,7 @@ const requestReview = async (
   console.log(
     `::warning::Neither the loop's App nor AGENT_PAT is set, so this label was added with GITHUB_TOKEN and will NOT trigger agent-review. Add ${REVIEW_LABEL} by hand on PR #${pr}.`,
   );
-  await tolerated(() => workflow.comment(pr, NO_REVIEW_STARTS), "…and that could not be said on the pull request either.");
+  await tolerated(inWriteLog("…and that could not be said on the pull request either."), () => workflow.comment(pr, NO_REVIEW_STARTS));
 };
 
 /**
@@ -359,24 +363,6 @@ const limits = (threads: number): Limits => ({
   markReadyForReview: 1,
 });
 
-/**
- * A write the loop can live without: made, or said as a warning where GitHub
- * refused it. Whether it landed. A write past its limit is still thrown: that
- * is our own bug, never one to read past.
- */
-const tolerated = async (write: () => Promise<unknown>, warning: string): Promise<boolean> => {
-  try {
-    await write();
-    return true;
-  } catch (error) {
-    if (!(error instanceof WriteFailed)) throw error;
-    console.log(`::warning::${warning} GitHub's reply is in the write log.`);
-    return false;
-  }
-};
-
-const describe = (error: unknown): string => (error instanceof Error ? error.message : String(error));
-
 /** A read publish cannot go on without, its failure said as a sentence: nothing has been written yet. */
 const read = async <T>(what: string, request: () => Promise<T>): Promise<T> => {
   try {
@@ -384,16 +370,6 @@ const read = async <T>(what: string, request: () => Promise<T>): Promise<T> => {
   } catch (error) {
     throw new Error(`Could not read ${what} from GitHub, so nothing was pushed or posted: ${describe(error)}`, { cause: error });
   }
-};
-
-const seconds = (value: string, name: string): number => {
-  if (!/^[0-9]{1,6}$/.test(value)) throw new Error(`${name} is ${JSON.stringify(value)}, which is not a number of seconds.`);
-  return Number(value);
-};
-
-const pullRequestNumber = (value: string): number => {
-  if (!/^[1-9][0-9]{0,9}$/.test(value)) throw new Error(`PR_NUMBER is ${JSON.stringify(value)}, which is not a pull request number.`);
-  return Number(value);
 };
 
 const commit = (value: string, name: string): string => {

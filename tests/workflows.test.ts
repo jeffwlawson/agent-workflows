@@ -4497,7 +4497,7 @@ describe("agent-implement's gate is `implement:gate`, before any checkout", () =
 
   /**
    * Refusing to swallow a failed shape query only helps if the failure reaches
-   * the issue. A gate that dies before deciding writes no `gate.json`, so
+   * the issue. A gate that dies before deciding writes no `proceed`, so
    * `refused` is empty, and `''` is not `'false'`: the publish job, and the
    * conclude step in it, have to run on `!= 'true'`, or the one step that
    * comments the reason is skipped exactly when the reason is a red run

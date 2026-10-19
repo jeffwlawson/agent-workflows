@@ -605,7 +605,9 @@ runs no model and needs no checkout. In order:
 Every write is made with `GH_TOKEN`: none of them has to start a run. A refusal or a deferral is a
 decision, and the command succeeds. `gate.json` is written the moment the run is decided, ahead of
 the probe, and again as each fact is read and however the command ends, so a run that failed at
-the probe still says it went ahead, and one that died before deciding writes none.
+the probe still says it went ahead. One that died before deciding writes no `gate.json` where an
+input could not be read, and `{}`, with no `proceed`, where it failed after that; the adapter
+reads either as undecided, an empty `refused`.
 
 #### Inputs
 
@@ -1732,8 +1734,9 @@ runs no model and needs no checkout. In order:
 Every write is made with `GH_TOKEN`: none of them has to start a run. A refusal is a decision, and
 the command succeeds. `gate.json` is written the moment the run is refused or claimed, ahead of the
 probe and the wait, so a cancel during either still finds it, and again however the command ends, with what was decided by
-then, so a run that failed at the probe still says it went ahead, and one that died before
-deciding writes none.
+then, so a run that failed at the probe still says it went ahead. One that died before deciding
+writes no `gate.json` where an input could not be read, and `{}`, with no `proceed`, where it
+failed after that; the adapter reads either as undecided, an empty `refused`.
 
 #### Inputs
 

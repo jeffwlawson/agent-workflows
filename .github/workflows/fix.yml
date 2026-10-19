@@ -222,10 +222,11 @@ jobs:
       # Glue only Actions can do (ADR 0003): the gate's decision, copied into
       # the step output `proceed`, which the job's `refused` and the clock
       # read. `always()`, so a gate that decided to go ahead and then failed,
-      # at the probe, still says so; nothing where it wrote no `gate.json`,
-      # which `refused` reads as a gate that died before deciding. And the
-      # reason the gate failed with, where it wrote one, as `failure-reason`,
-      # whole, under a delimiter of its own, as review's job hands its on.
+      # at the probe, still says so; nothing where it wrote no `gate.json`, or
+      # one with no `proceed`, which `refused` reads as a gate that died
+      # before deciding. And the reason the gate failed with, where it wrote
+      # one, as `failure-reason`, whole, under a delimiter of its own, as
+      # review's job hands its on.
       - name: Hand the gate's decision to the job
         id: state
         if: always()

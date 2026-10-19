@@ -29,10 +29,12 @@ interface Decided {
  *
  * `gate.json` is its decision, `proceed`, which the adapter copies into the
  * job's `refused`, written as soon as it is decided and again however this
- * ends, as `fix:gate`'s is: a gate that died before deciding writes none, and
- * the later jobs read that as the third value of `refused`, empty. One that
- * decided to go ahead and then failed, at the probe or a read after it, still
- * says so, and its job's failure is what keeps the agent's job from starting.
+ * ends, as `fix:gate`'s is: a gate that died before deciding writes no file
+ * where an input could not be read, and `{}`, with no `proceed`, where it
+ * failed after that. The later jobs read either as the third value of
+ * `refused`, empty. One that decided to go ahead and then failed, at the
+ * probe or a read after it, still says so, and its job's failure is what
+ * keeps the agent's job from starting.
  *
  * Every write is the workflow token's: nothing here has to start a run.
  */

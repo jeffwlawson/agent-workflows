@@ -6,7 +6,7 @@
 import { describe, expect, it } from "vitest";
 import { gitWrites } from "../../engine/git.js";
 import { GitHubError, isServerError, type RestRequest, type Transport } from "../../engine/github.js";
-import { githubReader } from "../../engine/read.js";
+import { githubReader, LABELLED_ISSUES_LIMIT } from "../../engine/read.js";
 import { ADD_REVIEW, githubWrites, MARK_READY, REPLY_TO_THREAD, RESOLVE_THREAD } from "../../engine/writes.js";
 import { createWriters, ReadBackFailed, WriteFailed, type PullRequestEdit } from "../../engine/writer.js";
 import { fakeGitHub, fakeWriters } from "./fakes.js";
@@ -59,6 +59,7 @@ const writerOver = (transport: Transport) =>
       reply: 9,
       editPullRequest: 9,
       openPullRequest: 9,
+      createIssue: 9,
     },
     appendLine: () => undefined,
   });
@@ -303,6 +304,152 @@ describe("openPullRequest", () => {
   });
 });
 
+/**
+ * `createIssue`: a server error is read back before it is called a failure,
+ * by the caller's label and match, listed and never searched, so only the
+ * issue the caller's match accepts can stand in for the one asked for.
+ */
+describe("createIssue", () => {
+  const KEY = "<!-- key:a.ts#1 -->";
+  const CREATE = {
+    title: "Follow-up: a.ts",
+    body: `Finding.\n\n${KEY}`,
+    labels: ["pr-follow-up", "needs-triage"],
+    readBack: { label: "pr-follow-up", matches: (body: string) => body.endsWith(KEY) },
+  };
+  const node = (number: number, body: string) => ({ number, url: `https://github.com/o/r/issues/${number}`, state: "OPEN", stateReason: null, body });
+  const page = (nodes: readonly unknown[]) => ({ repository: { issues: { nodes, pageInfo: { hasNextPage: false, endCursor: null } } } });
+  /** A transport whose POST answers `post`, and whose listing answers `list`. */
+  const answering = (post: () => unknown, list: () => unknown) => recording((s) => ("rest" in s ? post() : list()));
+  const serverError = () => {
+    throw new GitHubError("POST /repos/o/r/issues: 502 Bad Gateway", 502, { reason: "Bad Gateway" });
+  };
+
+  it("creates the issue with its title, body and labels in one call, and returns its number and link", async () => {
+    const { transport, sent } = answering(() => ({ number: 41, html_url: "https://github.com/o/r/issues/41" }), () => page([]));
+    const { writers, log } = writerOver(transport);
+
+    expect(await writers.workflow.createIssue(CREATE)).toEqual({ outcome: "applied", number: 41, url: "https://github.com/o/r/issues/41" });
+    expect(sent).toEqual([{ rest: { method: "POST", path: "/repos/o/r/issues", body: { title: CREATE.title, body: CREATE.body, labels: CREATE.labels } } }]);
+    expect(log.entries[0]).toMatchObject({ type: "createIssue", target: '"Follow-up: a.ts" pr-follow-up needs-triage', url: "https://github.com/o/r/issues/41" });
+  });
+
+  it("logs the title and labels, never the body", async () => {
+    const lines: string[] = [];
+    const { writers } = createWriters({
+      backends: { workflow: { ...githubWrites(REPO, answering(() => ({ number: 41, html_url: "u" }), () => page([])).transport), ...gitWrites({ dir: ".", env: {}, remote: "" }, "unused") } },
+      limits: { createIssue: 1 },
+      appendLine: (line) => lines.push(line),
+    });
+
+    await writers.workflow.createIssue(CREATE);
+
+    expect(lines.join("\n")).not.toContain("key:a.ts");
+  });
+
+  it("carries on with the issue the caller's match accepts where GitHub errored but created it, keeping the error", async () => {
+    const { transport, sent } = answering(serverError, () => page([node(43, "Another.\n\n<!-- key:b.ts#1 -->"), node(42, CREATE.body)]));
+    const { writers, log } = writerOver(transport);
+
+    expect(await writers.workflow.createIssue(CREATE)).toEqual({
+      outcome: "applied",
+      number: 42,
+      url: "https://github.com/o/r/issues/42",
+      readBack: "POST /repos/o/r/issues: 502 Bad Gateway",
+    });
+    expect(sent[1]).toMatchObject({ variables: { owner: "o", name: "r", label: "pr-follow-up", after: null } });
+    expect(log.entries[0]).toMatchObject({ outcome: "applied", calls: ["POST issues 502 Bad Gateway", "GET issues ok"] });
+  });
+
+  /** The match is the caller's: a body that only quotes the key, ahead of its own, is not this issue. */
+  it("takes only the issue the caller's match accepts, never one quoting a decoy under the same label", async () => {
+    const decoy = `Quoting ${KEY} from elsewhere.\n\n<!-- key:c.ts#1 -->`;
+    const { transport } = answering(serverError, () => page([node(44, decoy)]));
+
+    const failed = await writerOver(transport).writers.workflow.createIssue(CREATE).catch((error: unknown) => error);
+
+    expect(failed).toBeInstanceOf(WriteFailed);
+    expect((failed as WriteFailed).cause).toBeInstanceOf(GitHubError);
+    expect(((failed as WriteFailed).cause as Error).message).toBe("POST /repos/o/r/issues: 502 Bad Gateway");
+  });
+
+  it("throws the server error where the read-back finds nothing", async () => {
+    const { transport } = answering(serverError, () => page([]));
+
+    const failed = (await writerOver(transport).writers.workflow.createIssue(CREATE).catch((error: unknown) => error)) as WriteFailed;
+
+    expect(failed).toBeInstanceOf(WriteFailed);
+    expect(failed.cause).toBeInstanceOf(GitHubError);
+    expect(failed.entry.outcome).toBe("failed");
+  });
+
+  it("fails a refusal without reading back", async () => {
+    const { transport, sent } = answering(() => {
+      throw new GitHubError("POST /repos/o/r/issues: 422 Validation Failed", 422);
+    }, () => page([node(42, CREATE.body)]));
+
+    const failed = (await writerOver(transport).writers.workflow.createIssue(CREATE).catch((error: unknown) => error)) as WriteFailed;
+
+    expect(failed).toBeInstanceOf(WriteFailed);
+    expect((failed.cause as GitHubError).status).toBe(422);
+    expect(sent).toHaveLength(1);
+  });
+
+  it("fails a server error whose read-back fails too, naming both", async () => {
+    const { transport } = answering(serverError, () => {
+      throw new GitHubError("POST /graphql: 503 Unavailable", 503);
+    });
+
+    const failed = (await writerOver(transport).writers.workflow.createIssue(CREATE).catch((error: unknown) => error)) as WriteFailed;
+
+    expect(failed.cause).toBeInstanceOf(ReadBackFailed);
+    expect((failed.cause as Error).message).toContain("502 Bad Gateway");
+    expect((failed.cause as Error).message).toContain("503 Unavailable");
+  });
+
+  /** The fake a command's test stands on creates, and reads back, as a run does. */
+  it("is logged by the fake as a run logs it, created and read back", async () => {
+    const real = writerOver(answering(serverError, () => page([node(42, CREATE.body)])).transport);
+    const github = fakeGitHub();
+    github.fails = (_write, call) => (call === "POST issues" ? { status: 502, landed: true } : false);
+    const fake = fakeWriters(github, ["workflow"], { createIssue: 1 });
+
+    const [a, b] = [await real.writers.workflow.createIssue(CREATE), await fake.writers.workflow.createIssue(CREATE)];
+    expect({ ...a, number: 0, url: "", readBack: "" }).toEqual({ ...b, number: 0, url: "", readBack: "" });
+    expect(github.issueLabels.get(b.number)).toEqual(CREATE.labels);
+    expect(real.log.entries.map((e) => [e.type, e.target, e.outcome, e.calls.map((c) => c.split(" ").slice(0, 3).join(" "))])).toEqual(
+      fake.entries.map((e) => [e.type, e.target, e.outcome, e.calls.map((c) => c.split(" ").slice(0, 3).join(" "))]),
+    );
+  });
+
+  it.each([
+    ["finds nothing", { status: 502, landed: false }, false, GitHubError],
+    ["fails", { status: 502, landed: true }, true, ReadBackFailed],
+  ] as const)("fails through the fake where a server error's read-back %s", async (_name, error, readFails, cause) => {
+    const github = fakeGitHub();
+    github.fails = (_write, call) => (call === "POST issues" ? error : call === "GET issues" && readFails);
+    const { writers, entries } = fakeWriters(github, ["workflow"], { createIssue: 1 });
+
+    const failed = (await writers.workflow.createIssue(CREATE).catch((e: unknown) => e)) as WriteFailed;
+
+    expect(failed).toBeInstanceOf(WriteFailed);
+    expect(failed.cause).toBeInstanceOf(cause);
+    expect(entries[0]?.outcome).toBe("failed");
+  });
+
+  it("is refused by the fake on a client error, with no read-back", async () => {
+    const github = fakeGitHub();
+    github.fails = (_write, call) => call === "POST issues";
+    const { writers, entries } = fakeWriters(github, ["workflow"], { createIssue: 1 });
+
+    const failed = (await writers.workflow.createIssue(CREATE).catch((e: unknown) => e)) as WriteFailed;
+
+    expect((failed.cause as GitHubError).status).toBe(422);
+    expect(entries[0]?.calls).toHaveLength(1);
+    expect(github.filed.size).toBe(0);
+  });
+});
+
 describe("githubReader", () => {
   it("reads a pull request", async () => {
     const { transport } = recording(() => rawPull({ draft: true }));
@@ -517,6 +664,120 @@ describe("githubReader", () => {
 
     expect(await githubReader(REPO, transport).openPullRequest("agent/x", "main")).toEqual({ number: 5, url: "https://github.com/o/r/pull/5" });
     expect(await githubReader(REPO, transport).openPullRequest("agent/x", "develop")).toBeUndefined();
+  });
+
+  describe("reviewHistory", () => {
+    const review = (fields: Record<string, unknown>) => ({
+      body: "b",
+      url: "https://github.com/o/r/pull/7#pullrequestreview-1",
+      lastEditedAt: null,
+      submittedAt: "2026-01-01T00:00:00Z",
+      author: { login: "bot" },
+      commit: { oid: SHA },
+      ...fields,
+    });
+    const answer = (nodes: unknown) => ({ repository: { pullRequest: { reviews: { nodes } } } });
+
+    it("reads the newest 100 by last:, oldest first, with what tells an edited body apart", async () => {
+      const { transport, sent } = recording(() =>
+        answer([review({ body: "first" }), review({ body: "second", lastEditedAt: "2026-01-02T00:00:00Z", commit: null, submittedAt: null, author: null })]),
+      );
+
+      expect(await githubReader(REPO, transport).reviewHistory(7)).toEqual([
+        { author: "bot", body: "first", lastEditedAt: null, url: "https://github.com/o/r/pull/7#pullrequestreview-1", commit: SHA, submittedAt: "2026-01-01T00:00:00Z" },
+        { author: "", body: "second", lastEditedAt: "2026-01-02T00:00:00Z", url: "https://github.com/o/r/pull/7#pullrequestreview-1" },
+      ]);
+      expect((sent[0] as { readonly query: string }).query).toContain("reviews(last:100)");
+    });
+
+    /** A repository named in digits is still a `String!`: sent as a number, every merge in it would die at GraphQL. */
+    it("sends a repository name that looks like a number as a string", async () => {
+      const { transport, sent } = recording(() => answer([]));
+
+      await githubReader("org/2048", transport).reviewHistory(7);
+
+      expect(sent[0]).toMatchObject({ variables: { owner: "org", repo: "2048", number: 7 } });
+    });
+
+    it("throws on an answer with no review list, rather than reading it as no reviews", async () => {
+      const { transport } = recording(() => ({ repository: { pullRequest: null } }));
+
+      await expect(githubReader(REPO, transport).reviewHistory(7)).rejects.toThrow(
+        "The reviews on #7 could not be read: the GraphQL response carried no review list.",
+      );
+    });
+
+    /** Absent is "nobody asked", which is not `null`'s "never edited". */
+    it("throws on a review without the lastEditedAt field, and reads a null one", async () => {
+      const { lastEditedAt: _, ...unasked } = review({});
+      const { transport } = recording(() => answer([review({}), unasked]));
+
+      await expect(githubReader(REPO, transport).reviewHistory(7)).rejects.toThrow(
+        "A review on #7 came back without `lastEditedAt`, so whether it was edited cannot be established.",
+      );
+    });
+  });
+
+  describe("labelledIssues", () => {
+    const node = (number: number) => ({
+      number,
+      url: `https://github.com/o/r/issues/${number}`,
+      state: number % 2 === 0 ? "OPEN" : "CLOSED",
+      stateReason: number % 2 === 0 ? null : "NOT_PLANNED",
+      body: number === 1 ? null : `body ${number}`,
+    });
+    const pages = (total: number) =>
+      recording((s) => {
+        const at = "variables" in s ? Number(s.variables["after"] ?? 0) : 0;
+        const nodes = Array.from({ length: Math.min(100, total - at) }, (_, i) => node(total - at - i));
+        const next = at + nodes.length;
+        return { repository: { issues: { nodes, pageInfo: { hasNextPage: next < total, endCursor: String(next) } } } };
+      });
+
+    it("reads the issues carrying the label, open and closed, newest first, listed by label", async () => {
+      const { transport, sent } = pages(3);
+
+      expect(await githubReader(REPO, transport).labelledIssues("pr-follow-up")).toEqual([
+        { number: 3, url: "https://github.com/o/r/issues/3", state: "CLOSED", stateReason: "NOT_PLANNED", body: "body 3" },
+        { number: 2, url: "https://github.com/o/r/issues/2", state: "OPEN", stateReason: null, body: "body 2" },
+        { number: 1, url: "https://github.com/o/r/issues/1", state: "CLOSED", stateReason: "NOT_PLANNED", body: "" },
+      ]);
+      const query = (sent[0] as { readonly query: string }).query;
+      expect(query).toContain("issues(labels:[$label],states:[OPEN,CLOSED]");
+      expect(query).toContain("orderBy:{field:CREATED_AT,direction:DESC}");
+      expect(sent[0]).toMatchObject({ variables: { owner: "o", name: "r", label: "pr-follow-up", after: null } });
+    });
+
+    it("follows every page, and stops at the limit", async () => {
+      const short = pages(250);
+      const long = pages(LABELLED_ISSUES_LIMIT + 150);
+
+      expect(await githubReader(REPO, short.transport).labelledIssues("x")).toHaveLength(250);
+      const read = await githubReader(REPO, long.transport).labelledIssues("x");
+
+      expect(LABELLED_ISSUES_LIMIT).toBe(500);
+      expect(read).toHaveLength(LABELLED_ISSUES_LIMIT);
+      expect(read.at(-1)?.number).toBe(151);
+      expect(long.sent).toHaveLength(5);
+    });
+
+    it("throws on an answer with no repository, rather than reading it as no issues", async () => {
+      const { transport } = recording(() => ({ repository: null }));
+
+      await expect(githubReader(REPO, transport).labelledIssues("pr-follow-up")).rejects.toThrow("The issues labelled pr-follow-up came back empty.");
+    });
+  });
+
+  it("reads every page of the repository's labels, by name", async () => {
+    const { transport, sent } = recording((s) =>
+      "rest" in s && s.rest.path.endsWith("page=1") ? Array.from({ length: 100 }, (_, i) => ({ name: `l${i}` })) : [{ name: "pr-follow-up" }],
+    );
+
+    const labels = await githubReader(REPO, transport).repoLabels();
+
+    expect(labels).toHaveLength(101);
+    expect(labels.at(-1)).toBe("pr-follow-up");
+    expect(paths(sent)).toEqual(["/repos/o/r/labels?per_page=100&page=1", "/repos/o/r/labels?per_page=100&page=2"]);
   });
 
   /** The chain's order is the list's, so a read that reorders or stops at a page would build the wrong slice. */

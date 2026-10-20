@@ -355,10 +355,15 @@ export const SUBCOMMANDS: Readonly<Record<string, Subcommand>> = {
     async () => (await import("./fix/conclude.js")).conclude,
     "End a fix run however it ended: its rescue, its failure comment and its label (no model).",
   ),
-  "follow-ups:file": command(
+  "follow-ups:file": writingCommand(
     "follow-ups:file",
     async () => (await import("./follow-ups/file.js")).file,
     "File a closed PR's recorded review findings as triageable issues (no model).",
+  ),
+  "follow-ups:conclude": writingCommand(
+    "follow-ups:conclude",
+    async () => (await import("./follow-ups/conclude.js")).conclude,
+    "Say on a closed PR that its filing run stopped, and how to retry it (no model).",
   ),
   implement: runner("implement", () => import("./implement/implement.js")),
   "implement:gate": writingCommand(

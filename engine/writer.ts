@@ -128,6 +128,34 @@ export interface Opened {
 }
 
 /**
+ * An issue to open, with its labels set in the same call. `readBack` is how a
+ * server error is read past: the issues carrying `label` are listed, and the
+ * first whose body `matches` accepts is the one this write made. Both are the
+ * caller's, so the engine spells no label and parses no marker.
+ */
+export interface IssueCreate {
+  readonly title: string;
+  readonly body: string;
+  readonly labels: readonly string[];
+  readonly readBack: {
+    readonly label: string;
+    readonly matches: (body: string) => boolean;
+  };
+}
+
+/**
+ * An issue opened: its number and link. `readBack` is the server error GitHub
+ * answered the create with, where it did and the read-back found the issue
+ * all the same, so the caller can say so.
+ */
+export interface IssueCreated {
+  readonly outcome: "applied";
+  readonly number: number;
+  readonly url: string;
+  readonly readBack?: string;
+}
+
+/**
  * A pull request's title and body. `body` is handed the body as it is now and
  * returns the new one, or `undefined` to leave it, so a splice is made against
  * what a maintainer wrote while the run worked rather than against a copy read
@@ -166,6 +194,14 @@ export interface Writer {
    * both errors.
    */
   openPullRequest(open: PullRequestOpen): Promise<Opened>;
+  /**
+   * An issue opened, its labels set at creation. **A server error is not "not
+   * created"**: on one, and only on one, the issues carrying the read-back
+   * label are listed, never searched, and the first the caller's match
+   * accepts is the result. One not found throws the server error; a read-back
+   * that fails too throws `ReadBackFailed`, naming both. Never retried.
+   */
+  createIssue(create: IssueCreate): Promise<IssueCreated>;
   /**
    * A push of a commit to a ref, forced where the lease holds and failed where
    * it does not. A ref already at the commit is `unchanged`.
@@ -299,6 +335,8 @@ const TARGETS: { readonly [K in WriteType]: (...args: Parameters<Writer[K]>) => 
   reply: (reply) => reply.threadId,
   editPullRequest: (pr, edit) => `#${pr}${edit.title === undefined ? "" : " title"}${edit.body === undefined ? "" : " body"}`,
   openPullRequest: (open) => `${open.head} into ${open.base}${open.draft ? " draft" : ""}`,
+  // By its title and labels: the body is the caller's prose, and the log is not where it is kept.
+  createIssue: (create) => `${JSON.stringify(create.title)}${create.labels.length === 0 ? "" : ` ${create.labels.join(" ")}`}`,
   pushRef: (push) => `${push.ref} ${push.commit.slice(0, 7)} ${"tip" in push.lease ? `over ${push.lease.tip.slice(0, 7)}` : "new"}`,
   deleteRef: (remove) => `${remove.ref} at ${remove.lease.tip.slice(0, 7)}`,
 };
@@ -374,7 +412,7 @@ export const createWriters = <T extends string>(options: {
         error,
       );
     }
-    const result = done as Done | Posted | Opened;
+    const result = done as Done | Posted | Opened | IssueCreated;
     record({ token, type, target, outcome: result.outcome, calls, ...("url" in result ? { url: result.url } : {}) });
     return done;
   };
@@ -393,6 +431,7 @@ export const createWriters = <T extends string>(options: {
       reply: bound("reply"),
       editPullRequest: bound("editPullRequest"),
       openPullRequest: bound("openPullRequest"),
+      createIssue: bound("createIssue"),
       pushRef: bound("pushRef"),
       deleteRef: bound("deleteRef"),
     };

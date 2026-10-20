@@ -463,6 +463,20 @@ export const TOKENLESS = {
 } as const satisfies Inputs;
 
 /**
+ * `follow-ups:file`, declared ahead of `COMMANDS` so that
+ * `follow-ups:conclude` can read its outputs (`readsFromCommand`). See
+ * `COMMANDS`.
+ */
+const FOLLOW_UPS_FILE = {
+  inputs: {
+    ...EVERY_SUBCOMMAND,
+    ...LOOP_ACCOUNTS,
+    PR_NUMBER: REQUIRED,
+  },
+  outputs: [...EVERY_SUBCOMMAND_OUTPUTS, WRITE_LOG],
+} as const satisfies CommandContract;
+
+/**
  * `fix:bundle`, declared ahead of `COMMANDS` so that `fix:publish` can read
  * its outputs (`readsFromCommand`). See `COMMANDS`.
  */
@@ -784,8 +798,6 @@ const REVIEW_RED_CHECK_PLACE = {
  * workflow's folder, and exports one function the CLI calls with the inputs
  * declared here.
  *
- * - `follow-ups:file` writes issues with its `GH_TOKEN` itself, outside the
- *   engine's writer, until its own workflow moves (ADR 0005).
  * - `review:gate` decides, before checkout, whether the review runs, which
  *   commit it reviews, the fix-round budget's value and, on a PRD branch,
  *   which round it is, and writes nothing to the record: the posting job says
@@ -888,6 +900,11 @@ const REVIEW_RED_CHECK_PLACE = {
  *   runner's reason and set-aside rescue through `FIX_DIR`, and
  *   `fix:bundle`'s bundle and reason through `BUNDLE_DIR`,
  *   checked in `CHECKOUT` against `HEAD_SHA` before it is rescued.
+ * - `follow-ups:conclude` ends every filing run, success included: nothing
+ *   on `success`, and otherwise the one failure comment, with the time limit
+ *   where `TIMED_OUT` is `true`, a cancel, or the reason `follow-ups:file`
+ *   left in `FILE_DIR`. It never takes `agent:follow-ups` off, which is the
+ *   retry, and never adds `agent:blocked`.
  * - `implement:gate` refuses, defers or claims the issue before any
  *   checkout. An issue with sub-issues is `implement-prd`'s and is deferred
  *   without a write; a closed one, a `wayfinder:*` one, a sub-issue, one
@@ -1117,13 +1134,20 @@ export const COMMANDS = {
     },
     outputs: [...EVERY_SUBCOMMAND_OUTPUTS, WRITE_LOG],
   },
-  "follow-ups:file": {
+  "follow-ups:file": FOLLOW_UPS_FILE,
+  "follow-ups:conclude": {
     inputs: {
       ...EVERY_SUBCOMMAND,
-      ...LOOP_ACCOUNTS,
       PR_NUMBER: REQUIRED,
+      RUN_URL: REQUIRED,
+      JOB_STATUS: { required: true, accepts: ["success", "failure", "cancelled"] },
+      TIMED_OUT: EMPTY,
+      TIMEOUT_MINUTES: EMPTY,
+      FILE_DIR: readsFromCommand("follow-ups:file", FOLLOW_UPS_FILE, {
+        "failure_reason.txt": "sometimes",
+      }),
     },
-    outputs: [...EVERY_SUBCOMMAND_OUTPUTS],
+    outputs: [...EVERY_SUBCOMMAND_OUTPUTS, WRITE_LOG],
   },
   "implement:gate": {
     inputs: {

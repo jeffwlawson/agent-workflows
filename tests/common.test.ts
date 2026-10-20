@@ -1120,8 +1120,8 @@ describe("readInputs and input: a subcommand's declared inputs, read loudly", ()
 
     appendLine("failure_reason.txt", "first");
     appendLine("failure_reason.txt", "second");
-    // @ts-expect-error: `follow-ups:file` declares no `write_log.jsonl`, so it may not append to one.
-    appendLine("write_log.jsonl", "undeclared");
+    // @ts-expect-error: `follow-ups:file` declares no `summary.md`, so it may not append to one.
+    appendLine("summary.md", "undeclared");
 
     expect(fs.readFileSync(reasonFile(), "utf8")).toBe("first\nsecond\n");
   });

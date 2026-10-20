@@ -18,7 +18,7 @@ import {
   type CarriedFinding,
   type VerificationEntry,
 } from "./review-verification.js";
-import { BODY_HEADING, FIX_ROUND_STATUS, FOLLOW_UPS_LABEL, FOLLOW_UPS_MARKER } from "./record.js";
+import { BODY_HEADING, embeddableJson, FIX_ROUND_STATUS, FOLLOW_UPS_LABEL, FOLLOW_UPS_MARKER } from "./record.js";
 
 /**
  * A problem the review found and this pull request will not fix — a defect in a
@@ -72,6 +72,16 @@ export interface FollowUp {
  * list runs past this by exactly their number — see `recordFollowUps`.
  */
 export const MAX_FOLLOW_UPS = 3;
+
+/**
+ * The most follow-ups a review's hand-over may carry, and so the most issues
+ * one `follow-ups:file` run may open (#510): far past any review, a guard
+ * against a runaway rather than a budget. **Not** `MAX_FOLLOW_UPS`, which is
+ * how many one round records; a PRD PR's review carries every round's
+ * forward. One figure for both workflows, so the guard and the limit it
+ * guards cannot drift apart.
+ */
+export const FOLLOW_UPS_LIST_LIMIT = 200;
 
 /**
  * The cap for a pull request with `landedSlices` slices on it (#247):
@@ -2036,28 +2046,15 @@ export const recordFollowUps = (
  * cheapest way for a reader to refuse a shape it does not know.
  *
  * **This block and nothing else** — the dedup key on a filed stub carries its
- * own `STUB_KEY_VERSION` (`shared/follow-up-plan.ts`), and the two move
+ * own `STUB_KEY_VERSION` (`shared/record.ts`), and the two move
  * separately on purpose (#81). One constant for both made a bump for either
  * payload refuse the other, so a key change cost the filing of every review
  * body the previous release had already posted.
  */
 export const FOLLOW_UPS_VERSION = 1;
 
-/**
- * JSON that survives being put inside an HTML comment.
- *
- * `<` and `>` are escaped into the JSON rather than stripped: prose carried in
- * the payload may legitimately contain `-->`, which would end the comment early
- * and truncate what is left to invalid JSON — a reader that files nothing
- * rather than one that files three. `JSON.parse` decodes the escapes, so the
- * round trip is exact.
- *
- * Shared by both payloads deliberately. The block in a review body and the
- * dedup payload on a filed stub are written by different halves of the feature
- * and read by the same one, and this hazard is identical in both.
- */
-export const embeddableJson = (value: unknown): string =>
-  JSON.stringify(value).replace(/</g, "\\u003c").replace(/>/g, "\\u003e");
+/** Re-exported where its readers have always found it; it is spelled in `shared/record.ts`. */
+export { embeddableJson };
 
 /**
  * The block as written, found wherever it sits in a body.

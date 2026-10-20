@@ -6,7 +6,7 @@ import { afterEach, beforeEach, describe, expect, it, vi, type MockInstance } fr
 import ts from "typescript";
 import { parse } from "yaml";
 import { SUBCOMMANDS, type CliIo } from "../cli.js";
-import { file as fileFollowUps } from "../follow-ups/file.js";
+import { place as placeRedCheck } from "../review/red-check-place.js";
 import { gate } from "../review/gate.js";
 import { publish } from "../review/publish.js";
 import { serveDispatcher, serveWorker } from "../service/serve.js";
@@ -62,10 +62,10 @@ vi.mock("node:fs", async (importOriginal) => {
   return { ...actual, writeFileSync: vi.fn(actual.writeFileSync) };
 });
 
-// The one command there is, stood in for: a test of the CLI's half of a
-// command (read its inputs, call it, turn a throw into `fail()`) must not reach
-// GitHub through the real one.
-vi.mock("../follow-ups/file.js", () => ({ file: vi.fn() }));
+// A command that neither reads nor writes GitHub, stood in for: a test of the
+// CLI's half of a command (read its inputs, call it, turn a throw into
+// `fail()`) must not touch a checkout through the real one.
+vi.mock("../review/red-check-place.js", () => ({ place: vi.fn() }));
 // And the one that writes through the engine, for the same reason.
 vi.mock("../review/publish.js", () => ({ publish: vi.fn() }));
 vi.mock("../review/gate.js", () => ({ gate: vi.fn() }));
@@ -452,8 +452,8 @@ describe("every subcommand is declared in the contract, as its kind", () => {
  */
 describe("the CLI runs a command", () => {
   class Exited extends Error {}
-  const INPUTS = { GH_REPO: "o/r", GH_TOKEN: "a-token", PR_NUMBER: "7" } as const;
-  const command = vi.mocked(fileFollowUps);
+  const INPUTS = { CHECKOUT: "/checkout", BRANCH: "agent/issue-12-do-the-thing", BASE_REF: "main" } as const;
+  const command = vi.mocked(placeRedCheck);
   let exitCode: number | undefined;
   let exit: MockInstance<typeof process.exit>;
   let logged: MockInstance<typeof console.error>;
@@ -474,13 +474,13 @@ describe("the CLI runs a command", () => {
   });
 
   it("hands the function exactly its declared inputs, and its declared outputs, and exits 0", async () => {
-    const { code } = await invoke(["follow-ups:file"], { OUTPUT_DIR: scratch, ...INPUTS });
+    const { code } = await invoke(["review:red-check-place"], { OUTPUT_DIR: scratch, ...INPUTS });
 
     expect(code).toBe(0);
     expect(command).toHaveBeenCalledTimes(1);
     // An optional input it was not given arrives as its default.
     expect(command).toHaveBeenCalledWith(
-      { OUTPUT_DIR: scratch, ...INPUTS, AGENT_LOOP_LOGINS: "" },
+      { OUTPUT_DIR: scratch, ...INPUTS, PR_BODY: "", REPORT_PATH: "", TEST_GLOBS: "" },
       expect.objectContaining({ writeJson: expect.any(Function) }),
     );
   });
@@ -490,20 +490,20 @@ describe("the CLI runs a command", () => {
       throw new Error("The pull request could not be read.");
     });
 
-    await expect(invoke(["follow-ups:file"], { OUTPUT_DIR: scratch, ...INPUTS })).rejects.toThrow(Exited);
+    await expect(invoke(["review:red-check-place"], { OUTPUT_DIR: scratch, ...INPUTS })).rejects.toThrow(Exited);
 
     expect(exitCode).toBe(1);
     expect(fs.readFileSync(path.join(scratch, "failure_reason.txt"), "utf8")).toBe("The pull request could not be read.");
   });
 
   it("stops at a missing input, naming it, before the function is called", async () => {
-    const { PR_NUMBER: _, ...given } = INPUTS;
+    const { BRANCH: _, ...given } = INPUTS;
 
-    await expect(invoke(["follow-ups:file"], { OUTPUT_DIR: scratch, ...given })).rejects.toThrow(Exited);
+    await expect(invoke(["review:red-check-place"], { OUTPUT_DIR: scratch, ...given })).rejects.toThrow(Exited);
 
     expect(exitCode).toBe(1);
     expect(command).not.toHaveBeenCalled();
-    expect(fs.readFileSync(path.join(scratch, "failure_reason.txt"), "utf8")).toBe("Missing required env var: PR_NUMBER");
+    expect(fs.readFileSync(path.join(scratch, "failure_reason.txt"), "utf8")).toBe("Missing required env var: BRANCH");
   });
 });
 

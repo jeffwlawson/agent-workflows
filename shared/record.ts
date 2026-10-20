@@ -278,6 +278,94 @@ export const TRIAGE_LABEL = "needs-triage";
  */
 export const FOLLOW_UP_STUB_LABEL = "pr-follow-up";
 
+/**
+ * JSON that survives being put inside an HTML comment.
+ *
+ * `<` and `>` are escaped into the JSON rather than stripped: prose carried in
+ * the payload may legitimately contain `-->`, which would end the comment early
+ * and truncate what is left to invalid JSON — a reader that files nothing
+ * rather than one that files three. `JSON.parse` decodes the escapes, so the
+ * round trip is exact.
+ *
+ * Shared by every payload a marker carries deliberately. The block in a review
+ * body and the dedup payload on a filed stub are written by different halves of
+ * the feature and read by the same one, and this hazard is identical in both.
+ */
+export const embeddableJson = (value: unknown): string =>
+  JSON.stringify(value).replace(/</g, "\\u003c").replace(/>/g, "\\u003e");
+
+/**
+ * The stub payload's shape, versioned for the same reason the review block is
+ * and on its own timeline (#81): the two are written and read by different
+ * pairs of releases, and the gap this one spans is the longer of the two: a key
+ * written into an issue is read back by every run after it, for as long as that
+ * issue exists, since the stubs are listed open and closed, and a `wontfix`
+ * closure is the case that most needs its key to still match.
+ *
+ * Deliberately **not** the block's `FOLLOW_UPS_VERSION`, which they shared
+ * until this was split out. Moving one to reshape the other's payload is a cost
+ * with no connection to the change that caused it: while they shared one, a
+ * bump here also refused every findings block already posted by the previous
+ * release, filing nothing for pull requests that recorded their findings
+ * correctly. `embeddableJson` stays shared, because a JSON escaper is not the
+ * coupling.
+ */
+export const STUB_KEY_VERSION = 2;
+
+/**
+ * The key a stub is matched on, written into the stub and read back on the next
+ * run. Never the prose: a stub may be reworded freely, and a matcher that read
+ * the prose would break on the first person who tidied one up.
+ *
+ * It answers **two** questions with different authority (#82), which is why
+ * `location` is written verbatim and `seq` is written at all:
+ *
+ * | | Question | Fields | Authority |
+ * |---|---|---|---|
+ * | Identity | did this run already file this finding? | `pr` + `location` + `seq` | binding |
+ * | Relatedness | is there an issue a triager should see? | `location`, normalised | advisory |
+ *
+ * One key served both until #82 and could not: it was the normalised path, so
+ * two findings in one file were one finding, and the loser of that was skipped
+ * rather than linked. Storing the normalised form is what made identity as
+ * coarse as relatedness, so the raw string is what goes in and normalisation
+ * happens on the way back out.
+ *
+ * Version `2` makes every stub the previous release filed unmatchable, so the
+ * next review raising a finding at one of those paths files fresh rather than
+ * linking. Accepted on the grounds the planner's `stubKey` states: an
+ * unreadable key files a duplicate rather than skipping a real finding, which
+ * is one click to close.
+ *
+ * Moved here byte for byte from the planner's `dedupPayload` (#510), so the
+ * read-back and the planner name one spelling; `tests/record.test.ts` pins its
+ * bytes. The parser stays with the planner (`stubKey`).
+ */
+export const stubMarker = (location: string, prNumber: number, seq: number): string =>
+  `<!--${embeddableJson({ version: STUB_KEY_VERSION, location, pr: prNumber, seq })}-->`;
+
+/**
+ * What `follow-ups:conclude` says of a filing run that stopped (#511), word
+ * for word as the shell step *Report the failure on the PR* said it before:
+ * the reason it gives where nothing more is known, and the retry. The retry
+ * is the marker's: it stays on a run that stopped, and re-adding a label
+ * already there fires no event, so the gesture is remove, then add.
+ */
+export const FOLLOW_UPS_STOPPED = {
+  timedOut: (minutes: string): string => `It timed out after ${minutes} minutes.`,
+  cancelled: "It was cancelled before it finished, by hand or by GitHub.",
+  noReason: "It stopped without giving a reason. The workflow run's log has the details.",
+  retry: `Some follow-up issues may not have been filed. To try again, remove \`${FOLLOW_UPS_LABEL}\` and add it back; nothing is filed twice.`,
+} as const;
+
+/**
+ * The comment a stopped filing run posts on its pull request, in the one
+ * pattern every stopped run's takes (#253): `sentence`, already a sentence,
+ * then the run's link and the retry.
+ */
+export const followUpsStoppedComment = (sentence: string, runUrl: string): string =>
+  `**\`${FOLLOW_UPS_LABEL}\` stopped:** ${sentence}\n\n[Workflow run](${runUrl}) · ${FOLLOW_UPS_STOPPED.retry}\n`;
+
 // The orchestrator a repository is served by.
 
 /**

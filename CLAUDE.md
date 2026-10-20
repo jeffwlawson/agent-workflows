@@ -157,7 +157,7 @@ commit, and no-ops if the version is already on the registry.
 
 **That first command is the whole release.** The version appears in twelve files and `npm
 version` bumps two of them; `scripts/sync-version.ts` writes the other ten — the `npm exec`
-pin of each step that runs the package (thirty: the runner's or the filing command's in each of
+pin of each step that runs the package (thirty-one: the runner's or the filing command's in each of
 six reusable workflows but `fix.yml`, `update-branch.yml`, `implement.yml` and `implement-prd.yml`,
 `implement-prd:gate`, `implement-prd:catch-up`, `implement-prd:publish` and `implement-prd:conclude`
 in `implement-prd.yml`, `implement:gate`,
@@ -167,7 +167,8 @@ in `implement-prd.yml`, `implement:gate`,
 `review:publish`, `review:conclude` and `review:advance` beside the runner in `review.yml`,
 `fix:gate`, `fix:prepare`, `fix:bundle`, `fix:publish` and `fix:conclude` in `fix.yml`, and
 `update-branch:gate`, `update-branch:merge`, `update-branch:prepare`, `update-branch:bundle`,
-`update-branch:publish` and `update-branch:conclude` in `update-branch.yml`), the
+`update-branch:publish` and `update-branch:conclude` in `update-branch.yml`, and
+`follow-ups:conclude` beside the filing command in `follow-ups.yml`), the
 `npm install` pin of each step that installs it early, ahead of the steps that run from that
 install (six: one ahead of the red check's two in `review.yml`, one ahead of `fix:prepare`, the
 runner and `fix:bundle` in `fix.yml`, in `update-branch.yml` one ahead of `update-branch:gate`
@@ -179,7 +180,7 @@ each caller in the two caller files
 of each of the two caller sets, and the `uses:` ref a reusable's step names a composite action in
 `.github/actions/` with (eight of those: `loop-token` once in each of `implement.yml`, `fix.yml`
 and `update-branch.yml`, twice in `implement-prd.yml` and three times in `review.yml`, so
-fifty-six pins in the ten files). Fix's runner, update-branch's, implement's and implement-prd's carry no pin of their own: each
+fifty-seven pins in the ten files). Fix's runner, update-branch's, implement's and implement-prd's carry no pin of their own: each
 runs its job's early install's binary by its path, from the checkout, because `npm exec` finds an install under its `--prefix`
 only from that directory (#486's fix round). It
 runs from the `version` lifecycle script, which npm fires *after* the manifest is bumped and

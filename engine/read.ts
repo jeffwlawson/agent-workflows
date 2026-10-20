@@ -37,6 +37,31 @@ export interface Review {
   readonly submittedAt?: string;
 }
 
+/**
+ * A review as the review history reads it: what tells a submitted body from a
+ * rewritten one, as well as what it says and who said it. `lastEditedAt` is
+ * `null` for a body never edited.
+ */
+export interface ReviewHistoryEntry {
+  readonly author: string;
+  readonly body: string;
+  readonly lastEditedAt: string | null;
+  readonly url: string;
+  /** The commit it was posted on, where GitHub says. */
+  readonly commit?: string;
+  /** When it was submitted, where GitHub says. */
+  readonly submittedAt?: string;
+}
+
+/** An issue carrying a label, open or closed, its state and state reason in GraphQL's spelling. */
+export interface LabelledIssue {
+  readonly number: number;
+  readonly url: string;
+  readonly state: string;
+  readonly stateReason: string | null;
+  readonly body: string;
+}
+
 /** A check run on a commit. `conclusion` is `null` until it completes. */
 export interface CheckRun {
   readonly name: string;
@@ -166,6 +191,23 @@ export interface GitHubReader {
   /** Every review on the pull request, oldest first, as the endpoint documents. */
   reviews(number: number): Promise<readonly Review[]>;
   /**
+   * The newest 100 reviews on the pull request, oldest first, each with when
+   * it was last edited: GraphQL, because REST gives no edit time. An answer
+   * with no review list throws rather than reading as a pull request with no
+   * reviews, and so does a review without the `lastEditedAt` field, which is
+   * "nobody asked" rather than `null`'s "never edited".
+   */
+  reviewHistory(number: number): Promise<readonly ReviewHistoryEntry[]>;
+  /**
+   * Every issue carrying `label`, open and closed, newest first, up to
+   * `LABELLED_ISSUES_LIMIT`: listed by the label, never searched, so no issue
+   * stands in for another. The label is the caller's: the engine spells no
+   * record string.
+   */
+  labelledIssues(label: string): Promise<readonly LabelledIssue[]>;
+  /** The name of every label the repository has, every page. */
+  repoLabels(): Promise<readonly string[]>;
+  /**
    * When `label` was added to the issue or pull request, each time it was,
    * oldest first, off its timeline's events. The label is the caller's: the
    * engine spells no record string.
@@ -286,6 +328,52 @@ const CONVERSATION_COMMENTS = `query($owner:String!,$name:String!,$number:Int!,$
     comments(first:100,after:$after){nodes{id url author{login}} pageInfo{hasNextPage endCursor}}
   }}
 }`;
+
+/**
+ * The newest 100 by `last:`, since the newest block wins and a pull request
+ * with more reviews than fit must lose the oldest, never the newest. The repo
+ * name is a `String!` variable, so one spelled in digits is still sent as a
+ * string.
+ */
+const REVIEW_HISTORY = `query($owner:String!,$repo:String!,$number:Int!){
+  repository(owner:$owner,name:$repo){pullRequest(number:$number){
+    reviews(last:100){nodes{body url lastEditedAt submittedAt author{login} commit{oid}}}
+  }}
+}`;
+
+interface RawHistoryReview {
+  readonly body?: string | null;
+  readonly url?: string;
+  readonly lastEditedAt?: string | null;
+  readonly submittedAt?: string | null;
+  readonly author?: { readonly login?: string } | null;
+  readonly commit?: { readonly oid?: string } | null;
+}
+
+/**
+ * How many issues `labelledIssues` reads. A label's issues only grow, closed
+ * ones staying in the listing, and it is newest first, so what falls off the
+ * end is the oldest.
+ */
+export const LABELLED_ISSUES_LIMIT = 500;
+
+/** GraphQL rather than REST, whose issue list holds pull requests too, and spells state reasons otherwise. */
+const LABELLED_ISSUES = `query($owner:String!,$name:String!,$label:String!,$after:String){
+  repository(owner:$owner,name:$name){
+    issues(labels:[$label],states:[OPEN,CLOSED],first:100,after:$after,orderBy:{field:CREATED_AT,direction:DESC}){
+      nodes{number url state stateReason body} pageInfo{hasNextPage endCursor}
+    }
+  }
+}`;
+
+interface LabelledIssuePage {
+  readonly repository: {
+    readonly issues: {
+      readonly nodes: readonly { readonly number: number; readonly url: string; readonly state: string; readonly stateReason: string | null; readonly body: string | null }[];
+      readonly pageInfo: { readonly hasNextPage: boolean; readonly endCursor: string | null };
+    };
+  } | null;
+}
 
 interface ShapeAnswer {
   readonly repository: {
@@ -476,6 +564,50 @@ export const githubReader = (repo: string, transport: Transport): GitHubReader =
         if (raw.length < 100) return reviews;
       }
     },
+    reviewHistory: async (number) => {
+      const data = (await transport.graphql(REVIEW_HISTORY, { owner, repo: name, number })) as
+        | { readonly repository?: { readonly pullRequest?: { readonly reviews?: { readonly nodes?: unknown } | null } | null } | null }
+        | undefined;
+      const nodes = data?.repository?.pullRequest?.reviews?.nodes;
+      if (!Array.isArray(nodes)) {
+        throw new Error(`The reviews on #${number} could not be read: the GraphQL response carried no review list.`);
+      }
+      return nodes.map((node: unknown) => {
+        if (typeof node !== "object" || node === null || Array.isArray(node)) {
+          throw new Error(`A review on #${number} came back as something other than a review.`);
+        }
+        // Absent is not `null`: `null` is "never edited", absent is "nobody
+        // asked", and reading the second as the first lets an edited body through.
+        if (!("lastEditedAt" in node)) {
+          throw new Error(`A review on #${number} came back without \`lastEditedAt\`, so whether it was edited cannot be established.`);
+        }
+        const review = node as RawHistoryReview;
+        return {
+          author: review.author?.login ?? "",
+          body: review.body ?? "",
+          lastEditedAt: review.lastEditedAt ?? null,
+          url: review.url ?? "",
+          ...(typeof review.commit?.oid === "string" ? { commit: review.commit.oid } : {}),
+          ...(typeof review.submittedAt === "string" ? { submittedAt: review.submittedAt } : {}),
+        };
+      });
+    },
+    labelledIssues: async (label) => {
+      const issues: LabelledIssue[] = [];
+      for (let after: string | null = null; ; ) {
+        const data = (await transport.graphql(LABELLED_ISSUES, { owner, name, label, after })) as LabelledIssuePage | undefined;
+        const page = data?.repository?.issues;
+        if (page === undefined) throw new Error(`The issues labelled ${label} came back empty.`);
+        issues.push(
+          ...page.nodes.map((node) => ({ number: node.number, url: node.url, state: node.state, stateReason: node.stateReason, body: node.body ?? "" })),
+        );
+        if (issues.length >= LABELLED_ISSUES_LIMIT) return issues.slice(0, LABELLED_ISSUES_LIMIT);
+        if (!page.pageInfo.hasNextPage || page.pageInfo.endCursor === null) return issues;
+        after = page.pageInfo.endCursor;
+      }
+    },
+    repoLabels: async () =>
+      (await paged(`/repos/${repo}/labels`, (page) => page as readonly { readonly name: string }[])).map((label) => label.name),
     labelledAt: async (number, label) =>
       (
         await paged(

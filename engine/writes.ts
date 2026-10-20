@@ -138,6 +138,33 @@ export const githubWrites = (repo: string, transport: Transport): Omit<Backend, 
       }
       return { outcome: "applied", number: opened.number, url: opened.html_url };
     },
+    createIssue: async (call, create) => {
+      let created: { readonly number: number; readonly html_url: string };
+      try {
+        created = (await call("POST issues", () =>
+          transport.rest({
+            method: "POST",
+            path: `/repos/${repo}/issues`,
+            body: { title: create.title, body: create.body, labels: create.labels },
+          }),
+        )) as typeof created;
+      } catch (error) {
+        // As an open is (#329): a server error is read back before it is
+        // called a failure, by the caller's label and match, never by search.
+        if (!isServerError(error)) throw error;
+        let found;
+        try {
+          found = (await call("GET issues", () => reader.labelledIssues(create.readBack.label), "read")).find((issue) =>
+            create.readBack.matches(issue.body),
+          );
+        } catch (readError) {
+          throw new ReadBackFailed(error, readError);
+        }
+        if (found === undefined) throw error;
+        return { outcome: "applied", number: found.number, url: found.url, readBack: error instanceof Error ? error.message : String(error) };
+      }
+      return { outcome: "applied", number: created.number, url: created.html_url };
+    },
     editPullRequest: async (call, number, edit) => {
       // Read whatever the edit names, title or body or neither, so "nothing to
       // change" is judged against the live pull request the same way for each.

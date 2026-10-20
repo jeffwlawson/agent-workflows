@@ -3,6 +3,7 @@
  * limits, the throw, the log and its last line, over two tokens at once.
  */
 import { describe, expect, it } from "vitest";
+import { GitHubError } from "../../engine/github.js";
 import { LimitReached, WriteFailed } from "../../engine/writer.js";
 import { fakeGitHub, fakeReader, fakeWriters } from "./fakes.js";
 
@@ -238,6 +239,41 @@ describe("the writer", () => {
     expect(again).toEqual({ outcome: "unchanged" });
     expect(await reader.commitStatuses(SHA)).toEqual([{ context: "ctx", state: "success", targetUrl: null, description: "d", creator: "workflow" }]);
     expect(reads.map((r) => r.method)).toEqual(["pullRequest", "pullRequest", "commitStatuses"]);
+  });
+});
+
+describe("the fake reader's follow-ups reads", () => {
+  it("reads a pull request's review history, the issues carrying a label newest first, and the repository's labels", async () => {
+    const github = fakeGitHub([{ number: 7 }]);
+    const history = [{ author: "bot", body: "b", lastEditedAt: null, url: "u" }];
+    github.reviewHistory.set(7, history);
+    github.repoLabels.push("pr-follow-up");
+    github.filed.set(3, { title: "a", body: "old", state: "CLOSED", stateReason: "COMPLETED" });
+    github.filed.set(5, { title: "b", body: "new", state: "OPEN", stateReason: null });
+    github.filed.set(4, { title: "c", body: "unlabelled", state: "OPEN", stateReason: null });
+    github.issueLabels.set(3, ["pr-follow-up"]);
+    github.issueLabels.set(5, ["pr-follow-up"]);
+    const { reader, reads } = fakeReader(github);
+
+    expect(await reader.reviewHistory(7)).toEqual(history);
+    expect((await reader.labelledIssues("pr-follow-up")).map((issue) => [issue.number, issue.state, issue.body])).toEqual([
+      [5, "OPEN", "new"],
+      [3, "CLOSED", "old"],
+    ]);
+    expect(await reader.repoLabels()).toEqual(["pr-follow-up"]);
+    await expect(reader.reviewHistory(8)).rejects.toBeInstanceOf(GitHubError);
+    expect(reads.map((r) => r.method)).toEqual(["reviewHistory", "labelledIssues", "repoLabels", "reviewHistory"]);
+  });
+
+  it("lists an issue the fake writer creates", async () => {
+    const github = fakeGitHub([{ number: 7 }]);
+    const { reader } = fakeReader(github);
+    const { writers } = fakeWriters(github, ["workflow"], { createIssue: 1 });
+
+    const created = await writers.workflow.createIssue({ title: "t", body: "b", labels: ["x"], readBack: { label: "x", matches: () => true } });
+
+    expect(created).toEqual({ outcome: "applied", number: 8, url: "https://github.com/o/r/issues/8" });
+    expect(await reader.labelledIssues("x")).toEqual([{ number: 8, url: created.url, state: "OPEN", stateReason: null, body: "b" }]);
   });
 });
 

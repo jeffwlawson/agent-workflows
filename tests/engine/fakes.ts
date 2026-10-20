@@ -10,7 +10,18 @@
  */
 import { GitError, type BundleHead, type GitReader } from "../../engine/git.js";
 import { GitHubError, isServerError } from "../../engine/github.js";
-import type { CheckRun, CommitStatus, ConversationComment, GitHubReader, PullRequest, SubIssue, WorkflowRun } from "../../engine/read.js";
+import {
+  LABELLED_ISSUES_LIMIT,
+  type CheckRun,
+  type CommitStatus,
+  type ConversationComment,
+  type GitHubReader,
+  type LabelledIssue,
+  type PullRequest,
+  type ReviewHistoryEntry,
+  type SubIssue,
+  type WorkflowRun,
+} from "../../engine/read.js";
 import {
   createWriters,
   ReadBackFailed,
@@ -52,6 +63,14 @@ export interface FakeIssue {
   blockedBy: { readonly number: number; readonly state: "open" | "closed" }[];
 }
 
+/** An issue as a listing by label reads it, and as `createIssue` makes it. Its labels are `issueLabels`'. */
+export interface FakeFiledIssue {
+  title: string;
+  body: string;
+  state: "OPEN" | "CLOSED";
+  stateReason: string | null;
+}
+
 /** The live state both fakes share. */
 export interface FakeGitHub {
   readonly pullRequests: Map<number, FakePullRequest>;
@@ -88,6 +107,12 @@ export interface FakeGitHub {
   readonly reviews: FakeReview[];
   /** Per issue or pull request, each label added to it and when, oldest first. */
   readonly labelled: Map<number, { readonly label: string; readonly at: string }[]>;
+  /** Issues by number with a title, a body and a state: what a listing by label reads, and what `createIssue` adds to. */
+  readonly filed: Map<number, FakeFiledIssue>;
+  /** Per pull request, its review history, oldest first. A pull request not here has none. */
+  readonly reviewHistory: Map<number, ReviewHistoryEntry[]>;
+  /** The labels the repository has. */
+  readonly repoLabels: string[];
   /**
    * Whether the GitHub call `call` (such as `resolve`, `POST labels`) made by
    * the write `write` fails, and how. `true` refuses it with a 422 and changes
@@ -152,6 +177,9 @@ export const fakeGitHub = (pullRequests: readonly Partial<FakePullRequest>[] = [
   comments: [],
   reviews: [],
   labelled: new Map(),
+  filed: new Map(),
+  reviewHistory: new Map(),
+  repoLabels: [],
   fails: () => false,
 });
 
@@ -180,6 +208,20 @@ const openFrom = (github: FakeGitHub, head: string, base: string) => {
   const pr = [...github.pullRequests.values()].find((p) => p.state === "open" && p.headRef === head && p.baseRef === base);
   return pr === undefined ? undefined : { number: pr.number, url: `https://github.com/o/r/pull/${pr.number}` };
 };
+
+/** The filed issues carrying `label`, newest first, as the reader and the create's read-back list them. */
+const labelledIn = (github: FakeGitHub, label: string): LabelledIssue[] =>
+  [...github.filed]
+    .filter(([number]) => (github.issueLabels.get(number) ?? []).includes(label))
+    .sort(([a], [b]) => b - a)
+    .slice(0, LABELLED_ISSUES_LIMIT)
+    .map(([number, issue]) => ({
+      number,
+      url: `https://github.com/o/r/issues/${number}`,
+      state: issue.state,
+      stateReason: issue.stateReason,
+      body: issue.body,
+    }));
 
 /** A read the fake reader received: the method and its arguments. */
 export interface ReceivedRead {
@@ -271,6 +313,19 @@ export const fakeReader = (github: FakeGitHub): { readonly reader: GitHubReader;
           author: review.token,
           ...(review.submittedAt === undefined ? {} : { submittedAt: review.submittedAt }),
         }));
+    },
+    reviewHistory: async (number) => {
+      reads.push({ method: "reviewHistory", args: [number] });
+      pullRequestOf(github, number);
+      return [...(github.reviewHistory.get(number) ?? [])];
+    },
+    labelledIssues: async (label) => {
+      reads.push({ method: "labelledIssues", args: [label] });
+      return labelledIn(github, label);
+    },
+    repoLabels: async () => {
+      reads.push({ method: "repoLabels", args: [] });
+      return [...github.repoLabels];
     },
     labelledAt: async (number, label) => {
       reads.push({ method: "labelledAt", args: [number, label] });
@@ -495,6 +550,33 @@ const fakeBackend = (github: FakeGitHub, token: string): Backend => {
         }
         if (found === undefined) throw error;
         return { outcome: "applied", ...found, readBack: (error as Error).message };
+      }
+    },
+    createIssue: async (call, create) => {
+      try {
+        return await call("POST issues", async () =>
+          attempt("createIssue", "POST issues", () => {
+            const number = Math.max(0, ...github.pullRequests.keys(), ...github.issues.keys(), ...github.issueLabels.keys(), ...github.filed.keys()) + 1;
+            github.filed.set(number, { title: create.title, body: create.body, state: "OPEN", stateReason: null });
+            github.issueLabels.set(number, [...create.labels]);
+            return { outcome: "applied" as const, number, url: `https://github.com/o/r/issues/${number}` };
+          }),
+        );
+      } catch (error) {
+        // The read-back the engine's own makes, on a server error alone, by the caller's label and match alone.
+        if (!isServerError(error)) throw error;
+        let found;
+        try {
+          found = await call(
+            "GET issues",
+            async () => attempt("createIssue", "GET issues", () => labelledIn(github, create.readBack.label).find((issue) => create.readBack.matches(issue.body))),
+            "read",
+          );
+        } catch (readError) {
+          throw new ReadBackFailed(error, readError);
+        }
+        if (found === undefined) throw error;
+        return { outcome: "applied", number: found.number, url: found.url, readBack: (error as Error).message };
       }
     },
     editPullRequest: async (call, number, edit) => {

@@ -3416,35 +3416,97 @@ describe("the follow-ups workflow files a merged PR rather than refusing it", ()
  * `follow-ups:file` writes through the engine's writer (#510), so it keeps a
  * write log like every command that does, in a directory of its own: what it
  * filed, posted and removed, readable after the runner is gone however the job
- * ended.
+ * ended. And `follow-ups:conclude` ends the run (#511), in place of the shell
+ * step *Report the failure on the PR*: told how the job ended and whether it
+ * ran out of time, it reads `follow-ups:file`'s reason from that directory,
+ * and keeps a write log of its own beside it.
  */
-describe("the follow-ups workflow keeps its command's write log", () => {
+describe("the follow-ups workflow files with follow-ups:file and ends with follow-ups:conclude", () => {
   const step = (name: string): Step | undefined => stepsOf(FOLLOW_UPS).find((s) => s.name === name);
-  const declared = (outputs: readonly string[]): DirectoryInput => ({
+  const declared = (producer: string, outputs: readonly string[]): DirectoryInput => ({
     required: true,
-    producer: "follow-ups:file",
+    producer,
     files: Object.fromEntries(outputs.map((file) => [file, "sometimes" as const])),
   });
+  const writeLog = (command: "follow-ups:file" | "follow-ups:conclude"): DirectoryInput =>
+    declared(command, COMMANDS[command].outputs.filter((file) => file === "write_log.jsonl"));
 
-  it("gives the command an OUTPUT_DIR of its own", () => {
-    expect(step("File the recorded follow-ups")?.env?.["OUTPUT_DIR"]).toBe("${{ runner.temp }}/file");
+  it("runs, in order, the clock, the auth, the filing, the measure, conclude and the upload", () => {
+    expect(stepsOf(FOLLOW_UPS).map((s) => s.name)).toEqual([
+      "Start the clock",
+      "Authenticate to GitHub Packages",
+      "File the recorded follow-ups",
+      "Measure how the job ended",
+      "Conclude the run",
+      "Keep the write logs",
+    ]);
   });
 
-  it("uploads exactly the write log the command declares, always(), last", () => {
-    const keep = step("Keep the write log");
+  /** The only shell left records facts: when the job started, and whether it ran out of time. */
+  it("runs no inline shell but the clock and the measure", () => {
+    const shell = stepsOf(FOLLOW_UPS).filter((s) => s.run !== undefined && !(s.run.trim().startsWith("npm exec")));
+
+    expect(shell.map((s) => s.name)).toEqual(["Start the clock", "Measure how the job ended"]);
+    expect(stepsOf(FOLLOW_UPS).map((s) => subcommandRun(s)).filter((run) => run !== undefined)).toEqual([
+      "follow-ups:file",
+      "follow-ups:conclude",
+    ]);
+  });
+
+  it("gives each command an OUTPUT_DIR of its own", () => {
+    expect(step("File the recorded follow-ups")?.env?.["OUTPUT_DIR"]).toBe("${{ runner.temp }}/file");
+    expect(step("Conclude the run")?.env?.["OUTPUT_DIR"]).toBe("${{ runner.temp }}/conclude");
+  });
+
+  it("measures whether the job ran out of time always(), comparing only a cancel with the limit", () => {
+    const measure = step("Measure how the job ended");
+
+    expect(measure?.id).toBe("outcome");
+    expect(measure?.if).toBe("always()");
+    expect(measure?.env).toEqual({ JOB_STATUS: "${{ job.status }}" });
+    expect(measure?.run ?? "").toContain('[ "$JOB_STATUS" = "cancelled" ] && [ -n "${JOB_STARTED:-}" ] && [[ "$TIMEOUT_MINUTES" =~ ^[1-9][0-9]*$ ]]');
+    expect(measure?.run ?? "").toContain("TIMEOUT_MINUTES * 60 - 60");
+    expect(measure?.run ?? "").toContain('echo "timed-out=${timed_out}" >> "$GITHUB_OUTPUT"');
+  });
+
+  it("runs follow-ups:conclude always(), told how the job ended, and reading follow-ups:file's directory", () => {
+    const conclude = step("Conclude the run");
+
+    expect(conclude?.if).toBe("always()");
+    expect(conclude?.env).toEqual({
+      NODE_AUTH_TOKEN: "${{ secrets.GITHUB_TOKEN }}",
+      OUTPUT_DIR: "${{ runner.temp }}/conclude",
+      FILE_DIR: "${{ runner.temp }}/file",
+      JOB_STATUS: "${{ job.status }}",
+      TIMED_OUT: "${{ steps.outcome.outputs.timed-out }}",
+      RUN_URL: "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}",
+    });
+    expect(COMMANDS["follow-ups:conclude"].inputs.FILE_DIR.producer).toBe("follow-ups:file");
+    // Every input conclude requires is set, here or on the job.
+    const set = { ...(jobOf(FOLLOW_UPS).env ?? {}), ...(conclude?.env ?? {}) };
+    for (const [name, input] of Object.entries(COMMANDS["follow-ups:conclude"].inputs)) {
+      if (input.required) expect(set[name], name).toBeDefined();
+    }
+  });
+
+  /** `timeout-minutes` cannot read `env`, so the figure is spelled twice, and held equal here. */
+  it("names its limit once for the measure and conclude, equal to timeout-minutes", () => {
+    const job = jobOf(FOLLOW_UPS);
+
+    expect(job.env?.["TIMEOUT_MINUTES"]).toBe(String(job["timeout-minutes"]));
+    expect(step("Measure how the job ended")?.env?.["TIMEOUT_MINUTES"]).toBeUndefined();
+    expect(step("Conclude the run")?.env?.["TIMEOUT_MINUTES"]).toBeUndefined();
+  });
+
+  it("uploads exactly the write logs the two commands declare, always(), last", () => {
+    const keep = step("Keep the write logs");
 
     expect(COMMANDS["follow-ups:file"].outputs).toContain("write_log.jsonl");
-    expectHandsOver(keep, declared([]), { file: declared(COMMANDS["follow-ups:file"].outputs.filter((file) => file === "write_log.jsonl")) });
+    expect(COMMANDS["follow-ups:conclude"].outputs).toContain("write_log.jsonl");
+    expectHandsOver(keep, declared("follow-ups:file", []), { file: writeLog("follow-ups:file"), conclude: writeLog("follow-ups:conclude") });
     expect(keep?.if).toBe("always()");
     expect(keep?.uses).toBe("actions/upload-artifact@v7");
-    expect(stepsOf(FOLLOW_UPS).at(-1)?.name).toBe("Keep the write log");
-  });
-
-  it("reports the failure with the reason the command wrote in its own directory", () => {
-    const run = step("Report the failure on the PR")?.run ?? "";
-
-    expect(run).toContain('"${RUNNER_TEMP}/file/failure_reason.txt"');
-    expect(run).not.toMatch(/\$\{RUNNER_TEMP\}\/failure_reason\.txt/);
+    expect(stepsOf(FOLLOW_UPS).at(-1)?.name).toBe("Keep the write logs");
   });
 });
 
@@ -6311,12 +6373,14 @@ describe("every workflow invokes the runners at a pinned version", () => {
 
   /**
    * The runner's, where the job runs commands beside it, as review's runs
-   * `review:gate` ahead of it (#420); else the job's one command.
+   * `review:gate` ahead of it (#420); else the job's one command but its
+   * ending, as follow-ups' runs `follow-ups:file` and then
+   * `follow-ups:conclude` (#511).
    */
   const invocation = (file: string): string => {
     const invocations = invocationsIn(file);
     const runners = invocations.filter((run) => !(subcommandRun({ run }) ?? "").includes(":"));
-    const chosen = runners.length > 0 ? runners : invocations;
+    const chosen = runners.length > 0 ? runners : invocations.filter((run) => !run.endsWith(":conclude"));
 
     expect(chosen).toHaveLength(1);
     return chosen[0] as string;
@@ -7180,13 +7244,14 @@ describe("the runner package is installed from GitHub Packages", () => {
    * repository's own checkout as the package (#8). The runner's, by the
    * subcommand it names, where the workflow has one: a command its job runs
    * after it from an early install, as fix's `fix:bundle` does (#472), is not
-   * the runner. `follow-ups` has none, and its one step runs its command.
-   * And the installed binary run by its path, as fix's runner is, from the
-   * install its job holds.
+   * the runner. `follow-ups` has none, and its first command step runs the
+   * filing, which `follow-ups:conclude` follows `always()` (#511). And the
+   * installed binary run by its path, as fix's runner is, from the install
+   * its job holds.
    */
   const runnerStepIndex = (file: string): number => {
     const workflow = path.basename(file, ".yml");
-    return stepsOf(file).findLastIndex((s) => {
+    return stepsOf(file).findIndex((s) => {
       const run = (s.run ?? "").trim();
       const runs = run.startsWith("npm exec") || run.startsWith("npx ") || INSTALLED_BIN.test(run);
       return runs && (!(workflow in RUNNERS) || subcommandRun(s) === workflow);
@@ -7781,8 +7846,10 @@ describe("what the loop posts carries no em dash", () => {
  * had run. Observed on #152, whose implement run hit 30 minutes and vanished.
  *
  * So each failure step also runs on `cancelled()`, and is told which it was by
- * `job.status` and the clock. What the comment then says is executed in
- * `tests/failure-step.test.ts`; this is the wiring it depends on.
+ * `job.status` and the clock. Each is a conclude command now, the last
+ * follow-ups' (#511), and what its comment says is held in that command's
+ * tests; the clock's half is executed in `tests/failure-step.test.ts`. This is
+ * the wiring they depend on.
  */
 describe("a run that times out or is cancelled says so, as a failure does", () => {
   /** The failure step of each workflow, and the guard it carried before #220. */
@@ -7799,7 +7866,8 @@ describe("a run that times out or is cancelled says so, as a failure does", () =
     // failed: that is a result of the job it needs, not a status of its own.
     // `review:conclude` since #419, which tells the endings apart itself.
     review: { name: "Conclude the run", guard: "" },
-    "follow-ups": { name: "Report the failure on the PR", guard: "" },
+    // `follow-ups:conclude` since #511, likewise.
+    "follow-ups": { name: "Conclude the run", guard: "" },
   };
 
   /**
@@ -7818,6 +7886,7 @@ describe("a run that times out or is cancelled says so, as a failure does", () =
     fix: { job: AGENT_LIMIT, step: AGENT_MINUTES },
     "update-branch": { job: AGENT_LIMIT, step: AGENT_MINUTES },
     review: { job: "${{ fromJSON(needs.time-limit.outputs.minutes) }}", step: "${{ needs.time-limit.outputs.minutes }}" },
+    // Set on the job (#511), which its measure and conclude both read.
     "follow-ups": { job: 10, step: "10" },
   };
 
@@ -7854,6 +7923,14 @@ describe("a run that times out or is cancelled says so, as a failure does", () =
       expect(step.env?.["GATE_RESULT"]).toBe("${{ needs.gate.result }}");
       expect(step.env?.["AGENT_RESULT"]).toBe(`\${{ needs.${command}.result }}`);
       expect(step.env?.["PUBLISH_OUTCOME"]).toBe("${{ steps.publish.outcome }}");
+      return;
+    }
+    // And follow-ups' (#511), told how its one job ended and whether that
+    // job's own last measure found it ran out of time.
+    if (command === "follow-ups") {
+      expect(step.if).toBe("always()");
+      expect(step.env?.["JOB_STATUS"]).toBe("${{ job.status }}");
+      expect(step.env?.["TIMED_OUT"]).toBe("${{ steps.outcome.outputs.timed-out }}");
       return;
     }
 
@@ -7938,7 +8015,8 @@ describe("a run that times out or is cancelled says so, as a failure does", () =
 
   it.each(RUNNER_COMMANDS)("%s: names the limit it runs under, as the job states it", (command: string) => {
     expect(jobOf(fileOf(command))["timeout-minutes"]).toBe(LIMITS[command]?.job);
-    expect(failureStep(command).env?.["TIMEOUT_MINUTES"]).toBe(LIMITS[command]?.step);
+    const env = command === "follow-ups" ? jobOf(fileOf(command)).env : failureStep(command).env;
+    expect(env?.["TIMEOUT_MINUTES"]).toBe(LIMITS[command]?.step);
   });
 
   /**
@@ -8298,42 +8376,24 @@ describe("a trigger label is on while its run works, and off when it ends", () =
  * - **Didn't run**, refused before doing anything:
  *   `**`agent:X` didn't run:** <Reason>. <What to do>.`
  *
- * and `agent:blocked` goes on only where the maintainer has to act. The
- * failure steps are executed in `tests/failure-step.test.ts`; what is pinned
- * here is that each workflow writes the pattern, and every refusal fills it
- * with a sentence.
+ * and `agent:blocked` goes on only where the maintainer has to act. Each is a
+ * command's sentence now, held in that command's tests; what is pinned here
+ * is where each workflow hands it over.
  */
 describe("every failure and refusal says so in one of two patterns", () => {
   const FIX = path.join(WORKFLOW_DIR, "fix.yml");
   const UPDATE = path.join(WORKFLOW_DIR, "update-branch.yml");
-  const STOPPED = [
-    // Fix's is `fix:conclude`'s since #469, held in `tests/fix/conclude.test.ts`,
-    // update-branch's `update-branch:conclude`'s since #485, held in
-    // `tests/update-branch/conclude.test.ts`, implement's
-    // `implement:conclude`'s since #493, held in
-    // `tests/implement/conclude.test.ts`, and implement-prd's
-    // `implement-prd:conclude`'s since #505, held in
-    // `tests/implement-prd/conclude.test.ts`.
-    { file: FOLLOW_UPS, label: "agent:follow-ups", step: "Report the failure on the PR" },
-  ] as const;
+  // Every stopped run's comment is a command's now, each held in its tests:
+  // fix's `fix:conclude`'s since #469, in `tests/fix/conclude.test.ts`,
+  // update-branch's `update-branch:conclude`'s since #485, in
+  // `tests/update-branch/conclude.test.ts`, implement's
+  // `implement:conclude`'s since #493, in `tests/implement/conclude.test.ts`,
+  // implement-prd's `implement-prd:conclude`'s since #505, in
+  // `tests/implement-prd/conclude.test.ts`, and follow-ups'
+  // `follow-ups:conclude`'s since #511, in `tests/follow-ups/conclude.test.ts`.
   // Every refusal is a command's sentence now, each held word for word in
   // its tests: fix's `fix:gate`'s since #470, implement's `implement:gate`'s
   // since #490 and implement-prd's `implement-prd:gate`'s since #498.
-
-  it.each(STOPPED)("$file: a run that stopped says `$label stopped:`, the reason, the run and what to do", (c) => {
-    const run = writerStepsOf(c.file).find((s) => s.name === c.step)?.run ?? "";
-
-    expect(run).toMatch(
-      new RegExp(
-        `printf '\\*\\*\`${c.label}\` stopped:\\*\\* %s\\\\n\\\\n\\[Workflow run\\]\\(%s\\) · %s\\\\n' "\\$reason" "\\$RUN_URL" `,
-      ),
-    );
-    // The reason is made a sentence whoever wrote it.
-    expect(run).toContain('reason="${reason^}"');
-    expect(run).toContain('case "$reason" in *[.!?]) ;; *) reason="${reason}." ;; esac');
-    // And none of the old openings survives.
-    expect(run).not.toMatch(/run %s\.|\*\*Reason:\*\*|\*\*Workflow run:\*\*|Re-apply/);
-  });
 
   /**
    * Review's refusals are `review:gate`'s sentences (#420), each held word

@@ -344,6 +344,28 @@ export const STUB_KEY_VERSION = 2;
 export const stubMarker = (location: string, prNumber: number, seq: number): string =>
   `<!--${embeddableJson({ version: STUB_KEY_VERSION, location, pr: prNumber, seq })}-->`;
 
+/**
+ * What `follow-ups:conclude` says of a filing run that stopped (#511), word
+ * for word as the shell step *Report the failure on the PR* said it before:
+ * the reason it gives where nothing more is known, and the retry. The retry
+ * is the marker's: it stays on a run that stopped, and re-adding a label
+ * already there fires no event, so the gesture is remove, then add.
+ */
+export const FOLLOW_UPS_STOPPED = {
+  timedOut: (minutes: string): string => `It timed out after ${minutes} minutes.`,
+  cancelled: "It was cancelled before it finished, by hand or by GitHub.",
+  noReason: "It stopped without giving a reason. The workflow run's log has the details.",
+  retry: `Some follow-up issues may not have been filed. To try again, remove \`${FOLLOW_UPS_LABEL}\` and add it back; nothing is filed twice.`,
+} as const;
+
+/**
+ * The comment a stopped filing run posts on its pull request, in the one
+ * pattern every stopped run's takes (#253): `sentence`, already a sentence,
+ * then the run's link and the retry.
+ */
+export const followUpsStoppedComment = (sentence: string, runUrl: string): string =>
+  `**\`${FOLLOW_UPS_LABEL}\` stopped:** ${sentence}\n\n[Workflow run](${runUrl}) · ${FOLLOW_UPS_STOPPED.retry}\n`;
+
 // The orchestrator a repository is served by.
 
 /**

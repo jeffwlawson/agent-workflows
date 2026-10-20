@@ -360,6 +360,11 @@ export const SUBCOMMANDS: Readonly<Record<string, Subcommand>> = {
     async () => (await import("./follow-ups/file.js")).file,
     "File a closed PR's recorded review findings as triageable issues (no model).",
   ),
+  "follow-ups:conclude": writingCommand(
+    "follow-ups:conclude",
+    async () => (await import("./follow-ups/conclude.js")).conclude,
+    "Say on a closed PR that its filing run stopped, and how to retry it (no model).",
+  ),
   implement: runner("implement", () => import("./implement/implement.js")),
   "implement:gate": writingCommand(
     "implement:gate",

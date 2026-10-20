@@ -93,7 +93,9 @@ and throws on failure, and `cli.ts` turns the throw into `fail()`.
   writes.
 - The engine gains the two write types gh-aw lacks: a commit status, and a reply to a thread coupled
   to its resolve with a reason.
-- `follow-ups:file` writes outside the writer until its own workflow moves.
+- `follow-ups:file` writes outside the writer until its own workflow moves. *Resolved by PRD #508:*
+  it files, reports and removes its marker through the writer since #510, and
+  `follow-ups:conclude` replaced the workflow's last shell write, its failure comment, in #511.
 - #391's criterion that every write path goes through cleanup becomes a property of the readers.
   The hand-over's readers (#398) must give out the agent's text already cleaned.
 - Cleaning on read keeps a forged marker out only if no hand-over file carries a loop string. [ADR

@@ -59,7 +59,7 @@ cannot check is one only an orchestrator's author will catch.
   `review`, `fix` and `update-branch`. It reads its inputs from the environment, starts the agent,
   and writes files and commits. It is not the agent.
 - **Command.** A subcommand that does an orchestrator's work on the record and starts no agent,
-  named `<workflow>:<step>`: `fix:gate`, `fix:prepare`, `fix:bundle`, `fix:publish`, `fix:conclude`, `follow-ups:file`, `implement:gate`, `implement:prepare`, `implement:bundle`, `implement:publish`, `implement:conclude`, `implement-prd:gate`, `implement-prd:catch-up`, `implement-prd:prepare`, `implement-prd:bundle`, `implement-prd:publish`, `implement-prd:conclude`, `review:gate`, `review:budget`,
+  named `<workflow>:<step>`: `fix:gate`, `fix:prepare`, `fix:bundle`, `fix:publish`, `fix:conclude`, `follow-ups:file`, `follow-ups:conclude`, `implement:gate`, `implement:prepare`, `implement:bundle`, `implement:publish`, `implement:conclude`, `implement-prd:gate`, `implement-prd:catch-up`, `implement-prd:prepare`, `implement-prd:bundle`, `implement-prd:publish`, `implement-prd:conclude`, `review:gate`, `review:budget`,
   `review:collect-checks`, `review:red-check-place`, `review:red-check-classify`, `review:publish`,
   `review:conclude`, `review:advance`, `update-branch:gate`, `update-branch:merge`,
   `update-branch:prepare`, `update-branch:bundle`, `update-branch:publish` and
@@ -139,7 +139,7 @@ The inputs every runner reads, set once for any of them:
 |---|---|---|---|
 | `OUTPUT_DIR` | required | | The directory the runner writes its files into (§2.3). |
 | `GH_REPO` | required | | The repository, `owner/name`. Required rather than left to whatever `gh` infers. |
-| `GH_TOKEN` | required | | The token `gh` reads. The runners only read with it, `fix:prepare` reads and fetches the rescue branch with it, and `update-branch:merge`, `update-branch:prepare` and `update-branch:publish` fetch the base branch with it; `follow-ups:file` files its issues, posts its report and takes `agent:follow-ups` off with it, through the writer, `implement:gate` makes its refusals, its start comment and its label transitions with it, `implement:publish` the link on the issue with it, `implement:conclude` its failure comment, `agent:implement` off and `agent:blocked` on, `implement-prd:gate` its refusals, its start comments, its label transitions, the approved slice's note and the PRD PR's building row, `implement-prd:catch-up` fetches the PRD branch and the base branch with it and parks the chain with it, `implement-prd:prepare` reads and fetches the PRD branch and the rescue branch with it, `implement-prd:publish` fetches the base branch and the PRD branch and reads the rescue branch's tip, the open pull requests from the PRD branch and a reused PRD PR's rounds and head with it, `implement-prd:conclude` its set-aside note, its failure comment, `agent:implement` off and `agent:blocked` on, and fetches the base branch and the PRD branch and reads the rescue branch's tip and the PRD PR's rounds with it, and `review:publish` posts the review, the summary and the verdict with it, `review:conclude` its comments, its error verdict and the labels nothing fires on, `review:advance` a PRD PR's progress list and its notes there, `fix:gate` its refusals and its label transitions, `fix:publish` its thread replies, its comments and notes, and the rescue branch's deletion, `fix:conclude` its failure comment, the rescue-set-aside note where `fix:publish` did not post it, and `agent:fix` off and `agent:blocked` on, `update-branch:gate` its refusal and its label transitions, `update-branch:publish` the verdict it carries over, its comment, and the comment that no review will start, and `update-branch:conclude` its failure comment, `agent:update-branch` off and `agent:blocked` on, and the comment that no refresh of a moved head will start. |
+| `GH_TOKEN` | required | | The token `gh` reads. The runners only read with it, `fix:prepare` reads and fetches the rescue branch with it, and `update-branch:merge`, `update-branch:prepare` and `update-branch:publish` fetch the base branch with it; `follow-ups:file` files its issues, posts its report and takes `agent:follow-ups` off with it, through the writer, `follow-ups:conclude` posts its failure comment with it, `implement:gate` makes its refusals, its start comment and its label transitions with it, `implement:publish` the link on the issue with it, `implement:conclude` its failure comment, `agent:implement` off and `agent:blocked` on, `implement-prd:gate` its refusals, its start comments, its label transitions, the approved slice's note and the PRD PR's building row, `implement-prd:catch-up` fetches the PRD branch and the base branch with it and parks the chain with it, `implement-prd:prepare` reads and fetches the PRD branch and the rescue branch with it, `implement-prd:publish` fetches the base branch and the PRD branch and reads the rescue branch's tip, the open pull requests from the PRD branch and a reused PRD PR's rounds and head with it, `implement-prd:conclude` its set-aside note, its failure comment, `agent:implement` off and `agent:blocked` on, and fetches the base branch and the PRD branch and reads the rescue branch's tip and the PRD PR's rounds with it, and `review:publish` posts the review, the summary and the verdict with it, `review:conclude` its comments, its error verdict and the labels nothing fires on, `review:advance` a PRD PR's progress list and its notes there, `fix:gate` its refusals and its label transitions, `fix:publish` its thread replies, its comments and notes, and the rescue branch's deletion, `fix:conclude` its failure comment, the rescue-set-aside note where `fix:publish` did not post it, and `agent:fix` off and `agent:blocked` on, `update-branch:gate` its refusal and its label transitions, `update-branch:publish` the verdict it carries over, its comment, and the comment that no review will start, and `update-branch:conclude` its failure comment, `agent:update-branch` off and `agent:blocked` on, and the comment that no refresh of a moved head will start. |
 
 A command that runs where no token is held, as the red check's two do beside the pull request's own
 code, `fix:bundle`, `update-branch:bundle`, `implement:bundle` and `implement-prd:bundle` do after the agent and
@@ -492,7 +492,7 @@ only a status whose creator is the loop's identity (§4.1).
 | Event | What it records | Read by |
 |---|---|---|
 | `agent:fix` added to the pull request | One fix round, automatic or by hand, each time it was added. | `review`, `fix`, `implement-prd`, to count rounds |
-| `agent:follow-ups` on the pull request | Findings wait to be filed. Read live, and taken off once filed, by `follow-ups:file` through `removeLabel`, last, and left on by any run that fails. | `follow-ups:file` |
+| `agent:follow-ups` on the pull request | Findings wait to be filed. Read live, and taken off once filed, by `follow-ups:file` through `removeLabel`, last, and left on by any run that fails: `follow-ups:conclude`, which says so, never takes it off. | `follow-ups:file` |
 | `pr-follow-up` on an issue | An issue `follow-ups:file` filed earlier, labelled as `createIssue` creates it, where the repository has the label, and read with its body's key. | `follow-ups:file` |
 
 **`doctor` cannot check this.** These strings are written by the orchestrator's posting code, and
@@ -3058,7 +3058,7 @@ everything else with `GH_TOKEN`.
 Trigger label: `agent:follow-ups`, on a merged pull request. `doctor` does not demand the label,
 since only a repository that installed the filing caller reads it.
 
-A workflow with no runner: one command, and no agent.
+A workflow with no runner: two commands, the filing and its ending, and no agent.
 
 ### `follow-ups:file`
 
@@ -3088,7 +3088,69 @@ it needs no `claude` and no checkout.
 
 **`doctor` cannot check this.** The record is written by the orchestrator's posting code, for the reason §4.3 gives.
 
-> **Actions orchestrator:** the command files the issues through the writer, with its
+> **Actions orchestrator:** the job's step after the Node setup, from `RUNNER_TEMP`, in the one
+> job, which checks nothing out. The command files the issues through the writer, with its
 > `GH_TOKEN`, which can write issues, unlike any runner's, and its `OUTPUT_DIR` is a `file/`
-> directory of its own. Its write log is kept as an artifact however the job ended. A failure is
-> commented on the pull request, with the reason the command wrote there.
+> directory of its own, which `follow-ups:conclude` reads. Its write log is kept as an artifact
+> however the job ended, beside `follow-ups:conclude`'s.
+
+### `follow-ups:conclude`
+
+Ends every filing run, success included. It runs no model and needs no checkout. It is told how
+the job ended and whether it ran out of time, and works out the ending from them:
+
+- **A run that finished** (`JOB_STATUS` is `success`): nothing. The report is `follow-ups:file`'s,
+  and a merge with nothing to file stays silent.
+- **A run that stopped** (`failure` or `cancelled`): one comment, `` **`agent:follow-ups`
+  stopped:** `` and the reason as a sentence, starting with a capital and ending in a full stop
+  (#253), the run's link, and `` Some follow-up issues may not have been filed. To try again,
+  remove `agent:follow-ups` and add it back; nothing is filed twice. ``
+
+The reason is, in this order: `` It timed out after <TIMEOUT_MINUTES> minutes. `` where `TIMED_OUT`
+is `true`; `It was cancelled before it finished, by hand or by GitHub.` where the job was cancelled;
+the `failure_reason.txt` `follow-ups:file` wrote; and failing those, `It stopped without giving a
+reason. The workflow run's log has the details.` The reason file is not read on a timeout or a
+cancel, and one that cannot be read is a warning and is read as not written. The strings are
+`FOLLOW_UPS_STOPPED` and `followUpsStoppedComment` in `shared/record.ts`.
+
+It never takes `agent:follow-ups` off: `follow-ups:file` takes it off last and only on a plan that
+asked, so on a run that stopped it still says the findings are unfiled, and removing and re-adding
+it is the retry. It never adds `agent:blocked`: a merged pull request has no pipeline left to
+block. It may write one comment and nothing else, with `GH_TOKEN`, and a comment GitHub refuses is
+a warning.
+
+#### Inputs
+
+| Input | Kind | Default | What it is |
+|---|---|---|---|
+| `PR_NUMBER` | required | | The merged pull request. |
+| `RUN_URL` | required | | The run's page, which the failure comment links. |
+| `JOB_STATUS` | required | | How the job ended: `success`, `failure` or `cancelled`. |
+| `TIMED_OUT` | optional | `""` | `true` where the job ran its whole limit. |
+| `TIMEOUT_MINUTES` | optional | `""` | That limit, for the comment. |
+| `FILE_DIR` | directory | | `follow-ups:file`'s `OUTPUT_DIR`. Reads `failure_reason.txt` (where written). |
+
+#### Outputs
+
+| Output | When it is written |
+|---|---|
+| `write_log.jsonl` | Every write as it lands, one JSON line each, and a last line for how the command ended, as `review:conclude`'s. Not written where it wrote nothing. |
+
+**`doctor` cannot check this.** These tables are the command's, for the reason §6 gives.
+
+#### What it reads from the record
+
+Nothing: what it says comes from its inputs and its directory.
+
+**`doctor` cannot check this.** The record is written by the orchestrator's posting code, for the reason §4.3 gives.
+
+> **Actions orchestrator:** the job's step after `follow-ups:file`, run `always()`, from
+> `RUNNER_TEMP`. The job's first step starts a clock, and a step before this one, also `always()`,
+> measures whether the job ran out of time: a cancelled job that ran its whole limit, less a
+> minute, did, and a limit that is not a positive integer reads as no timeout. That step and this
+> one read the limit from the job's `TIMEOUT_MINUTES`, which `tests/workflows.test.ts` holds equal
+> to its `timeout-minutes`. It is told the job's status and that step's `timed-out` output.
+> `FILE_DIR` is `follow-ups:file`'s `file/` directory, and its own `OUTPUT_DIR` is a `conclude/`
+> directory, so the reason file it reads is never its own. Both commands' write logs are uploaded
+> `always()`. A failure before the package installs, the Node setup's own, posts nothing: the run
+> never got as far as the command.

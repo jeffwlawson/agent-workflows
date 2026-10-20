@@ -784,8 +784,6 @@ const REVIEW_RED_CHECK_PLACE = {
  * workflow's folder, and exports one function the CLI calls with the inputs
  * declared here.
  *
- * - `follow-ups:file` writes issues with its `GH_TOKEN` itself, outside the
- *   engine's writer, until its own workflow moves (ADR 0005).
  * - `review:gate` decides, before checkout, whether the review runs, which
  *   commit it reviews, the fix-round budget's value and, on a PRD branch,
  *   which round it is, and writes nothing to the record: the posting job says
@@ -1123,7 +1121,7 @@ export const COMMANDS = {
       ...LOOP_ACCOUNTS,
       PR_NUMBER: REQUIRED,
     },
-    outputs: [...EVERY_SUBCOMMAND_OUTPUTS],
+    outputs: [...EVERY_SUBCOMMAND_OUTPUTS, WRITE_LOG],
   },
   "implement:gate": {
     inputs: {

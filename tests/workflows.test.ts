@@ -3413,6 +3413,42 @@ describe("the follow-ups workflow files a merged PR rather than refusing it", ()
 });
 
 /**
+ * `follow-ups:file` writes through the engine's writer (#510), so it keeps a
+ * write log like every command that does, in a directory of its own: what it
+ * filed, posted and removed, readable after the runner is gone however the job
+ * ended.
+ */
+describe("the follow-ups workflow keeps its command's write log", () => {
+  const step = (name: string): Step | undefined => stepsOf(FOLLOW_UPS).find((s) => s.name === name);
+  const declared = (outputs: readonly string[]): DirectoryInput => ({
+    required: true,
+    producer: "follow-ups:file",
+    files: Object.fromEntries(outputs.map((file) => [file, "sometimes" as const])),
+  });
+
+  it("gives the command an OUTPUT_DIR of its own", () => {
+    expect(step("File the recorded follow-ups")?.env?.["OUTPUT_DIR"]).toBe("${{ runner.temp }}/file");
+  });
+
+  it("uploads exactly the write log the command declares, always(), last", () => {
+    const keep = step("Keep the write log");
+
+    expect(COMMANDS["follow-ups:file"].outputs).toContain("write_log.jsonl");
+    expectHandsOver(keep, declared([]), { file: declared(COMMANDS["follow-ups:file"].outputs.filter((file) => file === "write_log.jsonl")) });
+    expect(keep?.if).toBe("always()");
+    expect(keep?.uses).toBe("actions/upload-artifact@v7");
+    expect(stepsOf(FOLLOW_UPS).at(-1)?.name).toBe("Keep the write log");
+  });
+
+  it("reports the failure with the reason the command wrote in its own directory", () => {
+    const run = step("Report the failure on the PR")?.run ?? "";
+
+    expect(run).toContain('"${RUNNER_TEMP}/file/failure_reason.txt"');
+    expect(run).not.toMatch(/\$\{RUNNER_TEMP\}\/failure_reason\.txt/);
+  });
+});
+
+/**
  * One caller file per side (#225). Every label on a pull request used to start
  * four caller runs and every label on an issue two, most of them only to skip;
  * now one label starts one run per side, and an adopter copies two files.
@@ -8402,7 +8438,11 @@ describe("what the loop posts names no internal mechanism", () => {
     ["shared/review-output.ts", "const movedSentence", "._`;"],
     ["shared/review-output.ts", "const MOVED_NOTE", '._";'],
     ["shared/review-verification.ts", "export const declineReply", '].join("\\n");'],
-    ["shared/follow-up-plan.ts", "const stubBody", "dedupPayload("],
+    ["shared/follow-up-plan.ts", "const stubBody", "stubMarker("],
+    // Up to the run log's lines, which a human reads in the log and not on the pull request.
+    ["follow-ups/file.ts", "export const file", "console.log(`Filed"],
+    ["follow-ups/file.ts", "const createStub", "\n};"],
+    ["follow-ups/file.ts", "const stopping", "\n};"],
     ["implement/implement.ts", "fail(", "\n"],
     ["implement-prd/implement-prd.ts", "fail(", "\n"],
     ["update-branch/update-branch.ts", "fail(", "\n"],

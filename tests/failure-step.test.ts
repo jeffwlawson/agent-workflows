@@ -57,7 +57,8 @@ interface Workflow {
 const CASES = [
   // No `agent:blocked` on a merged pull request, on a failure or otherwise:
   // there is no pipeline left there to block (see the step's own note).
-  { command: "follow-ups", label: "agent:follow-ups", step: "Report the failure on the PR", minutes: 10, blocks: false },
+  // The reason is where `follow-ups:file`'s `OUTPUT_DIR`, a directory of its own (#510), puts it.
+  { command: "follow-ups", label: "agent:follow-ups", step: "Report the failure on the PR", minutes: 10, blocks: false, reason: "file/failure_reason.txt" },
 ] as const;
 
 type Case = (typeof CASES)[number];
@@ -148,7 +149,7 @@ const run = (
   elapsed: number,
   minutes = String(c.minutes),
   refused = "false",
-  files: Readonly<Record<string, string>> = { "failure_reason.txt": "The runner wrote this.\n" },
+  files: Readonly<Record<string, string>> = { [c.reason]: "The runner wrote this.\n" },
   extra: Readonly<Record<string, string>> = {},
 ): Outcome => {
   const temp = fs.mkdtempSync(path.join(os.tmpdir(), "agent-failure-step-"));
@@ -237,7 +238,7 @@ describe.skipIf(!CAN_RUN)("a failure step says whether the run failed, timed out
       expect(run(c, status, elapsed).comment, `${status} after ${elapsed}s`).toMatch(pattern);
     }
     // A reason written in lower case and with no full stop is made a sentence.
-    const lower = run(c, "failure", 120, String(c.minutes), "false", { "failure_reason.txt": "the push was rejected\n" });
+    const lower = run(c, "failure", 120, String(c.minutes), "false", { [c.reason]: "the push was rejected\n" });
     expect(lower.comment).toContain("stopped:** The push was rejected.\n");
     // And one that wrote no reason at all still says so in words.
     const none = run(c, "failure", 120, String(c.minutes), "false", {});

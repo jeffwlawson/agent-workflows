@@ -139,7 +139,7 @@ The inputs every runner reads, set once for any of them:
 |---|---|---|---|
 | `OUTPUT_DIR` | required | | The directory the runner writes its files into (§2.3). |
 | `GH_REPO` | required | | The repository, `owner/name`. Required rather than left to whatever `gh` infers. |
-| `GH_TOKEN` | required | | The token `gh` reads. The runners only read with it, `fix:prepare` reads and fetches the rescue branch with it, and `update-branch:merge`, `update-branch:prepare` and `update-branch:publish` fetch the base branch with it; `follow-ups:file` files issues with it, `implement:gate` makes its refusals, its start comment and its label transitions with it, `implement:publish` the link on the issue with it, `implement:conclude` its failure comment, `agent:implement` off and `agent:blocked` on, `implement-prd:gate` its refusals, its start comments, its label transitions, the approved slice's note and the PRD PR's building row, `implement-prd:catch-up` fetches the PRD branch and the base branch with it and parks the chain with it, `implement-prd:prepare` reads and fetches the PRD branch and the rescue branch with it, `implement-prd:publish` fetches the base branch and the PRD branch and reads the rescue branch's tip, the open pull requests from the PRD branch and a reused PRD PR's rounds and head with it, `implement-prd:conclude` its set-aside note, its failure comment, `agent:implement` off and `agent:blocked` on, and fetches the base branch and the PRD branch and reads the rescue branch's tip and the PRD PR's rounds with it, and `review:publish` posts the review, the summary and the verdict with it, `review:conclude` its comments, its error verdict and the labels nothing fires on, `review:advance` a PRD PR's progress list and its notes there, `fix:gate` its refusals and its label transitions, `fix:publish` its thread replies, its comments and notes, and the rescue branch's deletion, `fix:conclude` its failure comment, the rescue-set-aside note where `fix:publish` did not post it, and `agent:fix` off and `agent:blocked` on, `update-branch:gate` its refusal and its label transitions, `update-branch:publish` the verdict it carries over, its comment, and the comment that no review will start, and `update-branch:conclude` its failure comment, `agent:update-branch` off and `agent:blocked` on, and the comment that no refresh of a moved head will start. |
+| `GH_TOKEN` | required | | The token `gh` reads. The runners only read with it, `fix:prepare` reads and fetches the rescue branch with it, and `update-branch:merge`, `update-branch:prepare` and `update-branch:publish` fetch the base branch with it; `follow-ups:file` files its issues, posts its report and takes `agent:follow-ups` off with it, through the writer, `implement:gate` makes its refusals, its start comment and its label transitions with it, `implement:publish` the link on the issue with it, `implement:conclude` its failure comment, `agent:implement` off and `agent:blocked` on, `implement-prd:gate` its refusals, its start comments, its label transitions, the approved slice's note and the PRD PR's building row, `implement-prd:catch-up` fetches the PRD branch and the base branch with it and parks the chain with it, `implement-prd:prepare` reads and fetches the PRD branch and the rescue branch with it, `implement-prd:publish` fetches the base branch and the PRD branch and reads the rescue branch's tip, the open pull requests from the PRD branch and a reused PRD PR's rounds and head with it, `implement-prd:conclude` its set-aside note, its failure comment, `agent:implement` off and `agent:blocked` on, and fetches the base branch and the PRD branch and reads the rescue branch's tip and the PRD PR's rounds with it, and `review:publish` posts the review, the summary and the verdict with it, `review:conclude` its comments, its error verdict and the labels nothing fires on, `review:advance` a PRD PR's progress list and its notes there, `fix:gate` its refusals and its label transitions, `fix:publish` its thread replies, its comments and notes, and the rescue branch's deletion, `fix:conclude` its failure comment, the rescue-set-aside note where `fix:publish` did not post it, and `agent:fix` off and `agent:blocked` on, `update-branch:gate` its refusal and its label transitions, `update-branch:publish` the verdict it carries over, its comment, and the comment that no review will start, and `update-branch:conclude` its failure comment, `agent:update-branch` off and `agent:blocked` on, and the comment that no refresh of a moved head will start. |
 
 A command that runs where no token is held, as the red check's two do beside the pull request's own
 code, `fix:bundle`, `update-branch:bundle`, `implement:bundle` and `implement-prd:bundle` do after the agent and
@@ -429,7 +429,7 @@ string the agent wrote, so the agent cannot forge one of those through a review.
 | `<!-- agent-follow-ups {…} -->` | A review body that recorded out-of-scope findings. An edited review's is refused. | `review:publish`, from `review`'s `review_body.json` | `review`, to not record one twice; `follow-ups:file`, to file them |
 | `<!-- agent-red-tests {…} -->` | A slice round's review body: the red check's tests. | `review:publish`, from `review`'s `review_body.json` | `review`, on the PRD PR's final review |
 | `<summary><b>Acceptance criteria</b>` | A review body's criteria group, its `- **Changed:**` and `- **Unmet:**` lines. | `review:publish`, from `review`'s `review_body.json` | `review`, on later rounds of the same slice |
-| `<!--{"version",…,"location","pr","seq"}-->` | The body of a filed follow-up issue. | `follow-ups:file`, which files it | `follow-ups:file`, to not file one twice |
+| `<!--{"version",…,"location","pr","seq"}-->` | The end of a filed follow-up issue's body. | `follow-ups:file`, which files it through `createIssue`, as `stubMarker` in `shared/record.ts` spells it | `follow-ups:file`, to not file one twice, and to read back a stub GitHub filed while answering with a server error |
 | `<!-- agent:prd-started -->` | The end of a PRD chain's first run's comment on the parent, saying which sub-issue it builds first. | `implement-prd:gate`, as `PRD_STARTED_MARK` in `shared/record.ts` spells it | `implement-prd:gate`, to not post it twice on a retry |
 | `<!-- agent:slice-approved <sha> -->` | The end of the note on an approved slice's sub-issue, `<sha>` the PRD PR head it was approved on. | `implement-prd:gate`, past an approval, as `sliceApprovedMark` in `shared/record.ts` spells it | `implement-prd:gate`, to not post it twice on a retry |
 
@@ -492,8 +492,8 @@ only a status whose creator is the loop's identity (§4.1).
 | Event | What it records | Read by |
 |---|---|---|
 | `agent:fix` added to the pull request | One fix round, automatic or by hand, each time it was added. | `review`, `fix`, `implement-prd`, to count rounds |
-| `agent:follow-ups` on the pull request | Findings wait to be filed. Read live, and taken off once filed. | `follow-ups:file` |
-| `pr-follow-up` on an issue | An issue `follow-ups:file` filed earlier, read with its body's key. | `follow-ups:file` |
+| `agent:follow-ups` on the pull request | Findings wait to be filed. Read live, and taken off once filed, by `follow-ups:file` through `removeLabel`, last, and left on by any run that fails. | `follow-ups:file` |
+| `pr-follow-up` on an issue | An issue `follow-ups:file` filed earlier, labelled as `createIssue` creates it, where the repository has the label, and read with its body's key. | `follow-ups:file` |
 
 **`doctor` cannot check this.** These strings are written by the orchestrator's posting code, and
 read back at run time; nothing in a repository holds them before a run.
@@ -3076,7 +3076,7 @@ it needs no `claude` and no checkout.
 
 | Output | When it is written |
 |---|---|
-| | Nothing beyond §2.4. The result is the issues it files. |
+| `write_log.jsonl` | Every write as it lands, one JSON line each, and a last line for how the command ended, as `review:conclude`'s. Not written where it wrote nothing. |
 
 **`doctor` cannot check this.** These tables are the command's, for the reason §6 gives.
 
@@ -3088,5 +3088,7 @@ it needs no `claude` and no checkout.
 
 **`doctor` cannot check this.** The record is written by the orchestrator's posting code, for the reason §4.3 gives.
 
-> **Actions orchestrator:** the command files the issues itself, with its `GH_TOKEN`, which can
-> write issues, unlike any runner's. A failure is commented on the pull request.
+> **Actions orchestrator:** the command files the issues through the writer, with its
+> `GH_TOKEN`, which can write issues, unlike any runner's, and its `OUTPUT_DIR` is a `file/`
+> directory of its own. Its write log is kept as an artifact however the job ended. A failure is
+> commented on the pull request, with the reason the command wrote there.

@@ -2,13 +2,12 @@ import { isWorkflowBot, type LoopAccounts } from "./loop-accounts.js";
 import { severityTextBadge } from "./review-findings.js";
 import {
   capFollowUps,
-  embeddableJson,
   type EarlierFollowUps,
   hasFollowUpsBlock,
   parseFollowUpsBlock,
   type FollowUp,
 } from "./review-output.js";
-import { FOLLOW_UPS_LABEL, FOLLOW_UP_STUB_LABEL, TRIAGE_LABEL } from "./record.js";
+import { FOLLOW_UPS_LABEL, FOLLOW_UP_STUB_LABEL, STUB_KEY_VERSION, stubMarker, TRIAGE_LABEL } from "./record.js";
 
 /**
  * The filing decision (#48): everything gathered from GitHub in, the list of
@@ -181,52 +180,6 @@ const normaliseLocation = (location: string): string => {
 };
 
 /**
- * The stub payload's shape, versioned for the same reason the review block is
- * and on its own timeline (#81): the two are written and read by different
- * pairs of releases, and the gap this one spans is the longer of the two: a key
- * written into an issue is read back by every run after it, for as long as that
- * issue exists — `fetchStubs` lists `--state all`, and a `wontfix` closure is
- * the case that most needs its key to still match.
- *
- * Deliberately **not** the block's `FOLLOW_UPS_VERSION`, which they shared
- * until this was split out. Moving one to reshape the other's payload is a cost
- * with no connection to the change that caused it: while they shared one, a
- * bump here also refused every findings block already posted by the previous
- * release, filing nothing for pull requests that recorded their findings
- * correctly. `embeddableJson` stays shared, because a JSON escaper is not the
- * coupling.
- */
-export const STUB_KEY_VERSION = 2;
-
-/**
- * The key a stub is matched on, written into the stub and read back on the next
- * run. Never the prose: a stub may be reworded freely, and a matcher that read
- * the prose would break on the first person who tidied one up.
- *
- * It answers **two** questions with different authority (#82), which is why
- * `location` is written verbatim and `seq` is written at all:
- *
- * | | Question | Fields | Authority |
- * |---|---|---|---|
- * | Identity | did this run already file this finding? | `pr` + `location` + `seq` | binding |
- * | Relatedness | is there an issue a triager should see? | `location`, normalised | advisory |
- *
- * One key served both until #82 and could not: it was the normalised path, so
- * two findings in one file were one finding, and the loser of that was skipped
- * rather than linked. Storing the normalised form is what made identity as
- * coarse as relatedness, so the raw string is what goes in and normalisation
- * happens on the way back out.
- *
- * Version `2` makes every stub the previous release filed unmatchable, so the
- * next review raising a finding at one of those paths files fresh rather than
- * linking. Accepted on the grounds `stubKey` already states: an unreadable key
- * files a duplicate rather than skipping a real finding, which is one click to
- * close.
- */
-const dedupPayload = (location: string, prNumber: number, seq: number): string =>
-  `<!--${embeddableJson({ version: STUB_KEY_VERSION, location, pr: prNumber, seq })}-->`;
-
-/**
  * Any HTML comment holding a bare JSON object. The review body's block carries
  * its marker word before the `{`, so this cannot pick that one up by accident.
  */
@@ -285,6 +238,27 @@ const stubKey = (body: string): StubKey | undefined => {
   }
   return undefined;
 };
+
+/**
+ * Whether `body` is the stub `issue` files, which is how a server error on
+ * creating it is read back (#510): its key is this finding's identity, `pr`,
+ * `location` and `seq`, both read by `stubKey`, so the last readable payload
+ * wins on each side and a quoted decoy in a stub's prose cannot stand in for
+ * it. The planned body's own key is its last line, `stubBody` writes it there.
+ */
+export const isStubFor =
+  (issue: PlannedIssue) =>
+  (body: string): boolean => {
+    const planned = stubKey(issue.body);
+    const filed = stubKey(body);
+    return (
+      planned !== undefined &&
+      filed !== undefined &&
+      filed.pr === planned.pr &&
+      filed.seq === planned.seq &&
+      filed.location === planned.location
+    );
+  };
 
 const isClosed = (stub: FilingStub): boolean => stub.state.toLowerCase() === "closed";
 const isWontfix = (stub: FilingStub): boolean =>
@@ -441,7 +415,7 @@ const stubBody = (
     // than the evidence above it, and it is the last thing a triager reads.
     ...(related === undefined ? [] : ["", relationLine(related, path)]),
     "",
-    dedupPayload(followUp.location, prNumber, seq),
+    stubMarker(followUp.location, prNumber, seq),
   ].join("\n");
 
 /**

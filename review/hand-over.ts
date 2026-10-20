@@ -39,7 +39,15 @@ import type { ProgressInputs } from "../shared/progress-list.js";
 import type { SliceRanges } from "../shared/slice-ranges.js";
 import type { EvidenceCheck, RedTestsRecord, SliceRedTests } from "../shared/red-check.js";
 import type { HandedFinding } from "../shared/review-findings.js";
-import type { CiResult, CloserLookCause, CriteriaCase, ReviewBodyHandOver, TestSketch, Verdict } from "../shared/review-output.js";
+import {
+  FOLLOW_UPS_LIST_LIMIT,
+  type CiResult,
+  type CloserLookCause,
+  type CriteriaCase,
+  type ReviewBodyHandOver,
+  type TestSketch,
+  type Verdict,
+} from "../shared/review-output.js";
 import type { ThreadResolution } from "../shared/review-verification.js";
 import type { RoundCount, RoundCounts, RoundScope } from "../shared/round-header.js";
 
@@ -173,7 +181,6 @@ export interface ProgressHandOver extends Pick<ProgressInputs, "subIssues" | "ra
 export const MAX_FINDINGS = 200;
 export const MAX_RESOLUTIONS = 200;
 const MAX_ENTRIES = 500;
-const MAX_FOLLOW_UPS = 200;
 /** The red check's tests: the ones a pull request adds or changes, which a run lists in full. */
 const MAX_TESTS = 10_000;
 const MAX_SLICES = 1_000;
@@ -438,7 +445,7 @@ export const handOverParsers = (known: Known) => {
           missed: list(object(entry), { max: MAX_ENTRIES }),
           resolved: list(object({ ...entry, threadId: thread }), { max: MAX_ENTRIES }),
           movedToFollowUps: NUMBER,
-          followUps: list(followUp, { max: MAX_FOLLOW_UPS }),
+          followUps: list(followUp, { max: FOLLOW_UPS_LIST_LIMIT }),
           droppedFollowUps: NUMBER,
           followUpsCap: NUMBER,
           followUpsCarried: YES_NO,

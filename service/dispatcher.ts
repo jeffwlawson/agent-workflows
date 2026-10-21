@@ -218,7 +218,7 @@ export const createDispatcher = (edges: DispatcherEdges) => {
    */
   const decide = async (event: string | undefined, payload: unknown): Promise<string> => {
     if (event === "ping") return "ping: answered";
-    if (event !== "pull_request") return `ignored: a \`${event ?? "unnamed"}\` event, not a pull request's`;
+    if (event !== "pull_request") return `ignored: \`${event ?? "unnamed"}\` is not a pull request's event`;
     const p = (payload ?? {}) as LabelEvent;
     if (p.action !== "labeled") return `ignored: a pull request \`${String(p.action)}\`, not labelled`;
     const label = p.label?.name;

@@ -273,7 +273,18 @@ interface Workflow {
   readonly jobs: Record<string, Job>;
 }
 
-const workflowOf = (file: string): Workflow => parse(fs.readFileSync(file, "utf8")) as Workflow;
+/**
+ * Parsed once per distinct text, cloned per call. Keyed by the text rather
+ * than the path, so a file rewritten mid-run parses fresh; cloned so no test
+ * can mutate another's copy.
+ */
+const parsedWorkflows = new Map<string, Workflow>();
+const workflowOf = (file: string): Workflow => {
+  const text = fs.readFileSync(file, "utf8");
+  let doc = parsedWorkflows.get(text);
+  if (doc === undefined) parsedWorkflows.set(text, (doc = parse(text) as Workflow));
+  return structuredClone(doc);
+};
 
 /**
  * The jobs a workflow declares **beside** the one that does its work, keyed by

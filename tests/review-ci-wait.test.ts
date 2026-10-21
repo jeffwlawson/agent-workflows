@@ -1,4 +1,4 @@
-import { execFileSync, spawnSync } from "node:child_process";
+import { execFile, execFileSync, spawnSync } from "node:child_process";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
@@ -72,8 +72,12 @@ interface Workflow {
  * The `review` job by id. Since #133 the file has a second job, `resolve`,
  * which runs no wait.
  */
+const parsedReview = new Map<string, Workflow>();
 const reviewJob = (): { readonly env?: Record<string, string>; readonly steps?: readonly Step[] } => {
-  const job = (parse(fs.readFileSync(REVIEW, "utf8")) as Workflow).jobs["review"];
+  const text = fs.readFileSync(REVIEW, "utf8");
+  let doc = parsedReview.get(text);
+  if (doc === undefined) parsedReview.set(text, (doc = parse(text) as Workflow));
+  const job = structuredClone(doc).jobs["review"];
 
   expect(job).toBeDefined();
   return job as { readonly env?: Record<string, string>; readonly steps?: readonly Step[] };
@@ -214,7 +218,7 @@ interface Outcome {
  * Executes the step's `run:` block the way the runner does: written to a file
  * and handed to `bash -e`, with the step's own `env:` block around it.
  */
-const runWaitStep = (options: {
+const runWaitStep = async (options: {
   readonly pages?: readonly unknown[];
   readonly waitSeconds?: string;
   readonly unreadable?: "403" | "unreachable";
@@ -250,7 +254,7 @@ const runWaitStep = (options: {
    */
   readonly branch?: string;
   readonly extraEnv?: Record<string, string>;
-}): Outcome => {
+}): Promise<Outcome> => {
   const temp = fs.mkdtempSync(path.join(os.tmpdir(), "agent-review-ci-"));
   const script = path.join(temp, "step.sh");
   const pages = path.join(temp, "check-runs.json");
@@ -268,7 +272,8 @@ const runWaitStep = (options: {
   // The checkout may not carry the execute bit (Windows, or an archive).
   for (const file of fs.readdirSync(ghDir)) fs.chmodSync(path.join(ghDir, file), 0o755);
 
-  const result = spawnSync("bash", ["-e", script], {
+  const result = await new Promise<{ status: number | null; stdout: string; stderr: string }>((resolve) => {
+  execFile("bash", ["-e", script], {
     encoding: "utf8",
     // Bounded, because vitest's own timeout cannot interrupt a synchronous
     // spawn. The scenarios that do not override `waitSeconds` run at the
@@ -300,6 +305,13 @@ const runWaitStep = (options: {
       PATH: `${ghDir}${path.delimiter}${process.env["PATH"] ?? ""}`,
       ...options.extraEnv,
     },
+  }, (error, stdout, stderr) => {
+    resolve({
+      status: error === null ? 0 : typeof error.code === "number" ? error.code : null,
+      stdout,
+      stderr,
+    });
+  });
   });
 
   const collected = path.join(temp, "ci_status.md");
@@ -314,13 +326,13 @@ const runWaitStep = (options: {
   };
 };
 
-describe.skipIf(!CAN_RUN)("agent-review's CI collection, executed", () => {
+describe.skipIf(!CAN_RUN)("agent-review's CI collection, executed", { concurrent: true }, () => {
   /**
    * The harness runs the script under `bash -e` because that is what GitHub
    * does with a `run:` block carrying no `shell:` key. If one is ever added,
    * this harness is testing a different shell from the one in production.
    */
-  it("runs under the shell the workflow actually gets", () => {
+  it("runs under the shell the workflow actually gets", async () => {
     expect(waitStep().shell).toBeUndefined();
     expect(reviewJob().env?.["GH_REPO"]).toBe("${{ github.repository }}");
     // Supplied by the harness as `branch`, so it has to be what the job says.
@@ -332,7 +344,7 @@ describe.skipIf(!CAN_RUN)("agent-review's CI collection, executed", () => {
    * refuses `--slurp` next to `--jq` at flag-parse time — no request is made —
    * so this needs neither a network nor a token.
    */
-  it.skipIf(!onPath("gh"))("gh really does refuse --slurp alongside --jq", () => {
+  it.skipIf(!onPath("gh"))("gh really does refuse --slurp alongside --jq", async () => {
     const refused = spawnSync(
       "gh",
       ["api", `repos/${GH_REPO}/commits/${HEAD_SHA}/check-runs`, "--hostname", "localhost", "--paginate", "--slurp", "--jq", "."],
@@ -357,7 +369,7 @@ describe.skipIf(!CAN_RUN)("agent-review's CI collection, executed", () => {
    * sibling test below; it is otherwise seen only by the replay, which is the
    * thing that can drift from the binary.
    */
-  it.skipIf(!onPath("gh"))("every gh call the wait composes is one gh accepts", () => {
+  it.skipIf(!onPath("gh"))("every gh call the wait composes is one gh accepts", async () => {
     const temp = fs.mkdtempSync(path.join(os.tmpdir(), "agent-review-gh-"));
     const log = path.join(temp, "gh-stderr.log");
     const real = execFileSync("bash", ["-c", "command -v gh"], {
@@ -366,7 +378,7 @@ describe.skipIf(!CAN_RUN)("agent-review's CI collection, executed", () => {
     }).trim();
 
     fs.writeFileSync(path.join(temp, "gh"), `#!/usr/bin/env bash\nexec "${real}" "$@" 2>>"${log}"\n`);
-    const outcome = runWaitStep({ gh: temp, waitSeconds: "0", extraEnv: { GH_HOST: "localhost" } });
+    const outcome = await runWaitStep({ gh: temp, waitSeconds: "0", extraEnv: { GH_HOST: "localhost" } });
     const stderr = fs.readFileSync(log, "utf8");
 
     // Live rather than vacuous: gh got as far as building the request — and
@@ -405,7 +417,7 @@ describe.skipIf(!CAN_RUN)("agent-review's CI collection, executed", () => {
    * would be a test of a command nothing runs, which is the failure mode this
    * whole file exists to answer, one level up.
    */
-  it.skipIf(!onPath("gh"))("gh accepts the call the failure-log tail composes", () => {
+  it.skipIf(!onPath("gh"))("gh accepts the call the failure-log tail composes", async () => {
     const run = waitStep().run ?? "";
 
     expect(run).toContain('gh run view "$rid" --log-failed');
@@ -432,8 +444,8 @@ describe.skipIf(!CAN_RUN)("agent-review's CI collection, executed", () => {
    * fails as an unreadable API rather than as a miscount, and the assertion is
    * that nothing here looks like a failure at all.
    */
-  it("waits for no check when every non-agent check has finished", () => {
-    const outcome = runWaitStep({ waitSeconds: "0" });
+  it("waits for no check when every non-agent check has finished", async () => {
+    const outcome = await runWaitStep({ waitSeconds: "0" });
 
     expect(outcome.status).toBe(0);
     expect(outcome.stdout).not.toContain("::error::");
@@ -454,8 +466,8 @@ describe.skipIf(!CAN_RUN)("agent-review's CI collection, executed", () => {
    * agent `"- verify: success"` — which contains every substring this test
    * could otherwise have asked for.
    */
-  it("hands the agent every non-agent check on the commit", () => {
-    const { evidence } = runWaitStep({ waitSeconds: "0" });
+  it("hands the agent every non-agent check on the commit", async () => {
+    const { evidence } = await runWaitStep({ waitSeconds: "0" });
     const lines = evidence.split("\n");
 
     expect(evidence).not.toContain("Still running after");
@@ -477,8 +489,8 @@ describe.skipIf(!CAN_RUN)("agent-review's CI collection, executed", () => {
    * step reads the pair as no answer at all. Waiting zero seconds so the count
    * is asserted through the ceiling's message rather than through a sleep.
    */
-  it("counts a pending check on a later page as one number", () => {
-    const outcome = runWaitStep({
+  it("counts a pending check on a later page as one number", async () => {
+    const outcome = await runWaitStep({
       pages: [PAGE_ONE, page([...PAGE_TWO, running("deploy", "in_progress")])],
       waitSeconds: "0",
     });
@@ -504,8 +516,8 @@ describe.skipIf(!CAN_RUN)("agent-review's CI collection, executed", () => {
     ["red when one of them failed", "failure", "red"],
     ["green for a check that was neutral", "neutral", "green"],
     ["green for a check that was skipped", "skipped", "green"],
-  ])("is %s", (_case: string, conclusion: string, expected: string) => {
-    const outcome = runWaitStep({
+  ])("is %s", async (_case: string, conclusion: string, expected: string) => {
+    const outcome = await runWaitStep({
       pages: [PAGE_ONE, page([...PAGE_TWO, done("deploy", conclusion)])],
       waitSeconds: "0",
     });
@@ -520,8 +532,8 @@ describe.skipIf(!CAN_RUN)("agent-review's CI collection, executed", () => {
    * evidence about the diff, and reading its `queued` as a red check would send
    * every review with a pending `fix` to a human.
    */
-  it("is green when the only unfinished checks are agent jobs", () => {
-    expect(runWaitStep({ waitSeconds: "0" }).ciResult).toBe("green");
+  it("is green when the only unfinished checks are agent jobs", async () => {
+    expect((await runWaitStep({ waitSeconds: "0" })).ciResult).toBe("green");
   });
 
   /**
@@ -535,8 +547,8 @@ describe.skipIf(!CAN_RUN)("agent-review's CI collection, executed", () => {
     ["red when one errored", [status("ci/build", "error")], "red"],
     ["unknown when one is still pending at the ceiling", [status("ci/build", "pending")], "unknown"],
     ["green when every one of them passed", [status("ci/build", "success")], "green"],
-  ])("is %s", (_case: string, statuses: readonly Record<string, unknown>[], expected: string) => {
-    expect(runWaitStep({ waitSeconds: "0", statuses }).ciResult).toBe(expected);
+  ])("is %s", async (_case: string, statuses: readonly Record<string, unknown>[], expected: string) => {
+    expect((await runWaitStep({ waitSeconds: "0", statuses })).ciResult).toBe(expected);
   });
 
   /**
@@ -546,8 +558,8 @@ describe.skipIf(!CAN_RUN)("agent-review's CI collection, executed", () => {
    * recommended" — a `failure` status — would derive "needs a closer
    * look" one round later, off nothing but its own reply.
    */
-  it("ignores the verdict's own context, which is this job's previous answer", () => {
-    const outcome = runWaitStep({
+  it("ignores the verdict's own context, which is this job's previous answer", async () => {
+    const outcome = await runWaitStep({
       waitSeconds: "0",
       statuses: [status("agent-review", "failure"), status("ci/build", "success")],
     });
@@ -563,8 +575,8 @@ describe.skipIf(!CAN_RUN)("agent-review's CI collection, executed", () => {
    * message — the check runs here are all finished or agent jobs, so the one
    * being waited for can only be the status.
    */
-  it("waits for a pending commit status like a pending check run", () => {
-    const outcome = runWaitStep({ waitSeconds: "0", statuses: [status("ci/build", "pending")] });
+  it("waits for a pending commit status like a pending check run", async () => {
+    const outcome = await runWaitStep({ waitSeconds: "0", statuses: [status("ci/build", "pending")] });
 
     expect(outcome.status).toBe(0);
     expect(outcome.stdout).not.toContain("::error::");
@@ -575,8 +587,8 @@ describe.skipIf(!CAN_RUN)("agent-review's CI collection, executed", () => {
    * One count over both surfaces, so the timeout names every one still pending
    * rather than whichever half was asked first.
    */
-  it("counts pending check runs and pending statuses together", () => {
-    const outcome = runWaitStep({
+  it("counts pending check runs and pending statuses together", async () => {
+    const outcome = await runWaitStep({
       pages: [PAGE_ONE, page([...PAGE_TWO, running("deploy", "in_progress")])],
       waitSeconds: "0",
       statuses: [status("ci/build", "pending"), status("ci/lint", "pending"), status("ci/docs", "success")],
@@ -592,8 +604,8 @@ describe.skipIf(!CAN_RUN)("agent-review's CI collection, executed", () => {
    * scenario is: a wait that counted it would spin rather than fail, and the
    * spawn's bound is what would end it.
    */
-  it("never waits for the verdict's own context", () => {
-    const outcome = runWaitStep({ statuses: [status("agent-review", "pending"), status("ci/build", "success")] });
+  it("never waits for the verdict's own context", async () => {
+    const outcome = await runWaitStep({ statuses: [status("agent-review", "pending"), status("ci/build", "success")] });
 
     expect(outcome.status).toBe(0);
     expect(outcome.stdout).not.toContain("Waiting for");
@@ -615,8 +627,8 @@ describe.skipIf(!CAN_RUN)("agent-review's CI collection, executed", () => {
   const NO_CI = [page([running(SELF_CHECK, "in_progress"), running("fix / fix", "queued")])];
   const SLICE_BRANCH = "agent/slice-171-175-review-knows-it-is-reading-a-slice-pr";
 
-  it("does not know on a slice PR that no CI ran on", () => {
-    const outcome = runWaitStep({ pages: NO_CI, waitSeconds: "0", branch: SLICE_BRANCH });
+  it("does not know on a slice PR that no CI ran on", async () => {
+    const outcome = await runWaitStep({ pages: NO_CI, waitSeconds: "0", branch: SLICE_BRANCH });
 
     expect(outcome.status).toBe(0);
     expect(outcome.ciResult).toBe("unknown");
@@ -631,8 +643,8 @@ describe.skipIf(!CAN_RUN)("agent-review's CI collection, executed", () => {
    * 58), and the evidence now says plainly that nothing ran, so the agent does
    * not read "no failures" as "CI passed" (#221).
    */
-  it("is still green on an ordinary pull request that no CI ran on, and says so", () => {
-    const outcome = runWaitStep({ pages: NO_CI, waitSeconds: "0" });
+  it("is still green on an ordinary pull request that no CI ran on, and says so", async () => {
+    const outcome = await runWaitStep({ pages: NO_CI, waitSeconds: "0" });
 
     expect(outcome.status).toBe(0);
     expect(outcome.ciResult).toBe("green");
@@ -655,8 +667,8 @@ describe.skipIf(!CAN_RUN)("agent-review's CI collection, executed", () => {
   it.each([
     ["needing approval", workflowRun(201, "CI", "completed", "action_required")],
     ["held by a protection rule", workflowRun(201, "CI", "waiting")],
-  ])("does not know when a CI run is %s, and names it", (_case, run) => {
-    const outcome = runWaitStep({ pages: NO_CI, runs: [run] });
+  ])("does not know when a CI run is %s, and names it", async (_case, run) => {
+    const outcome = await runWaitStep({ pages: NO_CI, runs: [run] });
 
     expect(outcome.status).toBe(0);
     expect(outcome.ciResult).toBe("unknown");
@@ -671,8 +683,8 @@ describe.skipIf(!CAN_RUN)("agent-review's CI collection, executed", () => {
    * …and not green beside checks that passed, either: one workflow finishing
    * says nothing about another that never started.
    */
-  it("does not know when one run waits for approval and the rest passed", () => {
-    const outcome = runWaitStep({ runs: [workflowRun(201, "Corpus", "completed", "action_required")] });
+  it("does not know when one run waits for approval and the rest passed", async () => {
+    const outcome = await runWaitStep({ runs: [workflowRun(201, "Corpus", "completed", "action_required")] });
 
     expect(outcome.ciResult).toBe("unknown");
     expect(outcome.evidence).toContain("- Corpus: waiting for approval");
@@ -682,8 +694,8 @@ describe.skipIf(!CAN_RUN)("agent-review's CI collection, executed", () => {
    * A run still going at the ceiling is `unknown`, never `red` (#221): it has
    * not failed, and the evidence says it was still running.
    */
-  it("does not know when a run is still in progress at the ceiling", () => {
-    const outcome = runWaitStep({ pages: NO_CI, waitSeconds: "0", runs: [workflowRun(202, "CI", "in_progress")] });
+  it("does not know when a run is still in progress at the ceiling", async () => {
+    const outcome = await runWaitStep({ pages: NO_CI, waitSeconds: "0", runs: [workflowRun(202, "CI", "in_progress")] });
 
     expect(outcome.status).toBe(0);
     expect(outcome.ciResult).toBe("unknown");
@@ -697,8 +709,8 @@ describe.skipIf(!CAN_RUN)("agent-review's CI collection, executed", () => {
    * reading as "no CI": the wait keeps looking, finds the run, and waits for
    * it to finish.
    */
-  it("waits for a run that appears within the grace period", () => {
-    const outcome = runWaitStep({
+  it("waits for a run that appears within the grace period", async () => {
+    const outcome = await runWaitStep({
       pages: NO_CI,
       runsByCall: [[], [workflowRun(203, "CI", "queued")], [workflowRun(203, "CI", "completed", "success")]],
       extraEnv: { POLL_SECONDS: "0" },
@@ -720,8 +732,8 @@ describe.skipIf(!CAN_RUN)("agent-review's CI collection, executed", () => {
    * and the first poll, which prints the line asserted below, lost that race
    * often enough under a loaded suite to fail it.
    */
-  it("concludes there is no CI once the grace period passes empty", () => {
-    const outcome = runWaitStep({ pages: NO_CI, extraEnv: { POLL_SECONDS: "0", GRACE_SECONDS: "3" } });
+  it("concludes there is no CI once the grace period passes empty", async () => {
+    const outcome = await runWaitStep({ pages: NO_CI, extraEnv: { POLL_SECONDS: "1", GRACE_SECONDS: "3" } });
 
     expect(outcome.status).toBe(0);
     expect(outcome.stdout).toContain("No CI has reported on this commit yet");
@@ -737,8 +749,8 @@ describe.skipIf(!CAN_RUN)("agent-review's CI collection, executed", () => {
    * id, an `Agent …` workflow by its name, and a renamed caller by what it
    * calls. At the real 900, so a wait that counted any of them would spin.
    */
-  it("never waits for the loop's own workflow runs", () => {
-    const outcome = runWaitStep({
+  it("never waits for the loop's own workflow runs", async () => {
+    const outcome = await runWaitStep({
       runs: [
         workflowRun(SELF_RUN_ID, "Code review", "in_progress"),
         workflowRun(204, "Agent Fix", "queued"),
@@ -764,8 +776,8 @@ describe.skipIf(!CAN_RUN)("agent-review's CI collection, executed", () => {
    */
   it.each(["startup_failure", "failure", "cancelled", "timed_out", "stale"])(
     "is red when a run completed as %s, and names it",
-    (conclusion) => {
-      const outcome = runWaitStep({ pages: NO_CI, runs: [workflowRun(206, "CI", "completed", conclusion)] });
+    async (conclusion) => {
+      const outcome = await runWaitStep({ pages: NO_CI, runs: [workflowRun(206, "CI", "completed", conclusion)] });
 
       expect(outcome.status).toBe(0);
       expect(outcome.ciResult).toBe("red");
@@ -775,8 +787,8 @@ describe.skipIf(!CAN_RUN)("agent-review's CI collection, executed", () => {
   );
 
   /** …and a run that passed, was neutral or was skipped is not. */
-  it.each(["success", "neutral", "skipped"])("is green when a run completed as %s", (conclusion) => {
-    const outcome = runWaitStep({ pages: NO_CI, runs: [workflowRun(207, "CI", "completed", conclusion)] });
+  it.each(["success", "neutral", "skipped"])("is green when a run completed as %s", async (conclusion) => {
+    const outcome = await runWaitStep({ pages: NO_CI, runs: [workflowRun(207, "CI", "completed", conclusion)] });
 
     expect(outcome.ciResult).toBe("green");
     expect(outcome.evidence).not.toContain("did not pass");
@@ -789,8 +801,8 @@ describe.skipIf(!CAN_RUN)("agent-review's CI collection, executed", () => {
    * either: at the real 900 a wait that did would spin the whole ceiling. The
    * verdict still reads it as unfinished.
    */
-  it("does not wait for a check run held by a protection rule", () => {
-    const outcome = runWaitStep({
+  it("does not wait for a check run held by a protection rule", async () => {
+    const outcome = await runWaitStep({
       pages: [page([running(SELF_CHECK, "in_progress"), running("deploy", "waiting")])],
       runs: [workflowRun(208, "Deploy", "waiting")],
     });
@@ -809,8 +821,8 @@ describe.skipIf(!CAN_RUN)("agent-review's CI collection, executed", () => {
   it.each([
     ["CI that reports only a commit status", NO_CI, [status("ci/build", "success")]],
     ["CI that reports check runs", undefined, []],
-  ])("is green on a slice PR with %s", (_case, pages, statuses) => {
-    const outcome = runWaitStep({
+  ])("is green on a slice PR with %s", async (_case, pages, statuses) => {
+    const outcome = await runWaitStep({
       ...(pages === undefined ? {} : { pages }),
       waitSeconds: "0",
       branch: SLICE_BRANCH,
@@ -829,10 +841,10 @@ describe.skipIf(!CAN_RUN)("agent-review's CI collection, executed", () => {
    */
   it.each([["403"], ["unreachable"]])(
     "does not know when the statuses cannot be read (%s)",
-    (how: string) => {
+    async (how: string) => {
       // At the real 900: an unreadable status must neither spin the wait nor
       // be blamed on the check runs, which read fine.
-      const outcome = runWaitStep({ statusesUnreadable: how as "403" | "unreachable" });
+      const outcome = await runWaitStep({ statusesUnreadable: how as "403" | "unreachable" });
 
       expect(outcome.status).toBe(0);
       expect(outcome.ciResult).toBe("unknown");
@@ -846,8 +858,8 @@ describe.skipIf(!CAN_RUN)("agent-review's CI collection, executed", () => {
    * And a failure that *was* seen outranks a half that could not be read: both
    * send the review to a human, and `red` is the one that says why.
    */
-  it("is red when one half failed and the other could not be read", () => {
-    const outcome = runWaitStep({
+  it("is red when one half failed and the other could not be read", async () => {
+    const outcome = await runWaitStep({
       pages: [PAGE_ONE, page([...PAGE_TWO, done("deploy", "failure")])],
       waitSeconds: "0",
       statusesUnreadable: "403",
@@ -874,8 +886,8 @@ describe.skipIf(!CAN_RUN)("agent-review's CI collection, executed", () => {
   it.each([
     ["403", "Resource not accessible by integration"],
     ["unreachable", "connection refused"],
-  ] as const)("reports itself blind when the check-runs endpoint fails (%s)", (unreadable, said) => {
-    const outcome = runWaitStep({ unreadable });
+  ] as const)("reports itself blind when the check-runs endpoint fails (%s)", async (unreadable, said) => {
+    const outcome = await runWaitStep({ unreadable });
 
     expect(outcome.status).toBe(0);
     expect(outcome.stdout).toContain("::error::Could not read check runs");
@@ -906,8 +918,8 @@ describe.skipIf(!CAN_RUN)("agent-review's CI collection, executed", () => {
    * polls the same endpoint with the same argv, so only the ordinal separates
    * them.
    */
-  it("says why when the listing fails on a commit whose count was read", () => {
-    const outcome = runWaitStep({ waitSeconds: "0", unreadable: "unreachable", unreadableFrom: 2 });
+  it("says why when the listing fails on a commit whose count was read", async () => {
+    const outcome = await runWaitStep({ waitSeconds: "0", unreadable: "unreachable", unreadableFrom: 2 });
 
     expect(outcome.status).toBe(0);
     // The count succeeded, so the wait's own arm is silent — this is the one
@@ -932,8 +944,8 @@ describe.skipIf(!CAN_RUN)("agent-review's CI collection, executed", () => {
    * Two failing runs, so the assertion is that the *second* is still reached
    * rather than merely that the first did not kill the process.
    */
-  it("keeps collecting when a failed run's log cannot be read", () => {
-    const outcome = runWaitStep({
+  it("keeps collecting when a failed run's log cannot be read", async () => {
+    const outcome = await runWaitStep({
       waitSeconds: "0",
       failedRuns: [
         { id: 101, name: "CI" },
@@ -966,8 +978,8 @@ describe.skipIf(!CAN_RUN)("agent-review's CI collection, executed", () => {
   it.each([
     ["403", "Resource not accessible by integration"],
     ["unreachable", "connection refused"],
-  ] as const)("says the failure logs are missing when the runs cannot be listed (%s)", (runsUnreadable, said) => {
-    const outcome = runWaitStep({ waitSeconds: "0", runsUnreadable });
+  ] as const)("says the failure logs are missing when the runs cannot be listed (%s)", async (runsUnreadable, said) => {
+    const outcome = await runWaitStep({ waitSeconds: "0", runsUnreadable });
 
     expect(outcome.status).toBe(0);
     expect(outcome.evidence).toContain("Could not list this commit's workflow runs");
@@ -984,8 +996,8 @@ describe.skipIf(!CAN_RUN)("agent-review's CI collection, executed", () => {
   });
 
   /** A listing that answered with no failed run adds nothing, as before. */
-  it("adds no line when the runs were listed and none failed", () => {
-    const outcome = runWaitStep({ waitSeconds: "0" });
+  it("adds no line when the runs were listed and none failed", async () => {
+    const outcome = await runWaitStep({ waitSeconds: "0" });
 
     expect(outcome.evidence).not.toContain("Could not list this commit's workflow runs");
     expect(outcome.stdout).not.toContain("Could not list this commit's workflow runs");

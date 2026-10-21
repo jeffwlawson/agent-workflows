@@ -1,4 +1,4 @@
-import { spawnSync } from "node:child_process";
+import { execFile, spawnSync } from "node:child_process";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
@@ -44,8 +44,12 @@ interface Workflow {
   readonly jobs: Record<string, { readonly steps?: readonly Step[] }>;
 }
 
+const parsedPrd = new Map<string, Workflow>();
 const stepById = (id: string): Step => {
-  const step = ((parse(fs.readFileSync(PRD, "utf8")) as Workflow).jobs["implement-prd"]?.steps ?? []).find(
+  const text = fs.readFileSync(PRD, "utf8");
+  let doc = parsedPrd.get(text);
+  if (doc === undefined) parsedPrd.set(text, (doc = parse(text) as Workflow));
+  const step = (structuredClone(doc).jobs["implement-prd"]?.steps ?? []).find(
     (s) => s.id === id,
   );
 
@@ -135,7 +139,7 @@ interface StepOutcome extends Outcome {
   readonly temp: (name: string) => string;
 }
 
-const runStep = (
+const runStep = async (
   id: string,
   options: {
     readonly pulls: readonly Record<string, unknown>[];
@@ -148,7 +152,7 @@ const runStep = (
     /** The step's own `env:`, supplied in the expressions' place. */
     readonly env?: Record<string, string>;
   },
-): StepOutcome => {
+): Promise<StepOutcome> => {
   const temp = fs.mkdtempSync(path.join(os.tmpdir(), "agent-implement-prd-"));
   const script = path.join(temp, "step.sh");
   const issueFile = path.join(temp, "issue.json");
@@ -173,7 +177,8 @@ const runStep = (
   const ghDir = path.resolve(REPLAY_DIR);
   for (const file of fs.readdirSync(ghDir)) fs.chmodSync(path.join(ghDir, file), 0o755);
 
-  const result = spawnSync("bash", ["-e", script], {
+  const result = await new Promise<{ status: number | null; stdout: string; stderr: string }>((resolve) => {
+  execFile("bash", ["-e", script], {
     encoding: "utf8",
     timeout: SUBPROCESS_TIMEOUT,
     env: {
@@ -196,6 +201,9 @@ const runStep = (
       PATH: `${ghDir}${path.delimiter}${process.env["PATH"] ?? ""}`,
       ...options.env,
     },
+  }, (error, stdout, stderr) => {
+    resolve({ status: error === null ? 0 : typeof error.code === "number" ? error.code : null, stdout, stderr });
+  });
   });
   const read = (name: string): string => {
     const file = path.join(temp, name);
@@ -215,15 +223,15 @@ const runStep = (
 const runPreflight = (options: {
   readonly pulls: readonly Record<string, unknown>[];
   readonly issue?: Record<string, unknown>;
-}): Outcome => runStep("preflight", options);
+}): Promise<Outcome> => runStep("preflight", options);
 
-describe.skipIf(!CAN_RUN)("agent-implement-prd's preflight, executed", () => {
-  it("runs under the shell the workflow actually gets", () => {
+describe.skipIf(!CAN_RUN)("agent-implement-prd's preflight, executed", { concurrent: true }, () => {
+  it("runs under the shell the workflow actually gets", async () => {
     expect(preflight().shell).toBeUndefined();
   });
 
-  it("builds the next slice when no slice PR is open against the PRD branch", () => {
-    const outcome = runPreflight({ pulls: BYSTANDERS });
+  it("builds the next slice when no slice PR is open against the PRD branch", async () => {
+    const outcome = await runPreflight({ pulls: BYSTANDERS });
 
     expect(outcome.status).toBe(0);
     expect(outcome.output).toContain("sub=173\n");
@@ -233,14 +241,14 @@ describe.skipIf(!CAN_RUN)("agent-implement-prd's preflight, executed", () => {
   });
 
   /** What `Merge slice PR` titles the slices table's rows from (#174). */
-  it("leaves its snapshot of the PRD for the steps after it", () => {
-    const outcome = runStep("preflight", { pulls: BYSTANDERS });
+  it("leaves its snapshot of the PRD for the steps after it", async () => {
+    const outcome = await runStep("preflight", { pulls: BYSTANDERS });
 
     expect(JSON.parse(outcome.temp("prd-issue.json"))).toEqual(issue());
   });
 
-  it("hands no slice PR to the merge step when none is open", () => {
-    expect(runPreflight({ pulls: BYSTANDERS }).output).toContain("slice_pr=\n");
+  it("hands no slice PR to the merge step when none is open", async () => {
+    expect((await runPreflight({ pulls: BYSTANDERS })).output).toContain("slice_pr=\n");
   });
 
   /**
@@ -249,8 +257,8 @@ describe.skipIf(!CAN_RUN)("agent-implement-prd's preflight, executed", () => {
    * slice branch here was renamed away from `agent/slice-`, and it is still
    * the slice PR the merge step is handed.
    */
-  it("hands one open slice PR to the merge step and builds the next slice, whatever its branch is called", () => {
-    const outcome = runPreflight({ pulls: [...BYSTANDERS, pull(210, "renamed-by-hand", PRD_BRANCH)] });
+  it("hands one open slice PR to the merge step and builds the next slice, whatever its branch is called", async () => {
+    const outcome = await runPreflight({ pulls: [...BYSTANDERS, pull(210, "renamed-by-hand", PRD_BRANCH)] });
 
     expect(outcome.status).toBe(0);
     expect(outcome.output).toContain("slice_pr=210\n");
@@ -260,8 +268,8 @@ describe.skipIf(!CAN_RUN)("agent-implement-prd's preflight, executed", () => {
     expect(outcome.writes).toEqual([]);
   });
 
-  it("stops on more than one open slice PR, naming every one", () => {
-    const outcome = runPreflight({
+  it("stops on more than one open slice PR, naming every one", async () => {
+    const outcome = await runPreflight({
       pulls: [
         ...BYSTANDERS,
         pull(210, "agent/slice-171-173-slice-2", PRD_BRANCH),
@@ -278,8 +286,8 @@ describe.skipIf(!CAN_RUN)("agent-implement-prd's preflight, executed", () => {
     expect(outcome.writes).toEqual([]);
   });
 
-  it("says a run that builds a slice is not the finishing run", () => {
-    expect(runPreflight({ pulls: BYSTANDERS }).output).toContain("finishing=false\n");
+  it("says a run that builds a slice is not the finishing run", async () => {
+    expect((await runPreflight({ pulls: BYSTANDERS })).output).toContain("finishing=false\n");
   });
 
   /**
@@ -288,8 +296,8 @@ describe.skipIf(!CAN_RUN)("agent-implement-prd's preflight, executed", () => {
    * the **finishing run** (#177): it merges that slice PR and hands the PRD PR
    * over, and builds nothing.
    */
-  it("makes the finishing run of the last open slice PR, rather than calling the PRD finished", () => {
-    const outcome = runPreflight({
+  it("makes the finishing run of the last open slice PR, rather than calling the PRD finished", async () => {
+    const outcome = await runPreflight({
       issue: issue(["CLOSED", "CLOSED", "CLOSED"]),
       pulls: [...BYSTANDERS, pull(212, "agent/slice-171-174-slice-3", PRD_BRANCH)],
     });
@@ -309,8 +317,8 @@ describe.skipIf(!CAN_RUN)("agent-implement-prd's preflight, executed", () => {
    * slice PR open and the PRD PR still a draft. Re-labelled, it resumes the
    * handover — the one thing left — and merges and builds nothing.
    */
-  it("resumes the handover when nothing is open and the PRD PR is still a draft", () => {
-    const outcome = runPreflight({
+  it("resumes the handover when nothing is open and the PRD PR is still a draft", async () => {
+    const outcome = await runPreflight({
       issue: issue(["CLOSED", "CLOSED", "CLOSED"]),
       pulls: BYSTANDERS.map((p) => (p["number"] === 201 ? { ...p, isDraft: true } : p)),
     });
@@ -325,8 +333,8 @@ describe.skipIf(!CAN_RUN)("agent-implement-prd's preflight, executed", () => {
   });
 
   /** …with a handed-over PRD PR, it is finished, refused as before. */
-  it("refuses a PRD with no open sub-issue, no open slice PR and a handed-over PRD PR as finished", () => {
-    const outcome = runPreflight({ issue: issue(["CLOSED", "CLOSED", "CLOSED"]), pulls: BYSTANDERS });
+  it("refuses a PRD with no open sub-issue, no open slice PR and a handed-over PRD PR as finished", async () => {
+    const outcome = await runPreflight({ issue: issue(["CLOSED", "CLOSED", "CLOSED"]), pulls: BYSTANDERS });
 
     expect(outcome.status).toBe(0);
     expect(outcome.output).toContain("refused=true\n");
@@ -350,8 +358,8 @@ describe.skipIf(!CAN_RUN)("agent-implement-prd's preflight, executed", () => {
    * merged slice PR with no PRD PR is a row nobody wrote, resumed below, so
    * this chain's slices were all built before slice PRs.
    */
-  it("refuses a PRD with no PRD PR at all as finished", () => {
-    const outcome = runPreflight({
+  it("refuses a PRD with no PRD PR at all as finished", async () => {
+    const outcome = await runPreflight({
       issue: issue(["CLOSED", "CLOSED", "CLOSED"]),
       pulls: BYSTANDERS.filter((p) => p["number"] !== 201 && p["number"] !== 202),
     });
@@ -364,16 +372,16 @@ describe.skipIf(!CAN_RUN)("agent-implement-prd's preflight, executed", () => {
    * The finished refusal no longer sends a human to hand the PRD PR over: the
    * resume-the-handover row does that, on the same re-label.
    */
-  it("tells nobody to add agent:review by hand when it refuses a finished PRD", () => {
-    const outcome = runPreflight({ issue: issue(["CLOSED", "CLOSED", "CLOSED"]), pulls: BYSTANDERS });
+  it("tells nobody to add agent:review by hand when it refuses a finished PRD", async () => {
+    const outcome = await runPreflight({ issue: issue(["CLOSED", "CLOSED", "CLOSED"]), pulls: BYSTANDERS });
     const comment = outcome.writes.find((w) => w.includes('"comment"')) ?? "";
 
     expect(comment).not.toContain("agent:review");
     expect(comment).not.toMatch(/by hand/);
   });
 
-  it("will not guess which of two draft PRD PRs to hand over", () => {
-    const outcome = runPreflight({
+  it("will not guess which of two draft PRD PRs to hand over", async () => {
+    const outcome = await runPreflight({
       issue: issue(["CLOSED", "CLOSED", "CLOSED"]),
       pulls: [
         ...BYSTANDERS.map((p) => (p["number"] === 201 ? { ...p, isDraft: true } : p)),
@@ -394,8 +402,8 @@ describe.skipIf(!CAN_RUN)("agent-implement-prd's preflight, executed", () => {
    * step, whose `MERGED` arm merges nothing twice, so the row and the PRD PR
    * steps run, and then the next slice is built as usual.
    */
-  it("hands a merged slice PR with no row to the merge step, when no PRD PR was opened", () => {
-    const outcome = runPreflight({ pulls: BYSTANDERS.filter((p) => p["number"] !== 201) });
+  it("hands a merged slice PR with no row to the merge step, when no PRD PR was opened", async () => {
+    const outcome = await runPreflight({ pulls: BYSTANDERS.filter((p) => p["number"] !== 201) });
 
     expect(outcome.status).toBe(0);
     expect(outcome.output).toContain("slice_pr=202\n");
@@ -406,8 +414,8 @@ describe.skipIf(!CAN_RUN)("agent-implement-prd's preflight, executed", () => {
     expect(outcome.writes).toEqual([]);
   });
 
-  it("hands a merged slice PR to the merge step when the PRD PR has no row for its sub-issue", () => {
-    const outcome = runPreflight({
+  it("hands a merged slice PR to the merge step when the PRD PR has no row for its sub-issue", async () => {
+    const outcome = await runPreflight({
       pulls: BYSTANDERS.map((p) => (p["number"] === 201 ? { ...p, body: `Closes #${PARENT}\n` } : p)),
     });
 
@@ -416,15 +424,15 @@ describe.skipIf(!CAN_RUN)("agent-implement-prd's preflight, executed", () => {
   });
 
   /** The row is keyed by sub-issue, read out of the table between its markers and nowhere else. */
-  it("never picks a merged slice PR up again once its row is written", () => {
-    const outcome = runPreflight({ pulls: BYSTANDERS });
+  it("never picks a merged slice PR up again once its row is written", async () => {
+    const outcome = await runPreflight({ pulls: BYSTANDERS });
 
     expect(outcome.output).toContain("slice_pr=\n");
     expect(outcome.output).toContain("backfill=\n");
   });
 
-  it("does not take a mention of the sub-issue outside the table for its row", () => {
-    const outcome = runPreflight({
+  it("does not take a mention of the sub-issue outside the table for its row", async () => {
+    const outcome = await runPreflight({
       pulls: BYSTANDERS.map((p) =>
         p["number"] === 201 ? { ...p, body: `Closes #${PARENT}\n\n| Slice 1 (#172) | #202 | 🟢 | none |\n` } : p,
       ),
@@ -439,8 +447,8 @@ describe.skipIf(!CAN_RUN)("agent-implement-prd's preflight, executed", () => {
    * one as it would anyway, and writes the rowless one's row first, in merge
    * order, rather than building a second slice on an unmerged one.
    */
-  it("backfills a rowless merged slice PR beside the open one it merges", () => {
-    const outcome = runPreflight({
+  it("backfills a rowless merged slice PR beside the open one it merges", async () => {
+    const outcome = await runPreflight({
       issue: issue(["CLOSED", "CLOSED", "OPEN"]),
       pulls: [
         ...BYSTANDERS.filter((p) => p["number"] !== 201),
@@ -461,8 +469,8 @@ describe.skipIf(!CAN_RUN)("agent-implement-prd's preflight, executed", () => {
    * The latest-merged goes through the merge step; the rest are written before
    * it, in the order they merged.
    */
-  it("backfills every rowless merged slice PR, in the order they merged", () => {
-    const outcome = runPreflight({
+  it("backfills every rowless merged slice PR, in the order they merged", async () => {
+    const outcome = await runPreflight({
       issue: issue(["CLOSED", "CLOSED", "CLOSED", "OPEN"]),
       pulls: [
         ...BYSTANDERS.filter((p) => p["number"] !== 201 && p["number"] !== 202),
@@ -482,8 +490,8 @@ describe.skipIf(!CAN_RUN)("agent-implement-prd's preflight, executed", () => {
    * is not this chain's, and one into this PRD branch that names no sub-issue,
    * by body or by branch, is not a slice a row could be written for.
    */
-  it("backfills nothing merged into another PRD branch, or that names no sub-issue", () => {
-    const outcome = runPreflight({
+  it("backfills nothing merged into another PRD branch, or that names no sub-issue", async () => {
+    const outcome = await runPreflight({
       pulls: [
         ...BYSTANDERS,
         pull(204, "agent/slice-1710-1711-other", "agent/prd-1710-other", "MERGED", { body: "Part of #1711" }),
@@ -501,8 +509,8 @@ describe.skipIf(!CAN_RUN)("agent-implement-prd's preflight, executed", () => {
    * resume, which writes the row, opens the PRD PR if it has to, and hands it
    * over.
    */
-  it("makes the finishing run of a rowless last slice PR, rather than calling the PRD finished", () => {
-    const outcome = runPreflight({
+  it("makes the finishing run of a rowless last slice PR, rather than calling the PRD finished", async () => {
+    const outcome = await runPreflight({
       issue: issue(["CLOSED", "CLOSED", "CLOSED"]),
       pulls: [
         ...BYSTANDERS.filter((p) => p["number"] !== 201),
@@ -524,8 +532,8 @@ describe.skipIf(!CAN_RUN)("agent-implement-prd's preflight, executed", () => {
    * and the run would try to open a PRD PR from a branch already merged. Rows
    * are read from PRD PRs in every state, so it builds the new sub-issue.
    */
-  it("reads rows from a merged PRD PR, so a reopened PRD resumes nothing", () => {
-    const outcome = runPreflight({
+  it("reads rows from a merged PRD PR, so a reopened PRD resumes nothing", async () => {
+    const outcome = await runPreflight({
       pulls: BYSTANDERS.map((p) => (p["number"] === 201 ? { ...p, state: "MERGED" } : p)),
     });
 
@@ -536,8 +544,8 @@ describe.skipIf(!CAN_RUN)("agent-implement-prd's preflight, executed", () => {
   });
 
   /** …and with nothing left to build, it is refused as finished, as before, not made a finishing run. */
-  it("refuses a PRD whose PRD PR merged with every row as finished", () => {
-    const outcome = runPreflight({
+  it("refuses a PRD whose PRD PR merged with every row as finished", async () => {
+    const outcome = await runPreflight({
       issue: issue(["CLOSED", "CLOSED", "CLOSED"]),
       pulls: BYSTANDERS.map((p) => (p["number"] === 201 ? { ...p, state: "MERGED" } : p)),
     });
@@ -546,8 +554,8 @@ describe.skipIf(!CAN_RUN)("agent-implement-prd's preflight, executed", () => {
     expect(outcome.output).not.toContain("finishing=");
   });
 
-  it("reads rows from a closed PRD PR too", () => {
-    const outcome = runPreflight({
+  it("reads rows from a closed PRD PR too", async () => {
+    const outcome = await runPreflight({
       pulls: BYSTANDERS.map((p) => (p["number"] === 201 ? { ...p, state: "CLOSED" } : p)),
     });
 
@@ -556,7 +564,7 @@ describe.skipIf(!CAN_RUN)("agent-implement-prd's preflight, executed", () => {
   });
 
   /** The markers the rows are read between are the ones the runner splices between. */
-  it("reads rows between the slices table's own markers", () => {
+  it("reads rows between the slices table's own markers", async () => {
     expect(preflight().run ?? "").toContain(`--arg start "${SLICES_START}" --arg end "${SLICES_END}"`);
   });
 
@@ -566,7 +574,7 @@ describe.skipIf(!CAN_RUN)("agent-implement-prd's preflight, executed", () => {
    * connection to `localhost` and no further. gh checks field names before any
    * request, so a misspelt one is refused here rather than on a PRD.
    */
-  it.skipIf(!onPath("gh"))("gh accepts the pr list calls the lookup composes", () => {
+  it.skipIf(!onPath("gh"))("gh accepts the pr list calls the lookup composes", async () => {
     const run = preflight().run ?? "";
 
     for (const call of [
@@ -604,7 +612,7 @@ const runMerge = (
     /** GitHub refuses the merge itself, as a required check or review does. */
     readonly mergeRefused?: boolean;
   } = {},
-): StepOutcome =>
+): Promise<StepOutcome> =>
   runStep("merge", {
     pulls: [...BYSTANDERS, pull(SLICE, SLICE_BRANCH, PRD_BRANCH, "OPEN", extra)],
     repo: options.repo ?? REPO,
@@ -627,15 +635,15 @@ const merges = (outcome: Outcome): string[][] => prWrites(outcome).filter((argv)
  * the thing at all, and every refusal names the slice PR and fails into `Mark
  * blocked on failure` with a reason file — touching nothing on the way.
  */
-describe.skipIf(!CAN_RUN)("agent-implement-prd's merge step, executed", () => {
-  it("runs under the shell the workflow actually gets", () => {
+describe.skipIf(!CAN_RUN)("agent-implement-prd's merge step, executed", { concurrent: true }, () => {
+  it("runs under the shell the workflow actually gets", async () => {
     expect(stepById("merge").shell).toBeUndefined();
   });
 
   it.each(["agent:review", "agent:fix", "agent:update-branch"])(
     "refuses while %s is on the slice PR, naming it",
-    (label: string) => {
-      const outcome = runMerge({ labels: [{ name: "agent:follow-ups" }, { name: label }] });
+    async (label: string) => {
+      const outcome = await runMerge({ labels: [{ name: "agent:follow-ups" }, { name: label }] });
 
       expect(outcome.status).toBe(1);
       expect(outcome.reason).toContain(`Slice PR #${SLICE}`);
@@ -652,8 +660,8 @@ describe.skipIf(!CAN_RUN)("agent-implement-prd's merge step, executed", () => {
    * is not executed: the replay answers the same every time, so that scenario
    * would be half a minute of sleeping to reach this same refusal.
    */
-  it("refuses a conflicted slice PR, naming it and pointing at agent:update-branch on it", () => {
-    const outcome = runMerge({ mergeable: "CONFLICTING" });
+  it("refuses a conflicted slice PR, naming it and pointing at agent:update-branch on it", async () => {
+    const outcome = await runMerge({ mergeable: "CONFLICTING" });
 
     expect(outcome.status).toBe(1);
     expect(outcome.reason).toContain(`slice PR #${SLICE}`);
@@ -662,8 +670,8 @@ describe.skipIf(!CAN_RUN)("agent-implement-prd's merge step, executed", () => {
     expect(outcome.writes).toEqual([]);
   });
 
-  it("refuses a slice PR closed without merging, naming it", () => {
-    const outcome = runMerge({ state: "CLOSED" });
+  it("refuses a slice PR closed without merging, naming it", async () => {
+    const outcome = await runMerge({ state: "CLOSED" });
 
     expect(outcome.status).toBe(1);
     expect(outcome.reason).toContain(`Slice PR #${SLICE}`);
@@ -675,16 +683,16 @@ describe.skipIf(!CAN_RUN)("agent-implement-prd's merge step, executed", () => {
     [REPO, "--squash"],
     [{ ...REPO, allow_squash_merge: false }, "--rebase"],
     [{ ...REPO, allow_squash_merge: false, allow_rebase_merge: false }, "--merge"],
-  ])("merges with the first method the repo allows (%j → %s)", (repo: Record<string, unknown>, flag: string) => {
-    const outcome = runMerge({}, { repo });
+  ])("merges with the first method the repo allows (%j → %s)", async (repo: Record<string, unknown>, flag: string) => {
+    const outcome = await runMerge({}, { repo });
 
     expect(outcome.status).toBe(0);
     expect(merges(outcome)).toEqual([["pr", "merge", String(SLICE), flag, "--match-head-commit", `sha-of-${SLICE}`]]);
   });
 
   /** Settings this token cannot read come back absent, which is no method. */
-  it("refuses rather than guessing when the repo allows no method it can read", () => {
-    const outcome = runMerge({}, { repo: {} });
+  it("refuses rather than guessing when the repo allows no method it can read", async () => {
+    const outcome = await runMerge({}, { repo: {} });
 
     expect(outcome.status).toBe(1);
     expect(outcome.reason).toContain(`slice PR #${SLICE}`);
@@ -696,8 +704,8 @@ describe.skipIf(!CAN_RUN)("agent-implement-prd's merge step, executed", () => {
    * pinned to the head the merge is pinned to, so review's `advance-merged`
    * can tell this merge from one made by hand under the same login.
    */
-  it("marks the slice PR's body with the head it merges, before it merges", () => {
-    const outcome = runMerge({ headRefOid: "0123abc", body: "Part of #172" });
+  it("marks the slice PR's body with the head it merges, before it merges", async () => {
+    const outcome = await runMerge({ headRefOid: "0123abc", body: "Part of #172" });
     const writes = prWrites(outcome);
     const mark = writes.findIndex((argv) => argv[0] === "api" && argv[2] === "PATCH");
 
@@ -708,8 +716,8 @@ describe.skipIf(!CAN_RUN)("agent-implement-prd's merge step, executed", () => {
     expect(mark).toBeLessThan(writes.findIndex((argv) => argv[1] === "merge"));
   });
 
-  it("does not mark a body that already carries the mark for this head", () => {
-    const outcome = runMerge({ headRefOid: "0123abc", body: "Part of #172\n\n<!-- agent-chain-merge 0123abc -->" });
+  it("does not mark a body that already carries the mark for this head", async () => {
+    const outcome = await runMerge({ headRefOid: "0123abc", body: "Part of #172\n\n<!-- agent-chain-merge 0123abc -->" });
 
     expect(outcome.status).toBe(0);
     expect(prWrites(outcome).some((argv) => argv[2] === "PATCH")).toBe(false);
@@ -721,8 +729,8 @@ describe.skipIf(!CAN_RUN)("agent-implement-prd's merge step, executed", () => {
    * #210). A mark that outlived a refused merge would make a later hand merge
    * of the same head read as the chain's, and nothing would move the chain on.
    */
-  it("takes the mark back out when the merge is refused", () => {
-    const outcome = runMerge({ headRefOid: "0123abc", body: "Part of #172" }, { mergeRefused: true });
+  it("takes the mark back out when the merge is refused", async () => {
+    const outcome = await runMerge({ headRefOid: "0123abc", body: "Part of #172" }, { mergeRefused: true });
     const writes = prWrites(outcome);
     const patches = writes.filter((argv) => argv[2] === "PATCH");
     const merged = writes.findIndex((argv) => argv[1] === "merge");
@@ -737,8 +745,8 @@ describe.skipIf(!CAN_RUN)("agent-implement-prd's merge step, executed", () => {
   });
 
   /** A mark on this head an earlier run could not remove goes too, and nothing else in the body does. */
-  it("takes out a mark an earlier run left on this head, when the merge is refused", () => {
-    const outcome = runMerge(
+  it("takes out a mark an earlier run left on this head, when the merge is refused", async () => {
+    const outcome = await runMerge(
       { headRefOid: "0123abc", body: "Part of #172\n\n<!-- agent-chain-merge 0123abc -->\n\n<!-- agent-chain-merge 9999fff -->" },
       { mergeRefused: true },
     );
@@ -750,28 +758,28 @@ describe.skipIf(!CAN_RUN)("agent-implement-prd's merge step, executed", () => {
     ]);
   });
 
-  it("keeps the mark once the merge has happened", () => {
-    const outcome = runMerge({ headRefOid: "0123abc", body: "Part of #172" });
+  it("keeps the mark once the merge has happened", async () => {
+    const outcome = await runMerge({ headRefOid: "0123abc", body: "Part of #172" });
 
     expect(outcome.status).toBe(0);
     expect(prWrites(outcome).filter((argv) => argv[2] === "PATCH")).toHaveLength(1);
   });
 
-  it("marks nothing on a slice PR that is already merged", () => {
-    const outcome = runMerge({ state: "MERGED" });
+  it("marks nothing on a slice PR that is already merged", async () => {
+    const outcome = await runMerge({ state: "MERGED" });
 
     expect(prWrites(outcome).some((argv) => argv[2] === "PATCH")).toBe(false);
   });
 
-  it("pins the merge to the head it inspected", () => {
-    const outcome = runMerge({ headRefOid: "0123abc" });
+  it("pins the merge to the head it inspected", async () => {
+    const outcome = await runMerge({ headRefOid: "0123abc" });
 
     expect(merges(outcome)[0]).toContain("--match-head-commit");
     expect(merges(outcome)[0]?.at(-1)).toBe("0123abc");
   });
 
-  it("marks a still-draft slice PR ready first", () => {
-    const outcome = runMerge({ isDraft: true });
+  it("marks a still-draft slice PR ready first", async () => {
+    const outcome = await runMerge({ isDraft: true });
     const verbs = prWrites(outcome).map((argv) => argv[1]);
 
     expect(outcome.status).toBe(0);
@@ -779,12 +787,12 @@ describe.skipIf(!CAN_RUN)("agent-implement-prd's merge step, executed", () => {
     expect(verbs.indexOf("ready")).toBeLessThan(verbs.indexOf("merge"));
   });
 
-  it("leaves a slice PR that is already ready alone", () => {
-    expect(prWrites(runMerge()).map((argv) => argv[1])).not.toContain("ready");
+  it("leaves a slice PR that is already ready alone", async () => {
+    expect(prWrites(await runMerge()).map((argv) => argv[1])).not.toContain("ready");
   });
 
-  it("deletes the slice branch once it has merged, and hands the PRD branch on", () => {
-    const outcome = runMerge();
+  it("deletes the slice branch once it has merged, and hands the PRD branch on", async () => {
+    const outcome = await runMerge();
     const writes = prWrites(outcome);
 
     expect(writes.at(-1)).toEqual(["api", "-X", "DELETE", `repos/${GH_REPO}/git/refs/heads/${SLICE_BRANCH}`]);
@@ -794,20 +802,20 @@ describe.skipIf(!CAN_RUN)("agent-implement-prd's merge step, executed", () => {
   });
 
   /** A re-run after a merge that landed merges nothing twice. */
-  it("does not merge a slice PR that is already merged, and still carries on", () => {
-    const outcome = runMerge({ state: "MERGED" });
+  it("does not merge a slice PR that is already merged, and still carries on", async () => {
+    const outcome = await runMerge({ state: "MERGED" });
 
     expect(outcome.status).toBe(0);
     expect(merges(outcome)).toEqual([]);
     expect(outcome.output).toContain("merged=true\n");
   });
 
-  it("says nothing about the token when AGENT_PAT merged it", () => {
-    expect(runMerge({ labels: [{ name: "agent:follow-ups" }] }).stdout).not.toContain("::warning::AGENT_PAT");
+  it("says nothing about the token when AGENT_PAT merged it", async () => {
+    expect((await runMerge({ labels: [{ name: "agent:follow-ups" }] })).stdout).not.toContain("::warning::AGENT_PAT");
   });
 
-  it("warns on a GITHUB_TOKEN merge that the PRD PR's CI did not run", () => {
-    const outcome = runMerge({}, { pat: false });
+  it("warns on a GITHUB_TOKEN merge that the PRD PR's CI did not run", async () => {
+    const outcome = await runMerge({}, { pat: false });
 
     expect(outcome.status).toBe(0);
     expect(merges(outcome)).toHaveLength(1);
@@ -816,8 +824,8 @@ describe.skipIf(!CAN_RUN)("agent-implement-prd's merge step, executed", () => {
     expect(outcome.stdout).not.toContain("follow-ups were not filed");
   });
 
-  it("adds, when the slice PR carries agent:follow-ups, that they were not filed and how to file them", () => {
-    const outcome = runMerge({ labels: [{ name: "agent:follow-ups" }] }, { pat: false });
+  it("adds, when the slice PR carries agent:follow-ups, that they were not filed and how to file them", async () => {
+    const outcome = await runMerge({ labels: [{ name: "agent:follow-ups" }] }, { pat: false });
 
     expect(outcome.stdout).toContain("the PRD PR's CI did not run");
     expect(outcome.stdout).toContain("follow-ups were not filed");
@@ -838,7 +846,7 @@ const runSliceRow = (
     /** The rowless merged slice PRs the preflight found before this one. */
     readonly backfill?: string;
   } = {},
-): StepOutcome =>
+): Promise<StepOutcome> =>
   runStep("slice_row", {
     pulls: [
       ...(options.bystanders ?? BYSTANDERS),
@@ -875,16 +883,16 @@ const reviewThread = (over: Record<string, unknown> = {}): Record<string, unknow
  * through `gh` by the step after the merge and left under `RUNNER_TEMP` for the
  * runner, which renders them into the PRD PR body.
  */
-describe.skipIf(!CAN_RUN)("agent-implement-prd's slices table row, gathered, executed", () => {
-  it("names the sub-issue by its title in the preflight's snapshot, and the slice PR by number and URL", () => {
-    const outcome = runSliceRow();
+describe.skipIf(!CAN_RUN)("agent-implement-prd's slices table row, gathered, executed", { concurrent: true }, () => {
+  it("names the sub-issue by its title in the preflight's snapshot, and the slice PR by number and URL", async () => {
+    const outcome = await runSliceRow();
 
     expect(outcome.status).toBe(0);
     expect(merged(outcome)).toMatchObject({ title: "Slice 1", subIssue: 172, slicePr: SLICE, slicePrUrl: SLICE_URL });
   });
 
-  it("reads the verdict from the agent-review status on the merged head, and only that context", () => {
-    const outcome = runSliceRow(
+  it("reads the verdict from the agent-review status on the merged head, and only that context", async () => {
+    const outcome = await runSliceRow(
       {},
       {
         statusPages: [
@@ -903,12 +911,12 @@ describe.skipIf(!CAN_RUN)("agent-implement-prd's slices table row, gathered, exe
     expect(merged(outcome)["verdict"]).toBe("Needs a closer look. Read the review.");
   });
 
-  it("records no verdict when the merged head carries none", () => {
-    expect(merged(runSliceRow())["verdict"]).toBeNull();
+  it("records no verdict when the merged head carries none", async () => {
+    expect(merged(await runSliceRow())["verdict"]).toBeNull();
   });
 
-  it("links the unresolved threads only, falling back to the original line of an outdated one", () => {
-    const outcome = runSliceRow(
+  it("links the unresolved threads only, falling back to the original line of an outdated one", async () => {
+    const outcome = await runSliceRow(
       {},
       {
         threads: [
@@ -931,8 +939,8 @@ describe.skipIf(!CAN_RUN)("agent-implement-prd's slices table row, gathered, exe
    * #172 and #173 were built before slice PRs: closed, and no slice PR says
    * `Part of` either. #174 is the slice being merged, and #175 is still open.
    */
-  it("offers every closed sub-issue with no slice PR as a pre-upgrade slice, in sub-issue order", () => {
-    const outcome = runSliceRow(
+  it("offers every closed sub-issue with no slice PR as a pre-upgrade slice, in sub-issue order", async () => {
+    const outcome = await runSliceRow(
       { body: "Part of #174", title: "Slice 3 (#174)" },
       {
         issue: {
@@ -951,8 +959,8 @@ describe.skipIf(!CAN_RUN)("agent-implement-prd's slices table row, gathered, exe
   });
 
   /** #202 is a merged slice PR for #172, found by its branch: it has no body. */
-  it("does not offer a sub-issue a slice PR of any state built", () => {
-    const outcome = runSliceRow(
+  it("does not offer a sub-issue a slice PR of any state built", async () => {
+    const outcome = await runSliceRow(
       { body: "Part of #174" },
       { issue: issue(["CLOSED", "CLOSED", "CLOSED", "OPEN"]) },
     );
@@ -960,16 +968,16 @@ describe.skipIf(!CAN_RUN)("agent-implement-prd's slices table row, gathered, exe
     expect(facts(outcome)["preUpgrade"]).toEqual([{ title: "Slice 2", subIssue: 173 }]);
   });
 
-  it("offers none on an ordinary chain, whose closed sub-issues each had a slice PR", () => {
-    expect(facts(runSliceRow())["preUpgrade"]).toEqual([]);
+  it("offers none on an ordinary chain, whose closed sub-issues each had a slice PR", async () => {
+    expect(facts(await runSliceRow())["preUpgrade"]).toEqual([]);
   });
 
-  it("falls back to the slice branch's name when the body no longer says Part of", () => {
-    expect(merged(runSliceRow({ body: "Edited by hand." }))["subIssue"]).toBe(172);
+  it("falls back to the slice branch's name when the body no longer says Part of", async () => {
+    expect(merged(await runSliceRow({ body: "Edited by hand." }))["subIssue"]).toBe(172);
   });
 
-  it("stops, naming the slice PR, when it cannot tell which sub-issue the slice built", () => {
-    const outcome = runSliceRow({ body: "Edited by hand.", headRefName: "renamed-by-hand" });
+  it("stops, naming the slice PR, when it cannot tell which sub-issue the slice built", async () => {
+    const outcome = await runSliceRow({ body: "Edited by hand.", headRefName: "renamed-by-hand" });
 
     expect(outcome.status).toBe(1);
     expect(outcome.reason).toContain(`slice PR #${SLICE}`);
@@ -978,12 +986,12 @@ describe.skipIf(!CAN_RUN)("agent-implement-prd's slices table row, gathered, exe
     expect(outcome.temp("slices-table.json")).toBe("");
   });
 
-  it("only reads", () => {
-    expect(runSliceRow().writes).toEqual([]);
+  it("only reads", async () => {
+    expect((await runSliceRow()).writes).toEqual([]);
   });
 
-  it("backfills nothing when the preflight found no other rowless slice PR", () => {
-    expect(facts(runSliceRow())["backfill"]).toEqual([]);
+  it("backfills nothing when the preflight found no other rowless slice PR", async () => {
+    expect(facts(await runSliceRow())["backfill"]).toEqual([]);
   });
 
   /**
@@ -991,8 +999,8 @@ describe.skipIf(!CAN_RUN)("agent-implement-prd's slices table row, gathered, exe
    * gathered the way the merged slice's is, from its own merged head, and
    * listed in the order the preflight found them, before the merged slice's.
    */
-  it("gathers the row of every backfilled slice PR, in the order it is handed them", () => {
-    const outcome = runSliceRow(
+  it("gathers the row of every backfilled slice PR, in the order it is handed them", async () => {
+    const outcome = await runSliceRow(
       { body: "Part of #174", title: "Slice 3 (#174)" },
       {
         issue: issue(["CLOSED", "CLOSED", "CLOSED", "OPEN"]),
@@ -1017,8 +1025,8 @@ describe.skipIf(!CAN_RUN)("agent-implement-prd's slices table row, gathered, exe
     expect(outcome.writes).toEqual([]);
   });
 
-  it("stops, naming the backfilled slice PR, when it cannot tell which sub-issue that one built", () => {
-    const outcome = runSliceRow(
+  it("stops, naming the backfilled slice PR, when it cannot tell which sub-issue that one built", async () => {
+    const outcome = await runSliceRow(
       { body: "Part of #174" },
       {
         backfill: "205",
@@ -1034,7 +1042,7 @@ describe.skipIf(!CAN_RUN)("agent-implement-prd's slices table row, gathered, exe
 });
 
 /** The PRD PR step, handed the PRD branch the merge step read off the slice PR. */
-const runPrdPr = (pulls: readonly Record<string, unknown>[]): StepOutcome =>
+const runPrdPr = (pulls: readonly Record<string, unknown>[]): Promise<StepOutcome> =>
   runStep("prd_pr", { pulls, env: { PRD_BRANCH } });
 
 /**
@@ -1043,9 +1051,9 @@ const runPrdPr = (pulls: readonly Record<string, unknown>[]): StepOutcome =>
  * is also what adopts the draft PR a pre-upgrade chain opened from the PRD
  * branch.
  */
-describe.skipIf(!CAN_RUN)("agent-implement-prd's PRD PR, executed", () => {
-  it("opens it as a draft from the PRD branch into the base, closing the parent", () => {
-    const outcome = runPrdPr(BYSTANDERS.filter((p) => p["number"] !== 201));
+describe.skipIf(!CAN_RUN)("agent-implement-prd's PRD PR, executed", { concurrent: true }, () => {
+  it("opens it as a draft from the PRD branch into the base, closing the parent", async () => {
+    const outcome = await runPrdPr(BYSTANDERS.filter((p) => p["number"] !== 201));
     const creates = prWrites(outcome).filter((argv) => argv[1] === "create");
 
     expect(outcome.status).toBe(0);
@@ -1056,16 +1064,16 @@ describe.skipIf(!CAN_RUN)("agent-implement-prd's PRD PR, executed", () => {
   });
 
   /** #201 is the PR whose head is the PRD branch: a pre-upgrade draft, or this chain's own. */
-  it("reuses the PRD PR a run before it opened, or a pre-upgrade one, rather than a second", () => {
-    const outcome = runPrdPr(BYSTANDERS);
+  it("reuses the PRD PR a run before it opened, or a pre-upgrade one, rather than a second", async () => {
+    const outcome = await runPrdPr(BYSTANDERS);
 
     expect(outcome.status).toBe(0);
     expect(prWrites(outcome)).toEqual([]);
     expect(outcome.output).toContain("number=201\n");
   });
 
-  it("refuses to guess between two open PRs from the PRD branch", () => {
-    const outcome = runPrdPr([...BYSTANDERS, pull(205, PRD_BRANCH, "release")]);
+  it("refuses to guess between two open PRs from the PRD branch", async () => {
+    const outcome = await runPrdPr([...BYSTANDERS, pull(205, PRD_BRANCH, "release")]);
 
     expect(outcome.status).toBe(1);
     expect(outcome.reason).toContain("#201, #205");
@@ -1082,28 +1090,28 @@ const outputOf = (outcome: Outcome, name: string): string =>
  * its row or the PRD PR, and a re-label. Every step up to the build is run on
  * the outputs of the one before it, as the workflow wires them.
  */
-describe.skipIf(!CAN_RUN)("agent-implement-prd resumes a run that died after merging a slice", () => {
-  it("merges nothing twice, gathers the missing row, opens the PRD PR, and builds the next slice", () => {
+describe.skipIf(!CAN_RUN)("agent-implement-prd resumes a run that died after merging a slice", { concurrent: true }, () => {
+  it("merges nothing twice, gathers the missing row, opens the PRD PR, and builds the next slice", async () => {
     const pulls = BYSTANDERS.filter((p) => p["number"] !== 201).map((p) =>
       p["number"] === 202 ? { ...p, body: "Part of #172", url: `https://github.com/${GH_REPO}/pull/202` } : p,
     );
 
-    const preflighted = runPreflight({ pulls });
+    const preflighted = await runPreflight({ pulls });
     expect(preflighted.status).toBe(0);
     expect(outputOf(preflighted, "sub")).toBe("173");
     expect(outputOf(preflighted, "finishing")).toBe("false");
 
     const env = { SLICE_PR: outputOf(preflighted, "slice_pr"), BACKFILL: outputOf(preflighted, "backfill") };
-    const merge = runStep("merge", { pulls, repo: REPO, env: { ...env, HAS_PAT: "true" } });
+    const merge = await runStep("merge", { pulls, repo: REPO, env: { ...env, HAS_PAT: "true" } });
     expect(merge.status).toBe(0);
     expect(merges(merge)).toEqual([]);
     expect(outputOf(merge, "merged")).toBe("true");
 
-    const row = runStep("slice_row", { pulls, env: { ...env, PRD_BRANCH: outputOf(merge, "prd_branch") } });
+    const row = await runStep("slice_row", { pulls, env: { ...env, PRD_BRANCH: outputOf(merge, "prd_branch") } });
     expect(row.status).toBe(0);
     expect(facts(row)["merged"]).toMatchObject({ subIssue: 172, slicePr: 202 });
 
-    const prdPr = runStep("prd_pr", { pulls, env: { ...env, PRD_BRANCH: outputOf(merge, "prd_branch") } });
+    const prdPr = await runStep("prd_pr", { pulls, env: { ...env, PRD_BRANCH: outputOf(merge, "prd_branch") } });
     expect(prdPr.status).toBe(0);
     expect(prWrites(prdPr).filter((argv) => argv[1] === "create")).toHaveLength(1);
     expect(outputOf(prdPr, "number")).toBe("300");
@@ -1113,7 +1121,7 @@ describe.skipIf(!CAN_RUN)("agent-implement-prd resumes a run that died after mer
 /** The handover, handed PRD PR #201 and the PRD branch, as the finishing run has them. */
 const runHandover = (
   options: { readonly issue: Record<string, unknown>; readonly pulls: readonly Record<string, unknown>[]; readonly pat?: boolean },
-): StepOutcome =>
+): Promise<StepOutcome> =>
   runStep("handover", {
     issue: options.issue,
     pulls: options.pulls,
@@ -1126,20 +1134,20 @@ const runHandover = (
  * ready; one slice was reviewed on its slice PR already, so the PRD PR is
  * marked ready here. A slice built before slice PRs is a slice.
  */
-describe.skipIf(!CAN_RUN)("agent-implement-prd's handover, executed", () => {
-  it("runs under the shell the workflow actually gets", () => {
+describe.skipIf(!CAN_RUN)("agent-implement-prd's handover, executed", { concurrent: true }, () => {
+  it("runs under the shell the workflow actually gets", async () => {
     expect(stepById("handover").shell).toBeUndefined();
   });
 
-  it("marks the PRD PR of a one-slice PRD ready itself, and asks for no review", () => {
-    const outcome = runHandover({ issue: issue(["CLOSED"]), pulls: BYSTANDERS });
+  it("marks the PRD PR of a one-slice PRD ready itself, and asks for no review", async () => {
+    const outcome = await runHandover({ issue: issue(["CLOSED"]), pulls: BYSTANDERS });
 
     expect(outcome.status).toBe(0);
     expect(prWrites(outcome)).toEqual([["pr", "ready", "201"]]);
   });
 
-  it("asks for the integration review on the PRD PR of a PRD with more than one slice PR", () => {
-    const outcome = runHandover({
+  it("asks for the integration review on the PRD PR of a PRD with more than one slice PR", async () => {
+    const outcome = await runHandover({
       issue: issue(["CLOSED", "CLOSED"]),
       pulls: [...BYSTANDERS, pull(210, "agent/slice-171-173-slice-2", PRD_BRANCH, "MERGED")],
     });
@@ -1152,8 +1160,8 @@ describe.skipIf(!CAN_RUN)("agent-implement-prd's handover, executed", () => {
   });
 
   /** #202 built #172; #173 was closed with no slice PR, before slice PRs existed. */
-  it("counts a slice built before slice PRs as a slice", () => {
-    const outcome = runHandover({ issue: issue(["CLOSED", "CLOSED"]), pulls: BYSTANDERS });
+  it("counts a slice built before slice PRs as a slice", async () => {
+    const outcome = await runHandover({ issue: issue(["CLOSED", "CLOSED"]), pulls: BYSTANDERS });
 
     expect(prWrites(outcome)).toEqual([
       ["pr", "edit", "201", "--remove-label", "agent:review"],
@@ -1162,8 +1170,8 @@ describe.skipIf(!CAN_RUN)("agent-implement-prd's handover, executed", () => {
   });
 
   /** An open slice PR is the one the finishing run is about to merge; nothing else is built. */
-  it("does not count a slice PR that has not merged", () => {
-    const outcome = runHandover({
+  it("does not count a slice PR that has not merged", async () => {
+    const outcome = await runHandover({
       issue: issue(["CLOSED", "CLOSED"]),
       pulls: [...BYSTANDERS, pull(210, "agent/slice-171-173-slice-2", PRD_BRANCH, "CLOSED")],
     });
@@ -1171,8 +1179,8 @@ describe.skipIf(!CAN_RUN)("agent-implement-prd's handover, executed", () => {
     expect(prWrites(outcome)).toEqual([["pr", "ready", "201"]]);
   });
 
-  it("refuses without AGENT_PAT rather than add a label that starts nothing, touching nothing", () => {
-    const outcome = runHandover({ issue: issue(["CLOSED", "CLOSED"]), pulls: BYSTANDERS, pat: false });
+  it("refuses without AGENT_PAT rather than add a label that starts nothing, touching nothing", async () => {
+    const outcome = await runHandover({ issue: issue(["CLOSED", "CLOSED"]), pulls: BYSTANDERS, pat: false });
 
     expect(outcome.status).toBe(1);
     expect(outcome.reason).toContain("PRD PR #201");
@@ -1181,7 +1189,7 @@ describe.skipIf(!CAN_RUN)("agent-implement-prd's handover, executed", () => {
     expect(outcome.writes).toEqual([]);
   });
 
-  it("never merges the PRD PR, and never approves", () => {
+  it("never merges the PRD PR, and never approves", async () => {
     const run = stepById("handover").run ?? "";
 
     expect(run).not.toContain("gh pr merge");
@@ -1215,7 +1223,7 @@ describe.skipIf(!onPath("gh"))("gh accepts the calls the merge, slice row, PRD P
     ["pr edit --remove-label", ["pr", "edit", "201", "--remove-label", "agent:review"]],
     ["pr edit --add-label", ["pr", "edit", "201", "--add-label", "agent:review"]],
     ["pr ready", ["pr", "ready", "201"]],
-  ])("%s", (_name: string, args: readonly string[]) => {
+  ])("%s", async (_name: string, args: readonly string[]) => {
     const merge = stepById("merge").run ?? "";
     const prdPr = stepById("prd_pr").run ?? "";
 

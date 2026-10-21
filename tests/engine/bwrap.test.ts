@@ -3,7 +3,7 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { assertHostTarget, bwrap, CARRY_HOOKS, toHost, untrackedPaths } from "../../engine/bwrap.js";
+import { assertHostTarget, bwrap, CARRY_HOOKS, carriable, excludePattern, toHost, untrackedPaths } from "../../engine/bwrap.js";
 import { SUBPROCESS_TIMEOUT } from "../../vitest.config.js";
 
 /**
@@ -290,6 +290,76 @@ describe("what the checkout holds outside git", () => {
       expect(fs.existsSync(await hostOf(h, "/home/agent/.carry"))).toBe(false);
     } finally {
       await h.close();
+    }
+  });
+
+  it("writes each carried path's exclude pattern beside them, for the hook", async () => {
+    populate();
+    const h = await create();
+    try {
+      const exclude = await hostOf(h, "/home/agent/.carry-exclude");
+      expect(fs.readFileSync(exclude, "utf8").split("\n").sort()).toEqual(["", "/dist", "/node_modules", "/secret-link", "/src/generated.ts"]);
+    } finally {
+      await h.close();
+    }
+  });
+
+  it("carries no path with a line break in it, which no exclude line can name", async () => {
+    populate();
+    fs.writeFileSync(path.join(repo, "two\nlines"), "x\n");
+    const h = await create();
+    try {
+      expect(fs.existsSync(path.join(await hostOf(h, "/home/agent/.carry"), "two\nlines"))).toBe(false);
+      expect(fs.readFileSync(await hostOf(h, "/home/agent/.carry-exclude"), "utf8")).not.toContain("two");
+    } finally {
+      await h.close();
+    }
+    expect(carriable("a\rb")).toBe(false);
+    expect(carriable("a b")).toBe(true);
+  });
+
+  /**
+   * Sandcastle's copy-out hands back every path `git ls-files --others
+   * --exclude-standard` names in the worktree, and fails on a symlink that
+   * leaves the sandbox. So every carried path is excluded, whatever its name,
+   * and what the agent makes itself is still handed back.
+   */
+  it("excludes every carried path from the copy-out, whatever its name, and nothing the agent makes", () => {
+    const [hook] = CARRY_HOOKS.sandbox.onSandboxReady;
+    const sandboxHome = fs.mkdtempSync(path.join(os.tmpdir(), "bwrap-test-sandbox-home-"));
+    try {
+      const carry = path.join(sandboxHome, ".carry");
+      const worktree = path.join(sandboxHome, "workspace");
+      fs.mkdirSync(worktree);
+      git(worktree, "init", "--quiet");
+      fs.writeFileSync(path.join(worktree, "tracked"), "x\n");
+      git(worktree, "add", ".");
+      git(worktree, "commit", "--quiet", "-m", "base");
+      const names = ["#hash", "!bang", "star*", "q?", "[br]", "back\\slash", "trail ", "ünïcode", "a b", "secret-link", "dist"];
+      fs.mkdirSync(carry);
+      for (const name of names) fs.writeFileSync(path.join(carry, name), "carried\n");
+      fs.rmSync(path.join(carry, "secret-link"));
+      fs.symlinkSync("/nowhere/host-secret", path.join(carry, "secret-link"));
+      fs.rmSync(path.join(carry, "dist"));
+      fs.mkdirSync(path.join(carry, "dist"));
+      fs.writeFileSync(path.join(carry, "dist", "index.js"), "built\n");
+      fs.writeFileSync(`${carry}-exclude`, names.map((name) => `${excludePattern(name)}\n`).join(""));
+
+      execFileSync("sh", ["-c", hook.command.split("/home/agent/.carry").join(carry)], { cwd: worktree, timeout: SUBPROCESS_TIMEOUT });
+      // The agent's own, beside them, named like some of them.
+      fs.writeFileSync(path.join(worktree, "made"), "new\n");
+      fs.writeFileSync(path.join(worktree, "q1"), "new\n");
+      fs.writeFileSync(path.join(worktree, "starry"), "new\n");
+      fs.mkdirSync(path.join(worktree, "src"));
+      fs.writeFileSync(path.join(worktree, "src", "dist"), "new\n");
+
+      // What Sandcastle's copy-out runs, as it runs it.
+      const handedBack = git(worktree, "ls-files", "--others", "--exclude-standard").trim().split("\n").sort();
+      expect(handedBack).toEqual(["made", "q1", "src/dist", "starry"]);
+      expect(fs.existsSync(`${carry}-exclude`)).toBe(false);
+      for (const name of names) expect(fs.lstatSync(path.join(worktree, name)), name).toBeDefined();
+    } finally {
+      fs.rmSync(sandboxHome, { recursive: true, force: true });
     }
   });
 

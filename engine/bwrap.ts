@@ -21,7 +21,9 @@
  * would work without what its verify command needs. The provider copies each
  * untracked path into the sandbox's home as it is created, and `CARRY_HOOKS`,
  * which the run is started with, links them into the worktree once Sandcastle
- * has cloned it there.
+ * has cloned it there. Each is excluded there too, so Sandcastle's copy-out,
+ * which hands back every untracked path that is not ignored, never takes what
+ * was carried in for the agent's own work.
  *
  * Engine code (ADR 0005): it knows nothing of the loop and reads no
  * environment. Its settings are arguments, and the agent driver hands them in.
@@ -30,7 +32,7 @@
  */
 import { execFile, spawn } from "node:child_process";
 import { existsSync } from "node:fs";
-import { cp, mkdir, mkdtemp, readdir, realpath, rm } from "node:fs/promises";
+import { cp, mkdir, mkdtemp, readdir, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import * as path from "node:path";
 import { createInterface } from "node:readline";
@@ -59,6 +61,11 @@ const WORKTREE = `${HOME}/workspace`;
  * worktree: outside it, since Sandcastle replaces the worktree with its clone.
  */
 const CARRY = `${HOME}/.carry`;
+/**
+ * The carried paths as exclude patterns, one a line, waiting beside them for
+ * the worktree's `info/exclude`.
+ */
+const CARRY_EXCLUDE = `${HOME}/.carry-exclude`;
 /** Sandcastle's own directory in the checkout, its worktrees and patches: never carried. */
 const SANDCASTLE_DIR = ".sandcastle";
 /** Room for `git ls-files`' list of a checkout's untracked paths. */
@@ -119,17 +126,40 @@ export const untrackedPaths = async (repoDir: string): Promise<string[]> => {
 };
 
 /**
+ * Whether `entry` can be carried: a name with a line break in it cannot be
+ * written as an exclude pattern, and Sandcastle's copy-out, which reads `git
+ * ls-files` a line at a time, could not name it either, so it is left behind.
+ */
+export const carriable = (entry: string): boolean => !/[\n\r]/.test(entry);
+
+/**
+ * The `info/exclude` line that matches `entry`, a path relative to the
+ * worktree, and nothing else: anchored at the worktree's root, with every
+ * character a pattern reads specially, and a trailing space, escaped.
+ */
+export const excludePattern = (entry: string): string =>
+  `/${entry.replace(/[\\*?[!#]/g, "\\$&").replace(/ +$/, (spaces) => spaces.replace(/ /g, "\\ "))}`;
+
+/**
  * The hooks a run in this provider is started with: once Sandcastle has cloned
  * the worktree, the carried paths are hard-linked into it, so the copy is made
- * once, on the host, and the staging directory removed. A command of its own,
- * with no path in it: the paths it moves are the checkout's, so none of them is
- * ever a word of a command line.
+ * once, on the host, and the staging directory removed; and their patterns
+ * appended to the worktree's `info/exclude`, so Sandcastle's copy-out, which
+ * takes every untracked path that is not ignored, takes none of them. Without
+ * it a carried symlink pointing out of the sandbox, or at nothing, fails the
+ * copy-out and the agent's commits with it, and every other carried file is
+ * copied back over the checkout's own. A command of its own, with no path in
+ * it: the paths it moves are the checkout's, so none of them is ever a word of
+ * a command line.
  */
 export const CARRY_HOOKS = {
   sandbox: {
     onSandboxReady: [
       {
-        command: `if [ -d ${CARRY} ]; then cp -al ${CARRY}/. . && rm -rf ${CARRY}; fi`,
+        command:
+          `if [ -d ${CARRY} ]; then cp -al ${CARRY}/. . && rm -rf ${CARRY}; fi && ` +
+          `if [ -f ${CARRY_EXCLUDE} ]; then exclude="$(git rev-parse --git-path info/exclude)" && ` +
+          `mkdir -p "$(dirname "$exclude")" && cat ${CARRY_EXCLUDE} >> "$exclude" && rm -f ${CARRY_EXCLUDE}; fi`,
         timeoutMs: 10 * 60_000,
       },
     ],
@@ -183,10 +213,14 @@ export const bwrap = (settings: BwrapSettings) => {
       // Copied, never linked, from the checkout: what the agent changes stays
       // in the sandbox. A symlink is copied as the link it is, never followed,
       // so one setup left pointing at a host file brings nothing of it in.
-      for (const entry of await untrackedPaths(settings.repoDir)) {
+      const carried = (await untrackedPaths(settings.repoDir)).filter(carriable);
+      for (const entry of carried) {
         const target = toHost(root, path.posix.join(CARRY, entry));
         await mkdir(path.dirname(target), { recursive: true });
         await cp(path.join(settings.repoDir, entry), target, { recursive: true, verbatimSymlinks: true });
+      }
+      if (carried.length > 0) {
+        await writeFile(toHost(root, CARRY_EXCLUDE), carried.map((entry) => `${excludePattern(entry)}\n`).join(""));
       }
 
       const args = (cwd: string): string[] =>

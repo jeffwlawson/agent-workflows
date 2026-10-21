@@ -264,7 +264,7 @@ output, kept in full in the run's `logs/setup.log`.
 What it leaves in the checkout reaches the agent under either `AGENT_SANDBOX`. With `none` the
 agent works in the checkout itself. With `bwrap` it works in a copy at `/home/agent/workspace`,
 cloned from the checkout's history, and everything the checkout holds outside git, ignored or not,
-is copied in beside it. So what setup builds **must not depend on the checkout's absolute path**:
+is copied in beside it, and excluded there, so none of it comes back as the agent's work. So what setup builds **must not depend on the checkout's absolute path**:
 `node_modules` moves as it is, and a Python virtual environment, whose scripts name its path, does
 not.
 

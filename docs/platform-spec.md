@@ -276,7 +276,9 @@ the host's home, credentials or other runs:
 - `AGENT_SANDBOX_PROXY` is set as every proxy variable;
 - the agent works in a copy of the checkout: its history, cloned in, and what the checkout holds
   outside git, ignored or not, such as the install the repository's setup left there, copied in
-  beside it, so the agent sees what it would see in the checkout itself;
+  beside it, so the agent sees what it would see in the checkout itself; each path carried in is
+  excluded in the copy's `info/exclude`, so it is never handed back as the agent's work, and a
+  setup's untracked file the agent means to commit takes `git add -f` there;
 - the agent's work comes back only as Sandcastle's patches and session files: a write under `.git`,
   or of a symlink that leaves the sandbox, is refused.
 

@@ -2319,8 +2319,9 @@ diffing, which the orchestrator prepares, and `RESCUE_BRANCH` fetched to
 > - **No run link, and the download is a success** wherever the agent's job ran: the hand-over is
 >   on the worker's disk. `GITHUB_SERVER_URL`, `GITHUB_REPOSITORY` and `GITHUB_RUN_ID` are unset.
 > - **The mint is the `push` token's.** One not granted is `MINT_OUTCOME` `failure`, and nothing is
->   published; `fix:conclude` is then handed a `push` token asked for again, which it uses for its
->   comment and labels and, told the mint failed, for no rescue. Where none is granted to conclude
+>   published; `fix:conclude` is then handed a `write` token, since a second `push` would be refused
+>   as the first was, and uses it for its comment and labels alone: told the mint failed, it
+>   rescues nothing, so it needs no push. Where none is granted to conclude
 >   either, nothing can write to the pull request, and the worker's log says why the run ended.
 > - **One checkout.** `fix:publish` and `fix:conclude` work in the agent's checkout, where the
 >   publish job checks the head out again: under the bwrap sandbox the agent works on a copy and

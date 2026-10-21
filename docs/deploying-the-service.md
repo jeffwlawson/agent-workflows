@@ -170,7 +170,9 @@ start of each phase. For review: `read` for the gate, the checkout, the budget a
 fresh `read` for the runner, so the token's hour starts as the agent does, and `write` for
 `review:publish` and `review:conclude`. For fix: `write` for `fix:gate`, which posts its refusal and
 probes the label; `read` for the checkout and `fix:prepare`, and a fresh `read` for the runner;
-none for `fix:bundle`; and `push` for `fix:publish` and `fix:conclude`, the only phases that push.
+none for `fix:bundle`; and `push` for `fix:publish` and `fix:conclude`, the only phases that push. Where the `push`
+token is refused, nothing is published, and `fix:conclude` asks for `write` instead, to post the
+round's ending without a rescue.
 The runner never holds a token that writes. It needs:
 
 - Linux, Node 24.14 or later, `git`, `npm`, and the package (`npm exec

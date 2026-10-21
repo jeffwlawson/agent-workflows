@@ -966,12 +966,13 @@ describe("the worker's fix job, where its agent's job fails", () => {
     );
   });
 
-  it("tells conclude the mint failed, publishes nothing, and asks again for conclude's own token", async () => {
+  it("tells conclude the mint failed, publishes nothing, and asks for a write token for conclude's comment and labels", async () => {
     const s = setup(FIX_ORDINARY, { refused: [4] });
     await runJob(FIX_JOB, s.edges);
 
     expect(s.events).not.toContain("fix:publish");
-    expect(s.env("fix:conclude")).toMatchObject({ MINT_OUTCOME: "failure", GH_TOKEN: "push-token-5", LOOP_TOKEN: "push-token-5" });
+    expect(s.asked).toEqual(["write", "read", "read", "push", "write"]);
+    expect(s.env("fix:conclude")).toMatchObject({ MINT_OUTCOME: "failure", GH_TOKEN: "write-token-5", LOOP_TOKEN: "write-token-5" });
     expect(s.env("fix:conclude")).not.toHaveProperty("PUBLISH_OUTCOME");
   });
 

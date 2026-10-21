@@ -806,7 +806,8 @@ type JobResult = "success" | "failure" | "cancelled" | "skipped";
  * 3. The publish job: a `push` token, then `fix:publish`, where the agent's
  *    job ran, told how it ended.
  * 4. `fix:conclude`, however the run ended, with the `push` token, told how
- *    each job and step ended: it rescues a stopped round's commits.
+ *    each job and step ended: it rescues a stopped round's commits. Where
+ *    `push` was refused, a `write` token, since it then rescues nothing.
  *
  * The runner never holds a token that writes: `push` is asked for only once
  * the agent's job is over, and handed to publish and conclude alone, as both
@@ -983,10 +984,11 @@ const runFix = async (job: FixJob, edges: JobEdges): Promise<readonly Phase[]> =
     publishOutcome = published.timedOut ? "cancelled" : published.ok ? "success" : "failure";
   }
 
-  // 4. Conclude, however the run ended. It writes, and rescues, so it needs a
-  // token that pushes even where publish was granted none; told the mint
-  // failed, it rescues nothing with it.
-  const concluding = push ?? (await ask("push"));
+  // 4. Conclude, however the run ended, with the `push` token, since it
+  // rescues. Where that was refused it is told the mint failed and pushes
+  // nothing, so it asks for `write` instead, for its comment and labels: a
+  // second `push` would be refused for the reason the first was.
+  const concluding = push ?? (await ask("write"));
   if (concluding === undefined) {
     // Nothing can say so on the pull request, so the worker's log says why
     // the run ended as well.

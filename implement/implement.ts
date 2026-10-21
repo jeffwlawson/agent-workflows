@@ -55,7 +55,7 @@ try {
   const result = await sandcastle.run({
     name: `implement-#${ISSUE_NUMBER}`,
     agent: claudeAgent("implement", INPUTS),
-    sandbox: agentSandbox(INPUTS),
+    ...agentSandbox(INPUTS),
     logging: { type: "stdout" },
     promptFile: path.join(import.meta.dirname, "prompt.md"),
     promptArgs: {

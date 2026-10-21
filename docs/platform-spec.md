@@ -274,6 +274,9 @@ the host's home, credentials or other runs:
 - `/usr` and the directories `AGENT_SANDBOX_RO_BINDS` names are read-only, and the run gets a
   writable home and temporary directory of its own;
 - `AGENT_SANDBOX_PROXY` is set as every proxy variable;
+- the agent works in a copy of the checkout: its history, cloned in, and what the checkout holds
+  outside git, ignored or not, such as the install the repository's setup left there, copied in
+  beside it, so the agent sees what it would see in the checkout itself;
 - the agent's work comes back only as Sandcastle's patches and session files: a write under `.git`,
   or of a symlink that leaves the sandbox, is refused.
 

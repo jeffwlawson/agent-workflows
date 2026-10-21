@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { CARRY_HOOKS } from "../engine/bwrap.js";
 import { agentSandbox, type SandboxInputs } from "../shared/agent.js";
 import { SANDBOX } from "../shared/contract.js";
 
@@ -17,10 +18,13 @@ describe("agentSandbox: the provider a runner's inputs select", () => {
   };
 
   it("keeps today's behaviour when unset", () => {
-    expect(agentSandbox(unset).name).toBe("no-sandbox");
+    expect(agentSandbox(unset).sandbox.name).toBe("no-sandbox");
+    expect(agentSandbox(unset)).not.toHaveProperty("hooks");
   });
 
-  it("selects bwrap", () => {
-    expect(agentSandbox({ ...unset, AGENT_SANDBOX: "bwrap" }).name).toBe("bwrap");
+  it("selects bwrap, with the hooks that carry the checkout's untracked files into its worktree", () => {
+    const selected = agentSandbox({ ...unset, AGENT_SANDBOX: "bwrap" });
+    expect(selected.sandbox.name).toBe("bwrap");
+    expect(selected).toHaveProperty("hooks", CARRY_HOOKS);
   });
 });

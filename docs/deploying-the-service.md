@@ -261,6 +261,13 @@ at the first failing command, under the job's time limit, and ended with everyth
 that limit. A setup that exits non-zero fails its phase with the exit status and the end of its
 output, kept in full in the run's `logs/setup.log`.
 
+What it leaves in the checkout reaches the agent under either `AGENT_SANDBOX`. With `none` the
+agent works in the checkout itself. With `bwrap` it works in a copy at `/home/agent/workspace`,
+cloned from the checkout's history, and everything the checkout holds outside git, ignored or not,
+is copied in beside it. So what setup builds **must not depend on the checkout's absolute path**:
+`node_modules` moves as it is, and a Python virtual environment, whose scripts name its path, does
+not.
+
 **`node-version-file` is not supported.** The sandbox runs the agent box's own Node, the one
 `AGENT_SANDBOX_RO_BINDS` and `AGENT_SANDBOX_PATH` give it. A repository that needs another
 toolchain stays on Actions for now.

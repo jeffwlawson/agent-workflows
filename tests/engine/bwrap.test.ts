@@ -1,8 +1,10 @@
+import { execFileSync } from "node:child_process";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { assertHostTarget, bwrap, toHost } from "../../engine/bwrap.js";
+import { assertHostTarget, bwrap, CARRY_HOOKS, toHost, untrackedPaths } from "../../engine/bwrap.js";
+import { SUBPROCESS_TIMEOUT } from "../../vitest.config.js";
 
 /**
  * The guards are what this provider exists for: the sandbox chooses every name
@@ -13,6 +15,7 @@ import { assertHostTarget, bwrap, toHost } from "../../engine/bwrap.js";
  */
 
 interface Handle {
+  readonly worktreePath: string;
   copyIn(hostPath: string, sandboxPath: string): Promise<void>;
   copyFileOut(sandboxPath: string, hostPath: string): Promise<void>;
   close(): Promise<void>;
@@ -29,8 +32,31 @@ const create = (): Promise<Handle> =>
     }
   ).create({ env: {} });
 
+const git = (dir: string, ...args: string[]): string =>
+  execFileSync("git", ["-c", "user.name=t", "-c", "user.email=t@example.com", ...args], { cwd: dir, encoding: "utf8", timeout: SUBPROCESS_TIMEOUT });
+
+/** The host directory backing a sandbox path, found through a file copied in, as the provider keeps its root to itself. */
+const hostOf = async (h: Handle, sandboxPath: string): Promise<string> => {
+  const marker = fs.mkdtempSync(path.join(os.tmpdir(), "bwrap-test-marker-"));
+  try {
+    fs.writeFileSync(path.join(marker, "m"), "");
+    await h.copyIn(path.join(marker, "m"), "/home/agent/.marker");
+  } finally {
+    fs.rmSync(marker, { recursive: true, force: true });
+  }
+  const roots = fs
+    .readdirSync(os.tmpdir())
+    .filter((name) => name.startsWith("bwrap-job-"))
+    .map((name) => path.join(fs.realpathSync(os.tmpdir()), name))
+    .filter((root) => fs.existsSync(path.join(root, "home", ".marker")));
+  if (roots.length !== 1) throw new Error(`expected one sandbox root, found ${roots.length}`);
+  fs.rmSync(path.join(roots[0]!, "home", ".marker"));
+  return toHost(roots[0]!, sandboxPath);
+};
+
 beforeEach(() => {
   repo = fs.mkdtempSync(path.join(os.tmpdir(), "bwrap-test-repo-"));
+  git(repo, "init", "--quiet");
   home = fs.mkdtempSync(path.join(os.tmpdir(), "bwrap-test-home-"));
 });
 afterEach(() => {
@@ -148,7 +174,7 @@ describe("copyFileOut", () => {
     const h = await create();
     try {
       await expect(h.copyFileOut("/home/agent/workspace/x", path.join(repo, ".git", "hooks", "post-checkout"))).rejects.toThrow(/\.git/);
-      expect(fs.existsSync(path.join(repo, ".git"))).toBe(false);
+      expect(fs.existsSync(path.join(repo, ".git", "hooks", "post-checkout"))).toBe(false);
     } finally {
       await h.close();
     }
@@ -187,6 +213,113 @@ describe("the session, between a runner's two passes", () => {
       }
     } finally {
       fs.rmSync(src, { recursive: true, force: true });
+    }
+  });
+});
+
+/**
+ * Sandcastle fills the worktree from a bundle of the checkout, which holds its
+ * history and nothing else, so the provider carries what the checkout holds
+ * outside git, the setup's install and build output, into the sandbox, and its
+ * hook links it into the worktree once Sandcastle has cloned it there.
+ */
+describe("what the checkout holds outside git", () => {
+  /** A checkout as the repository's setup leaves it: tracked files, an ignored install, untracked output, and Sandcastle's own directory. */
+  const populate = (): void => {
+    fs.writeFileSync(path.join(repo, ".gitignore"), "node_modules/\ndist/\n");
+    fs.mkdirSync(path.join(repo, "src"));
+    fs.writeFileSync(path.join(repo, "src", "index.ts"), "tracked\n");
+    git(repo, "add", ".");
+    git(repo, "commit", "--quiet", "-m", "base");
+    fs.mkdirSync(path.join(repo, "node_modules", "pkg", "bin"), { recursive: true });
+    fs.writeFileSync(path.join(repo, "node_modules", "pkg", "bin", "run.js"), "installed\n");
+    fs.mkdirSync(path.join(repo, "node_modules", ".bin"));
+    fs.symlinkSync("../pkg/bin/run.js", path.join(repo, "node_modules", ".bin", "run"));
+    fs.mkdirSync(path.join(repo, "dist"));
+    fs.writeFileSync(path.join(repo, "dist", "index.js"), "built\n");
+    fs.writeFileSync(path.join(repo, "src", "generated.ts"), "generated\n");
+    fs.symlinkSync(path.join(home, "host-secret"), path.join(repo, "secret-link"));
+    fs.writeFileSync(path.join(home, "host-secret"), "host secret\n");
+    fs.mkdirSync(path.join(repo, ".sandcastle", "worktrees", "w"), { recursive: true });
+    fs.writeFileSync(path.join(repo, ".sandcastle", "worktrees", "w", "f"), "sandcastle's\n");
+  };
+
+  it("lists every untracked path, ignored or not, a wholly untracked directory once, and not Sandcastle's", async () => {
+    populate();
+
+    expect((await untrackedPaths(repo)).sort()).toEqual(["dist", "node_modules", "secret-link", "src/generated.ts"]);
+  });
+
+  it("copies each into the sandbox's home as it is created, links as links, nothing tracked", async () => {
+    populate();
+    const h = await create();
+    try {
+      const carry = await hostOf(h, "/home/agent/.carry");
+      expect(fs.readFileSync(path.join(carry, "node_modules", "pkg", "bin", "run.js"), "utf8")).toBe("installed\n");
+      expect(fs.readlinkSync(path.join(carry, "node_modules", ".bin", "run"))).toBe("../pkg/bin/run.js");
+      expect(fs.readFileSync(path.join(carry, "dist", "index.js"), "utf8")).toBe("built\n");
+      expect(fs.readFileSync(path.join(carry, "src", "generated.ts"), "utf8")).toBe("generated\n");
+      // Copied as the link it is: the host file it names is not brought in.
+      expect(fs.lstatSync(path.join(carry, "secret-link")).isSymbolicLink()).toBe(true);
+      expect(fs.existsSync(path.join(carry, "src", "index.ts"))).toBe(false);
+      expect(fs.existsSync(path.join(carry, ".sandcastle"))).toBe(false);
+      expect(fs.existsSync(path.join(carry, ".git"))).toBe(false);
+    } finally {
+      await h.close();
+    }
+  });
+
+  it("is a copy: a change in the sandbox leaves the checkout's own untouched", async () => {
+    populate();
+    const h = await create();
+    try {
+      const carry = await hostOf(h, "/home/agent/.carry");
+      fs.writeFileSync(path.join(carry, "dist", "index.js"), "changed\n");
+      expect(fs.readFileSync(path.join(repo, "dist", "index.js"), "utf8")).toBe("built\n");
+    } finally {
+      await h.close();
+    }
+  });
+
+  it("carries nothing where the checkout holds nothing outside git", async () => {
+    fs.writeFileSync(path.join(repo, "tracked"), "x\n");
+    git(repo, "add", ".");
+    git(repo, "commit", "--quiet", "-m", "base");
+    const h = await create();
+    try {
+      expect(fs.existsSync(await hostOf(h, "/home/agent/.carry"))).toBe(false);
+    } finally {
+      await h.close();
+    }
+  });
+
+  it("is linked into the worktree by the hook, beside what Sandcastle cloned, and the staging removed", () => {
+    const [hook] = CARRY_HOOKS.sandbox.onSandboxReady;
+    const sandboxHome = fs.mkdtempSync(path.join(os.tmpdir(), "bwrap-test-sandbox-home-"));
+    try {
+      const carry = path.join(sandboxHome, ".carry");
+      const worktree = path.join(sandboxHome, "workspace");
+      fs.mkdirSync(path.join(carry, "src"), { recursive: true });
+      fs.mkdirSync(path.join(carry, "node_modules", ".bin"), { recursive: true });
+      fs.writeFileSync(path.join(carry, "src", "generated.ts"), "generated\n");
+      fs.writeFileSync(path.join(carry, "node_modules", "run.js"), "installed\n");
+      fs.symlinkSync("../run.js", path.join(carry, "node_modules", ".bin", "run"));
+      fs.mkdirSync(path.join(worktree, "src"), { recursive: true });
+      fs.writeFileSync(path.join(worktree, "src", "index.ts"), "tracked\n");
+
+      // The hook's own command, run where Sandcastle runs it, with the sandbox's home here instead.
+      execFileSync("sh", ["-c", hook.command.split("/home/agent/.carry").join(carry)], { cwd: worktree, timeout: SUBPROCESS_TIMEOUT });
+
+      expect(fs.readFileSync(path.join(worktree, "src", "index.ts"), "utf8")).toBe("tracked\n");
+      expect(fs.readFileSync(path.join(worktree, "src", "generated.ts"), "utf8")).toBe("generated\n");
+      expect(fs.readFileSync(path.join(worktree, "node_modules", "run.js"), "utf8")).toBe("installed\n");
+      expect(fs.readlinkSync(path.join(worktree, "node_modules", ".bin", "run"))).toBe("../run.js");
+      expect(fs.existsSync(carry)).toBe(false);
+
+      // And does nothing where nothing was carried.
+      execFileSync("sh", ["-c", hook.command.split("/home/agent/.carry").join(carry)], { cwd: worktree, timeout: SUBPROCESS_TIMEOUT });
+    } finally {
+      fs.rmSync(sandboxHome, { recursive: true, force: true });
     }
   });
 });

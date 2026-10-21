@@ -15,17 +15,26 @@
  * invisible but `/usr`, a few named files under `/etc`, and the read-only
  * directories the settings name for the toolchain.
  *
+ * What the checkout holds outside git, the dependencies and build output the
+ * repository's setup left there, is carried in as well: Sandcastle fills the
+ * worktree from a bundle, which holds only history, so without it the agent
+ * would work without what its verify command needs. The provider copies each
+ * untracked path into the sandbox's home as it is created, and `CARRY_HOOKS`,
+ * which the run is started with, links them into the worktree once Sandcastle
+ * has cloned it there.
+ *
  * Engine code (ADR 0005): it knows nothing of the loop and reads no
  * environment. Its settings are arguments, and the agent driver hands them in.
  * It uses the host's temporary directory as Sandcastle does, since Sandcastle
  * writes its session files there and the guard below has to find them.
  */
-import { spawn } from "node:child_process";
+import { execFile, spawn } from "node:child_process";
 import { existsSync } from "node:fs";
 import { cp, mkdir, mkdtemp, readdir, realpath, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import * as path from "node:path";
 import { createInterface } from "node:readline";
+import { promisify } from "node:util";
 import { createIsolatedSandboxProvider } from "@ai-hero/sandcastle";
 import { bwrapArgs, SANDBOX_HOME } from "./bwrap-args.js";
 
@@ -45,6 +54,15 @@ export interface BwrapSettings {
 
 const HOME = SANDBOX_HOME;
 const WORKTREE = `${HOME}/workspace`;
+/**
+ * Where, in the sandbox's home, the checkout's untracked paths wait for the
+ * worktree: outside it, since Sandcastle replaces the worktree with its clone.
+ */
+const CARRY = `${HOME}/.carry`;
+/** Sandcastle's own directory in the checkout, its worktrees and patches: never carried. */
+const SANDCASTLE_DIR = ".sandcastle";
+/** Room for `git ls-files`' list of a checkout's untracked paths. */
+const LIST_BUFFER = 64 * 1024 * 1024;
 /** Output kept per stream for the result; `onLine` sees everything. */
 const TAIL = 1_000_000;
 
@@ -83,6 +101,40 @@ export const assertHostTarget = (repoDir: string, hostPath: string): void => {
   const isSession = path.dirname(abs) === path.resolve(tmpdir()) && /^sandcastle-[\w.-]+\.jsonl$/.test(path.basename(abs));
   if (!inPatches && !isSession) throw new Error(`bwrap: refusing to write outside the patch directory: ${abs}`);
 };
+
+/**
+ * What the checkout at `repoDir` holds outside git, each path relative to it:
+ * everything untracked, ignored or not, with a wholly untracked directory
+ * named once, and Sandcastle's own directory left out. What the agent would
+ * see in the checkout itself, with no sandbox, beside what git checks out.
+ */
+export const untrackedPaths = async (repoDir: string): Promise<string[]> => {
+  const { stdout } = await promisify(execFile)("git", ["-C", repoDir, "ls-files", "-z", "--others", "--directory"], {
+    maxBuffer: LIST_BUFFER,
+  });
+  return stdout
+    .split("\0")
+    .map((entry) => entry.replace(/\/$/, ""))
+    .filter((entry) => entry !== "" && entry !== SANDCASTLE_DIR && !entry.startsWith(`${SANDCASTLE_DIR}/`));
+};
+
+/**
+ * The hooks a run in this provider is started with: once Sandcastle has cloned
+ * the worktree, the carried paths are hard-linked into it, so the copy is made
+ * once, on the host, and the staging directory removed. A command of its own,
+ * with no path in it: the paths it moves are the checkout's, so none of them is
+ * ever a word of a command line.
+ */
+export const CARRY_HOOKS = {
+  sandbox: {
+    onSandboxReady: [
+      {
+        command: `if [ -d ${CARRY} ]; then cp -al ${CARRY}/. . && rm -rf ${CARRY}; fi`,
+        timeoutMs: 10 * 60_000,
+      },
+    ],
+  },
+} as const;
 
 const sessionsIn = (root: string): string => path.join(root, "home", ".claude", "projects");
 
@@ -128,6 +180,14 @@ export const bwrap = (settings: BwrapSettings) => {
       await mkdir(path.join(root, "home", "workspace"), { recursive: true });
       await mkdir(path.join(root, "tmp"), { recursive: true });
       if (sessionStore !== undefined) await cp(sessionStore, sessionsIn(root), { recursive: true });
+      // Copied, never linked, from the checkout: what the agent changes stays
+      // in the sandbox. A symlink is copied as the link it is, never followed,
+      // so one setup left pointing at a host file brings nothing of it in.
+      for (const entry of await untrackedPaths(settings.repoDir)) {
+        const target = toHost(root, path.posix.join(CARRY, entry));
+        await mkdir(path.dirname(target), { recursive: true });
+        await cp(path.join(settings.repoDir, entry), target, { recursive: true, verbatimSymlinks: true });
+      }
 
       const args = (cwd: string): string[] =>
         bwrapArgs({

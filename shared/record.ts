@@ -380,14 +380,6 @@ export const ORCHESTRATOR_VARIABLE = "AGENT_ORCHESTRATOR";
 
 export const SERVICE_ORCHESTRATOR = "service";
 
-/**
- * The trigger labels the service orchestrator answers on a repository that
- * opts in, and the one list of them: the dispatcher reads it to decide what is
- * a job, and `doctor` to name the labels nothing answers there. Every other
- * `agent:*` label waits for its workflow to move into commands (#410).
- */
-export const SERVICE_LABELS: readonly string[] = [REVIEW_LABEL];
-
 // Branch patterns.
 
 /**
@@ -414,6 +406,13 @@ export const ISSUE_BRANCH_PREFIX = "agent/issue-";
  * branch.
  */
 export const issueBranch = (issue: number, title: string): string => `${ISSUE_BRANCH_PREFIX}${issue}-${slugOf(title)}`;
+
+/**
+ * Where a stopped fix run on pull request `pr` leaves its commits, its
+ * `RESCUE_BRANCH`: `agent/rescue/fix-<pr>`, as `fix.yml` names it for its
+ * steps. The service's fix job names it from here.
+ */
+export const fixRescueBranch = (pr: number): string => `agent/rescue/fix-${pr}`;
 
 /**
  * The stable half of every PRD branch of parent `parent`, `agent/prd-<parent>-`,

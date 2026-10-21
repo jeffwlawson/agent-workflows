@@ -2,18 +2,29 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import { COMMANDS, RUNNERS, type Command, type Runner } from "../shared/contract.js";
 import type { HostEnvironment } from "../shared/env.js";
-import { PRD_BRANCH_PREFIX } from "../shared/record.js";
+import { fixRescueBranch, PRD_BRANCH_PREFIX } from "../shared/record.js";
 import type { DoorRequest, DoorResponse } from "./dispatcher.js";
-import { parseJob, reviewTimeLimit, SIGNATURE_HEADER, verifySignature, type ReviewJob, type TokenKind } from "./job.js";
+import {
+  fixTimeLimit,
+  parseJob,
+  reviewTimeLimit,
+  SIGNATURE_HEADER,
+  verifySignature,
+  type FixJob,
+  type Job,
+  type ReviewJob,
+  type TokenKind,
+} from "./job.js";
 
 /**
  * The service orchestrator's worker (#457): it receives jobs from the
- * dispatcher and runs review on each the way `review.yml` does, by running
+ * dispatcher and runs each the way its workflow's reusable does, by running
  * the same subcommands in the same order, each told what the reusable tells
- * it. It writes nothing to the record and spells no record string: every
+ * it: one run function per job kind, built from shared phase primitives. It writes nothing to the record and spells no record string: every
  * write is a command's. What it reads between them is the hand-over the
  * reusable's glue steps read, `gate.json`, `budget.json`, `verdict.json` and
- * `ended.json`, copied across as they are.
+ * `ended.json`, copied across as they are; where a phase is not started, the
+ * reason, as `failure_reason.txt` in the directory it would have written.
  *
  * Its decisions are here, over edges it is handed: the dispatcher's token
  * door, the launcher that starts a subcommand, git, and the host. `serve.ts`
@@ -42,13 +53,14 @@ export interface Launch {
  */
 export type Launcher = (launch: Launch) => Promise<number>;
 
-/** The checkout a review runs in. */
+/** The checkout a job runs in. */
 export interface Git {
   /**
    * Check `sha` out in `dir`, a directory that does not exist yet, as the
    * local branch `branch`, with `baseRef` fetched as a local branch of the
-   * same name beside it. `token` reads `repo`, and is passed with each command
-   * that needs it, never stored in the checkout's configuration.
+   * same name beside it, and `committer` the name commits made there are
+   * made under. `token` reads `repo`, and is passed with each command that
+   * needs it, never stored in the checkout's configuration.
    */
   checkout(options: {
     readonly dir: string;
@@ -57,10 +69,44 @@ export interface Git {
     readonly sha: string;
     readonly baseRef: string;
     readonly token: string;
-    /** Aborted at the review's time limit, which ends the checkout. */
+    /** The login the agent's commits are made as: the App's. */
+    readonly committer: string;
+    /** Aborted at the job's time limit, which ends the checkout. */
     readonly signal: AbortSignal;
   }): Promise<void>;
 }
+
+/**
+ * One script to run in the sandbox: the repository's setup, in the checkout.
+ * Nothing in it is a token, and nothing of the worker's environment reaches
+ * the sandbox but what the sandbox's own settings give it.
+ */
+export interface SandboxRun {
+  /**
+   * The script, which reaches the sandbox's shell through its environment, as
+   * `AGENT_SETUP`, and is never spliced into a command line.
+   */
+  readonly script: string;
+  /** The host directory bound read-write at its own path, and the script's working directory: the checkout. */
+  readonly dir: string;
+  /** Host directories bound read-only at the same path inside: the toolchain. */
+  readonly roBinds: readonly string[];
+  /** `PATH` inside the sandbox. */
+  readonly path: string;
+  /** The proxy every request from the sandbox leaves through. Absent is none. */
+  readonly proxy?: string;
+  /** The file its output goes to. */
+  readonly log: string;
+  /** Aborted at its time limit, which ends the sandbox and everything in it. */
+  readonly signal: AbortSignal;
+}
+
+/**
+ * Runs a script in the bwrap sandbox, never on the worker's host, and answers
+ * with its exit code once it has ended, which it is made to where `signal`
+ * aborts. Throws where the sandbox could not be started.
+ */
+export type Sandbox = (run: SandboxRun) => Promise<number>;
 
 /** Asks the dispatcher for a token for one phase of this job. Throws, with the dispatcher's reason, where none is granted. */
 export type TokenSource = (kind: TokenKind) => Promise<string>;
@@ -69,6 +115,8 @@ export interface JobEdges {
   readonly token: TokenSource;
   readonly launch: Launcher;
   readonly git: Git;
+  /** Where the repository's setup runs: the bwrap sandbox, whatever `AGENT_SANDBOX` says of the agent's. */
+  readonly sandbox: Sandbox;
   /**
    * The worker's own `PATH`, `HOME` and `LANG`, and its proxy where it has one
    * (`hostEnvironment`): the only part of its environment a subcommand gets.
@@ -97,21 +145,29 @@ export const POSTING_MINUTES = 10;
 /** `review:advance`'s time limit, in minutes: the advance job's `timeout-minutes` in `review.yml`. */
 export const ADVANCE_MINUTES = 5;
 
+/** `fix:gate`'s time limit, in minutes: the gate job's `timeout-minutes` in `fix.yml`. */
+export const FIX_GATE_MINUTES = 15;
+
+/**
+ * `fix:bundle`'s time limit, in minutes. On Actions it runs in the agent's
+ * job, `always()`, in the time GitHub gives a cancelled job's last steps; the
+ * worker gives it a limit of its own instead, so a round stopped at its time
+ * limit still hands its commits over.
+ */
+export const BUNDLE_MINUTES = 5;
+
+/**
+ * `fix:publish`'s and `fix:conclude`'s time limit, in minutes, each: the
+ * publish job's `timeout-minutes` in `fix.yml`. Each gets the whole of it, as
+ * review's posting commands do.
+ */
+export const FIX_POSTING_MINUTES = 15;
+
 /** The run summary's name in the run's directory. */
 export const SUMMARY_FILE = "summary.json";
 
 /** What stands in for a token in the run summary and the worker's log. */
 export const REDACTED = "[redacted]";
-
-/**
- * The fix-round budget the worker hands `review:budget`, whatever the
- * repository's `AGENT_MAX_FIX_ROUNDS` says, while the service answers no
- * `agent:fix` (PRD #453): so no review asks for a round nobody would start,
- * and a verdict asking for changes leaves the round to a human, which is
- * what a budget of 0 means on Actions too. Goes in the release where the
- * service answers `agent:fix`.
- */
-export const SERVICE_FIX_ROUND_BUDGET = "0";
 
 /**
  * `review:collect-checks`'s `SELF_CHECK`. On Actions it is the check run the
@@ -120,6 +176,12 @@ export const SERVICE_FIX_ROUND_BUDGET = "0";
  * the command leaves out anyway: nothing more is left out of the wait.
  */
 export const SERVICE_SELF_CHECK = "review";
+
+/** The setup phase's name, in the summary and the worker's log. */
+export const SETUP_PHASE = "setup";
+
+/** How many of its output's last lines a failed setup's reason quotes. */
+const SETUP_TAIL_LINES = 20;
 
 /** Every token source a command reads `app` from: the service's tokens are its App's. */
 const TOKEN_SOURCE = "app";
@@ -178,56 +240,111 @@ const reason = (dir: string, file: string): string | undefined => {
   }
 };
 
+/** The last lines of a log, as a sentence's continuation, or that it wrote nothing. */
+const tail = (log: string): string => {
+  let text = "";
+  try {
+    text = fs.readFileSync(log, "utf8").trimEnd();
+  } catch {
+    // Nothing was written.
+  }
+  if (text === "") return "It wrote no output.";
+  return `The end of its output:\n\n\`\`\`\n${text.split("\n").slice(-SETUP_TAIL_LINES).join("\n")}\n\`\`\``;
+};
+
 const message = (error: unknown): string => (error instanceof Error ? error.message : String(error));
 
+/** How a subcommand a run started ended, and the output directory it wrote into. */
+interface Ran {
+  readonly ok: boolean;
+  readonly timedOut: boolean;
+  readonly dir: string;
+}
+
+/** How the repository's setup ended: skipped and succeeded are both `ok`. */
+export interface SetupRan {
+  readonly ok: boolean;
+  readonly timedOut: boolean;
+  /** Where it failed, the sentence a person can act on: its exit status and the end of its output. */
+  readonly failureReason?: string;
+}
+
 /**
- * **One job**: review on one pull request, in `review.yml`'s order and under
- * its conditions, which the `Actions orchestrator:` blocks of spec §8
- * describe.
- *
- * 1. A `read` token, then `review:gate`. Where it does not go ahead, on to 6.
- * 2. The checkout of the commit the gate settled, as `BRANCH`, with the base.
- * 3. `review:budget`, with a budget of 0 (`SERVICE_FIX_ROUND_BUDGET`).
- * 4. `review:collect-checks`, whose failure the review reads as checks unknown.
- * 5. A fresh `read` token, then the runner, with it as `GH_TOKEN`.
- * 6. A `write` token, then `review:publish`, where the review finished.
- * 7. `review:conclude`, however the phases before it ended, told how each did.
- * 8. On a PRD pull request, where the gate went ahead and the head did not
- *    move, a `write` token and `review:advance`, told how the review and the
- *    posting ended.
- *
- * Each subcommand gets a fresh output directory of its own, and a command
- * that reads another's files is pointed at that one's. Never throws: a phase
- * that fails is an ending conclude is told, and one conclude cannot be run for
- * is the last phase in what this returns, with the reason the run ended, for
- * the worker's log, since nothing on the pull request will say it.
+ * The phase primitives every kind's run function is built from (ADR 0008):
+ * each is a step one of the reusables' jobs takes, and a run function says in
+ * which order, under which conditions and handed what.
+ */
+export interface Run {
+  /** Records how a phase ended, for the summary and the worker's log. */
+  readonly note: (name: string, outcome: string) => void;
+  /** A time limit of `minutes` from now: the signal it aborts, and the timer to clear once what it bounds has ended. */
+  readonly limit: (minutes: number) => { readonly signal: AbortSignal; readonly clear: () => void };
+  /** The fresh output directory `subcommand` writes into, which a command reading its files is pointed at. */
+  readonly outputDir: (subcommand: Subcommand) => string;
+  /** Where the pull request is checked out. */
+  readonly checkout: string;
+  /**
+   * Asks the dispatcher for a token of `kind`, which the run then redacts
+   * wherever it appears. `undefined`, and the refusal noted, where none is granted.
+   */
+  readonly ask: (kind: TokenKind) => Promise<string | undefined>;
+  /**
+   * Starts a subcommand in a fresh output directory, with the environment its
+   * declaration builds from `values`, and notes how it ended. A launch that
+   * throws, or ends at `signal`, is an ending like an exit.
+   */
+  readonly run: (subcommand: Subcommand, values: Readonly<Record<string, string | undefined>>, cwd: string, signal: AbortSignal) => Promise<Ran>;
+  /**
+   * Starts a runner as `run` does, handed what the worker's settings give the
+   * agent and the sandbox, with the worker's own `claude` first on its `PATH`.
+   */
+  readonly runAgent: (runner: Runner, values: Readonly<Record<string, string | undefined>>, cwd: string, signal: AbortSignal) => Promise<Ran>;
+  /**
+   * Runs the repository's setup, `script`, the job's `AGENT_SETUP`, in the
+   * bwrap sandbox, in the checkout, with no token, behind the sandbox's proxy,
+   * and notes how it ended, as Actions runs a caller's `setup:` in the agent's
+   * job. Empty is skipped, and noted so, as an empty `setup:` is on Actions.
+   * A setup that could not start, or exited non-zero, is a failure with its
+   * reason; one still running at `signal` is ended with its sandbox.
+   */
+  readonly setup: (script: string, signal: AbortSignal) => Promise<SetupRan>;
+  /**
+   * Records that `subcommand` was not started, and why, as the
+   * `failure_reason.txt` it would have written, in the directory it would
+   * have written it to: so a command reading that directory gives the reason.
+   */
+  readonly notStarted: (subcommand: Subcommand, why: string) => void;
+  /** Writes the run summary, and answers the phases, redacted: the end of every path through a run. */
+  readonly done: () => readonly Phase[];
+}
+
+/**
+ * A run of `job` begun: its directories made, and the primitives its kind's
+ * run function is built from.
  *
  * **The run leaves a summary**, `SUMMARY_FILE` in the run's directory: the
  * job, each phase's outcome, and each subcommand's directory, log and
- * environment, with every token it was handed redacted, as is what this
- * returns.
- *
- * **Every phase has a time limit**, as every job on Actions does. Phases 1 to
- * 5 share the review's, its CI wait plus `AGENT_REVIEW_TIMEOUT_MINUTES`
- * (`reviewTimeLimit`), and one still running at it is ended and told to
- * conclude as a timeout. Publish and conclude get `POSTING_MINUTES` each, and
- * advance `ADVANCE_MINUTES`.
+ * environment, with every token it was handed redacted, as are the phases
+ * `done` returns.
  */
-export const runJob = async (job: ReviewJob, edges: JobEdges): Promise<readonly Phase[]> => {
+export const startRun = (job: Job, edges: JobEdges): Run => {
   const phases: Phase[] = [];
   const note = (name: string, outcome: string): void => {
     phases.push({ name, outcome });
   };
-  /** What each subcommand was started with, for the run summary. */
-  const started: { readonly subcommand: Subcommand; readonly env: Readonly<Record<string, string>>; readonly cwd: string; readonly log: string }[] =
-    [];
+  /** What each subcommand, and the setup, was started with, for the run summary. */
+  const started: {
+    readonly subcommand: Subcommand | typeof SETUP_PHASE;
+    readonly env: Readonly<Record<string, string>>;
+    readonly cwd: string;
+    readonly log: string;
+  }[] = [];
   /**
    * Every token this run holds, the dispatcher's and the agent's, each
    * replaced wherever it appears in what the run leaves for a person to read.
    */
   const secrets = new Set(Object.entries(edges.agent).flatMap(([name, value]) => (name.endsWith("TOKEN") && value !== "" ? [value] : [])));
   const redact = (text: string): string => [...secrets].reduce((done, secret) => done.split(secret).join(REDACTED), text);
-  /** The summary written, and the phases answered, redacted: the end of every path through the job. */
   const done = (): readonly Phase[] => {
     const summary = {
       job,
@@ -243,29 +360,20 @@ export const runJob = async (job: ReviewJob, edges: JobEdges): Promise<readonly 
   const logFile = (name: Subcommand): string => path.join(logs, `${name.replace(":", "-")}.log`);
   fs.mkdirSync(logs, { recursive: true });
 
-  /** What every phase of this job is told: the pull request, and the loop's account, the App's login (spec §4.1). */
-  const common = {
-    GH_REPO: job.repo,
-    PR_NUMBER: String(job.pr),
-    BRANCH: job.branch,
-    AGENT_LOOP_LOGINS: job.appLogin,
-  };
-
   const minuteMs = edges.minuteMs ?? 60_000;
-  /** A time limit of `minutes` from now: the signal it aborts, and the timer to clear once what it bounds has ended. */
   const limit = (minutes: number): { readonly signal: AbortSignal; readonly clear: () => void } => {
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), minutes * minuteMs);
     return { signal: controller.signal, clear: () => clearTimeout(timer) };
   };
 
-  const run = async (
+  const launch = async (
     subcommand: Subcommand,
     values: Readonly<Record<string, string | undefined>>,
     cwd: string,
     signal: AbortSignal,
-    host: HostEnvironment = edges.host,
-  ): Promise<{ readonly ok: boolean; readonly timedOut: boolean; readonly dir: string }> => {
+    host: HostEnvironment,
+  ): Promise<Ran> => {
     const dir = outputDir(subcommand);
     fs.rmSync(dir, { recursive: true, force: true });
     fs.mkdirSync(dir, { recursive: true });
@@ -299,6 +407,123 @@ export const runJob = async (job: ReviewJob, edges: JobEdges): Promise<readonly 
       note(`${kind} token`, `failure: ${message(error)}`);
       return undefined;
     }
+  };
+
+  const setup = async (script: string, signal: AbortSignal): Promise<SetupRan> => {
+    if (script === "") {
+      note(SETUP_PHASE, "skipped: AGENT_SETUP is unset");
+      return { ok: true, timedOut: false };
+    }
+    const log = path.join(logs, `${SETUP_PHASE}.log`);
+    const proxy = edges.agent["AGENT_SANDBOX_PROXY"] ?? "";
+    started.push({ subcommand: SETUP_PHASE, env: { AGENT_SETUP: script }, cwd: checkout, log });
+    let code: number;
+    try {
+      code = await edges.sandbox({
+        script,
+        dir: checkout,
+        roBinds: (edges.agent["AGENT_SANDBOX_RO_BINDS"] ?? "").split(":").filter((dir) => dir !== ""),
+        path: edges.agent["AGENT_SANDBOX_PATH"] ?? "",
+        ...(proxy === "" ? {} : { proxy }),
+        log,
+        signal,
+      });
+    } catch (error) {
+      const failureReason = `The repository's setup (\`AGENT_SETUP\`) could not be started in the sandbox: ${message(error)}`;
+      note(SETUP_PHASE, `failure: ${failureReason}`);
+      return { ok: false, timedOut: false, failureReason };
+    }
+    if (signal.aborted) {
+      note(SETUP_PHASE, "timed out");
+      return { ok: false, timedOut: true };
+    }
+    if (code === 0) {
+      note(SETUP_PHASE, "success");
+      return { ok: true, timedOut: false };
+    }
+    const failureReason = `The repository's setup (\`AGENT_SETUP\`) exited with status ${code}. ${tail(log)}`;
+    note(SETUP_PHASE, `failure (exit ${code})`);
+    return { ok: false, timedOut: false, failureReason: redact(failureReason) };
+  };
+
+  const notStarted = (subcommand: Subcommand, why: string): void => {
+    const dir = outputDir(subcommand);
+    fs.rmSync(dir, { recursive: true, force: true });
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(path.join(dir, "failure_reason.txt"), why);
+    note(subcommand, `not run: ${why}`);
+  };
+
+  return {
+    note,
+    limit,
+    outputDir,
+    checkout,
+    ask,
+    run: (subcommand, values, cwd, signal) => launch(subcommand, values, cwd, signal, edges.host),
+    runAgent: (runner, values, cwd, signal) =>
+      launch(runner, { ...edges.agent, ...values }, cwd, signal, {
+        ...edges.host,
+        PATH: [edges.cliBin, edges.host.PATH].filter((part) => part !== undefined && part !== "").join(":"),
+      }),
+    setup,
+    notStarted,
+    done,
+  };
+};
+
+/**
+ * **One job**: its kind's run function, which follows that workflow's
+ * `Actions orchestrator:` blocks in the spec, §8 for review and §9 for fix.
+ * Never throws: how each phase ended is in what this returns, for the
+ * worker's log.
+ */
+export const runJob = async (job: Job, edges: JobEdges): Promise<readonly Phase[]> => {
+  switch (job.workflow) {
+    case "review":
+      return runReview(job, edges);
+    case "fix":
+      return runFix(job, edges);
+  }
+};
+
+/**
+ * **A review job**: review on one pull request, in `review.yml`'s order and
+ * under its conditions, which the `Actions orchestrator:` blocks of spec §8
+ * describe.
+ *
+ * 1. A `read` token, then `review:gate`. Where it does not go ahead, on to 6.
+ * 2. The checkout of the commit the gate settled, as `BRANCH`, with the base.
+ * 3. `review:budget`, with the budget the gate settled from `AGENT_MAX_FIX_ROUNDS`.
+ * 4. `review:collect-checks`, whose failure the review reads as checks unknown.
+ * 5. A fresh `read` token, then the runner, with it as `GH_TOKEN`.
+ * 6. A `write` token, then `review:publish`, where the review finished.
+ * 7. `review:conclude`, however the phases before it ended, told how each did.
+ * 8. On a PRD pull request, where the gate went ahead and the head did not
+ *    move, a `write` token and `review:advance`, told how the review and the
+ *    posting ended.
+ *
+ * Each subcommand gets a fresh output directory of its own, and a command
+ * that reads another's files is pointed at that one's. A phase that fails is
+ * an ending conclude is told, and one conclude cannot be run for is the last
+ * phase in what this returns, with the reason the run ended, for the worker's
+ * log, since nothing on the pull request will say it.
+ *
+ * **Every phase has a time limit**, as every job on Actions does. Phases 1 to
+ * 5 share the review's, its CI wait plus `AGENT_REVIEW_TIMEOUT_MINUTES`
+ * (`reviewTimeLimit`), and one still running at it is ended and told to
+ * conclude as a timeout. Publish and conclude get `POSTING_MINUTES` each, and
+ * advance `ADVANCE_MINUTES`.
+ */
+const runReview = async (job: ReviewJob, edges: JobEdges): Promise<readonly Phase[]> => {
+  const { note, limit, outputDir, checkout, ask, run, runAgent, done } = startRun(job, edges);
+
+  /** What every phase of this job is told: the pull request, and the loop's account, the App's login (spec §4.1). */
+  const common = {
+    GH_REPO: job.repo,
+    PR_NUMBER: String(job.pr),
+    BRANCH: job.branch,
+    AGENT_LOOP_LOGINS: job.appLogin,
   };
 
   /** How the review job ended, as the reusable's `needs.review` outputs say it. */
@@ -370,6 +595,7 @@ export const runJob = async (job: ReviewJob, edges: JobEdges): Promise<readonly 
         sha,
         baseRef: job.baseRef,
         token: read,
+        committer: job.appLogin,
         signal: reviewLimit.signal,
       });
       note("checkout", "success");
@@ -391,7 +617,7 @@ export const runJob = async (job: ReviewJob, edges: JobEdges): Promise<readonly 
         GH_TOKEN: read,
         BASE_REF: job.baseRef,
         ROUND: gate["round"],
-        FIX_ROUND_BUDGET: SERVICE_FIX_ROUND_BUDGET,
+        FIX_ROUND_BUDGET: gate["budget"],
         LOOP_TOKEN_SOURCE: TOKEN_SOURCE,
       },
       checkout,
@@ -421,11 +647,10 @@ export const runJob = async (job: ReviewJob, edges: JobEdges): Promise<readonly 
   }
   if (proceeds && runnerToken !== undefined && review.result === "success") {
     const checks = outputDir("review:collect-checks");
-    const reviewed = await run(
+    const reviewed = await runAgent(
       "review",
       {
         ...common,
-        ...edges.agent,
         GH_TOKEN: runnerToken,
         AGENT_MODEL: job.variables.AGENT_MODEL,
         AGENT_MODEL_REVIEW: job.variables.AGENT_MODEL_REVIEW,
@@ -439,7 +664,6 @@ export const runJob = async (job: ReviewJob, edges: JobEdges): Promise<readonly 
       },
       checkout,
       reviewLimit.signal,
-      { ...edges.host, PATH: [edges.cliBin, edges.host.PATH].filter((part) => part !== undefined && part !== "").join(":") },
     );
     reviewDir = reviewed.dir;
     if (reviewed.timedOut) timedOut();
@@ -563,12 +787,253 @@ export const runJob = async (job: ReviewJob, edges: JobEdges): Promise<readonly 
   return done();
 };
 
+/** How a job of a reusable ended, as Actions' `needs.<job>.result` says it. */
+type JobResult = "success" | "failure" | "cancelled" | "skipped";
+
+/**
+ * **A fix job**: a fix round on one pull request, in `fix.yml`'s order and
+ * under its conditions, which the `Actions orchestrator:` blocks of spec §9
+ * describe.
+ *
+ * 1. The gate job: a `write` token, then `fix:gate`, which refuses or claims
+ *    the pull request and writes as it does. A refusal ends the run there.
+ * 2. The agent's job, where the gate succeeded and claimed the run: a `read`
+ *    token, the checkout of the head the label's event named, as `BRANCH`,
+ *    with the base; `fix:prepare`, which fetches the rescue branch; the
+ *    repository's setup, in the sandbox; a fresh `read` token, then the
+ *    runner, with it as `GH_TOKEN`; and `fix:bundle`, with no token, however
+ *    the steps before it ended.
+ * 3. The publish job: a `push` token, then `fix:publish`, where the agent's
+ *    job ran, told how it ended.
+ * 4. `fix:conclude`, however the run ended, with the `push` token, told how
+ *    each job and step ended: it rescues a stopped round's commits. Where
+ *    `push` was refused, a `write` token, since it then rescues nothing.
+ *
+ * The runner never holds a token that writes: `push` is asked for only once
+ * the agent's job is over, and handed to publish and conclude alone, as both
+ * `GH_TOKEN` and `LOOP_TOKEN`.
+ *
+ * **Every phase has a time limit**, as every job on Actions does: the gate
+ * `FIX_GATE_MINUTES`; the checkout, prepare, the setup and the runner share
+ * the agent's job's, `AGENT_TIMEOUT_MINUTES` (`fixTimeLimit`), and one still
+ * running at it is ended and the round told to conclude as a timeout; the
+ * bundle `BUNDLE_MINUTES`, so a stopped round still hands its commits over;
+ * publish and conclude `FIX_POSTING_MINUTES` each.
+ */
+const runFix = async (job: FixJob, edges: JobEdges): Promise<readonly Phase[]> => {
+  const { note, limit, outputDir, checkout, ask, run, runAgent, setup, notStarted, done } = startRun(job, edges);
+  const rescueBranch = fixRescueBranch(job.pr);
+
+  /** What every phase of this job is told: the pull request, and the loop's account, the App's login (spec §4.1). */
+  const common = {
+    GH_REPO: job.repo,
+    PR_NUMBER: String(job.pr),
+    BRANCH: job.branch,
+    AGENT_LOOP_LOGINS: job.appLogin,
+  };
+
+  // 1. The gate. It writes, its refusal and its label transitions, so its
+  // token is `write`, as the gate job's own token has `pull-requests: write`.
+  let gateResult: JobResult = "failure";
+  let gateReason: string | undefined;
+  let gate: Readonly<Record<string, string>> = {};
+  const claiming = await ask("write");
+  if (claiming === undefined) {
+    note("fix:gate", "not run: the dispatcher granted no token to claim the pull request with");
+  } else {
+    const gateLimit = limit(FIX_GATE_MINUTES);
+    const gated = await run(
+      "fix:gate",
+      { ...common, GH_TOKEN: claiming, HEAD_SHA: job.headSha, PR_STATE: job.state, PR_MERGED: String(job.merged) },
+      edges.runDir,
+      gateLimit.signal,
+    );
+    gateLimit.clear();
+    gate = decisions(gated.dir, "gate.json");
+    gateResult = gated.timedOut ? "cancelled" : gated.ok ? "success" : "failure";
+    gateReason = reason(gated.dir, "failure_reason.txt");
+  }
+  // The gate job's `refused`: empty where the gate decided nothing.
+  const refused = gate["proceed"] === "true" ? "false" : gate["proceed"] === "false" ? "true" : "";
+  // The gate said it, and took the label off: the publish job does not run.
+  if (refused === "true") return done();
+
+  // 2. The agent's job, where the gate succeeded and claimed the run.
+  const minutes = fixTimeLimit(job.variables.AGENT_TIMEOUT_MINUTES);
+  const agent: { result: JobResult; timedOut: boolean } = { result: "skipped", timedOut: false };
+  const fixDir = outputDir("fix");
+  const bundleDir = outputDir("fix:bundle");
+  if (gateResult === "success" && refused === "false") {
+    agent.result = "success";
+    const agentLimit = limit(minutes);
+    /** The agent's job ran past its time limit, which ends it as Actions ends a job at its `timeout-minutes`. */
+    const timedOut = (): void => {
+      agent.result = "cancelled";
+      agent.timedOut = true;
+    };
+    const going = (): boolean => agent.result === "success";
+
+    const read = await ask("read");
+    if (read === undefined) {
+      agent.result = "failure";
+      notStarted("fix:prepare", "The service's dispatcher granted no token to read the pull request with, so the fix did not start.");
+    } else {
+      try {
+        await edges.git.checkout({
+          dir: checkout,
+          repo: job.repo,
+          branch: job.branch,
+          sha: job.headSha,
+          baseRef: job.baseRef,
+          token: read,
+          committer: job.appLogin,
+          signal: agentLimit.signal,
+        });
+        note("checkout", "success");
+      } catch (error) {
+        if (agentLimit.signal.aborted) {
+          note("checkout", "timed out");
+          timedOut();
+        } else {
+          note("checkout", `failure: ${message(error)}`);
+          agent.result = "failure";
+          notStarted("fix:prepare", `The pull request's head could not be checked out: ${message(error)}`);
+        }
+      }
+    }
+    if (going() && read !== undefined) {
+      const prepared = await run(
+        "fix:prepare",
+        { ...common, GH_TOKEN: read, CHECKOUT: checkout, RESCUE_BRANCH: rescueBranch },
+        edges.runDir,
+        agentLimit.signal,
+      );
+      if (prepared.timedOut) timedOut();
+      else if (!prepared.ok) agent.result = "failure";
+    }
+    if (going()) {
+      const set = await setup(job.variables.AGENT_SETUP, agentLimit.signal);
+      if (set.timedOut) timedOut();
+      else if (!set.ok) {
+        agent.result = "failure";
+        notStarted("fix", set.failureReason ?? "The repository's setup (`AGENT_SETUP`) failed.");
+      }
+    }
+    // The runner gets a `read` token of its own, minted as it starts, since
+    // the setup before it can take a good part of the gate's token's hour.
+    const runnerToken = going() ? await ask("read") : undefined;
+    if (going() && runnerToken === undefined) {
+      agent.result = "failure";
+      notStarted("fix", "The service's dispatcher granted no token for the fix to read the pull request with.");
+    }
+    if (going() && runnerToken !== undefined) {
+      const fixed = await runAgent(
+        "fix",
+        {
+          ...common,
+          GH_TOKEN: runnerToken,
+          AGENT_MODEL: job.variables.AGENT_MODEL,
+          AGENT_MODEL_FIX: job.variables.AGENT_MODEL_FIX,
+          BASE_REF: job.baseRef,
+          RESCUE_BRANCH: rescueBranch,
+        },
+        checkout,
+        agentLimit.signal,
+      );
+      if (fixed.timedOut) timedOut();
+      else if (!fixed.ok) agent.result = "failure";
+    }
+    agentLimit.clear();
+
+    // However the steps before it ended, so a failed or stopped round hands
+    // its commits over too. It is handed no token.
+    const bundleLimit = limit(BUNDLE_MINUTES);
+    const bundled = await run("fix:bundle", { CHECKOUT: checkout, BRANCH: job.branch, HEAD_SHA: job.headSha }, edges.runDir, bundleLimit.signal);
+    bundleLimit.clear();
+    if (bundled.timedOut && agent.result === "success") agent.result = "cancelled";
+    else if (!bundled.ok && agent.result === "success") agent.result = "failure";
+  }
+  const agentRan = agent.result !== "skipped";
+
+  // 3. The publish job's token, then publish, where the agent's job ran.
+  // There is nothing to download: the hand-over is on this disk.
+  const push = await ask("push");
+  const mintOutcome = push === undefined ? "failure" : "success";
+  let publishOutcome = "";
+  const publishDir = outputDir("fix:publish");
+  if (push !== undefined && agentRan) {
+    const publishLimit = limit(FIX_POSTING_MINUTES);
+    const published = await run(
+      "fix:publish",
+      {
+        ...common,
+        GH_TOKEN: push,
+        LOOP_TOKEN: push,
+        LOOP_TOKEN_SOURCE: TOKEN_SOURCE,
+        HEAD_SHA: job.headSha,
+        RESCUE_BRANCH: rescueBranch,
+        AGENT_RESULT: agent.result,
+        CHECKOUT: checkout,
+        FIX_DIR: fixDir,
+        BUNDLE_DIR: bundleDir,
+      },
+      edges.runDir,
+      publishLimit.signal,
+    );
+    publishLimit.clear();
+    publishOutcome = published.timedOut ? "cancelled" : published.ok ? "success" : "failure";
+  }
+
+  // 4. Conclude, however the run ended, with the `push` token, since it
+  // rescues. Where that was refused it is told the mint failed and pushes
+  // nothing, so it asks for `write` instead, for its comment and labels: a
+  // second `push` would be refused for the reason the first was.
+  const concluding = push ?? (await ask("write"));
+  if (concluding === undefined) {
+    // Nothing can say so on the pull request, so the worker's log says why
+    // the run ended as well.
+    const ended = agent.timedOut ? `the fix timed out after ${minutes} minutes` : `the gate's result was ${gateResult}, and the agent's ${agent.result}`;
+    note("fix:conclude", `not run: the dispatcher granted no token to write the ending with, and the run had ended so: ${ended}`);
+    return done();
+  }
+  const concludeLimit = limit(FIX_POSTING_MINUTES);
+  await run(
+    "fix:conclude",
+    {
+      ...common,
+      GH_TOKEN: concluding,
+      LOOP_TOKEN: concluding,
+      LOOP_TOKEN_SOURCE: TOKEN_SOURCE,
+      HEAD_SHA: job.headSha,
+      RESCUE_BRANCH: rescueBranch,
+      CHECKOUT: checkout,
+      REFUSED: refused,
+      GATE_RESULT: gateResult,
+      GATE_REASON: gateReason,
+      AGENT_RESULT: agent.result,
+      TIMED_OUT: String(agent.timedOut),
+      TIMEOUT_MINUTES: String(minutes),
+      MINT_OUTCOME: mintOutcome,
+      DOWNLOAD_OUTCOME: agentRan ? "success" : "",
+      PUBLISH_OUTCOME: publishOutcome,
+      PUBLISH_DIR: publishDir,
+      PREPARE_DIR: outputDir("fix:prepare"),
+      FIX_DIR: fixDir,
+      BUNDLE_DIR: bundleDir,
+    },
+    edges.runDir,
+    concludeLimit.signal,
+  );
+  concludeLimit.clear();
+  return done();
+};
+
 /** What the job door needs: the shared secret, the worker's own release, and where an accepted job goes. */
 export interface WorkerDoorEdges {
   readonly secret: string;
   readonly version: string;
   /** Queues the job; called only for one that is accepted. */
-  readonly accept: (job: ReviewJob) => void;
+  readonly accept: (job: Job) => void;
 }
 
 const answer = (status: number, body: unknown): DoorResponse => ({ status, body: JSON.stringify(body) });

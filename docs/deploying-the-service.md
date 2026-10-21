@@ -7,14 +7,14 @@ machine of your own, so the agent spends none of your Actions minutes:
 - the **dispatcher**, which holds the GitHub App's key, receives GitHub's webhooks, decides which
   delivery is a job, and mints a short-lived token, scoped to one repository, each time the worker
   asks for one;
-- the **worker**, which receives jobs from the dispatcher and runs review the way `review.yml`
-  does, with the runner in a sandbox.
+- the **worker**, which receives jobs from the dispatcher and runs review and fix the way
+  `review.yml` and `fix.yml` do, with the runner in a sandbox.
 
 Each is a subcommand of the published package, so deploying the service is configuration rather
 than a build. A
 repository opts in with the repository variable `AGENT_ORCHESTRATOR=service`
 ([ADOPTING §2e](./ADOPTING.md#2e-choosing-the-orchestrator)); the service refuses every other
-repository, and answers `agent:review` only.
+repository, and answers `agent:review` and `agent:fix` only.
 
 ## What a host needs
 
@@ -54,12 +54,22 @@ Repository permissions:
 | Permission | Access | Why |
 |---|---|---|
 | Metadata | read | every API call, and a label's sender's permission |
-| Variables (`actions_variables` in the API) | read | `AGENT_ORCHESTRATOR`, re-read at every token, and the variables review reads: the repository's own, else its organization's shared with it, as `vars` resolves them |
-| Contents | read | the checkout, and the pull request's history |
+| Variables (`actions_variables` in the API) | read | `AGENT_ORCHESTRATOR`, re-read at every token, and the variables the service reads, `AGENT_SETUP` among them: the repository's own, else its organization's shared with it, as `vars` resolves them |
+| Contents | write | the checkout and the pull request's history, read by every phase; a push, by a `push` token only |
 | Pull requests | write | the review, its threads, the title and summary, and the ready mark |
 | Issues | write | comments and labels, and a PRD's parent |
 | Checks | read | CI's result, which the review's verdict reads |
 | Commit statuses | write | the verdict and the fix-round statuses |
+| Workflows | write | a push touching `.github/workflows/**` is refused without it, *after* the agent has done all its work |
+
+The worker asks for one of three kinds of token at each phase: `read`, which every phase reads
+with and the only one the runner is ever handed; `write`, which adds the pull request, issue and
+status writes of the phases that post; and `push`, which adds Contents: write and Workflows: write
+to `write`, for the phases that push and run no agent. Contents: write together with Workflows: write
+is the pair that lets a holder push a workflow into a repository whose runs carry secrets, which is
+why it is a kind of its own rather than a wider `write`, and why it is acceptable at all: as on
+Actions (ADOPTING §2), neither the App's key nor a `push` token is ever where the agent runs. The
+key stays with the dispatcher, and a token reaches a subcommand only where its phase was handed it.
 
 A permission the App lacks fails the mint of the token that asks for it, so it is named in the
 dispatcher's log as the job's phase starts, rather than surfacing as a failed write mid-run.
@@ -104,17 +114,22 @@ It answers each delivery at once and does its work afterwards, and a delivery be
 when all of these hold:
 
 - it is a pull request labelled with a label the service answers (`SERVICE_LABELS` in
-  `shared/record.ts`: `agent:review`);
+  `service/dispatcher.ts`, the labels its `LABEL_KINDS` maps to a job kind: `agent:review` to a
+  review job, `agent:fix` to a fix job);
 - the App is installed on the repository;
 - the installation is on the App's owner's account, or on one `EXTRA_OWNERS` lists;
 - the repository's `AGENT_ORCHESTRATOR` is `service`;
 - the head is in the same repository, not a fork;
 - the pull request is open;
-- the label's sender can write to the repository.
+- the label's sender can write to the repository, or is the App itself (`<slug>[bot]`), whose
+  labels the loop's own commands add (ADR 0008).
 
 Every other delivery is logged with its reason. A job carries what the label's event carried, the
-repository variables review reads, the App's login, a job id, a deadline and the package's version.
-It carries no token: the worker asks for one per phase, `read` or `write`, and the dispatcher mints
+repository variables the service reads (`AGENT_MODEL`, `AGENT_MODEL_REVIEW`, `AGENT_MODEL_FIX`,
+`AGENT_REVIEW_TIMEOUT_MINUTES`, `AGENT_TIMEOUT_MINUTES`, `AGENT_MAX_FIX_ROUNDS` and `AGENT_SETUP`,
+each unset as empty), the App's login, a job id, a deadline and the package's version. The
+deadline is the job's own time limit, review's or fix's (below), plus `JOB_DEADLINE_MARGIN_MINUTES`.
+It carries no token: the worker asks for one per phase, `read`, `write` or `push`, and the dispatcher mints
 one only for a job it dispatched, before that job's deadline, for that job's repository alone, while
 the installation is still on an account it serves, and after reading `AGENT_ORCHESTRATOR` again. Deleting the variable stops a job in flight at its next
 phase.
@@ -136,7 +151,7 @@ so does an App whose own record cannot be read, since that is where the App's ow
 | `WEBHOOK_PORT` | optional | `8790` | the webhook door's port; GitHub's deliveries arrive at `POST /github` |
 | `TOKEN_HOST` | optional | `127.0.0.1` | the address the token door listens on: one the worker reaches |
 | `TOKEN_PORT` | optional | `8791` | the token door's port; the worker asks at `POST /token` |
-| `JOB_DEADLINE_MARGIN_MINUTES` | optional | `60` | added to review's time limit (its CI wait and `AGENT_REVIEW_TIMEOUT_MINUTES`) for a job's deadline, covering the phases around the runner's and the time a job waits in the worker's queue |
+| `JOB_DEADLINE_MARGIN_MINUTES` | optional | `60` | added to a job's own time limit for its deadline, review's (its CI wait and `AGENT_REVIEW_TIMEOUT_MINUTES`) or fix's (`AGENT_TIMEOUT_MINUTES`), covering the phases around the runner's and the time a job waits in the worker's queue |
 | `EXTRA_OWNERS` | optional | `""` | accounts, comma-separated, whose installations the dispatcher serves besides the App owner's; empty is none. An installation on any other account is refused |
 
 Each door also answers `GET /health` with `200`.
@@ -150,10 +165,15 @@ Each door also answers `GET /health` with `200`.
 
 ## The worker
 
-The process that runs review. It holds no key: it asks the dispatcher for a token at the start of
-each phase: `read` for the gate, the checkout, the budget and the CI wait, a fresh `read` for the
-runner, so the token's hour starts as the agent does, and `write` for `review:publish` and
-`review:conclude`. It needs:
+The process that runs review and fix. It holds no key: it asks the dispatcher for a token at the
+start of each phase. For review: `read` for the gate, the checkout, the budget and the CI wait, a
+fresh `read` for the runner, so the token's hour starts as the agent does, and `write` for
+`review:publish` and `review:conclude`. For fix: `write` for `fix:gate`, which posts its refusal and
+probes the label; `read` for the checkout and `fix:prepare`, and a fresh `read` for the runner;
+none for `fix:bundle`; and `push` for `fix:publish` and `fix:conclude`, the only phases that push. Where the `push`
+token is refused, nothing is published, and `fix:conclude` asks for `write` instead, to post the
+round's ending without a rescue.
+The runner never holds a token that writes. It needs:
 
 - Linux, Node 24.14 or later, `git`, `npm`, and the package (`npm exec
   @jeffwlawson/agent-workflows@<version> worker`, or an install of it) at the **same version as the
@@ -170,12 +190,25 @@ At start it installs the agent's CLI, `@anthropic-ai/claude-code` at `CLAUDE_COD
 `AGENT_SANDBOX_PATH`, and into `AGENT_SANDBOX_RO_BINDS`. Bind the Node the agent's CLI runs on
 read-only too, through `AGENT_SANDBOX_RO_BINDS`, and put it on `AGENT_SANDBOX_PATH`.
 
-Jobs run one at a time, in the order they arrived. Each runs the subcommands `review.yml` runs, in
-its order (spec §8), each a child process of the worker's own install, with an environment built
-from its declaration in the contract and the host's `PATH`, `HOME` and `LANG`, and nothing else
-of the worker's. Not run, at this release: the red check, the repository's own install and setup
-commands. The fix-round budget is 0 whatever `AGENT_MAX_FIX_ROUNDS` says, while the service
-answers no `agent:fix`, so a review asking for changes leaves the round to a human.
+Jobs run one at a time, in the order they arrived. Each runs the subcommands its reusable runs, in
+its order (spec §8 for `review.yml`, §9 for `fix.yml`), each a child process of the worker's own
+install, with an environment built from its declaration in the contract and the host's `PATH`,
+`HOME` and `LANG`, and nothing else of the worker's. Not run, at this release: the red check. The
+repository's setup is run by a fix job, before its runner, and not by a review, as on Actions.
+
+The fix-round budget is the repository's `AGENT_MAX_FIX_ROUNDS`, read as on Actions: a review
+asking for changes under a budget with a round left adds `agent:fix`, which the dispatcher answers
+as the App's own label, and a spent budget leaves the round to a human, with the comment Actions
+posts. Since the worker runs one job at a time, a fix round starts only once the review that asked
+for it has finished, and the `agent-fix-round` status the budget counts stops the cycle.
+
+A fix job runs `fix:gate`, then the agent's job: the checkout of the head the label's event named,
+with the base, `fix:prepare`, which fetches a stopped round's rescue branch into it, the setup, the
+runner, and `fix:bundle`, however those ended. Then `fix:publish` pushes the agent's commits and
+asks for the re-review, and `fix:conclude` ends the round, pushing a stopped round's commits to
+`agent/rescue/fix-<n>` for the next round to resume from. The checkout keeps no token in its
+configuration: each command is handed its token in its environment. It does keep a committer, the
+App's login and its no-reply address, as `fix.yml`'s checkout sets one, since the agent commits.
 
 On a PRD pull request (head `agent/prd-…`), where the review went ahead and the head did not move
 while it ran, the worker asks for one more `write` token and runs `review:advance` after
@@ -198,9 +231,46 @@ Every phase has a time limit, as every job on Actions does, so a hung agent cann
 The gate, the checkout, the budget, the CI wait and the runner share the review's: 15 minutes of CI
 wait plus `AGENT_REVIEW_TIMEOUT_MINUTES` (5 where unset). `review:publish` and `review:conclude`
 get 10 minutes each, and `review:advance` 5. A phase still running at its limit is ended, with every process it started,
-and the pull request's ending says the review timed out. A job that waits in the queue for longer
+and the pull request's ending says the review timed out. A fix job's gate gets 15 minutes; the
+checkout, `fix:prepare`, the setup and the runner share `AGENT_TIMEOUT_MINUTES` (30 where unset);
+`fix:bundle` gets 5 minutes of its own, so a round stopped at its limit still hands its commits
+over; and `fix:publish` and `fix:conclude` 15 each. A round ended at its limit still bundles,
+publishes and concludes: its ending says it timed out, and any commits it made are rescued. A job that waits in the queue for longer
 than the dispatcher's `JOB_DEADLINE_MARGIN_MINUTES` is past its deadline by the time it asks to
 post, and ends with nothing posted, so set the margin above the longest wait you expect.
+
+### The repository's setup
+
+A repository's setup is its repository variable `AGENT_SETUP`: a script, the install and anything
+else its verify command needs, the same text a caller's `setup:` input holds on Actions. Only an
+admin can set it. The dispatcher reads it with the other variables and the job carries it; the
+worker hands it to the sandbox's shell through the environment, as written, and never splices it
+into a command line. Unset or empty, the setup is skipped. A fix job runs it after `fix:prepare`
+and before its runner; a review runs none, as `review.yml` runs none. A setup that fails starts no
+runner, and the round's failure comment quotes the end of its output.
+
+It runs **in the bwrap sandbox, never on the worker's host**, whatever `AGENT_SANDBOX` says of the
+agent's, since the host holds what can ask for tokens and setup runs the pull request's code. So
+`bwrap` is needed on the worker's host even with `AGENT_SANDBOX=none`. The sandbox is the agent's
+shape: the checkout bound read-write at its own path, its `.git` read-only, so nothing setup runs can
+plant a hook or a configuration that host-side git would later run; `AGENT_SANDBOX_RO_BINDS` and
+`AGENT_SANDBOX_PATH` for the toolchain; a fresh home and `/tmp`, removed after; no token in its
+environment; and its traffic through `AGENT_SANDBOX_PROXY`, which must therefore **let the package
+registry through** for setup's install. It is run as Actions runs a `run:` step, by `bash` stopping
+at the first failing command, under the job's time limit, and ended with everything it started at
+that limit. A setup that exits non-zero fails its phase with the exit status and the end of its
+output, kept in full in the run's `logs/setup.log`.
+
+What it leaves in the checkout reaches the agent under either `AGENT_SANDBOX`. With `none` the
+agent works in the checkout itself. With `bwrap` it works in a copy at `/home/agent/workspace`,
+cloned from the checkout's history, and everything the checkout holds outside git, ignored or not,
+is copied in beside it, and excluded there, so none of it comes back as the agent's work. So what setup builds **must not depend on the checkout's absolute path**:
+`node_modules` moves as it is, and a Python virtual environment, whose scripts name its path, does
+not.
+
+**`node-version-file` is not supported.** The sandbox runs the agent box's own Node, the one
+`AGENT_SANDBOX_RO_BINDS` and `AGENT_SANDBOX_PATH` give it. A repository that needs another
+toolchain stays on Actions for now.
 
 ### Settings
 

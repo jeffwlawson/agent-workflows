@@ -34,8 +34,8 @@ const REQUIRED = { required: true } as const;
  *   whatever brings GitHub's deliveries in forwards to.
  * - `TOKEN_HOST` and `TOKEN_PORT`: where the token door listens. A door of
  *   its own, so the one exposed to the internet mints nothing.
- * - `JOB_DEADLINE_MARGIN_MINUTES`: added to review's time limit for a job's
- *   deadline, past which no token is minted for it. It covers the phases
+ * - `JOB_DEADLINE_MARGIN_MINUTES`: added to a job's own time limit, its
+ *   kind's (`TIME_LIMITS` in `job.ts`), for its deadline, past which no token is minted for it. It covers the phases
  *   around the runner's, and the time a job waits in the worker's queue.
  * - `EXTRA_OWNERS`: the accounts, comma-separated, whose installations the
  *   dispatcher serves besides the App owner's own. Empty is none, so an App
@@ -57,9 +57,10 @@ export const DISPATCHER = {
 } as const satisfies Inputs;
 
 /**
- * **The worker's settings** (#457). It runs review the way `review.yml` does,
- * so beside its own door it reads what the review job is handed from outside
- * the repository: the agent's token, its CLI and the sandbox.
+ * **The worker's settings** (#457). It runs review and fix the way
+ * `review.yml` and `fix.yml` do, so beside its own door it reads what their
+ * agent's jobs are handed from outside the repository: the agent's token, its
+ * CLI and the sandbox.
  *
  * - `WORKER_SECRET`: the secret shared with the dispatcher, the same value
  *   as its own.

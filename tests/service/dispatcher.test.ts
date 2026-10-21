@@ -1,8 +1,8 @@
 import { describe, expect, it } from "vitest";
 import { CI_WAIT_SECONDS } from "../../review/collect-checks.js";
-import { createDispatcher, parseOwners, TOKEN_PERMISSIONS, type AppGitHub } from "../../service/dispatcher.js";
-import { DEFAULT_REVIEW_MINUTES, parseJob, sign, SIGNATURE_HEADER, verifySignature, type ReviewJob } from "../../service/job.js";
-import { ORCHESTRATOR_VARIABLE, REVIEW_LABEL, SERVICE_ORCHESTRATOR } from "../../shared/record.js";
+import { createDispatcher, LABEL_KINDS, parseOwners, SERVICE_LABELS, TOKEN_PERMISSIONS, type AppGitHub } from "../../service/dispatcher.js";
+import { DEFAULT_FIX_MINUTES, DEFAULT_REVIEW_MINUTES, JOB_KINDS, parseJob, sign, SIGNATURE_HEADER, verifySignature, type Job } from "../../service/job.js";
+import { FIX_LABEL, ORCHESTRATOR_VARIABLE, REVIEW_LABEL, SERVICE_ORCHESTRATOR } from "../../shared/record.js";
 
 /**
  * Seam 2 of PRD #453: the dispatcher's two doors, driven through the request
@@ -43,6 +43,8 @@ const setup = (options: { workerStatus?: number; owners?: readonly string[] } = 
   };
   const minted: { repo: string; permissions: Readonly<Record<string, string>> }[] = [];
   const posted: { body: string; headers: Readonly<Record<string, string>> }[] = [];
+  /** Each login whose permission was looked up. */
+  const looked: string[] = [];
   let clock = START;
   let ids = 0;
   const github: AppGitHub = {
@@ -52,7 +54,10 @@ const setup = (options: { workerStatus?: number; owners?: readonly string[] } = 
       if (repository.unreadable === true) throw new Error("GitHub answered 503");
       return repo === REPO ? repository.variables[name] : undefined;
     },
-    permission: async (repo, login) => (repo === REPO ? repository.permissions[login] : undefined),
+    permission: async (repo, login) => {
+      looked.push(login);
+      return repo === REPO ? repository.permissions[login] : undefined;
+    },
     mint: async (repo, permissions) => {
       minted.push({ repo, permissions });
       return { token: `minted-token-${minted.length}`, expiresAt: "2026-10-11T13:00:00Z" };
@@ -77,6 +82,7 @@ const setup = (options: { workerStatus?: number; owners?: readonly string[] } = 
     repository,
     minted,
     posted,
+    looked,
     advance: (minutes: number) => {
       clock = new Date(clock.getTime() + minutes * MINUTE_MS);
     },
@@ -115,7 +121,7 @@ const deliver = async (setupd: ReturnType<typeof setup>, payload: unknown, secre
 };
 
 /** The job a delivery posted to the worker. */
-const dispatched = async (s: ReturnType<typeof setup>, payload: unknown = labelled()): Promise<ReviewJob> => {
+const dispatched = async (s: ReturnType<typeof setup>, payload: unknown = labelled()): Promise<Job> => {
   await deliver(s, payload);
   const post = s.posted.at(-1);
   if (post === undefined) throw new Error("nothing was posted to the worker");
@@ -143,7 +149,7 @@ describe("the webhook door", () => {
   });
 
   it.each<[string, (s: ReturnType<typeof setup>) => unknown, RegExp]>([
-    ["a label the service does not answer", () => labelled({ label: "agent:fix" }), /`agent:fix` is not a label this release's service answers/],
+    ["a label the service does not answer", () => labelled({ label: "agent:update-branch" }), /`agent:update-branch` is not a label this release's service answers/],
     ["an event that is not a pull request's", () => labelled(), /not a pull request's/],
     [
       "a repository the App is not installed on",
@@ -194,6 +200,7 @@ describe("the webhook door", () => {
     const [post] = s.posted;
     expect(verifySignature(WORKER_SECRET, post!.body, post!.headers[SIGNATURE_HEADER])).toBe(true);
     expect(parseJob(JSON.parse(post!.body))).toEqual({
+      workflow: "review",
       id: "job-1",
       version: "9.9.9",
       deadline: new Date(START.getTime() + (CI_WAIT_SECONDS / 60 + DEFAULT_REVIEW_MINUTES + MARGIN) * MINUTE_MS).toISOString(),
@@ -208,10 +215,21 @@ describe("the webhook door", () => {
       variables: {
         AGENT_MODEL: "a-model",
         AGENT_MODEL_REVIEW: "",
+        AGENT_MODEL_FIX: "",
         AGENT_REVIEW_TIMEOUT_MINUTES: "",
+        AGENT_TIMEOUT_MINUTES: "",
         AGENT_MAX_FIX_ROUNDS: "2",
+        AGENT_SETUP: "",
       },
     });
+  });
+
+  it("carries the repository's setup as the repository set it, unevaluated", async () => {
+    const s = setup();
+    s.repository.variables["AGENT_SETUP"] = "npm ci && echo \"$HOME\" `id` $(whoami); exit 3";
+    const job = await dispatched(s);
+
+    expect(job.variables.AGENT_SETUP).toBe("npm ci && echo \"$HOME\" `id` $(whoami); exit 3");
   });
 
   it("works the App's login out of the App's own record, as its REST spelling", async () => {
@@ -245,6 +263,90 @@ describe("the webhook door", () => {
     const response = await s.dispatcher.token(tokenRequest({ jobId: "job-1", kind: "read" }));
     expect(response.status).toBe(404);
     expect(s.minted).toEqual([]);
+  });
+});
+
+/**
+ * Each trigger label the service answers starts one kind of job (ADR 0008),
+ * and the list of what it answers is that map's keys.
+ */
+describe("the labels the dispatcher routes", () => {
+  it("answers exactly the labels that map to a job kind, and each maps to a kind this release runs", () => {
+    expect(SERVICE_LABELS).toEqual(Object.keys(LABEL_KINDS));
+    for (const label of SERVICE_LABELS) expect(JOB_KINDS).toContain(LABEL_KINDS[label]);
+  });
+
+  it("names the job's kind from its label", async () => {
+    expect((await dispatched(setup(), labelled({ label: REVIEW_LABEL }))).workflow).toBe("review");
+    expect((await dispatched(setup(), labelled({ label: FIX_LABEL }))).workflow).toBe("fix");
+  });
+
+  it("dispatches an agent:fix from a person who can write, and from the App's own login alike", async () => {
+    for (const sender of ["maintainer", "loop-app[bot]"]) {
+      const s = setup();
+      const job = await dispatched(s, labelled({ label: FIX_LABEL, sender }));
+
+      expect(job.workflow, sender).toBe("fix");
+      expect(job, sender).toMatchObject({ pr: 7, branch: "agent/issue-7-a-thing", headSha: HEAD, baseRef: "main", appLogin: "loop-app[bot]" });
+      expect(job.variables.AGENT_MAX_FIX_ROUNDS, sender).toBe("2");
+    }
+  });
+
+  it("sets a fix job's deadline from the agent's time limit, AGENT_TIMEOUT_MINUTES, or its default", async () => {
+    const unset = await dispatched(setup(), labelled({ label: FIX_LABEL }));
+    expect(unset.deadline).toBe(new Date(START.getTime() + (DEFAULT_FIX_MINUTES + MARGIN) * MINUTE_MS).toISOString());
+
+    const s = setup();
+    s.repository.variables["AGENT_TIMEOUT_MINUTES"] = "45";
+    s.repository.variables["AGENT_REVIEW_TIMEOUT_MINUTES"] = "12";
+    const set = await dispatched(s, labelled({ label: FIX_LABEL }));
+    expect(set.deadline).toBe(new Date(START.getTime() + (45 + MARGIN) * MINUTE_MS).toISOString());
+  });
+
+  it("ignores a label that names an inherited property, not a kind", async () => {
+    const s = setup();
+    const result = await deliver(s, labelled({ label: "constructor" }));
+
+    expect(result.outcome).toMatch(/`constructor` is not a label this release's service answers/);
+    expect(s.posted).toEqual([]);
+  });
+});
+
+/**
+ * The label's sender is the loop's author gate: a person must be able to
+ * write to the repository. The App's own label is the loop's, added under the
+ * repository's budget, so its login is trusted without a lookup (ADR 0008).
+ */
+describe("the label's sender", () => {
+  it("dispatches a label the App itself added, and looks up no permission for it", async () => {
+    const s = setup();
+    const result = await deliver(s, labelled({ sender: "loop-app[bot]" }));
+
+    expect(result.outcome).toMatch(/^dispatched owner\/repo#7/);
+    expect(s.looked).toEqual([]);
+  });
+
+  it("matches the App's login whatever its case, as GitHub does", async () => {
+    const s = setup();
+
+    expect((await deliver(s, labelled({ sender: "Loop-App[bot]" }))).outcome).toMatch(/^dispatched owner\/repo#7/);
+    expect(s.looked).toEqual([]);
+  });
+
+  it("looks up a person's permission, and dispatches for one who can write", async () => {
+    const s = setup();
+
+    expect((await deliver(s, labelled({ sender: "maintainer" }))).outcome).toMatch(/^dispatched owner\/repo#7/);
+    expect(s.looked).toEqual(["maintainer"]);
+  });
+
+  it("refuses another App's label, with today's sentence, after looking it up", async () => {
+    const s = setup();
+    const result = await deliver(s, labelled({ sender: "other-app[bot]" }));
+
+    expect(result.outcome).toBe("refused on owner/repo#7: other-app[bot] cannot write to owner/repo");
+    expect(s.looked).toEqual(["other-app[bot]"]);
+    expect(s.posted).toEqual([]);
   });
 });
 
@@ -299,7 +401,7 @@ describe("the accounts the dispatcher serves", () => {
 });
 
 describe("the token door", () => {
-  it.each(["read", "write"] as const)("mints a %s token for a dispatched job, for its repository, with that kind's permissions", async (kind) => {
+  it.each(["read", "write", "push"] as const)("mints a %s token for a dispatched job, for its repository, with that kind's permissions", async (kind) => {
     const s = setup();
     const job = await dispatched(s);
     const response = await s.dispatcher.token(tokenRequest({ jobId: job.id, kind }));
@@ -312,6 +414,11 @@ describe("the token door", () => {
   it("gives a read token no write, and a write token only what review's posting writes", () => {
     expect(TOKEN_PERMISSIONS.read).toEqual({ contents: "read", pull_requests: "read", issues: "read", checks: "read", statuses: "read" });
     expect(TOKEN_PERMISSIONS.write).toEqual({ contents: "read", pull_requests: "write", issues: "write", checks: "read", statuses: "write" });
+  });
+
+  it("gives a push token exactly write's permissions, with contents and workflows written", () => {
+    expect(TOKEN_PERMISSIONS.push).toEqual({ ...TOKEN_PERMISSIONS.write, contents: "write", workflows: "write" });
+    expect(TOKEN_PERMISSIONS.push).toEqual({ contents: "write", pull_requests: "write", issues: "write", checks: "read", statuses: "write", workflows: "write" });
   });
 
   it("mints a fresh token at each request, one per phase", async () => {

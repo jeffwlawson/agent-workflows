@@ -2,7 +2,7 @@ import { homedir } from "node:os";
 import * as sandcastle from "@ai-hero/sandcastle";
 import type { OutputObjectDefinition, RunOptions, RunResult } from "@ai-hero/sandcastle";
 import { noSandbox } from "@ai-hero/sandcastle/sandboxes/no-sandbox";
-import { bwrap } from "../engine/bwrap.js";
+import { bwrap, CARRY_HOOKS } from "../engine/bwrap.js";
 import type { SANDBOX } from "./contract.js";
 import type { InputValues } from "./env.js";
 
@@ -128,9 +128,9 @@ export const claudeAgent = (
 export type SandboxInputs = InputValues<typeof SANDBOX>;
 
 /**
- * The sandbox every runner starts the agent in, chosen here and nowhere else:
- * a runner names no provider, and this is the one module that loads Sandcastle,
- * so no command can reach the choice.
+ * The sandbox every runner starts the agent in, chosen here and nowhere else,
+ * as the run options that select it: a runner names no provider, and this is
+ * the one module that loads Sandcastle, so no command can reach the choice.
  *
  * - `none`: the agent runs on the runner's own machine. On Actions the
  *   ephemeral runner IS the isolation, and running the agent directly on it
@@ -138,23 +138,29 @@ export type SandboxInputs = InputValues<typeof SANDBOX>;
  *   image drift, no "works in the sandbox, fails in CI".
  * - `bwrap`: the agent runs in bubblewrap on the host (`engine/bwrap.ts`),
  *   with the toolchain, `PATH` and proxy its inputs name. The run starts in
- *   the checkout, which is where Sandcastle writes its patches.
+ *   the checkout, which is where Sandcastle writes its patches. Its hooks
+ *   carry what the checkout holds outside git, the setup's install, into the
+ *   agent's copy of it, so the agent sees what it would with no sandbox.
  *
- * Call it once per runner and hand both of `runWithExtraction`'s passes the
- * one provider: `bwrap` carries the session between them itself.
+ * Spread it into the run's options, once per runner, and hand both of
+ * `runWithExtraction`'s passes the one provider: `bwrap` carries the session
+ * between them itself.
  */
 export const agentSandbox = (inputs: SandboxInputs) => {
   switch (inputs.AGENT_SANDBOX) {
     case "none":
-      return noSandbox();
+      return { sandbox: noSandbox() };
     case "bwrap":
-      return bwrap({
-        roBinds: inputs.AGENT_SANDBOX_RO_BINDS.split(":").filter((dir) => dir !== ""),
-        path: inputs.AGENT_SANDBOX_PATH,
-        ...(inputs.AGENT_SANDBOX_PROXY === "" ? {} : { proxy: inputs.AGENT_SANDBOX_PROXY }),
-        repoDir: process.cwd(),
-        homeDir: homedir(),
-      });
+      return {
+        sandbox: bwrap({
+          roBinds: inputs.AGENT_SANDBOX_RO_BINDS.split(":").filter((dir) => dir !== ""),
+          path: inputs.AGENT_SANDBOX_PATH,
+          ...(inputs.AGENT_SANDBOX_PROXY === "" ? {} : { proxy: inputs.AGENT_SANDBOX_PROXY }),
+          repoDir: process.cwd(),
+          homeDir: homedir(),
+        }),
+        hooks: CARRY_HOOKS,
+      };
   }
 };
 

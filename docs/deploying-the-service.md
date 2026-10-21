@@ -55,11 +55,21 @@ Repository permissions:
 |---|---|---|
 | Metadata | read | every API call, and a label's sender's permission |
 | Variables (`actions_variables` in the API) | read | `AGENT_ORCHESTRATOR`, re-read at every token, and the variables review reads: the repository's own, else its organization's shared with it, as `vars` resolves them |
-| Contents | read | the checkout, and the pull request's history |
+| Contents | write | the checkout and the pull request's history, read by every phase; a push, by a `push` token only |
 | Pull requests | write | the review, its threads, the title and summary, and the ready mark |
 | Issues | write | comments and labels, and a PRD's parent |
 | Checks | read | CI's result, which the review's verdict reads |
 | Commit statuses | write | the verdict and the fix-round statuses |
+| Workflows | write | a push touching `.github/workflows/**` is refused without it, *after* the agent has done all its work |
+
+The worker asks for one of three kinds of token at each phase: `read`, which every phase reads
+with and the only one the runner is ever handed; `write`, which adds the pull request, issue and
+status writes of the phases that post; and `push`, which adds Contents: write and Workflows: write
+to `write`, for the phases that push and run no agent. Contents: write together with Workflows: write
+is the pair that lets a holder push a workflow into a repository whose runs carry secrets, which is
+why it is a kind of its own rather than a wider `write`, and why it is acceptable at all: as on
+Actions (ADOPTING §2), neither the App's key nor a `push` token is ever where the agent runs. The
+key stays with the dispatcher, and a token reaches a subcommand only where its phase was handed it.
 
 A permission the App lacks fails the mint of the token that asks for it, so it is named in the
 dispatcher's log as the job's phase starts, rather than surfacing as a failed write mid-run.

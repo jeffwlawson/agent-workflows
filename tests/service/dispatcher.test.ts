@@ -369,7 +369,7 @@ describe("the accounts the dispatcher serves", () => {
 });
 
 describe("the token door", () => {
-  it.each(["read", "write"] as const)("mints a %s token for a dispatched job, for its repository, with that kind's permissions", async (kind) => {
+  it.each(["read", "write", "push"] as const)("mints a %s token for a dispatched job, for its repository, with that kind's permissions", async (kind) => {
     const s = setup();
     const job = await dispatched(s);
     const response = await s.dispatcher.token(tokenRequest({ jobId: job.id, kind }));
@@ -382,6 +382,11 @@ describe("the token door", () => {
   it("gives a read token no write, and a write token only what review's posting writes", () => {
     expect(TOKEN_PERMISSIONS.read).toEqual({ contents: "read", pull_requests: "read", issues: "read", checks: "read", statuses: "read" });
     expect(TOKEN_PERMISSIONS.write).toEqual({ contents: "read", pull_requests: "write", issues: "write", checks: "read", statuses: "write" });
+  });
+
+  it("gives a push token exactly write's permissions, with contents and workflows written", () => {
+    expect(TOKEN_PERMISSIONS.push).toEqual({ ...TOKEN_PERMISSIONS.write, contents: "write", workflows: "write" });
+    expect(TOKEN_PERMISSIONS.push).toEqual({ contents: "write", pull_requests: "write", issues: "write", checks: "read", statuses: "write", workflows: "write" });
   });
 
   it("mints a fresh token at each request, one per phase", async () => {

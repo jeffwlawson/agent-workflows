@@ -604,7 +604,7 @@ release the one kind is `review` (`ReviewJob`), from `agent:review`. The labels 
 answers, `SERVICE_LABELS`, are that map's keys. The label's sender must be able to write to the
 repository, unless it is the App itself, whose labels the loop's commands add
 ([ADR 0008](./docs/adr/0008-service-job-kinds-and-own-app-sender.md)). A job carries no token. The worker
-asks for one at the other door at the start of each phase, `read` or `write`, and the dispatcher
+asks for one at the other door at the start of each phase, `read`, `write` or `push`, and the dispatcher
 mints one for that job's repository alone, before its deadline, after reading the opt-in again, so
 deleting the variable stops a job in flight at its next phase. The job's format is one module,
 `service/job.ts`, which both processes import, so it only has to hold within one release.
@@ -619,7 +619,13 @@ to the record and spells no record string; what it reads between phases is the h
 reusable's glue steps read, copied across as it is. Each subcommand's environment is built by one
 function from its declaration in the contract, and holds nothing else of the worker's but `PATH`,
 `HOME` and `LANG`, so a token reaches a subcommand only where its phase was handed it: the runner
-gets the `read` token, never the `write` one.
+gets the `read` token, never the `write` one. A token's **kind** is what it may write: `read`
+writes nothing, `write` adds what a posting phase writes (the pull request, issues and statuses),
+and `push` is `write` with Contents: write and Workflows: write added, for a phase that pushes. Not
+a wider `write`, which would hand review's posting phases push rights they never use, and not a
+loop/workflow split as on Actions, since on the service both would be the same App identity. The
+runner only ever gets `read`, so Contents: write with Workflows: write, the pair that can push a
+workflow, is never where the agent runs.
 
 Their settings are declared in `service/settings.ts` in the contract's style and read through
 `readInputs`, like a runner's inputs, but they are no runner's inputs and have no row in the spec:

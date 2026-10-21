@@ -90,8 +90,8 @@ export interface ReviewJob extends JobBase {
 /** A job the dispatcher posts and the worker runs: one member per workflow the service serves. */
 export type Job = ReviewJob;
 
-/** What a token is for: reading only, or the posting phases' writes as well. */
-export const TOKEN_KINDS = ["read", "write"] as const;
+/** What a token is for: reading only, the posting phases' writes as well, or those and a push. */
+export const TOKEN_KINDS = ["read", "write", "push"] as const;
 
 export type TokenKind = (typeof TOKEN_KINDS)[number];
 

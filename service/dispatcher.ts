@@ -107,11 +107,15 @@ export interface Delivery {
  * The token permissions of each kind. `read` is what every phase reads with:
  * the code, the pull request and its conversation, checks and statuses.
  * `write` adds what review's posting commands write: the review and the ready
- * mark, comments and labels, and the verdict's statuses.
+ * mark, comments and labels, and the verdict's statuses. `push` adds a push to
+ * `write`: the branch's contents, and `workflows`, without which GitHub refuses
+ * a push touching `.github/workflows/**`. It is for the phases that push and
+ * run no agent; the runner only ever gets `read`.
  */
 export const TOKEN_PERMISSIONS: Readonly<Record<TokenKind, Readonly<Record<string, string>>>> = {
   read: { contents: "read", pull_requests: "read", issues: "read", checks: "read", statuses: "read" },
   write: { contents: "read", pull_requests: "write", issues: "write", checks: "read", statuses: "write" },
+  push: { contents: "write", pull_requests: "write", issues: "write", checks: "read", statuses: "write", workflows: "write" },
 };
 
 /**

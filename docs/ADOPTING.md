@@ -517,12 +517,12 @@ GitHub App is installed on the repository. The callers can stay: each label stil
 run, and every job in it skips. `doctor` then checks what the service needs instead of what Actions
 needs, and warns about what this release's service does not do:
 
-- it answers `agent:review` **only**. `agent:implement`, `agent:fix` and `agent:update-branch` do
-  nothing on a service-served repository, and the `agent:follow-ups` a review adds files nothing on
-  merge. `doctor` names them;
-- it runs every review with a fix-round budget of 0, since nothing would answer the `agent:fix` a
-  review added, so a verdict asking for changes leaves the round to you. `doctor` warns where
-  `AGENT_MAX_FIX_ROUNDS` is set above 0;
+- it answers `agent:review` and `agent:fix` **only**. `agent:implement` and `agent:update-branch`
+  do nothing on a service-served repository, and the `agent:follow-ups` a review adds files nothing
+  on merge. `doctor` names them;
+- it reads the repository's install and setup from the repository variable `AGENT_SETUP`, not a
+  caller's `setup:` input, and supports no `node-version-file`
+  ([deploying-the-service.md](./deploying-the-service.md#the-repositorys-setup));
 - whether the service's App is installed on the repository: **`doctor` cannot check this.** The App
   is the service's, not the loop's, and nothing in the repository names it.
 

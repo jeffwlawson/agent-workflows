@@ -20,8 +20,8 @@ sentence. How one orchestrator does a thing is description, and sits in a quoted
 > **Service orchestrator:** a service that receives GitHub's webhooks and runs the runner on a box
 > it owns: the `dispatcher` and `worker` subcommands of this package, whose code is
 > [`service/`](../service/) and whose deployment is
-> [deploying-the-service.md](./deploying-the-service.md). It answers `agent:review` alone, at this
-> release. A block for it appears only where it differs from the Actions orchestrator in a way a
+> [deploying-the-service.md](./deploying-the-service.md). It answers `agent:review` and `agent:fix`
+> alone, at this release. A block for it appears only where it differs from the Actions orchestrator in a way a
 > reader would trip on.
 
 Neither block binds anyone. Where they disagree with a bold sentence, the bold sentence is right.
@@ -371,7 +371,7 @@ A repository says which orchestrator serves it in the repository variable `AGENT
 answer a label on such a repository unless it would answer one with the variable unset, so a typo
 falls back to the orchestrator the repository already had rather than to two. A service
 orchestrator answers only the labels `SERVICE_LABELS` in `service/dispatcher.ts` lists, the keys
-of its map from trigger label to job kind: `agent:review` alone at this release, and on a
+of its map from trigger label to job kind: `agent:review` and `agent:fix` at this release, and on a
 service-served repository every other label is answered by nothing.
 
 `doctor` reads the variable. It reports any value but unset or `service` as an error, and one it
@@ -983,7 +983,7 @@ earlier run of this PRD left commits on `RESCUE_BRANCH`, that branch fetched to
 > **Service orchestrator:** the chain moves on only when a review ends on an approval and
 > `review:advance` puts `agent:implement` back on the parent. An orchestrator that does not run it
 > leaves the chain waiting on a human to add the label. The service runs it (§8), but answers
-> `agent:review` only: on a repository it serves, the `agent:implement` advance re-adds waits for an
+> `agent:review` and `agent:fix` only: on a repository it serves, the `agent:implement` advance re-adds waits for an
 > orchestrator that answers it, which is expected while `implement-prd` has not joined the service.
 
 ### `implement-prd:gate`
@@ -1648,10 +1648,6 @@ text, and `review:publish` and `review:advance` write every final string from th
 > where it declares one, `LOOP_TOKEN`. Where `review.yml` passes something the service does not
 > have, it passes the nearest equivalent:
 >
-> - **The fix-round budget is 0.** `review:budget` is handed `FIX_ROUND_BUDGET` 0, whatever
->   `AGENT_MAX_FIX_ROUNDS` says, while the service answers no `agent:fix`. So no review asks for a
->   round nobody would start, and a verdict asking for changes leaves it to a human, which is what
->   a budget of 0 means on Actions.
 > - **`SELF_CHECK` is `review`.** The service has no check of its own on the pull request to leave
 >   out, so it names the review job's id, which the command leaves out already.
 > - **No run link.** There is no Actions run, so `GITHUB_SERVER_URL`, `GITHUB_REPOSITORY` and
@@ -2282,6 +2278,57 @@ diffing, which the orchestrator prepares, and `RESCUE_BRANCH` fetched to
 > **Service orchestrator:** the re-review request is `fix:publish`'s, package code every
 > orchestrator runs, as `review:conclude`'s fix round is: an orchestrator that runs the command has
 > it. Without it the round ends on the fix, with its findings open.
+
+> **Service orchestrator:** the worker runs the gate job's, the agent's job's and the publish job's
+> subcommands, in the order and under the conditions above, each a child process with a fresh
+> `OUTPUT_DIR` of its own and an environment built from its declaration, and writes nothing to the
+> record itself. It answers an `agent:fix` from a person who can write and from its own App alike,
+> since the App adds one only under the budget (ADR 0008). It asks the dispatcher for a `write`
+> token and runs `fix:gate` with the head commit, state and merged flag the label's event carried:
+> the gate writes, its refusal and its permission probe, as the gate job's token does with
+> `pull-requests: write`. A refusal ends the run there. Where the gate succeeded and claimed the
+> run, it asks for a `read` token and checks out the event's head as `BRANCH`, fetching
+> `BASE_REF`, the token passed with each fetch and never stored in the checkout, which keeps only a
+> committer, the App's login, as `fix.yml`'s checkout step sets one. Then `fix:prepare`, with the
+> same token, which fetches `RESCUE_BRANCH` into the checkout; the repository's setup, `AGENT_SETUP`,
+> in the bwrap sandbox with no token; and the runner, in the sandbox its settings name, with a fresh
+> `read` token as `GH_TOKEN`. Then `fix:bundle`, however those ended, handed no token. It asks for
+> a `push` token, runs `fix:publish` where the agent's job ran, pointed at the runner's and
+> `fix:bundle`'s directories, and then `fix:conclude`, however the run ended, pointed at publish's,
+> prepare's, the runner's and bundle's. `fix:publish` and `fix:conclude` alone hold `push`, each as
+> both `GH_TOKEN` and `LOOP_TOKEN`, with `LOOP_TOKEN_SOURCE` `app`; the runner never holds a token
+> that writes. Where `fix.yml` passes something the service does not have, it passes the nearest
+> equivalent:
+>
+> - **The gate's outputs are its files.** `REFUSED` is `false` where `gate.json` says `proceed`
+>   `true`, `true` where it says `false`, and empty where there is none; `GATE_REASON` is
+>   `fix:gate`'s `failure_reason.txt`.
+> - **The time limits are the jobs'.** `fix:gate` gets the gate job's 15 minutes. The checkout,
+>   `fix:prepare`, the setup and the runner share the agent's job's, `AGENT_TIMEOUT_MINUTES` (30
+>   where unset or not a positive integer), and one still running at it is ended with every
+>   process it started: the agent's job is then `cancelled`, with `TIMED_OUT` `true` and
+>   `TIMEOUT_MINUTES` the limit, as the *Measure* step says it. `fix:bundle` gets 5 minutes of its
+>   own, so a round stopped at its limit still hands its commits over, and `fix:publish` and
+>   `fix:conclude` the publish job's 15 each. The dispatcher's deadline for the job is the agent's
+>   limit plus its margin.
+> - **A phase not started leaves its reason** where `fix:conclude` reads the next one: a `read`
+>   token not granted, or a checkout that failed, as `fix:prepare`'s `failure_reason.txt`; a setup
+>   that failed, with its exit status and the end of its output, or a runner's token not granted,
+>   as the runner's. On Actions a failed setup leaves no reason, and the comment says none was
+>   given.
+> - **No run link, and the download is a success** wherever the agent's job ran: the hand-over is
+>   on the worker's disk. `GITHUB_SERVER_URL`, `GITHUB_REPOSITORY` and `GITHUB_RUN_ID` are unset.
+> - **The mint is the `push` token's.** One not granted is `MINT_OUTCOME` `failure`, and nothing is
+>   published; `fix:conclude` is then handed a `push` token asked for again, which it uses for its
+>   comment and labels and, told the mint failed, for no rescue. Where none is granted to conclude
+>   either, nothing can write to the pull request, and the worker's log says why the run ended.
+> - **One checkout.** `fix:publish` and `fix:conclude` work in the agent's checkout, where the
+>   publish job checks the head out again: under the bwrap sandbox the agent works on a copy and
+>   the setup sees `.git` read-only, so nothing of the pull request's can have planted a hook or a
+>   configuration there, and the commands push with `--no-verify`.
+>
+> Not run: `node-version-file`, since the sandbox runs the worker box's own Node, and the session
+> transcript's upload.
 
 ### `fix:gate`
 

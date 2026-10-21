@@ -595,12 +595,13 @@ is `service/`: not a workflow's folder, not `shared/`, and not `engine/`, since 
 contract and the record, which makes it loop code.
 
 The **dispatcher** (#456) is the only holder of the GitHub App's key. GitHub's webhooks arrive at
-one of its doors, and an `agent:review` delivery on a repository that opted in, with the App
+one of its doors, and a trigger label's delivery on a repository that opted in, with the App
 installed on its owner's account or one its `EXTRA_OWNERS` lists, becomes a **job**
 for the worker: what the label's event carried, the repository variables the service reads, the App's login read
 off the App's own record, an id, a deadline and the release. A job has a **kind**, one per workflow
 the service serves, named in its `workflow` field and routed to from the trigger label: at this
-release the one kind is `review` (`ReviewJob`), from `agent:review`. The labels the service
+release the kinds are `review` (`ReviewJob`), from `agent:review`, and `fix` (`FixJob`), from
+`agent:fix`. A job's deadline is its kind's own time limit plus the dispatcher's margin. The labels the service
 answers, `SERVICE_LABELS`, are that map's keys. The label's sender must be able to write to the
 repository, unless it is the App itself, whose labels the loop's commands add
 ([ADR 0008](./docs/adr/0008-service-job-kinds-and-own-app-sender.md)). A job carries no token. The worker
@@ -610,17 +611,20 @@ deleting the variable stops a job in flight at its next phase. The job's format 
 `service/job.ts`, which both processes import, so it only has to hold within one release.
 
 The **worker** (#457) runs each job the way its workflow's reusable runs it, `review.yml` for a
-`review` job, as a **thin adapter**: the same subcommands in the same order (`service/worker.ts`),
+`review` job and `fix.yml` for a `fix` job, as a **thin adapter**: the same subcommands in the same order (`service/worker.ts`),
 each a child process of its own installed package, so the service and every subcommand it runs are
 one release. Each kind has a run function of its own, following its workflow's orchestrator
 blocks, built from shared phase primitives: ask for a token, run a subcommand, run the sandboxed
 runner, and run the repository's setup, `AGENT_SETUP`, in the bwrap sandbox in the checkout with no
 token, never on the worker's host. It writes nothing
 to the record and spells no record string; what it reads between phases is the hand-over the
-reusable's glue steps read, copied across as it is. Each subcommand's environment is built by one
+reusable's glue steps read, copied across as it is; a phase it did not start gets its reason
+written where the next command reads that phase's, as Actions would have it written there. Each subcommand's environment is built by one
 function from its declaration in the contract, and holds nothing else of the worker's but `PATH`,
 `HOME` and `LANG`, so a token reaches a subcommand only where its phase was handed it: the runner
-gets the `read` token, never the `write` one. A token's **kind** is what it may write: `read`
+gets the `read` token, never the `write` or `push` one. With `fix` served, the review's fix-round
+budget is the repository's `AGENT_MAX_FIX_ROUNDS`, read as on Actions (PRD #515): it was held at 0
+until something answered the `agent:fix` a review adds. A token's **kind** is what it may write: `read`
 writes nothing, `write` adds what a posting phase writes (the pull request, issues and statuses),
 and `push` is `write` with Contents: write and Workflows: write added, for a phase that pushes. Not
 a wider `write`, which would hand review's posting phases push rights they never use, and not a

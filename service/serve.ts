@@ -8,7 +8,7 @@ import { liveAppGitHub } from "./github-app.js";
 import type { Job } from "./job.js";
 import type { DISPATCHER, WORKER } from "./settings.js";
 import { jobDoor, oneAtATime, runJob, SUMMARY_FILE } from "./worker.js";
-import { installCli, liveGit, liveLauncher, liveTokens, routeThroughProxy } from "./worker-live.js";
+import { installCli, liveGit, liveLauncher, liveSandbox, liveTokens, routeThroughProxy } from "./worker-live.js";
 
 /**
  * The service's two processes behind HTTP. The dispatcher's two doors, each
@@ -183,6 +183,7 @@ export const serveWorker = async (settings: InputValues<typeof WORKER>, stdout: 
       token: liveTokens(settings.DISPATCHER_TOKEN_URL, settings.WORKER_SECRET, job.id),
       launch: liveLauncher,
       git: liveGit(host),
+      sandbox: liveSandbox(host),
       host,
       agent,
       cliBin,

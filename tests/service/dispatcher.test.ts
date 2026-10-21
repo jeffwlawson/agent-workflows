@@ -217,8 +217,17 @@ describe("the webhook door", () => {
         AGENT_MODEL_REVIEW: "",
         AGENT_REVIEW_TIMEOUT_MINUTES: "",
         AGENT_MAX_FIX_ROUNDS: "2",
+        AGENT_SETUP: "",
       },
     });
+  });
+
+  it("carries the repository's setup as the repository set it, unevaluated", async () => {
+    const s = setup();
+    s.repository.variables["AGENT_SETUP"] = "npm ci && echo \"$HOME\" `id` $(whoami); exit 3";
+    const job = await dispatched(s);
+
+    expect(job.variables.AGENT_SETUP).toBe("npm ci && echo \"$HOME\" `id` $(whoami); exit 3");
   });
 
   it("works the App's login out of the App's own record, as its REST spelling", async () => {

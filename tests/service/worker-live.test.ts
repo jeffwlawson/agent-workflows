@@ -4,8 +4,8 @@ import { connect, type AddressInfo } from "node:net";
 import * as os from "node:os";
 import * as path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { installCli, liveTokens, routeThroughProxy } from "../../service/worker-live.js";
-import { gitEnvironment, hostEnvironment, PROXY_VARIABLES } from "../../shared/env.js";
+import { installCli, liveSandbox, liveTokens, routeThroughProxy, SETUP_SHELL } from "../../service/worker-live.js";
+import { gitEnvironment, hostEnvironment, PROXY_VARIABLES, type HostEnvironment } from "../../shared/env.js";
 import { SUBPROCESS_TIMEOUT } from "../../vitest.config.js";
 
 /**
@@ -121,4 +121,146 @@ describe("the worker's own requests", () => {
 
     expect(asked.filter((line) => line.startsWith("CONNECT "))).not.toEqual([]);
   }, SUBPROCESS_TIMEOUT * 2);
+});
+
+/**
+ * A stand-in for `bwrap`, since CI's runners cannot be relied on to have it:
+ * it records its arguments beside itself, applies the ones that decide what
+ * the command sees (`--clearenv`, `--setenv`, `--chdir`), skips the mounts
+ * and namespaces it cannot make, and runs the command that follows them,
+ * exiting as it does. A real `bwrap` is the live proof of the rest.
+ */
+const FAKE_BWRAP = `#!/usr/bin/env node
+const { spawnSync } = require("node:child_process");
+const fs = require("node:fs");
+const path = require("node:path");
+const args = process.argv.slice(2);
+fs.writeFileSync(path.join(__dirname, "argv.json"), JSON.stringify(args));
+const arity = { "--cap-drop": 1, "--hostname": 1, "--dev": 1, "--proc": 1, "--tmpfs": 1, "--chdir": 1, "--ro-bind": 2, "--bind": 2, "--symlink": 2, "--setenv": 2 };
+let env = { ...process.env };
+let cwd = process.cwd();
+let at = 0;
+while (at < args.length && args[at].startsWith("--")) {
+  const option = args[at];
+  if (option === "--clearenv") env = {};
+  if (option === "--setenv") env[args[at + 1]] = args[at + 2];
+  if (option === "--chdir") cwd = args[at + 1];
+  at += 1 + (arity[option] ?? 0);
+}
+const ran = spawnSync(args[at], args.slice(at + 1), { cwd, env, stdio: "inherit" });
+process.exit(ran.status ?? 1);
+`;
+
+describe("the sandbox the repository's setup runs in", () => {
+  let checkout: string;
+  let fakes: string;
+  let log: string;
+
+  beforeEach(() => {
+    checkout = path.join(scratch, "checkout");
+    fs.mkdirSync(path.join(checkout, ".git"), { recursive: true });
+    fakes = path.join(scratch, "fakes");
+    fs.mkdirSync(fakes);
+    fs.writeFileSync(path.join(fakes, "bwrap"), FAKE_BWRAP, { mode: 0o755 });
+    log = path.join(scratch, "setup.log");
+  });
+
+  /** The worker's host, with the stand-in first on its `PATH`, and the worker's own proxy, which the sandbox must not get. */
+  const host = (): HostEnvironment => ({
+    PATH: [fakes, path.dirname(process.execPath), "/usr/bin", "/bin"].join(":"),
+    HOME: scratch,
+    LANG: "C.UTF-8",
+    HTTPS_PROXY: "http://worker-proxy:3128",
+  });
+
+  const run = (script: string, signal: AbortSignal = new AbortController().signal) =>
+    liveSandbox(host())({ script, dir: checkout, roBinds: ["/opt/node"], path: "/usr/bin:/bin", proxy: "http://sandbox-proxy:3128", log, signal });
+
+  const argv = (): string[] => JSON.parse(fs.readFileSync(path.join(fakes, "argv.json"), "utf8")) as string[];
+
+  it("runs AGENT_SETUP as the script, shell metacharacters and all, never as words of a command line", async () => {
+    const script = [
+      `printf '%s\\n' "$((6 * 7))" 'a b; c | d' "$(echo nested)" > made.txt`,
+      "echo `echo backticks` >> made.txt && echo '$NOT_EXPANDED' >> made.txt",
+      'pwd >> made.txt',
+    ].join("\n");
+
+    expect(await run(script)).toBe(0);
+
+    expect(fs.readFileSync(path.join(checkout, "made.txt"), "utf8")).toBe(`42\na b; c | d\nnested\nbackticks\n$NOT_EXPANDED\n${checkout}\n`);
+    const words = argv();
+    expect(words.filter((word) => word === script)).toHaveLength(1);
+    expect(words[words.indexOf(script) - 1]).toBe("AGENT_SETUP");
+    expect(words[words.indexOf(script) - 2]).toBe("--setenv");
+    expect(words.slice(-SETUP_SHELL.length)).toEqual([...SETUP_SHELL]);
+  });
+
+  it("hands the script the sandbox's environment and AGENT_SETUP, and nothing of the worker's", async () => {
+    expect(await run("env > seen.txt")).toBe(0);
+
+    const seen = Object.fromEntries(
+      fs
+        .readFileSync(path.join(checkout, "seen.txt"), "utf8")
+        .trim()
+        .split("\n")
+        .map((line) => [line.slice(0, line.indexOf("=")), line.slice(line.indexOf("=") + 1)]),
+    );
+    // Bash's own: the shell sets these for whatever it runs.
+    for (const name of ["PWD", "SHLVL", "_", "OLDPWD"]) delete seen[name];
+    expect(seen).toEqual({
+      HOME: "/home/agent",
+      PATH: "/usr/bin:/bin",
+      LANG: "C.UTF-8",
+      TMPDIR: "/tmp",
+      HTTPS_PROXY: "http://sandbox-proxy:3128",
+      HTTP_PROXY: "http://sandbox-proxy:3128",
+      https_proxy: "http://sandbox-proxy:3128",
+      http_proxy: "http://sandbox-proxy:3128",
+      AGENT_SETUP: "env > seen.txt",
+    });
+  });
+
+  it("binds the checkout read-write at its own path, its .git read-only inside it, and the toolchain read-only", async () => {
+    await run("true");
+
+    const words = argv();
+    const bind = words.findIndex((word, at) => word === "--bind" && words[at + 1] === checkout);
+    const git = words.findIndex((word, at) => word === "--ro-bind" && words[at + 1] === path.join(checkout, ".git"));
+    expect(bind).toBeGreaterThan(-1);
+    expect(words[bind + 2]).toBe(checkout);
+    expect(git).toBeGreaterThan(bind);
+    expect(words[git + 2]).toBe(path.join(checkout, ".git"));
+    expect(words.join(" ")).toContain("--ro-bind /opt/node /opt/node");
+    expect(words.join(" ")).toContain(`--chdir ${checkout}`);
+    expect(words).toContain("--die-with-parent");
+  });
+
+  it("answers the script's exit status, and appends its output to the log", async () => {
+    expect(await run("echo installing; echo broken >&2; exit 3")).toBe(3);
+
+    expect(fs.readFileSync(log, "utf8")).toBe("installing\nbroken\n");
+  });
+
+  it("stops at the first command that fails, as an Actions run step does", async () => {
+    expect(await run("false\necho after > after.txt")).toBe(1);
+
+    expect(fs.existsSync(path.join(checkout, "after.txt"))).toBe(false);
+  });
+
+  it("ends the sandbox and everything in it where its time limit aborts", async () => {
+    const limit = new AbortController();
+    const started = Date.now();
+    const ended = run("sleep 30", limit.signal);
+    setTimeout(() => limit.abort(), 200);
+
+    expect(await ended).not.toBe(0);
+    expect(Date.now() - started).toBeLessThan(SUBPROCESS_TIMEOUT);
+  });
+
+  it("removes the sandbox's home and /tmp once it has ended", async () => {
+    const before = fs.readdirSync(os.tmpdir()).filter((name) => name.startsWith("agent-setup-"));
+    await run("true");
+
+    expect(fs.readdirSync(os.tmpdir()).filter((name) => name.startsWith("agent-setup-"))).toEqual(before);
+  });
 });

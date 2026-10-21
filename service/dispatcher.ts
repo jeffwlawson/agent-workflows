@@ -2,14 +2,14 @@ import { randomUUID } from "node:crypto";
 import { ORCHESTRATOR_VARIABLE, REVIEW_LABEL, SERVICE_ORCHESTRATOR } from "../shared/record.js";
 import {
   parseTokenRequest,
-  REVIEW_VARIABLES,
+  REPOSITORY_VARIABLES,
   reviewTimeLimit,
   SIGNATURE_HEADER,
   sign,
   verifySignature,
   type Job,
   type JobKind,
-  type ReviewVariable,
+  type RepositoryVariable,
   type TokenGrant,
   type TokenKind,
 } from "./job.js";
@@ -267,8 +267,8 @@ export const createDispatcher = (edges: DispatcherEdges) => {
 
     // Review is the one kind this release serves, so every label routes here.
     const variables = Object.fromEntries(
-      await Promise.all(REVIEW_VARIABLES.map(async (name) => [name, (await edges.github.variable(repo, name)) ?? ""] as const)),
-    ) as Record<ReviewVariable, string>;
+      await Promise.all(REPOSITORY_VARIABLES.map(async (name) => [name, (await edges.github.variable(repo, name)) ?? ""] as const)),
+    ) as Record<RepositoryVariable, string>;
     const minutes = reviewTimeLimit(variables.AGENT_REVIEW_TIMEOUT_MINUTES) + edges.deadlineMarginMinutes;
     const deadline = new Date(now().getTime() + minutes * 60_000);
     const job: Job = {

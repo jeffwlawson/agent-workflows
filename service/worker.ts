@@ -62,6 +62,38 @@ export interface Git {
   }): Promise<void>;
 }
 
+/**
+ * One script to run in the sandbox: the repository's setup, in the checkout.
+ * Nothing in it is a token, and nothing of the worker's environment reaches
+ * the sandbox but what the sandbox's own settings give it.
+ */
+export interface SandboxRun {
+  /**
+   * The script, which reaches the sandbox's shell through its environment, as
+   * `AGENT_SETUP`, and is never spliced into a command line.
+   */
+  readonly script: string;
+  /** The host directory bound read-write at its own path, and the script's working directory: the checkout. */
+  readonly dir: string;
+  /** Host directories bound read-only at the same path inside: the toolchain. */
+  readonly roBinds: readonly string[];
+  /** `PATH` inside the sandbox. */
+  readonly path: string;
+  /** The proxy every request from the sandbox leaves through. Absent is none. */
+  readonly proxy?: string;
+  /** The file its output goes to. */
+  readonly log: string;
+  /** Aborted at its time limit, which ends the sandbox and everything in it. */
+  readonly signal: AbortSignal;
+}
+
+/**
+ * Runs a script in the bwrap sandbox, never on the worker's host, and answers
+ * with its exit code once it has ended, which it is made to where `signal`
+ * aborts. Throws where the sandbox could not be started.
+ */
+export type Sandbox = (run: SandboxRun) => Promise<number>;
+
 /** Asks the dispatcher for a token for one phase of this job. Throws, with the dispatcher's reason, where none is granted. */
 export type TokenSource = (kind: TokenKind) => Promise<string>;
 
@@ -69,6 +101,8 @@ export interface JobEdges {
   readonly token: TokenSource;
   readonly launch: Launcher;
   readonly git: Git;
+  /** Where the repository's setup runs: the bwrap sandbox, whatever `AGENT_SANDBOX` says of the agent's. */
+  readonly sandbox: Sandbox;
   /**
    * The worker's own `PATH`, `HOME` and `LANG`, and its proxy where it has one
    * (`hostEnvironment`): the only part of its environment a subcommand gets.
@@ -120,6 +154,12 @@ export const SERVICE_FIX_ROUND_BUDGET = "0";
  * the command leaves out anyway: nothing more is left out of the wait.
  */
 export const SERVICE_SELF_CHECK = "review";
+
+/** The setup phase's name, in the summary and the worker's log. */
+export const SETUP_PHASE = "setup";
+
+/** How many of its output's last lines a failed setup's reason quotes. */
+const SETUP_TAIL_LINES = 20;
 
 /** Every token source a command reads `app` from: the service's tokens are its App's. */
 const TOKEN_SOURCE = "app";
@@ -178,6 +218,18 @@ const reason = (dir: string, file: string): string | undefined => {
   }
 };
 
+/** The last lines of a log, as a sentence's continuation, or that it wrote nothing. */
+const tail = (log: string): string => {
+  let text = "";
+  try {
+    text = fs.readFileSync(log, "utf8").trimEnd();
+  } catch {
+    // Nothing was written.
+  }
+  if (text === "") return "It wrote no output.";
+  return `The end of its output:\n\n\`\`\`\n${text.split("\n").slice(-SETUP_TAIL_LINES).join("\n")}\n\`\`\``;
+};
+
 const message = (error: unknown): string => (error instanceof Error ? error.message : String(error));
 
 /** How a subcommand a run started ended, and the output directory it wrote into. */
@@ -187,12 +239,20 @@ interface Ran {
   readonly dir: string;
 }
 
+/** How the repository's setup ended: skipped and succeeded are both `ok`. */
+export interface SetupRan {
+  readonly ok: boolean;
+  readonly timedOut: boolean;
+  /** Where it failed, the sentence a person can act on: its exit status and the end of its output. */
+  readonly failureReason?: string;
+}
+
 /**
  * The phase primitives every kind's run function is built from (ADR 0008):
  * each is a step one of the reusables' jobs takes, and a run function says in
  * which order, under which conditions and handed what.
  */
-interface Run {
+export interface Run {
   /** Records how a phase ended, for the summary and the worker's log. */
   readonly note: (name: string, outcome: string) => void;
   /** A time limit of `minutes` from now: the signal it aborts, and the timer to clear once what it bounds has ended. */
@@ -217,6 +277,15 @@ interface Run {
    * agent and the sandbox, with the worker's own `claude` first on its `PATH`.
    */
   readonly runAgent: (runner: Runner, values: Readonly<Record<string, string | undefined>>, cwd: string, signal: AbortSignal) => Promise<Ran>;
+  /**
+   * Runs the repository's setup, `script`, the job's `AGENT_SETUP`, in the
+   * bwrap sandbox, in the checkout, with no token, behind the sandbox's proxy,
+   * and notes how it ended, as Actions runs a caller's `setup:` in the agent's
+   * job. Empty is skipped, and noted so, as an empty `setup:` is on Actions.
+   * A setup that could not start, or exited non-zero, is a failure with its
+   * reason; one still running at `signal` is ended with its sandbox.
+   */
+  readonly setup: (script: string, signal: AbortSignal) => Promise<SetupRan>;
   /** Writes the run summary, and answers the phases, redacted: the end of every path through a run. */
   readonly done: () => readonly Phase[];
 }
@@ -230,13 +299,13 @@ interface Run {
  * environment, with every token it was handed redacted, as are the phases
  * `done` returns.
  */
-const startRun = (job: Job, edges: JobEdges): Run => {
+export const startRun = (job: Job, edges: JobEdges): Run => {
   const phases: Phase[] = [];
   const note = (name: string, outcome: string): void => {
     phases.push({ name, outcome });
   };
   /** What each subcommand was started with, for the run summary. */
-  const started: { readonly subcommand: Subcommand; readonly env: Readonly<Record<string, string>>; readonly cwd: string; readonly log: string }[] =
+  const started: { readonly subcommand: Subcommand | typeof SETUP_PHASE; readonly env: Readonly<Record<string, string>>; readonly cwd: string; readonly log: string }[] =
     [];
   /**
    * Every token this run holds, the dispatcher's and the agent's, each
@@ -253,6 +322,7 @@ const startRun = (job: Job, edges: JobEdges): Run => {
     fs.writeFileSync(path.join(edges.runDir, SUMMARY_FILE), `${redact(JSON.stringify(summary, null, 2))}\n`);
     return phases.map(({ name, outcome }) => ({ name, outcome: redact(outcome) }));
   };
+  const checkout = path.join(edges.runDir, "checkout");
   const outputDir = (name: Subcommand): string => path.join(edges.runDir, "out", name.replace(":", "-"));
   const logs = path.join(edges.runDir, "logs");
   const logFile = (name: Subcommand): string => path.join(logs, `${name.replace(":", "-")}.log`);
@@ -307,11 +377,48 @@ const startRun = (job: Job, edges: JobEdges): Run => {
     }
   };
 
+  const setup = async (script: string, signal: AbortSignal): Promise<SetupRan> => {
+    if (script === "") {
+      note(SETUP_PHASE, "skipped: AGENT_SETUP is unset");
+      return { ok: true, timedOut: false };
+    }
+    const log = path.join(logs, `${SETUP_PHASE}.log`);
+    const proxy = edges.agent["AGENT_SANDBOX_PROXY"] ?? "";
+    started.push({ subcommand: SETUP_PHASE, env: { AGENT_SETUP: script }, cwd: checkout, log });
+    let code: number;
+    try {
+      code = await edges.sandbox({
+        script,
+        dir: checkout,
+        roBinds: (edges.agent["AGENT_SANDBOX_RO_BINDS"] ?? "").split(":").filter((dir) => dir !== ""),
+        path: edges.agent["AGENT_SANDBOX_PATH"] ?? "",
+        ...(proxy === "" ? {} : { proxy }),
+        log,
+        signal,
+      });
+    } catch (error) {
+      const failureReason = `The repository's setup (\`AGENT_SETUP\`) could not be started in the sandbox: ${message(error)}`;
+      note(SETUP_PHASE, `failure: ${failureReason}`);
+      return { ok: false, timedOut: false, failureReason };
+    }
+    if (signal.aborted) {
+      note(SETUP_PHASE, "timed out");
+      return { ok: false, timedOut: true };
+    }
+    if (code === 0) {
+      note(SETUP_PHASE, "success");
+      return { ok: true, timedOut: false };
+    }
+    const failureReason = `The repository's setup (\`AGENT_SETUP\`) exited with status ${code}. ${tail(log)}`;
+    note(SETUP_PHASE, `failure (exit ${code})`);
+    return { ok: false, timedOut: false, failureReason: redact(failureReason) };
+  };
+
   return {
     note,
     limit,
     outputDir,
-    checkout: path.join(edges.runDir, "checkout"),
+    checkout,
     ask,
     run: (subcommand, values, cwd, signal) => launch(subcommand, values, cwd, signal, edges.host),
     runAgent: (runner, values, cwd, signal) =>
@@ -319,6 +426,7 @@ const startRun = (job: Job, edges: JobEdges): Run => {
         ...edges.host,
         PATH: [edges.cliBin, edges.host.PATH].filter((part) => part !== undefined && part !== "").join(":"),
       }),
+    setup,
     done,
   };
 };

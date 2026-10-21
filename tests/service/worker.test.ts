@@ -4,7 +4,18 @@ import * as path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { CI_WAIT_SECONDS } from "../../review/collect-checks.js";
 import { DEFAULT_REVIEW_MINUTES, sign, SIGNATURE_HEADER, type ReviewJob, type TokenKind } from "../../service/job.js";
-import { jobDoor, REDACTED, runJob, SUMMARY_FILE, type Launch, type Subcommand } from "../../service/worker.js";
+import {
+  jobDoor,
+  REDACTED,
+  runJob,
+  SETUP_PHASE,
+  startRun,
+  SUMMARY_FILE,
+  type JobEdges,
+  type Launch,
+  type SandboxRun,
+  type Subcommand,
+} from "../../service/worker.js";
 import { COMMANDS, RUNNERS, type Command, type Runner } from "../../shared/contract.js";
 import type { HostEnvironment } from "../../shared/env.js";
 
@@ -39,7 +50,7 @@ const JOB: ReviewJob = {
   state: "open",
   merged: false,
   appLogin: "loop-app[bot]",
-  variables: { AGENT_MODEL: "a-model", AGENT_MODEL_REVIEW: "", AGENT_REVIEW_TIMEOUT_MINUTES: "", AGENT_MAX_FIX_ROUNDS: "3" },
+  variables: { AGENT_MODEL: "a-model", AGENT_MODEL_REVIEW: "", AGENT_REVIEW_TIMEOUT_MINUTES: "", AGENT_MAX_FIX_ROUNDS: "3", AGENT_SETUP: "" },
 };
 
 /** What a subcommand writes into its `OUTPUT_DIR`, and how it exits, or that it hangs until its time limit ends it. */
@@ -84,8 +95,11 @@ const setup = (
     /** The token requests the dispatcher refuses, counted from 1. */
     readonly refused?: readonly number[];
     readonly host?: HostEnvironment;
+    /** How the repository's setup ends in the sandbox: its exit, the output it writes, or that it hangs or cannot start. */
+    readonly setupRun?: { readonly exit?: number; readonly output?: string; readonly hangs?: boolean; readonly throws?: string };
   } = {},
 ) => {
+  const sandboxed: SandboxRun[] = [];
   /** Every edge the job touched, in the order it touched them. */
   const events: string[] = [];
   const launched: (Launch & { readonly emptyAtStart: boolean })[] = [];
@@ -120,6 +134,14 @@ const setup = (
         }
       },
     },
+    sandbox: async (run: SandboxRun) => {
+      sandboxed.push(run);
+      events.push("sandbox");
+      const { exit = 0, output, hangs = false, throws } = options.setupRun ?? {};
+      if (throws !== undefined) throw new Error(throws);
+      if (output !== undefined) fs.appendFileSync(run.log, output);
+      return hangs ? hang(run.signal, 143) : exit;
+    },
     host: options.host ?? HOST,
     agent: AGENT,
     cliBin: "/work/claude-code/bin",
@@ -132,7 +154,7 @@ const setup = (
     if (found === undefined) throw new Error(`${subcommand} was not started`);
     return found.env;
   };
-  return { edges, events, launched, asked, checkouts, env, runDir };
+  return { edges, events, launched, asked, checkouts, env, runDir, sandboxed };
 };
 
 const declared = (subcommand: Subcommand) =>
@@ -557,6 +579,121 @@ describe("the worker's job, on a PRD pull request", () => {
     expect(s.events).not.toContain("review:advance");
     expect(phases.at(-1)?.name).toBe("review:advance");
     expect(phases.at(-1)?.outcome).toContain("not run");
+  });
+});
+
+describe("the repository's setup, as a phase primitive", () => {
+  /** A run of `JOB` begun, its tokens asked for as a job's phases would, and its setup run with `script` under a limit of `minutes`. */
+  const ranSetup = async (edges: JobEdges, script: string, minutes = 60) => {
+    const run = startRun(JOB, edges);
+    await run.ask("read");
+    await run.ask("push");
+    const limit = run.limit(minutes);
+    const ran = await run.setup(script, limit.signal);
+    limit.clear();
+    return { ran, phases: run.done() };
+  };
+
+  it("runs the script in the sandbox, in the checkout, with the sandbox's settings and no token anywhere in what it is handed", async () => {
+    const s = setup();
+    const { ran } = await ranSetup(s.edges, "npm ci");
+
+    expect(ran).toEqual({ ok: true, timedOut: false });
+    expect(s.launched).toEqual([]);
+    expect(s.sandboxed).toEqual([
+      {
+        script: "npm ci",
+        dir: path.join(s.runDir, "checkout"),
+        roBinds: ["/opt/node", "/work/claude-code"],
+        path: "/work/claude-code/bin:/usr/bin",
+        proxy: "http://proxy:3128",
+        log: path.join(s.runDir, "logs", "setup.log"),
+        signal: expect.any(AbortSignal),
+      },
+    ]);
+    const handed = JSON.stringify(s.sandboxed);
+    for (const token of ["read-token-1", "push-token-2", AGENT.CLAUDE_CODE_OAUTH_TOKEN]) expect(handed).not.toContain(token);
+  });
+
+  it("hands the sandbox no proxy where the worker's settings give it none", async () => {
+    const s = setup();
+    await ranSetup({ ...s.edges, agent: { ...AGENT, AGENT_SANDBOX_PROXY: "" } }, "npm ci");
+
+    expect(s.sandboxed[0]).not.toHaveProperty("proxy");
+  });
+
+  it("is skipped where AGENT_SETUP is unset, and noted as skipped", async () => {
+    const s = setup();
+    const { ran, phases } = await ranSetup(s.edges, "");
+
+    expect(ran).toEqual({ ok: true, timedOut: false });
+    expect(s.sandboxed).toEqual([]);
+    expect(phases).toContainEqual({ name: SETUP_PHASE, outcome: "skipped: AGENT_SETUP is unset" });
+  });
+
+  it("fails on a non-zero exit, with a sentence naming the exit status and quoting the end of its output", async () => {
+    const output = Array.from({ length: 30 }, (_, at) => `line ${at + 1}`).join("\n");
+    const s = setup(ORDINARY, { setupRun: { exit: 3, output: `${output}\n` } });
+    const { ran, phases } = await ranSetup(s.edges, "npm ci");
+
+    expect(ran.ok).toBe(false);
+    expect(ran.timedOut).toBe(false);
+    expect(ran.failureReason).toMatch(/^The repository's setup \(`AGENT_SETUP`\) exited with status 3\. The end of its output:/);
+    expect(ran.failureReason).toContain("line 11\nline 12");
+    expect(ran.failureReason).toContain("line 30");
+    expect(ran.failureReason).not.toContain("line 10\n");
+    expect(phases).toContainEqual({ name: SETUP_PHASE, outcome: "failure (exit 3)" });
+  });
+
+  it("says so where the failed setup wrote nothing", async () => {
+    const s = setup(ORDINARY, { setupRun: { exit: 1 } });
+    const { ran } = await ranSetup(s.edges, "false");
+
+    expect(ran.failureReason).toBe("The repository's setup (`AGENT_SETUP`) exited with status 1. It wrote no output.");
+  });
+
+  it("fails, with the reason, where the sandbox could not be started", async () => {
+    const s = setup(ORDINARY, { setupRun: { throws: "spawn bwrap ENOENT" } });
+    const { ran, phases } = await ranSetup(s.edges, "npm ci");
+
+    expect(ran).toEqual({
+      ok: false,
+      timedOut: false,
+      failureReason: "The repository's setup (`AGENT_SETUP`) could not be started in the sandbox: spawn bwrap ENOENT",
+    });
+    expect(phases).toContainEqual({ name: SETUP_PHASE, outcome: `failure: ${ran.failureReason}` });
+  });
+
+  it("is ended with its sandbox at the job's time limit, and noted as timed out", async () => {
+    const s = setup(ORDINARY, { minuteMs: 20, setupRun: { hangs: true } });
+    const { ran, phases } = await ranSetup(s.edges, "sleep 3600", 1);
+
+    expect(ran).toEqual({ ok: false, timedOut: true });
+    expect(s.sandboxed[0]?.signal.aborted).toBe(true);
+    expect(phases).toContainEqual({ name: SETUP_PHASE, outcome: "timed out" });
+  });
+
+  it("is in the run's summary, with the script and nothing else as its environment", async () => {
+    const s = setup();
+    await ranSetup(s.edges, "npm ci");
+
+    const summary = JSON.parse(fs.readFileSync(path.join(s.runDir, SUMMARY_FILE), "utf8")) as { subcommands: unknown[] };
+    expect(summary.subcommands).toEqual([
+      {
+        subcommand: SETUP_PHASE,
+        env: { AGENT_SETUP: "npm ci" },
+        cwd: path.join(s.runDir, "checkout"),
+        log: path.join(s.runDir, "logs", "setup.log"),
+      },
+    ]);
+  });
+
+  it("is not run by a review, whatever AGENT_SETUP says, as review.yml runs no setup", async () => {
+    const s = setup();
+    await runJob({ ...JOB, variables: { ...JOB.variables, AGENT_SETUP: "npm ci" } }, s.edges);
+
+    expect(s.sandboxed).toEqual([]);
+    expect(s.events).not.toContain("sandbox");
   });
 });
 

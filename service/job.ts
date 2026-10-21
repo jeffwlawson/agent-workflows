@@ -10,19 +10,23 @@ import { CI_WAIT_SECONDS } from "../review/collect-checks.js";
  */
 
 /**
- * The repository variables review reads, which the dispatcher reads off the
- * repository and the job carries, so a repository's settings mean the same
- * thing under both orchestrators. Unset is `""`, as an unset `vars.X` is on
- * Actions.
+ * The repository variables the service reads, which the dispatcher reads off
+ * the repository and the job carries, so a repository's settings mean the
+ * same thing under both orchestrators. Unset is `""`, as an unset `vars.X` is
+ * on Actions. `AGENT_SETUP` is the repository's setup, the script the worker
+ * runs in the sandbox before a runner that needs the repository's
+ * dependencies (PRD #515): an admin's to set, and handed to the sandbox's
+ * shell unevaluated.
  */
-export const REVIEW_VARIABLES = [
+export const REPOSITORY_VARIABLES = [
   "AGENT_MODEL",
   "AGENT_MODEL_REVIEW",
   "AGENT_REVIEW_TIMEOUT_MINUTES",
   "AGENT_MAX_FIX_ROUNDS",
+  "AGENT_SETUP",
 ] as const;
 
-export type ReviewVariable = (typeof REVIEW_VARIABLES)[number];
+export type RepositoryVariable = (typeof REPOSITORY_VARIABLES)[number];
 
 /**
  * Review's own time where `AGENT_REVIEW_TIMEOUT_MINUTES` is unset or not a
@@ -84,7 +88,7 @@ export interface ReviewJob extends JobBase {
   /** The pull request's state, as the event carried it. */
   readonly state: string;
   readonly merged: boolean;
-  readonly variables: Readonly<Record<ReviewVariable, string>>;
+  readonly variables: Readonly<Record<RepositoryVariable, string>>;
 }
 
 /** A job the dispatcher posts and the worker runs: one member per workflow the service serves. */
@@ -143,8 +147,8 @@ const parseReview = (base: Omit<JobBase, "workflow">, value: Fields): ReviewJob 
   if (typeof state !== "string" || state === "") return "`state` is not a non-empty string";
   if (typeof merged !== "boolean") return "`merged` is not a boolean";
   if (!isObject(variables)) return "`variables` is not an object";
-  const read: Partial<Record<ReviewVariable, string>> = {};
-  for (const name of REVIEW_VARIABLES) {
+  const read: Partial<Record<RepositoryVariable, string>> = {};
+  for (const name of REPOSITORY_VARIABLES) {
     const given = variables[name];
     if (typeof given !== "string") return `\`variables.${name}\` is not a string`;
     read[name] = given;
@@ -158,7 +162,7 @@ const parseReview = (base: Omit<JobBase, "workflow">, value: Fields): ReviewJob 
     baseRef,
     state,
     merged,
-    variables: read as Record<ReviewVariable, string>,
+    variables: read as Record<RepositoryVariable, string>,
   };
 };
 

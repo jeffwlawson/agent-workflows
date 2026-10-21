@@ -27,6 +27,7 @@ import { tmpdir } from "node:os";
 import * as path from "node:path";
 import { createInterface } from "node:readline";
 import { createIsolatedSandboxProvider } from "@ai-hero/sandcastle";
+import { bwrapArgs, SANDBOX_HOME } from "./bwrap-args.js";
 
 /** What a `bwrap` sandbox is given, beyond what Sandcastle hands each run. */
 export interface BwrapSettings {
@@ -42,22 +43,10 @@ export interface BwrapSettings {
   readonly homeDir: string;
 }
 
-const HOME = "/home/agent";
+const HOME = SANDBOX_HOME;
 const WORKTREE = `${HOME}/workspace`;
 /** Output kept per stream for the result; `onLine` sees everything. */
 const TAIL = 1_000_000;
-
-/** Files under `/etc` the toolchain needs: TLS roots, DNS, the user's name. */
-const ETC = [
-  "/etc/ssl",
-  "/etc/ca-certificates",
-  "/etc/resolv.conf",
-  "/etc/hosts",
-  "/etc/nsswitch.conf",
-  "/etc/passwd",
-  "/etc/group",
-  "/etc/alternatives",
-];
 
 /** Map a sandbox path to the host path that backs it, or refuse. */
 export const toHost = (root: string, sandboxPath: string): string => {
@@ -131,10 +120,6 @@ export const bwrap = (settings: BwrapSettings) => {
     }
   };
 
-  const { proxy } = settings;
-  const proxyVars =
-    proxy === undefined ? [] : ["HTTPS_PROXY", "HTTP_PROXY", "https_proxy", "http_proxy"].flatMap((name) => ["--setenv", name, proxy]);
-
   return createIsolatedSandboxProvider({
     name: "bwrap",
     create: async ({ env }) => {
@@ -144,40 +129,22 @@ export const bwrap = (settings: BwrapSettings) => {
       await mkdir(path.join(root, "tmp"), { recursive: true });
       if (sessionStore !== undefined) await cp(sessionStore, sessionsIn(root), { recursive: true });
 
-      const args = (cwd: string): string[] => [
-        "--unshare-all",
-        "--share-net",
-        "--die-with-parent",
-        "--new-session",
-        "--cap-drop", "ALL",
-        "--hostname", "sandbox",
-        "--clearenv",
-        "--ro-bind", "/usr", "/usr",
-        "--symlink", "usr/bin", "/bin",
-        "--symlink", "usr/sbin", "/sbin",
-        "--symlink", "usr/lib", "/lib",
-        ...(existsSync("/usr/lib64") ? ["--symlink", "usr/lib64", "/lib64"] : []),
-        ...ETC.filter((p) => existsSync(p)).flatMap((p) => ["--ro-bind", p, p]),
-        "--dev", "/dev",
-        "--proc", "/proc",
-        // Writable state, before the read-only toolchain binds: a later mount
-        // over the same tree wins, and a tmpfs over /home would hide them.
-        "--tmpfs", "/home",
-        "--bind", path.join(root, "home"), HOME,
-        "--bind", path.join(root, "tmp"), "/tmp",
-        ...settings.roBinds.flatMap((p) => ["--ro-bind", p, p]),
-        "--chdir", cwd,
-        "--setenv", "HOME", HOME,
-        "--setenv", "PATH", settings.path,
-        "--setenv", "LANG", "C.UTF-8",
-        "--setenv", "TMPDIR", "/tmp",
-        ...proxyVars,
-        // Telemetry and the auto-updater reach hosts no egress allowlist should
-        // need to name; the agent's own work needs only the API.
-        "--setenv", "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC", "1",
-        "--setenv", "DISABLE_AUTOUPDATER", "1",
-        ...Object.entries(env).flatMap(([k, v]) => ["--setenv", k, v]),
-      ];
+      const args = (cwd: string): string[] =>
+        bwrapArgs({
+          home: path.join(root, "home"),
+          tmp: path.join(root, "tmp"),
+          roBinds: settings.roBinds,
+          cwd,
+          path: settings.path,
+          ...(settings.proxy === undefined ? {} : { proxy: settings.proxy }),
+          env: {
+            // Telemetry and the auto-updater reach hosts no egress allowlist
+            // should need to name; the agent's own work needs only the API.
+            CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: "1",
+            DISABLE_AUTOUPDATER: "1",
+            ...env,
+          },
+        });
 
       return {
         worktreePath: WORKTREE,

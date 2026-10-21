@@ -20,8 +20,8 @@ sentence. How one orchestrator does a thing is description, and sits in a quoted
 > **Service orchestrator:** a service that receives GitHub's webhooks and runs the runner on a box
 > it owns: the `dispatcher` and `worker` subcommands of this package, whose code is
 > [`service/`](../service/) and whose deployment is
-> [deploying-the-service.md](./deploying-the-service.md). It answers `agent:review` and `agent:fix`
-> alone, at this release. A block for it appears only where it differs from the Actions orchestrator in a way a
+> [deploying-the-service.md](./deploying-the-service.md). It answers `agent:review`, `agent:fix` and
+> `agent:update-branch` alone, at this release. A block for it appears only where it differs from the Actions orchestrator in a way a
 > reader would trip on.
 
 Neither block binds anyone. Where they disagree with a bold sentence, the bold sentence is right.
@@ -376,7 +376,8 @@ A repository says which orchestrator serves it in the repository variable `AGENT
 answer a label on such a repository unless it would answer one with the variable unset, so a typo
 falls back to the orchestrator the repository already had rather than to two. A service
 orchestrator answers only the labels `SERVICE_LABELS` in `service/dispatcher.ts` lists, the keys
-of its map from trigger label to job kind: `agent:review` and `agent:fix` at this release, and on a
+of its map from trigger label to job kind: `agent:review`, `agent:fix` and `agent:update-branch` at
+this release, and on a
 service-served repository every other label is answered by nothing.
 
 `doctor` reads the variable. It reports any value but unset or `service` as an error, and one it
@@ -988,7 +989,7 @@ earlier run of this PRD left commits on `RESCUE_BRANCH`, that branch fetched to
 > **Service orchestrator:** the chain moves on only when a review ends on an approval and
 > `review:advance` puts `agent:implement` back on the parent. An orchestrator that does not run it
 > leaves the chain waiting on a human to add the label. The service runs it (§8), but answers
-> `agent:review` and `agent:fix` only: on a repository it serves, the `agent:implement` advance re-adds waits for an
+> `agent:review`, `agent:fix` and `agent:update-branch` only: on a repository it serves, the `agent:implement` advance re-adds waits for an
 > orchestrator that answers it, which is expected while `implement-prd` has not joined the service.
 
 ### `implement-prd:gate`
@@ -2709,6 +2710,71 @@ neither.
 > `update-branch:conclude`, `always()`, which ends every run: the failure comment,
 > `agent:update-branch` off, `agent:blocked`, and the re-request where the head moved. No step of
 > the workflow decides anything in inline shell: what is left is glue and what only Actions can do.
+
+> **Service orchestrator:** the worker runs the gate job's, the agent's job's and the publish job's
+> subcommands, in the order and under the conditions above, each a child process with a fresh
+> `OUTPUT_DIR` of its own and an environment built from its declaration, and writes nothing to the
+> record itself. It answers an `agent:update-branch` from a person who can write and from its own
+> App alike (ADR 0008). It asks the dispatcher for a `write` token and runs `update-branch:gate`
+> with the state and merged flag the label's event carried. Where the gate claimed the run, it
+> checks out the event's head as `BRANCH`, fetching `BASE_REF`, with that token passed with each
+> fetch and never stored, and runs `update-branch:merge` there with the same token: outside the
+> sandbox, since it runs none of the pull request's code, and holding no `push` token, since
+> nothing is pushed until publish. Only where the merge conflicted does the agent's job run: a
+> `read` token, a checkout of its own, `update-branch:prepare` with that token, the repository's
+> setup, `AGENT_SETUP`, in the bwrap sandbox with no token, the runner in the sandbox its settings
+> name with a fresh `read` token as `GH_TOKEN`, and `update-branch:bundle`, handed no token, where
+> those succeeded. A clean merge, or a branch already up to date, runs no setup and no runner.
+> Where the gate did not refuse, it asks for a `push` token; where the gate claimed the run and, on
+> a conflict, the agent's job succeeded, it checks the head out once more and runs
+> `update-branch:publish` there, pointed at the runner's and `update-branch:bundle`'s directories.
+> Then `update-branch:conclude`, however the run ended, pointed at publish's, prepare's, the
+> runner's and bundle's. `update-branch:publish` and `update-branch:conclude` alone hold `push`,
+> each as both `GH_TOKEN` and `LOOP_TOKEN`, with `LOOP_TOKEN_SOURCE` `app`; the runner never holds
+> a token that writes. Where `update-branch.yml` passes something the service does not have, it
+> passes the nearest equivalent:
+>
+> - **The gate job's outputs are its files.** `REFUSED` is read from `gate.json` as for `fix`;
+>   `STATUS` and `BASE_SHA` are `merge.json`'s `status` and `base`; `GATE_REASON` is
+>   `update-branch:gate`'s `failure_reason.txt`, or `update-branch:merge`'s where the merge ran, or
+>   the checkout's error where the head could not be checked out. The gate job's result is a
+>   failure where any of the three failed.
+> - **A checkout per job**, as on Actions: the gate's merge leaves its checkout merged, or stopped
+>   on its conflicts, and `update-branch:prepare` and `update-branch:publish` each make that merge
+>   again from the head the event named, so each needs the head as the event named it. The agent's
+>   checkout is the one the setup's sandbox binds.
+> - **The time limits are the jobs'.** The gate, its checkout and the merge share the gate job's
+>   15 minutes. The agent's job's steps share `AGENT_TIMEOUT_MINUTES` (30 where unset or not a
+>   positive integer), and one still running at it is ended with every process it started: the
+>   agent's job is then `cancelled`, with `TIMED_OUT` `true` and `TIMEOUT_MINUTES` the limit, which
+>   on Actions the job's last step measures. Publish's checkout and `update-branch:publish` share
+>   the publish job's 15 minutes, and `update-branch:conclude` gets 15 of its own. The dispatcher's
+>   deadline for the job is the agent's limit plus its margin.
+> - **A phase not started leaves its reason** where `update-branch:conclude` reads the next one: a
+>   `read` token not granted, or a checkout that failed, as `update-branch:prepare`'s
+>   `failure_reason.txt`; a setup that failed, or a runner's token not granted, as the runner's; a
+>   publish checkout that failed as `update-branch:publish`'s.
+> - **No run link, and the download is a success** wherever the agent's job ran: the hand-over is
+>   on the worker's disk. `GITHUB_SERVER_URL`, `GITHUB_REPOSITORY` and `GITHUB_RUN_ID` are unset.
+> - **The mint is the `push` token's.** One not granted is `MINT_OUTCOME` `failure`, and nothing is
+>   published; `update-branch:conclude` is then handed a `write` token, enough for its comment and
+>   labels. A refusal asks for no `push` at all, since on Actions it skips the publish job: conclude
+>   runs with a `write` token, is told `REFUSED` `true`, and writes nothing. Where no token is
+>   granted to conclude, nothing can write to the pull request, and the worker's log says why the
+>   run ended.
+> - **The hand back to review needs nothing new.** `update-branch:publish` adds `agent:review` with
+>   the loop's token, the App's, which the dispatcher answers as the App's own label.
+> - **A head that moves while a refresh runs.** `update-branch:conclude` is unchanged. Its comment
+>   that no refresh of the new head will start fires only without a loop token, and the service
+>   always passes the App's, so on the service it never fires: conclude adds `agent:update-branch`
+>   again, as the App. Its guard against re-requesting while another trigger label is on is
+>   reasoned from Actions' concurrency group, whose waiting slot holds one run and cancels the run
+>   it replaces. The worker queues jobs one at a time and cancels none, so on the service that
+>   reason does not hold: the guard is harmless there, and only leaves the re-request to a person
+>   where another label's job is still to run.
+>
+> Not run: `node-version-file`, since the sandbox runs the worker box's own Node, and the session
+> transcript's upload.
 
 ### `update-branch:gate`
 

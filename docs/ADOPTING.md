@@ -517,8 +517,8 @@ GitHub App is installed on the repository. The callers can stay: each label stil
 run, and every job in it skips. `doctor` then checks what the service needs instead of what Actions
 needs, and warns about what this release's service does not do:
 
-- it answers `agent:review` and `agent:fix` **only**. `agent:implement` and `agent:update-branch`
-  do nothing on a service-served repository, and the `agent:follow-ups` a review adds files nothing
+- it answers `agent:review`, `agent:fix` and `agent:update-branch` **only**. `agent:implement`
+  does nothing on a service-served repository, and the `agent:follow-ups` a review adds files nothing
   on merge. `doctor` names them;
 - it reads the repository's install and setup from the repository variable `AGENT_SETUP`, not a
   caller's `setup:` input, and supports no `node-version-file`

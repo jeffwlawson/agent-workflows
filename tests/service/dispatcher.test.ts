@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { CI_WAIT_SECONDS } from "../../review/collect-checks.js";
 import { createDispatcher, LABEL_KINDS, parseOwners, SERVICE_LABELS, TOKEN_PERMISSIONS, type AppGitHub } from "../../service/dispatcher.js";
 import { DEFAULT_FIX_MINUTES, DEFAULT_REVIEW_MINUTES, JOB_KINDS, parseJob, sign, SIGNATURE_HEADER, verifySignature, type Job } from "../../service/job.js";
-import { FIX_LABEL, ORCHESTRATOR_VARIABLE, REVIEW_LABEL, SERVICE_ORCHESTRATOR } from "../../shared/record.js";
+import { FIX_LABEL, ORCHESTRATOR_VARIABLE, REVIEW_LABEL, SERVICE_ORCHESTRATOR, UPDATE_BRANCH_LABEL } from "../../shared/record.js";
 
 /**
  * Seam 2 of PRD #453: the dispatcher's two doors, driven through the request
@@ -149,7 +149,7 @@ describe("the webhook door", () => {
   });
 
   it.each<[string, (s: ReturnType<typeof setup>) => unknown, RegExp]>([
-    ["a label the service does not answer", () => labelled({ label: "agent:update-branch" }), /`agent:update-branch` is not a label this release's service answers/],
+    ["a label the service does not answer", () => labelled({ label: "agent:implement" }), /`agent:implement` is not a label this release's service answers/],
     ["an event that is not a pull request's", () => labelled(), /not a pull request's/],
     [
       "a repository the App is not installed on",
@@ -216,6 +216,7 @@ describe("the webhook door", () => {
         AGENT_MODEL: "a-model",
         AGENT_MODEL_REVIEW: "",
         AGENT_MODEL_FIX: "",
+        AGENT_MODEL_UPDATE_BRANCH: "",
         AGENT_REVIEW_TIMEOUT_MINUTES: "",
         AGENT_TIMEOUT_MINUTES: "",
         AGENT_MAX_FIX_ROUNDS: "2",
@@ -279,6 +280,11 @@ describe("the labels the dispatcher routes", () => {
   it("names the job's kind from its label", async () => {
     expect((await dispatched(setup(), labelled({ label: REVIEW_LABEL }))).workflow).toBe("review");
     expect((await dispatched(setup(), labelled({ label: FIX_LABEL }))).workflow).toBe("fix");
+    expect((await dispatched(setup(), labelled({ label: UPDATE_BRANCH_LABEL }))).workflow).toBe("update-branch");
+  });
+
+  it("answers agent:update-branch among the labels it lists", () => {
+    expect(SERVICE_LABELS).toContain(UPDATE_BRANCH_LABEL);
   });
 
   it("dispatches an agent:fix from a person who can write, and from the App's own login alike", async () => {
@@ -300,6 +306,28 @@ describe("the labels the dispatcher routes", () => {
     s.repository.variables["AGENT_TIMEOUT_MINUTES"] = "45";
     s.repository.variables["AGENT_REVIEW_TIMEOUT_MINUTES"] = "12";
     const set = await dispatched(s, labelled({ label: FIX_LABEL }));
+    expect(set.deadline).toBe(new Date(START.getTime() + (45 + MARGIN) * MINUTE_MS).toISOString());
+  });
+
+  it("dispatches an agent:update-branch from a person who can write, and from the App's own login alike", async () => {
+    for (const sender of ["maintainer", "loop-app[bot]"]) {
+      const s = setup();
+      s.repository.variables["AGENT_MODEL_UPDATE_BRANCH"] = "a-merge-model";
+      const job = await dispatched(s, labelled({ label: UPDATE_BRANCH_LABEL, sender }));
+
+      expect(job.workflow, sender).toBe("update-branch");
+      expect(job, sender).toMatchObject({ pr: 7, branch: "agent/issue-7-a-thing", headSha: HEAD, baseRef: "main", appLogin: "loop-app[bot]" });
+      expect(job.variables.AGENT_MODEL_UPDATE_BRANCH, sender).toBe("a-merge-model");
+    }
+  });
+
+  it("sets an update-branch job's deadline from the agent's time limit, AGENT_TIMEOUT_MINUTES, or its default", async () => {
+    const unset = await dispatched(setup(), labelled({ label: UPDATE_BRANCH_LABEL }));
+    expect(unset.deadline).toBe(new Date(START.getTime() + (DEFAULT_FIX_MINUTES + MARGIN) * MINUTE_MS).toISOString());
+
+    const s = setup();
+    s.repository.variables["AGENT_TIMEOUT_MINUTES"] = "45";
+    const set = await dispatched(s, labelled({ label: UPDATE_BRANCH_LABEL }));
     expect(set.deadline).toBe(new Date(START.getTime() + (45 + MARGIN) * MINUTE_MS).toISOString());
   });
 

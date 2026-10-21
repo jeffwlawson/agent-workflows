@@ -597,7 +597,7 @@ contract and the record, which makes it loop code.
 The **dispatcher** (#456) is the only holder of the GitHub App's key. GitHub's webhooks arrive at
 one of its doors, and an `agent:review` delivery on a repository that opted in, with the App
 installed on its owner's account or one its `EXTRA_OWNERS` lists, becomes a **job**
-for the worker: what the label's event carried, the variables review reads, the App's login read
+for the worker: what the label's event carried, the repository variables the service reads, the App's login read
 off the App's own record, an id, a deadline and the release. A job has a **kind**, one per workflow
 the service serves, named in its `workflow` field and routed to from the trigger label: at this
 release the one kind is `review` (`ReviewJob`), from `agent:review`. The labels the service
@@ -614,7 +614,8 @@ The **worker** (#457) runs each job the way its workflow's reusable runs it, `re
 each a child process of its own installed package, so the service and every subcommand it runs are
 one release. Each kind has a run function of its own, following its workflow's orchestrator
 blocks, built from shared phase primitives: ask for a token, run a subcommand, run the sandboxed
-runner. It writes nothing
+runner, and run the repository's setup, `AGENT_SETUP`, in the bwrap sandbox in the checkout with no
+token, never on the worker's host. It writes nothing
 to the record and spells no record string; what it reads between phases is the hand-over the
 reusable's glue steps read, copied across as it is. Each subcommand's environment is built by one
 function from its declaration in the contract, and holds nothing else of the worker's but `PATH`,

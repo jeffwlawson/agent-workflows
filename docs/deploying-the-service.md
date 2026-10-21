@@ -54,7 +54,7 @@ Repository permissions:
 | Permission | Access | Why |
 |---|---|---|
 | Metadata | read | every API call, and a label's sender's permission |
-| Variables (`actions_variables` in the API) | read | `AGENT_ORCHESTRATOR`, re-read at every token, and the variables review reads: the repository's own, else its organization's shared with it, as `vars` resolves them |
+| Variables (`actions_variables` in the API) | read | `AGENT_ORCHESTRATOR`, re-read at every token, and the variables the service reads, `AGENT_SETUP` among them: the repository's own, else its organization's shared with it, as `vars` resolves them |
 | Contents | write | the checkout and the pull request's history, read by every phase; a push, by a `push` token only |
 | Pull requests | write | the review, its threads, the title and summary, and the ready mark |
 | Issues | write | comments and labels, and a PRD's parent |
@@ -124,7 +124,8 @@ when all of these hold:
   labels the loop's own commands add (ADR 0008).
 
 Every other delivery is logged with its reason. A job carries what the label's event carried, the
-repository variables review reads, the App's login, a job id, a deadline and the package's version.
+repository variables the service reads (`AGENT_SETUP` among them, unset as empty), the App's login,
+a job id, a deadline and the package's version.
 It carries no token: the worker asks for one per phase, `read` or `write`, and the dispatcher mints
 one only for a job it dispatched, before that job's deadline, for that job's repository alone, while
 the installation is still on an account it serves, and after reading `AGENT_ORCHESTRATOR` again. Deleting the variable stops a job in flight at its next
@@ -212,6 +213,31 @@ get 10 minutes each, and `review:advance` 5. A phase still running at its limit 
 and the pull request's ending says the review timed out. A job that waits in the queue for longer
 than the dispatcher's `JOB_DEADLINE_MARGIN_MINUTES` is past its deadline by the time it asks to
 post, and ends with nothing posted, so set the margin above the longest wait you expect.
+
+### The repository's setup
+
+A repository's setup is its repository variable `AGENT_SETUP`: a script, the install and anything
+else its verify command needs, the same text a caller's `setup:` input holds on Actions. Only an
+admin can set it. The dispatcher reads it with the other variables and the job carries it; the
+worker hands it to the sandbox's shell through the environment, as written, and never splices it
+into a command line. Unset or empty, the setup is skipped. At this release no job the service runs
+calls it, so it is not yet run (above); the fix job will, before its runner.
+
+It runs **in the bwrap sandbox, never on the worker's host**, whatever `AGENT_SANDBOX` says of the
+agent's, since the host holds what can ask for tokens and setup runs the pull request's code. So
+`bwrap` is needed on the worker's host even with `AGENT_SANDBOX=none`. The sandbox is the agent's
+shape: the checkout bound read-write at its own path, its `.git` read-only, so nothing setup runs can
+plant a hook or a configuration that host-side git would later run; `AGENT_SANDBOX_RO_BINDS` and
+`AGENT_SANDBOX_PATH` for the toolchain; a fresh home and `/tmp`, removed after; no token in its
+environment; and its traffic through `AGENT_SANDBOX_PROXY`, which must therefore **let the package
+registry through** for setup's install. It is run as Actions runs a `run:` step, by `bash` stopping
+at the first failing command, under the job's time limit, and ended with everything it started at
+that limit. A setup that exits non-zero fails its phase with the exit status and the end of its
+output, kept in full in the run's `logs/setup.log`.
+
+**`node-version-file` is not supported.** The sandbox runs the agent box's own Node, the one
+`AGENT_SANDBOX_RO_BINDS` and `AGENT_SANDBOX_PATH` give it. A repository that needs another
+toolchain stays on Actions for now.
 
 ### Settings
 

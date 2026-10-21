@@ -304,9 +304,13 @@ export const startRun = (job: Job, edges: JobEdges): Run => {
   const note = (name: string, outcome: string): void => {
     phases.push({ name, outcome });
   };
-  /** What each subcommand was started with, for the run summary. */
-  const started: { readonly subcommand: Subcommand | typeof SETUP_PHASE; readonly env: Readonly<Record<string, string>>; readonly cwd: string; readonly log: string }[] =
-    [];
+  /** What each subcommand, and the setup, was started with, for the run summary. */
+  const started: {
+    readonly subcommand: Subcommand | typeof SETUP_PHASE;
+    readonly env: Readonly<Record<string, string>>;
+    readonly cwd: string;
+    readonly log: string;
+  }[] = [];
   /**
    * Every token this run holds, the dispatcher's and the agent's, each
    * replaced wherever it appears in what the run leaves for a person to read.

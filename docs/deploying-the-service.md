@@ -104,13 +104,14 @@ It answers each delivery at once and does its work afterwards, and a delivery be
 when all of these hold:
 
 - it is a pull request labelled with a label the service answers (`SERVICE_LABELS` in
-  `shared/record.ts`: `agent:review`);
+  `service/dispatcher.ts`, the labels its `LABEL_KINDS` maps to a job kind: `agent:review`);
 - the App is installed on the repository;
 - the installation is on the App's owner's account, or on one `EXTRA_OWNERS` lists;
 - the repository's `AGENT_ORCHESTRATOR` is `service`;
 - the head is in the same repository, not a fork;
 - the pull request is open;
-- the label's sender can write to the repository.
+- the label's sender can write to the repository, or is the App itself (`<slug>[bot]`), whose
+  labels the loop's own commands add (ADR 0008).
 
 Every other delivery is logged with its reason. A job carries what the label's event carried, the
 repository variables review reads, the App's login, a job id, a deadline and the package's version.

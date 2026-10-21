@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { CI_WAIT_SECONDS } from "../../review/collect-checks.js";
-import { createDispatcher, parseOwners, TOKEN_PERMISSIONS, type AppGitHub } from "../../service/dispatcher.js";
-import { DEFAULT_REVIEW_MINUTES, parseJob, sign, SIGNATURE_HEADER, verifySignature, type ReviewJob } from "../../service/job.js";
+import { createDispatcher, LABEL_KINDS, parseOwners, SERVICE_LABELS, TOKEN_PERMISSIONS, type AppGitHub } from "../../service/dispatcher.js";
+import { DEFAULT_REVIEW_MINUTES, JOB_KINDS, parseJob, sign, SIGNATURE_HEADER, verifySignature, type ReviewJob } from "../../service/job.js";
 import { ORCHESTRATOR_VARIABLE, REVIEW_LABEL, SERVICE_ORCHESTRATOR } from "../../shared/record.js";
 
 /**
@@ -43,6 +43,8 @@ const setup = (options: { workerStatus?: number; owners?: readonly string[] } = 
   };
   const minted: { repo: string; permissions: Readonly<Record<string, string>> }[] = [];
   const posted: { body: string; headers: Readonly<Record<string, string>> }[] = [];
+  /** Each login whose permission was looked up. */
+  const looked: string[] = [];
   let clock = START;
   let ids = 0;
   const github: AppGitHub = {
@@ -52,7 +54,10 @@ const setup = (options: { workerStatus?: number; owners?: readonly string[] } = 
       if (repository.unreadable === true) throw new Error("GitHub answered 503");
       return repo === REPO ? repository.variables[name] : undefined;
     },
-    permission: async (repo, login) => (repo === REPO ? repository.permissions[login] : undefined),
+    permission: async (repo, login) => {
+      looked.push(login);
+      return repo === REPO ? repository.permissions[login] : undefined;
+    },
     mint: async (repo, permissions) => {
       minted.push({ repo, permissions });
       return { token: `minted-token-${minted.length}`, expiresAt: "2026-10-11T13:00:00Z" };
@@ -77,6 +82,7 @@ const setup = (options: { workerStatus?: number; owners?: readonly string[] } = 
     repository,
     minted,
     posted,
+    looked,
     advance: (minutes: number) => {
       clock = new Date(clock.getTime() + minutes * MINUTE_MS);
     },
@@ -194,6 +200,7 @@ describe("the webhook door", () => {
     const [post] = s.posted;
     expect(verifySignature(WORKER_SECRET, post!.body, post!.headers[SIGNATURE_HEADER])).toBe(true);
     expect(parseJob(JSON.parse(post!.body))).toEqual({
+      workflow: "review",
       id: "job-1",
       version: "9.9.9",
       deadline: new Date(START.getTime() + (CI_WAIT_SECONDS / 60 + DEFAULT_REVIEW_MINUTES + MARGIN) * MINUTE_MS).toISOString(),
@@ -245,6 +252,69 @@ describe("the webhook door", () => {
     const response = await s.dispatcher.token(tokenRequest({ jobId: "job-1", kind: "read" }));
     expect(response.status).toBe(404);
     expect(s.minted).toEqual([]);
+  });
+});
+
+/**
+ * Each trigger label the service answers starts one kind of job (ADR 0008),
+ * and the list of what it answers is that map's keys.
+ */
+describe("the labels the dispatcher routes", () => {
+  it("answers exactly the labels that map to a job kind, and each maps to a kind this release runs", () => {
+    expect(SERVICE_LABELS).toEqual(Object.keys(LABEL_KINDS));
+    for (const label of SERVICE_LABELS) expect(JOB_KINDS).toContain(LABEL_KINDS[label]);
+  });
+
+  it("names the job's kind from its label", async () => {
+    const job = await dispatched(setup(), labelled({ label: REVIEW_LABEL }));
+
+    expect(job.workflow).toBe("review");
+  });
+
+  it("ignores a label that names an inherited property, not a kind", async () => {
+    const s = setup();
+    const result = await deliver(s, labelled({ label: "constructor" }));
+
+    expect(result.outcome).toMatch(/`constructor` is not a label this release's service answers/);
+    expect(s.posted).toEqual([]);
+  });
+});
+
+/**
+ * The label's sender is the loop's author gate: a person must be able to
+ * write to the repository. The App's own label is the loop's, added under the
+ * repository's budget, so its login is trusted without a lookup (ADR 0008).
+ */
+describe("the label's sender", () => {
+  it("dispatches a label the App itself added, and looks up no permission for it", async () => {
+    const s = setup();
+    const result = await deliver(s, labelled({ sender: "loop-app[bot]" }));
+
+    expect(result.outcome).toMatch(/^dispatched owner\/repo#7/);
+    expect(s.looked).toEqual([]);
+  });
+
+  it("matches the App's login whatever its case, as GitHub does", async () => {
+    const s = setup();
+
+    expect((await deliver(s, labelled({ sender: "Loop-App[bot]" }))).outcome).toMatch(/^dispatched owner\/repo#7/);
+    expect(s.looked).toEqual([]);
+  });
+
+  it("looks up a person's permission, and dispatches for one who can write", async () => {
+    const s = setup();
+
+    expect((await deliver(s, labelled({ sender: "maintainer" }))).outcome).toMatch(/^dispatched owner\/repo#7/);
+    expect(s.looked).toEqual(["maintainer"]);
+  });
+
+  it("refuses another App's label, with today's sentence, after looking it up", async () => {
+    const s = setup();
+    const result = await deliver(s, labelled({ sender: "other-app[bot]" }));
+
+    expect(result.outcome).toBe("refused on owner/repo#7: other-app[bot] cannot write to owner/repo");
+    expect(s.looked).toEqual(["other-app[bot]"]);
+    expect(s.posted).toEqual([]);
   });
 });
 

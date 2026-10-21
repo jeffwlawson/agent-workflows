@@ -4,9 +4,9 @@ import {
   FIX_LABEL,
   FOLLOW_UPS_LABEL,
   ORCHESTRATOR_VARIABLE,
-  SERVICE_LABELS,
   SERVICE_ORCHESTRATOR,
 } from "../shared/record.js";
+import { SERVICE_LABELS } from "../service/dispatcher.js";
 import {
   passesSecret,
   readInstalledCallers,

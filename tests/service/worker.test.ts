@@ -27,6 +27,7 @@ const AGENT = {
 } as const;
 
 const JOB: ReviewJob = {
+  workflow: "review",
   id: "job-1",
   version: "9.9.9",
   deadline: "2026-10-11T14:00:00.000Z",
@@ -645,6 +646,18 @@ describe("the job door", () => {
     const d = door();
 
     expect(d.handle(request(JOB, "someone-elses-secret")).status).toBe(401);
+    expect(d.accepted).toEqual([]);
+  });
+
+  it.each<[string, unknown]>([
+    ["an unknown", { ...JOB, workflow: "deploy" }],
+    ["a missing", { ...JOB, workflow: undefined }],
+  ])("refuses a job with %s workflow kind, naming the field", (_name, job) => {
+    const d = door();
+    const response = d.handle(request(job));
+
+    expect(response.status).toBe(400);
+    expect(JSON.parse(response.body)).toEqual({ refusal: "`workflow` is not one of `review`" });
     expect(d.accepted).toEqual([]);
   });
 

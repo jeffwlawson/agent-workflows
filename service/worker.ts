@@ -4,13 +4,13 @@ import { COMMANDS, RUNNERS, type Command, type Runner } from "../shared/contract
 import type { HostEnvironment } from "../shared/env.js";
 import { PRD_BRANCH_PREFIX } from "../shared/record.js";
 import type { DoorRequest, DoorResponse } from "./dispatcher.js";
-import { parseJob, reviewTimeLimit, SIGNATURE_HEADER, verifySignature, type ReviewJob, type TokenKind } from "./job.js";
+import { parseJob, reviewTimeLimit, SIGNATURE_HEADER, verifySignature, type Job, type ReviewJob, type TokenKind } from "./job.js";
 
 /**
  * The service orchestrator's worker (#457): it receives jobs from the
- * dispatcher and runs review on each the way `review.yml` does, by running
+ * dispatcher and runs each the way its workflow's reusable does, by running
  * the same subcommands in the same order, each told what the reusable tells
- * it. It writes nothing to the record and spells no record string: every
+ * it: one run function per job kind, built from shared phase primitives. It writes nothing to the record and spells no record string: every
  * write is a command's. What it reads between them is the hand-over the
  * reusable's glue steps read, `gate.json`, `budget.json`, `verdict.json` and
  * `ended.json`, copied across as they are.
@@ -180,40 +180,57 @@ const reason = (dir: string, file: string): string | undefined => {
 
 const message = (error: unknown): string => (error instanceof Error ? error.message : String(error));
 
+/** How a subcommand a run started ended, and the output directory it wrote into. */
+interface Ran {
+  readonly ok: boolean;
+  readonly timedOut: boolean;
+  readonly dir: string;
+}
+
 /**
- * **One job**: review on one pull request, in `review.yml`'s order and under
- * its conditions, which the `Actions orchestrator:` blocks of spec §8
- * describe.
- *
- * 1. A `read` token, then `review:gate`. Where it does not go ahead, on to 6.
- * 2. The checkout of the commit the gate settled, as `BRANCH`, with the base.
- * 3. `review:budget`, with a budget of 0 (`SERVICE_FIX_ROUND_BUDGET`).
- * 4. `review:collect-checks`, whose failure the review reads as checks unknown.
- * 5. A fresh `read` token, then the runner, with it as `GH_TOKEN`.
- * 6. A `write` token, then `review:publish`, where the review finished.
- * 7. `review:conclude`, however the phases before it ended, told how each did.
- * 8. On a PRD pull request, where the gate went ahead and the head did not
- *    move, a `write` token and `review:advance`, told how the review and the
- *    posting ended.
- *
- * Each subcommand gets a fresh output directory of its own, and a command
- * that reads another's files is pointed at that one's. Never throws: a phase
- * that fails is an ending conclude is told, and one conclude cannot be run for
- * is the last phase in what this returns, with the reason the run ended, for
- * the worker's log, since nothing on the pull request will say it.
+ * The phase primitives every kind's run function is built from (ADR 0008):
+ * each is a step one of the reusables' jobs takes, and a run function says in
+ * which order, under which conditions and handed what.
+ */
+interface Run {
+  /** Records how a phase ended, for the summary and the worker's log. */
+  readonly note: (name: string, outcome: string) => void;
+  /** A time limit of `minutes` from now: the signal it aborts, and the timer to clear once what it bounds has ended. */
+  readonly limit: (minutes: number) => { readonly signal: AbortSignal; readonly clear: () => void };
+  /** The fresh output directory `subcommand` writes into, which a command reading its files is pointed at. */
+  readonly outputDir: (subcommand: Subcommand) => string;
+  /** Where the pull request is checked out. */
+  readonly checkout: string;
+  /**
+   * Asks the dispatcher for a token of `kind`, which the run then redacts
+   * wherever it appears. `undefined`, and the refusal noted, where none is granted.
+   */
+  readonly ask: (kind: TokenKind) => Promise<string | undefined>;
+  /**
+   * Starts a subcommand in a fresh output directory, with the environment its
+   * declaration builds from `values`, and notes how it ended. A launch that
+   * throws, or ends at `signal`, is an ending like an exit.
+   */
+  readonly run: (subcommand: Subcommand, values: Readonly<Record<string, string | undefined>>, cwd: string, signal: AbortSignal) => Promise<Ran>;
+  /**
+   * Starts a runner as `run` does, handed what the worker's settings give the
+   * agent and the sandbox, with the worker's own `claude` first on its `PATH`.
+   */
+  readonly runAgent: (runner: Runner, values: Readonly<Record<string, string | undefined>>, cwd: string, signal: AbortSignal) => Promise<Ran>;
+  /** Writes the run summary, and answers the phases, redacted: the end of every path through a run. */
+  readonly done: () => readonly Phase[];
+}
+
+/**
+ * A run of `job` begun: its directories made, and the primitives its kind's
+ * run function is built from.
  *
  * **The run leaves a summary**, `SUMMARY_FILE` in the run's directory: the
  * job, each phase's outcome, and each subcommand's directory, log and
- * environment, with every token it was handed redacted, as is what this
- * returns.
- *
- * **Every phase has a time limit**, as every job on Actions does. Phases 1 to
- * 5 share the review's, its CI wait plus `AGENT_REVIEW_TIMEOUT_MINUTES`
- * (`reviewTimeLimit`), and one still running at it is ended and told to
- * conclude as a timeout. Publish and conclude get `POSTING_MINUTES` each, and
- * advance `ADVANCE_MINUTES`.
+ * environment, with every token it was handed redacted, as are the phases
+ * `done` returns.
  */
-export const runJob = async (job: ReviewJob, edges: JobEdges): Promise<readonly Phase[]> => {
+const startRun = (job: Job, edges: JobEdges): Run => {
   const phases: Phase[] = [];
   const note = (name: string, outcome: string): void => {
     phases.push({ name, outcome });
@@ -227,7 +244,6 @@ export const runJob = async (job: ReviewJob, edges: JobEdges): Promise<readonly 
    */
   const secrets = new Set(Object.entries(edges.agent).flatMap(([name, value]) => (name.endsWith("TOKEN") && value !== "" ? [value] : [])));
   const redact = (text: string): string => [...secrets].reduce((done, secret) => done.split(secret).join(REDACTED), text);
-  /** The summary written, and the phases answered, redacted: the end of every path through the job. */
   const done = (): readonly Phase[] => {
     const summary = {
       job,
@@ -237,35 +253,25 @@ export const runJob = async (job: ReviewJob, edges: JobEdges): Promise<readonly 
     fs.writeFileSync(path.join(edges.runDir, SUMMARY_FILE), `${redact(JSON.stringify(summary, null, 2))}\n`);
     return phases.map(({ name, outcome }) => ({ name, outcome: redact(outcome) }));
   };
-  const checkout = path.join(edges.runDir, "checkout");
   const outputDir = (name: Subcommand): string => path.join(edges.runDir, "out", name.replace(":", "-"));
   const logs = path.join(edges.runDir, "logs");
   const logFile = (name: Subcommand): string => path.join(logs, `${name.replace(":", "-")}.log`);
   fs.mkdirSync(logs, { recursive: true });
 
-  /** What every phase of this job is told: the pull request, and the loop's account, the App's login (spec §4.1). */
-  const common = {
-    GH_REPO: job.repo,
-    PR_NUMBER: String(job.pr),
-    BRANCH: job.branch,
-    AGENT_LOOP_LOGINS: job.appLogin,
-  };
-
   const minuteMs = edges.minuteMs ?? 60_000;
-  /** A time limit of `minutes` from now: the signal it aborts, and the timer to clear once what it bounds has ended. */
   const limit = (minutes: number): { readonly signal: AbortSignal; readonly clear: () => void } => {
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), minutes * minuteMs);
     return { signal: controller.signal, clear: () => clearTimeout(timer) };
   };
 
-  const run = async (
+  const launch = async (
     subcommand: Subcommand,
     values: Readonly<Record<string, string | undefined>>,
     cwd: string,
     signal: AbortSignal,
-    host: HostEnvironment = edges.host,
-  ): Promise<{ readonly ok: boolean; readonly timedOut: boolean; readonly dir: string }> => {
+    host: HostEnvironment,
+  ): Promise<Ran> => {
     const dir = outputDir(subcommand);
     fs.rmSync(dir, { recursive: true, force: true });
     fs.mkdirSync(dir, { recursive: true });
@@ -299,6 +305,73 @@ export const runJob = async (job: ReviewJob, edges: JobEdges): Promise<readonly 
       note(`${kind} token`, `failure: ${message(error)}`);
       return undefined;
     }
+  };
+
+  return {
+    note,
+    limit,
+    outputDir,
+    checkout: path.join(edges.runDir, "checkout"),
+    ask,
+    run: (subcommand, values, cwd, signal) => launch(subcommand, values, cwd, signal, edges.host),
+    runAgent: (runner, values, cwd, signal) =>
+      launch(runner, { ...edges.agent, ...values }, cwd, signal, {
+        ...edges.host,
+        PATH: [edges.cliBin, edges.host.PATH].filter((part) => part !== undefined && part !== "").join(":"),
+      }),
+    done,
+  };
+};
+
+/**
+ * **One job**: its kind's run function, which follows that workflow's
+ * `Actions orchestrator:` blocks in spec §8. Never throws: how each phase
+ * ended is in what this returns, for the worker's log.
+ */
+export const runJob = async (job: Job, edges: JobEdges): Promise<readonly Phase[]> => {
+  switch (job.workflow) {
+    case "review":
+      return runReview(job, edges);
+  }
+};
+
+/**
+ * **A review job**: review on one pull request, in `review.yml`'s order and
+ * under its conditions, which the `Actions orchestrator:` blocks of spec §8
+ * describe.
+ *
+ * 1. A `read` token, then `review:gate`. Where it does not go ahead, on to 6.
+ * 2. The checkout of the commit the gate settled, as `BRANCH`, with the base.
+ * 3. `review:budget`, with a budget of 0 (`SERVICE_FIX_ROUND_BUDGET`).
+ * 4. `review:collect-checks`, whose failure the review reads as checks unknown.
+ * 5. A fresh `read` token, then the runner, with it as `GH_TOKEN`.
+ * 6. A `write` token, then `review:publish`, where the review finished.
+ * 7. `review:conclude`, however the phases before it ended, told how each did.
+ * 8. On a PRD pull request, where the gate went ahead and the head did not
+ *    move, a `write` token and `review:advance`, told how the review and the
+ *    posting ended.
+ *
+ * Each subcommand gets a fresh output directory of its own, and a command
+ * that reads another's files is pointed at that one's. A phase that fails is
+ * an ending conclude is told, and one conclude cannot be run for is the last
+ * phase in what this returns, with the reason the run ended, for the worker's
+ * log, since nothing on the pull request will say it.
+ *
+ * **Every phase has a time limit**, as every job on Actions does. Phases 1 to
+ * 5 share the review's, its CI wait plus `AGENT_REVIEW_TIMEOUT_MINUTES`
+ * (`reviewTimeLimit`), and one still running at it is ended and told to
+ * conclude as a timeout. Publish and conclude get `POSTING_MINUTES` each, and
+ * advance `ADVANCE_MINUTES`.
+ */
+const runReview = async (job: ReviewJob, edges: JobEdges): Promise<readonly Phase[]> => {
+  const { note, limit, outputDir, checkout, ask, run, runAgent, done } = startRun(job, edges);
+
+  /** What every phase of this job is told: the pull request, and the loop's account, the App's login (spec §4.1). */
+  const common = {
+    GH_REPO: job.repo,
+    PR_NUMBER: String(job.pr),
+    BRANCH: job.branch,
+    AGENT_LOOP_LOGINS: job.appLogin,
   };
 
   /** How the review job ended, as the reusable's `needs.review` outputs say it. */
@@ -421,11 +494,10 @@ export const runJob = async (job: ReviewJob, edges: JobEdges): Promise<readonly 
   }
   if (proceeds && runnerToken !== undefined && review.result === "success") {
     const checks = outputDir("review:collect-checks");
-    const reviewed = await run(
+    const reviewed = await runAgent(
       "review",
       {
         ...common,
-        ...edges.agent,
         GH_TOKEN: runnerToken,
         AGENT_MODEL: job.variables.AGENT_MODEL,
         AGENT_MODEL_REVIEW: job.variables.AGENT_MODEL_REVIEW,
@@ -439,7 +511,6 @@ export const runJob = async (job: ReviewJob, edges: JobEdges): Promise<readonly 
       },
       checkout,
       reviewLimit.signal,
-      { ...edges.host, PATH: [edges.cliBin, edges.host.PATH].filter((part) => part !== undefined && part !== "").join(":") },
     );
     reviewDir = reviewed.dir;
     if (reviewed.timedOut) timedOut();
@@ -568,7 +639,7 @@ export interface WorkerDoorEdges {
   readonly secret: string;
   readonly version: string;
   /** Queues the job; called only for one that is accepted. */
-  readonly accept: (job: ReviewJob) => void;
+  readonly accept: (job: Job) => void;
 }
 
 const answer = (status: number, body: unknown): DoorResponse => ({ status, body: JSON.stringify(body) });

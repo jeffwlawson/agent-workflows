@@ -370,8 +370,9 @@ A repository says which orchestrator serves it in the repository variable `AGENT
 `service` the service orchestrator. Any other value names neither: an orchestrator ***must not***
 answer a label on such a repository unless it would answer one with the variable unset, so a typo
 falls back to the orchestrator the repository already had rather than to two. A service
-orchestrator answers only the labels `SERVICE_LABELS` in `shared/record.ts` lists, `agent:review`
-alone at this release, and on a service-served repository every other label is answered by nothing.
+orchestrator answers only the labels `SERVICE_LABELS` in `service/dispatcher.ts` lists, the keys
+of its map from trigger label to job kind: `agent:review` alone at this release, and on a
+service-served repository every other label is answered by nothing.
 
 `doctor` reads the variable. It reports any value but unset or `service` as an error, and one it
 could not read as unknown. With `service`, it checks that the labels the service answers exist,

@@ -380,14 +380,6 @@ export const ORCHESTRATOR_VARIABLE = "AGENT_ORCHESTRATOR";
 
 export const SERVICE_ORCHESTRATOR = "service";
 
-/**
- * The trigger labels the service orchestrator answers on a repository that
- * opts in, and the one list of them: the dispatcher reads it to decide what is
- * a job, and `doctor` to name the labels nothing answers there. Every other
- * `agent:*` label waits for its workflow to move into commands (#410).
- */
-export const SERVICE_LABELS: readonly string[] = [REVIEW_LABEL];
-
 // Branch patterns.
 
 /**

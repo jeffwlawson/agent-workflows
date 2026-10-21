@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { ORCHESTRATOR_VARIABLE, SERVICE_LABELS, SERVICE_ORCHESTRATOR } from "../shared/record.js";
+import { ORCHESTRATOR_VARIABLE, REVIEW_LABEL, SERVICE_ORCHESTRATOR } from "../shared/record.js";
 import {
   parseTokenRequest,
   REVIEW_VARIABLES,
@@ -7,7 +7,8 @@ import {
   SIGNATURE_HEADER,
   sign,
   verifySignature,
-  type ReviewJob,
+  type Job,
+  type JobKind,
   type ReviewVariable,
   type TokenGrant,
   type TokenKind,
@@ -16,11 +17,11 @@ import {
 /**
  * The service orchestrator's dispatcher (#456): the only holder of the GitHub
  * App's key. It has two doors. GitHub's webhook deliveries come in at one, and
- * an `agent:review` delivery on a repository that opted in becomes a job,
- * posted to the worker with no token in it. The worker's token requests come
- * in at the other, and each is answered with a token scoped to the job's
- * repository, for the one phase it asks for, while the job is live and the
- * repository still opts in.
+ * an `agent:review` delivery on a repository that opted in becomes a job of
+ * the kind its label maps to, posted to the worker with no token in it. The
+ * worker's token requests come in at the other, and each is answered with a
+ * token scoped to the job's repository, for the one phase it asks for, while
+ * the job is live and the repository still opts in.
  *
  * Its decisions are here, over edges it is handed: the App's view of GitHub,
  * the worker, the clock and the job ids. `serve.ts` puts them behind HTTP.
@@ -112,6 +113,23 @@ export const TOKEN_PERMISSIONS: Readonly<Record<TokenKind, Readonly<Record<strin
   read: { contents: "read", pull_requests: "read", issues: "read", checks: "read", statuses: "read" },
   write: { contents: "read", pull_requests: "write", issues: "write", checks: "read", statuses: "write" },
 };
+
+/**
+ * The job kind each trigger label the service answers starts (ADR 0008).
+ * Every other `agent:*` label waits for its workflow to move into commands
+ * (#410).
+ */
+export const LABEL_KINDS: Readonly<Record<string, JobKind>> = {
+  [REVIEW_LABEL]: "review",
+};
+
+/**
+ * The trigger labels the service orchestrator answers on a repository that
+ * opts in, and the one list of them: `LABEL_KINDS`' keys, so no label is
+ * answered that starts no job. `doctor` reads it to name the labels nothing
+ * answers there.
+ */
+export const SERVICE_LABELS: readonly string[] = Object.keys(LABEL_KINDS);
 
 /** The permissions a label's sender needs on the repository: the loop's author gate. */
 const WRITERS = ["admin", "maintain", "write"];
@@ -219,9 +237,8 @@ export const createDispatcher = (edges: DispatcherEdges) => {
       return "refused: the delivery is missing a field a job needs";
     }
     const where = `${repo}#${pr}`;
-    // `SERVICE_LABELS` is the one list of what the service answers, and
-    // review is the one job it runs at this release.
-    if (!SERVICE_LABELS.includes(label)) return `ignored on ${where}: \`${label}\` is not a label this release's service answers`;
+    const kind = Object.hasOwn(LABEL_KINDS, label) ? LABEL_KINDS[label] : undefined;
+    if (kind === undefined) return `ignored on ${where}: \`${label}\` is not a label this release's service answers`;
     const account = await edges.github.installation(repo);
     if (account === undefined) return `refused on ${where}: the App is not installed on ${repo}`;
     // Ahead of the opt-in, so a stranger's repository is never read further.
@@ -233,17 +250,25 @@ export const createDispatcher = (edges: DispatcherEdges) => {
     }
     if (p.pull_request?.head?.repo?.full_name !== repo) return `refused on ${where}: the head is on a fork`;
     if (state !== "open") return `refused on ${where}: the pull request is ${state}, not open`;
-    const permission = await edges.github.permission(repo, sender);
-    if (permission === undefined || !WRITERS.includes(permission)) {
-      return `refused on ${where}: ${sender} cannot write to ${repo}`;
+    // The App's own label is the loop's: it adds one only where a command
+    // decided to, under the repository's budget, so its login is trusted
+    // without a lookup (ADR 0008). Every other sender is a person's.
+    const login = appLogin((await edges.github.app()).slug);
+    if (sender.toLowerCase() !== login.toLowerCase()) {
+      const permission = await edges.github.permission(repo, sender);
+      if (permission === undefined || !WRITERS.includes(permission)) {
+        return `refused on ${where}: ${sender} cannot write to ${repo}`;
+      }
     }
 
+    // Review is the one kind this release serves, so every label routes here.
     const variables = Object.fromEntries(
       await Promise.all(REVIEW_VARIABLES.map(async (name) => [name, (await edges.github.variable(repo, name)) ?? ""] as const)),
     ) as Record<ReviewVariable, string>;
     const minutes = reviewTimeLimit(variables.AGENT_REVIEW_TIMEOUT_MINUTES) + edges.deadlineMarginMinutes;
     const deadline = new Date(now().getTime() + minutes * 60_000);
-    const job: ReviewJob = {
+    const job: Job = {
+      workflow: kind,
       id: newId(),
       version: edges.version,
       deadline: deadline.toISOString(),
@@ -254,7 +279,7 @@ export const createDispatcher = (edges: DispatcherEdges) => {
       baseRef,
       state,
       merged: p.pull_request?.merged === true,
-      appLogin: appLogin((await edges.github.app()).slug),
+      appLogin: login,
       variables,
     };
 

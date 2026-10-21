@@ -598,15 +598,23 @@ The **dispatcher** (#456) is the only holder of the GitHub App's key. GitHub's w
 one of its doors, and an `agent:review` delivery on a repository that opted in, with the App
 installed on its owner's account or one its `EXTRA_OWNERS` lists, becomes a **job**
 for the worker: what the label's event carried, the variables review reads, the App's login read
-off the App's own record, an id, a deadline and the release. A job carries no token. The worker
+off the App's own record, an id, a deadline and the release. A job has a **kind**, one per workflow
+the service serves, named in its `workflow` field and routed to from the trigger label: at this
+release the one kind is `review` (`ReviewJob`), from `agent:review`. The labels the service
+answers, `SERVICE_LABELS`, are that map's keys. The label's sender must be able to write to the
+repository, unless it is the App itself, whose labels the loop's commands add
+([ADR 0008](./docs/adr/0008-service-job-kinds-and-own-app-sender.md)). A job carries no token. The worker
 asks for one at the other door at the start of each phase, `read` or `write`, and the dispatcher
 mints one for that job's repository alone, before its deadline, after reading the opt-in again, so
 deleting the variable stops a job in flight at its next phase. The job's format is one module,
 `service/job.ts`, which both processes import, so it only has to hold within one release.
 
-The **worker** (#457) runs each job the way `review.yml` runs review, as a **thin adapter**: the
-same subcommands in the same order (`service/worker.ts`), each a child process of its own
-installed package, so the service and every subcommand it runs are one release. It writes nothing
+The **worker** (#457) runs each job the way its workflow's reusable runs it, `review.yml` for a
+`review` job, as a **thin adapter**: the same subcommands in the same order (`service/worker.ts`),
+each a child process of its own installed package, so the service and every subcommand it runs are
+one release. Each kind has a run function of its own, following its workflow's orchestrator
+blocks, built from shared phase primitives: ask for a token, run a subcommand, run the sandboxed
+runner. It writes nothing
 to the record and spells no record string; what it reads between phases is the hand-over the
 reusable's glue steps read, copied across as it is. Each subcommand's environment is built by one
 function from its declaration in the contract, and holds nothing else of the worker's but `PATH`,

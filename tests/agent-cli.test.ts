@@ -9,6 +9,7 @@ import { SUBCOMMANDS, type CliIo } from "../cli.js";
 import { place as placeRedCheck } from "../review/red-check-place.js";
 import { gate } from "../review/gate.js";
 import { publish } from "../review/publish.js";
+import { SERVICE_LABELS } from "../service/dispatcher.js";
 import { serveDispatcher, serveWorker } from "../service/serve.js";
 import { SERVICE } from "../service/settings.js";
 import { COMMANDS, RUNNERS } from "../shared/contract.js";
@@ -4159,7 +4160,7 @@ describe("doctor names the failures that otherwise look like something else", ()
 
     it("is spelt once, in the record", () => {
       expect(record.ORCHESTRATOR_VARIABLE).toBe("AGENT_ORCHESTRATOR");
-      expect(record.SERVICE_LABELS).toEqual([record.REVIEW_LABEL]);
+      expect(SERVICE_LABELS).toEqual([record.REVIEW_LABEL]);
     });
 
     it("rules on an unset variable as Actions, as before", async () => {

@@ -5,7 +5,7 @@ import { hostEnvironment, type InputValues } from "../shared/env.js";
 import { VERSION } from "../shared/manifest.js";
 import { createDispatcher, parseOwners, type DoorRequest, type DoorResponse } from "./dispatcher.js";
 import { liveAppGitHub } from "./github-app.js";
-import type { ReviewJob } from "./job.js";
+import type { Job } from "./job.js";
 import type { DISPATCHER, WORKER } from "./settings.js";
 import { jobDoor, oneAtATime, runJob, SUMMARY_FILE } from "./worker.js";
 import { installCli, liveGit, liveLauncher, liveTokens, routeThroughProxy } from "./worker-live.js";
@@ -175,10 +175,10 @@ export const serveWorker = async (settings: InputValues<typeof WORKER>, stdout: 
     AGENT_SANDBOX_PROXY: settings.AGENT_SANDBOX_PROXY,
   };
 
-  const work = async (job: ReviewJob): Promise<void> => {
+  const work = async (job: Job): Promise<void> => {
     const runDir = path.join(settings.WORK_DIR, "runs", `${new Date().toISOString().replace(/[:.]/g, "-")}-${job.id}`);
     fs.mkdirSync(runDir, { recursive: true });
-    log(`job ${job.id}: reviewing ${job.repo}#${job.pr} at ${job.headSha}, in ${runDir}`);
+    log(`job ${job.id}: ${job.workflow} on ${job.repo}#${job.pr} at ${job.headSha}, in ${runDir}`);
     const phases = await runJob(job, {
       token: liveTokens(settings.DISPATCHER_TOKEN_URL, settings.WORKER_SECRET, job.id),
       launch: liveLauncher,

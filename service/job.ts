@@ -43,11 +43,18 @@ export const reviewMinutes = (variable: string): number =>
 export const reviewTimeLimit = (variable: string): number => CI_WAIT_SECONDS / 60 + reviewMinutes(variable);
 
 /**
- * One `agent:review` delivery, as a job for the worker: what the label's event
- * carried, what the dispatcher read, and nothing that grants anything. **It
- * carries no token**: the worker asks for one per phase, naming `id`.
+ * The workflows the service runs, one job kind each (ADR 0008): the field a
+ * job names its workflow in, and the worker's run function for it, follow
+ * from the kind. The dispatcher routes a trigger label to one.
  */
-export interface ReviewJob {
+export const JOB_KINDS = ["review"] as const;
+
+export type JobKind = (typeof JOB_KINDS)[number];
+
+/** What every job carries, whatever its workflow. */
+interface JobBase {
+  /** The workflow the job runs, which decides the rest of its shape. */
+  readonly workflow: JobKind;
   /** The dispatcher's name for the job, which a token request names. */
   readonly id: string;
   /** The release of the dispatcher that wrote it. */
@@ -56,6 +63,17 @@ export interface ReviewJob {
   readonly deadline: string;
   /** `owner/name`. */
   readonly repo: string;
+  /** The login the App posts as, `<slug>[bot]`, read off the App's own record. */
+  readonly appLogin: string;
+}
+
+/**
+ * One `agent:review` delivery, as a job for the worker: what the label's event
+ * carried, what the dispatcher read, and nothing that grants anything. **It
+ * carries no token**: the worker asks for one per phase, naming `id`.
+ */
+export interface ReviewJob extends JobBase {
+  readonly workflow: "review";
   readonly pr: number;
   /** The head branch, as the event carried it. */
   readonly branch: string;
@@ -66,10 +84,11 @@ export interface ReviewJob {
   /** The pull request's state, as the event carried it. */
   readonly state: string;
   readonly merged: boolean;
-  /** The login the App posts as, `<slug>[bot]`, read off the App's own record. */
-  readonly appLogin: string;
   readonly variables: Readonly<Record<ReviewVariable, string>>;
 }
+
+/** A job the dispatcher posts and the worker runs: one member per workflow the service serves. */
+export type Job = ReviewJob;
 
 /** What a token is for: reading only, or the posting phases' writes as well. */
 export const TOKEN_KINDS = ["read", "write"] as const;
@@ -112,25 +131,17 @@ const isObject = (value: unknown): value is Readonly<Record<string, unknown>> =>
 const REPO = /^[\w.-]+\/[\w.-]+$/;
 const SHA = /^[0-9a-f]{40}$/;
 
-/**
- * A job read off the wire, or the reason it is not one. The body is signed,
- * so this guards against a release's drift rather than an attacker: every
- * field is checked for the shape the worker hands on.
- */
-export const parseJob = (value: unknown): ReviewJob | string => {
-  if (!isObject(value)) return "the job is not an object";
-  const { id, version, deadline, repo, pr, branch, headSha, baseRef, state, merged, appLogin, variables } = value;
-  if (typeof id !== "string" || id === "") return "`id` is not a non-empty string";
-  if (typeof version !== "string" || version === "") return "`version` is not a non-empty string";
-  if (typeof deadline !== "string" || Number.isNaN(Date.parse(deadline))) return "`deadline` is not a time";
-  if (typeof repo !== "string" || !REPO.test(repo)) return "`repo` is not `owner/name`";
+type Fields = Readonly<Record<string, unknown>>;
+
+/** A review job's own fields, past the common ones, or the reason they are not. */
+const parseReview = (base: Omit<JobBase, "workflow">, value: Fields): ReviewJob | string => {
+  const { pr, branch, headSha, baseRef, state, merged, variables } = value;
   if (typeof pr !== "number" || !Number.isInteger(pr) || pr <= 0) return "`pr` is not a positive integer";
   if (typeof branch !== "string" || branch === "") return "`branch` is not a non-empty string";
   if (typeof headSha !== "string" || !SHA.test(headSha)) return "`headSha` is not a 40-character commit";
   if (typeof baseRef !== "string" || baseRef === "") return "`baseRef` is not a non-empty string";
   if (typeof state !== "string" || state === "") return "`state` is not a non-empty string";
   if (typeof merged !== "boolean") return "`merged` is not a boolean";
-  if (typeof appLogin !== "string" || appLogin === "") return "`appLogin` is not a non-empty string";
   if (!isObject(variables)) return "`variables` is not an object";
   const read: Partial<Record<ReviewVariable, string>> = {};
   for (const name of REVIEW_VARIABLES) {
@@ -139,19 +150,39 @@ export const parseJob = (value: unknown): ReviewJob | string => {
     read[name] = given;
   }
   return {
-    id,
-    version,
-    deadline,
-    repo,
+    workflow: "review",
+    ...base,
     pr,
     branch,
     headSha,
     baseRef,
     state,
     merged,
-    appLogin,
     variables: read as Record<ReviewVariable, string>,
   };
+};
+
+/** Each kind's own fields, read once the common ones are. */
+const PARSERS: Readonly<Record<JobKind, (base: Omit<JobBase, "workflow">, value: Fields) => Job | string>> = {
+  review: parseReview,
+};
+
+/**
+ * A job read off the wire, or the reason it is not one. The body is signed,
+ * so this guards against a release's drift rather than an attacker: every
+ * field is checked for the shape the worker hands on, and a kind this release
+ * does not know is refused, as an unknown token kind is.
+ */
+export const parseJob = (value: unknown): Job | string => {
+  if (!isObject(value)) return "the job is not an object";
+  const { workflow, id, version, deadline, repo, appLogin } = value;
+  if (!JOB_KINDS.some((known) => known === workflow)) return `\`workflow\` is not one of ${JOB_KINDS.map((k) => `\`${k}\``).join(", ")}`;
+  if (typeof id !== "string" || id === "") return "`id` is not a non-empty string";
+  if (typeof version !== "string" || version === "") return "`version` is not a non-empty string";
+  if (typeof deadline !== "string" || Number.isNaN(Date.parse(deadline))) return "`deadline` is not a time";
+  if (typeof repo !== "string" || !REPO.test(repo)) return "`repo` is not `owner/name`";
+  if (typeof appLogin !== "string" || appLogin === "") return "`appLogin` is not a non-empty string";
+  return PARSERS[workflow as JobKind]({ id, version, deadline, repo, appLogin }, value);
 };
 
 /** A token request read off the wire, or the reason it is not one. */

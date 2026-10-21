@@ -173,10 +173,12 @@ export const liveSandbox =
  * The checkout, with the token passed to each fetch as a header in the
  * command's own environment (`GIT_CONFIG_*`), so it is neither in the
  * checkout's configuration, where the agent could read it, nor in a process
- * listing's arguments.
+ * listing's arguments. The committer's name and its no-reply address are the
+ * one thing it configures there, as `fix.yml`'s checkout step does: the
+ * agent's commits need a name, and the sandbox's home has no git config.
  */
 export const liveGit = (host: HostEnvironment): Git => ({
-  checkout: async ({ dir, repo, branch, sha, baseRef, token, signal }) => {
+  checkout: async ({ dir, repo, branch, sha, baseRef, token, committer, signal }) => {
     const auth = Buffer.from(`x-access-token:${token}`).toString("base64");
     const env = { ...host, GIT_TERMINAL_PROMPT: "0" };
     const withToken = {
@@ -195,6 +197,8 @@ export const liveGit = (host: HostEnvironment): Git => ({
       { env: withToken, signal },
     );
     await run("git", ["-C", dir, "checkout", "--quiet", "-B", branch, sha], { env, signal });
+    await run("git", ["-C", dir, "config", "user.name", committer], { env, signal });
+    await run("git", ["-C", dir, "config", "user.email", `${committer}@users.noreply.github.com`], { env, signal });
   },
 });
 

@@ -1410,29 +1410,6 @@ const diagnoseService = (
     });
   }
 
-  // The service runs every review with a budget of 0 while it answers no
-  // `agent:fix`, whatever the variable says. Unset is no setting, so says
-  // nothing; a value that is not a count is ignored here as any other is.
-  if (
-    !SERVICE_LABELS.includes(FIX_LABEL) &&
-    typeof facts.maxFixRounds === "string" &&
-    COUNT.test(facts.maxFixRounds) &&
-    Number(facts.maxFixRounds) > 0
-  ) {
-    add({
-      severity: "warning",
-      check: "fix-round budget",
-      problem:
-        `The repository variable \`${FIX_ROUNDS_VARIABLE}\` is \`${facts.maxFixRounds}\`, but the service ` +
-        `orchestrator answers no \`${FIX_LABEL}\`, so it runs every review with a fix-round budget of ` +
-        `0: no review here adds \`${FIX_LABEL}\`, and every verdict asking for changes leaves the round ` +
-        `to you.`,
-      fix:
-        `Set it to \`0\` so it says what happens here. It counts again if you switch back to GitHub ` +
-        `Actions.`,
-    });
-  }
-
   const needed = [
     ...TRIGGER_LABELS.filter((label) => SERVICE_LABELS.includes(label.name)),
     ...STATE_LABELS,

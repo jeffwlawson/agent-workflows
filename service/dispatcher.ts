@@ -1,11 +1,11 @@
 import { randomUUID } from "node:crypto";
-import { ORCHESTRATOR_VARIABLE, REVIEW_LABEL, SERVICE_ORCHESTRATOR } from "../shared/record.js";
+import { FIX_LABEL, ORCHESTRATOR_VARIABLE, REVIEW_LABEL, SERVICE_ORCHESTRATOR } from "../shared/record.js";
 import {
   parseTokenRequest,
   REPOSITORY_VARIABLES,
-  reviewTimeLimit,
   SIGNATURE_HEADER,
   sign,
+  TIME_LIMITS,
   verifySignature,
   type Job,
   type JobKind,
@@ -17,7 +17,7 @@ import {
 /**
  * The service orchestrator's dispatcher (#456): the only holder of the GitHub
  * App's key. It has two doors. GitHub's webhook deliveries come in at one, and
- * an `agent:review` delivery on a repository that opted in becomes a job of
+ * a trigger label's delivery on a repository that opted in becomes a job of
  * the kind its label maps to, posted to the worker with no token in it. The
  * worker's token requests come in at the other, and each is answered with a
  * token scoped to the job's repository, for the one phase it asks for, while
@@ -73,7 +73,7 @@ export interface DispatcherEdges {
    * there and the repository opts in.
    */
   readonly owners: readonly string[];
-  /** Added to review's time limit for a job's deadline. */
+  /** Added to a job's own time limit, its kind's, for its deadline. */
   readonly deadlineMarginMinutes: number;
   /** The release this dispatcher is, which each job carries. */
   readonly version: string;
@@ -125,6 +125,7 @@ export const TOKEN_PERMISSIONS: Readonly<Record<TokenKind, Readonly<Record<strin
  */
 export const LABEL_KINDS: Readonly<Record<string, JobKind>> = {
   [REVIEW_LABEL]: "review",
+  [FIX_LABEL]: "fix",
 };
 
 /**
@@ -265,11 +266,12 @@ export const createDispatcher = (edges: DispatcherEdges) => {
       }
     }
 
-    // Review is the one kind this release serves, so every label routes here.
+    // Every kind this release serves runs on a pull request, so each carries
+    // the same fields; its deadline starts from its own time limit.
     const variables = Object.fromEntries(
       await Promise.all(REPOSITORY_VARIABLES.map(async (name) => [name, (await edges.github.variable(repo, name)) ?? ""] as const)),
     ) as Record<RepositoryVariable, string>;
-    const minutes = reviewTimeLimit(variables.AGENT_REVIEW_TIMEOUT_MINUTES) + edges.deadlineMarginMinutes;
+    const minutes = TIME_LIMITS[kind](variables) + edges.deadlineMarginMinutes;
     const deadline = new Date(now().getTime() + minutes * 60_000);
     const job: Job = {
       workflow: kind,

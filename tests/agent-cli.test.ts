@@ -4160,7 +4160,7 @@ describe("doctor names the failures that otherwise look like something else", ()
 
     it("is spelt once, in the record", () => {
       expect(record.ORCHESTRATOR_VARIABLE).toBe("AGENT_ORCHESTRATOR");
-      expect(SERVICE_LABELS).toEqual([record.REVIEW_LABEL]);
+      expect(SERVICE_LABELS).toEqual([record.REVIEW_LABEL, record.FIX_LABEL]);
     });
 
     it("rules on an unset variable as Actions, as before", async () => {
@@ -4174,7 +4174,7 @@ describe("doctor names the failures that otherwise look like something else", ()
     });
 
     it("passes a service-served repository with no callers and its labels", () => {
-      const findings = rule(empty(), service({ labels: ["agent:review", "agent:blocked"] }));
+      const findings = rule(empty(), service({ labels: ["agent:review", "agent:fix", "agent:blocked"] }));
 
       expect(checks(findings)).toEqual(["note orchestrator", "note service App", "warning unanswered labels"]);
     });
@@ -4188,10 +4188,10 @@ describe("doctor names the failures that otherwise look like something else", ()
     it("names every agent:* label the service does not answer, from the one list", () => {
       const [warning] = rule(empty(), service()).filter((finding) => finding.check === "unanswered labels");
 
-      for (const name of ["agent:implement", "agent:fix", "agent:update-branch", "agent:follow-ups"]) {
+      for (const name of ["agent:implement", "agent:update-branch", "agent:follow-ups"]) {
         expect(warning?.problem).toContain(`\`${name}\``);
       }
-      expect(warning?.problem).toMatch(/answers `agent:review` and no other label, so `agent:implement`/);
+      expect(warning?.problem).toMatch(/answers `agent:review`, `agent:fix` and no other label, so `agent:implement`, `agent:update-branch`/);
     });
 
     it("warns that callers left installed are skipped, and skips every Actions check", async () => {
@@ -4217,21 +4217,10 @@ describe("doctor names the failures that otherwise look like something else", ()
     it("checks the labels the service needs exist, and no others", () => {
       const missing = rule(empty(), service({ labels: ["agent:blocked"] })).find((finding) => finding.check === "labels");
       expect(missing?.severity).toBe("error");
-      expect(missing?.problem).toMatch(/^agent:review does not exist/);
+      expect(missing?.problem).toMatch(/^agent:review, agent:fix do not exist/);
 
       const unread = rule(empty(), service({ labels: undefined })).find((finding) => finding.check === "labels");
       expect(unread?.severity).toBe("warning");
-    });
-
-    it("warns where a fix-round budget above 0 is set, which the service runs as 0", () => {
-      const budget = (value: string | null | undefined): readonly Finding[] =>
-        rule(empty(), service({ maxFixRounds: value })).filter((finding) => finding.check === "fix-round budget");
-
-      const [two] = budget("2");
-      expect(two?.severity).toBe("warning");
-      expect(two?.problem).toContain(`\`${FIX_ROUNDS_VARIABLE}\` is \`2\``);
-      expect(two?.problem).toContain("budget of 0");
-      for (const value of ["0", null, undefined, "three"]) expect(budget(value), String(value)).toEqual([]);
     });
 
     it("errors on any other value, and checks the repository as an Actions one", async () => {

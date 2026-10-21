@@ -16,12 +16,15 @@ import { CI_WAIT_SECONDS } from "../review/collect-checks.js";
  * on Actions. `AGENT_SETUP` is the repository's setup, the script the worker
  * runs in the sandbox before a runner that needs the repository's
  * dependencies (PRD #515): an admin's to set, and handed to the sandbox's
- * shell unevaluated.
+ * shell unevaluated. `AGENT_MODEL_FIX` and `AGENT_TIMEOUT_MINUTES` are what
+ * `fix.yml` reads: the fix runner's model, and the agent's job's time limit.
  */
 export const REPOSITORY_VARIABLES = [
   "AGENT_MODEL",
   "AGENT_MODEL_REVIEW",
+  "AGENT_MODEL_FIX",
   "AGENT_REVIEW_TIMEOUT_MINUTES",
+  "AGENT_TIMEOUT_MINUTES",
   "AGENT_MAX_FIX_ROUNDS",
   "AGENT_SETUP",
 ] as const;
@@ -47,11 +50,26 @@ export const reviewMinutes = (variable: string): number =>
 export const reviewTimeLimit = (variable: string): number => CI_WAIT_SECONDS / 60 + reviewMinutes(variable);
 
 /**
+ * The fix agent's job's time limit where `AGENT_TIMEOUT_MINUTES` is unset or
+ * not a positive integer: the figure `fix.yml`'s agent's job falls back to.
+ */
+export const DEFAULT_FIX_MINUTES = 30;
+
+/**
+ * The fix agent's job's time limit, in minutes, from the variable as the job
+ * carries it: the agent's job's `timeout-minutes` in `fix.yml`. The
+ * dispatcher's deadline for a fix job starts from it, and the worker holds the
+ * checkout, `fix:prepare`, the setup and the runner to it.
+ */
+export const fixTimeLimit = (variable: string): number =>
+  /^[1-9][0-9]*$/.test(variable) ? Number(variable) : DEFAULT_FIX_MINUTES;
+
+/**
  * The workflows the service runs, one job kind each (ADR 0008): the field a
  * job names its workflow in, and the worker's run function for it, follow
  * from the kind. The dispatcher routes a trigger label to one.
  */
-export const JOB_KINDS = ["review"] as const;
+export const JOB_KINDS = ["review", "fix"] as const;
 
 export type JobKind = (typeof JOB_KINDS)[number];
 
@@ -72,12 +90,12 @@ interface JobBase {
 }
 
 /**
- * One `agent:review` delivery, as a job for the worker: what the label's event
- * carried, what the dispatcher read, and nothing that grants anything. **It
- * carries no token**: the worker asks for one per phase, naming `id`.
+ * What a job on a pull request carries past the common fields: what the
+ * label's event carried, what the dispatcher read, and nothing that grants
+ * anything. **It carries no token**: the worker asks for one per phase,
+ * naming `id`.
  */
-export interface ReviewJob extends JobBase {
-  readonly workflow: "review";
+interface PullRequestJob extends JobBase {
   readonly pr: number;
   /** The head branch, as the event carried it. */
   readonly branch: string;
@@ -91,8 +109,27 @@ export interface ReviewJob extends JobBase {
   readonly variables: Readonly<Record<RepositoryVariable, string>>;
 }
 
+/** One `agent:review` delivery, as a job for the worker. */
+export interface ReviewJob extends PullRequestJob {
+  readonly workflow: "review";
+}
+
+/** One `agent:fix` delivery, as a job for the worker. */
+export interface FixJob extends PullRequestJob {
+  readonly workflow: "fix";
+}
+
 /** A job the dispatcher posts and the worker runs: one member per workflow the service serves. */
-export type Job = ReviewJob;
+export type Job = ReviewJob | FixJob;
+
+/**
+ * Each kind's time limit, in minutes, from the repository's variables: the
+ * dispatcher's deadline for a job starts from it.
+ */
+export const TIME_LIMITS: Readonly<Record<JobKind, (variables: Readonly<Record<RepositoryVariable, string>>) => number>> = {
+  review: (variables) => reviewTimeLimit(variables.AGENT_REVIEW_TIMEOUT_MINUTES),
+  fix: (variables) => fixTimeLimit(variables.AGENT_TIMEOUT_MINUTES),
+};
 
 /** What a token is for: reading only, the posting phases' writes as well, or those and a push. */
 export const TOKEN_KINDS = ["read", "write", "push"] as const;
@@ -137,8 +174,12 @@ const SHA = /^[0-9a-f]{40}$/;
 
 type Fields = Readonly<Record<string, unknown>>;
 
-/** A review job's own fields, past the common ones, or the reason they are not. */
-const parseReview = (base: Omit<JobBase, "workflow">, value: Fields): ReviewJob | string => {
+/** A pull request job's own fields, past the common ones, or the reason they are not. */
+const parsePullRequest = <K extends JobKind>(
+  workflow: K,
+  base: Omit<JobBase, "workflow">,
+  value: Fields,
+): (Omit<PullRequestJob, "workflow"> & { readonly workflow: K }) | string => {
   const { pr, branch, headSha, baseRef, state, merged, variables } = value;
   if (typeof pr !== "number" || !Number.isInteger(pr) || pr <= 0) return "`pr` is not a positive integer";
   if (typeof branch !== "string" || branch === "") return "`branch` is not a non-empty string";
@@ -154,7 +195,7 @@ const parseReview = (base: Omit<JobBase, "workflow">, value: Fields): ReviewJob 
     read[name] = given;
   }
   return {
-    workflow: "review",
+    workflow,
     ...base,
     pr,
     branch,
@@ -168,7 +209,8 @@ const parseReview = (base: Omit<JobBase, "workflow">, value: Fields): ReviewJob 
 
 /** Each kind's own fields, read once the common ones are. */
 const PARSERS: Readonly<Record<JobKind, (base: Omit<JobBase, "workflow">, value: Fields) => Job | string>> = {
-  review: parseReview,
+  review: (base, value) => parsePullRequest("review", base, value),
+  fix: (base, value) => parsePullRequest("fix", base, value),
 };
 
 /**

@@ -408,6 +408,13 @@ export const ISSUE_BRANCH_PREFIX = "agent/issue-";
 export const issueBranch = (issue: number, title: string): string => `${ISSUE_BRANCH_PREFIX}${issue}-${slugOf(title)}`;
 
 /**
+ * Where a stopped fix run on pull request `pr` leaves its commits, its
+ * `RESCUE_BRANCH`: `agent/rescue/fix-<pr>`, as `fix.yml` names it for its
+ * steps. The service's fix job names it from here.
+ */
+export const fixRescueBranch = (pr: number): string => `agent/rescue/fix-${pr}`;
+
+/**
  * The stable half of every PRD branch of parent `parent`, `agent/prd-<parent>-`,
  * with the dash that stops #17 matching #171's branch: what the PRD branch is
  * found by, since the slug half comes from an editable title.

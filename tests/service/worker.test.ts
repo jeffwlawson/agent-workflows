@@ -3,7 +3,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { CI_WAIT_SECONDS } from "../../review/collect-checks.js";
-import { DEFAULT_REVIEW_MINUTES, sign, SIGNATURE_HEADER, type ReviewJob, type TokenKind } from "../../service/job.js";
+import { DEFAULT_FIX_MINUTES, DEFAULT_REVIEW_MINUTES, sign, SIGNATURE_HEADER, type FixJob, type Job, type ReviewJob, type TokenKind } from "../../service/job.js";
 import {
   jobDoor,
   REDACTED,
@@ -50,7 +50,15 @@ const JOB: ReviewJob = {
   state: "open",
   merged: false,
   appLogin: "loop-app[bot]",
-  variables: { AGENT_MODEL: "a-model", AGENT_MODEL_REVIEW: "", AGENT_REVIEW_TIMEOUT_MINUTES: "", AGENT_MAX_FIX_ROUNDS: "3", AGENT_SETUP: "" },
+  variables: {
+    AGENT_MODEL: "a-model",
+    AGENT_MODEL_REVIEW: "",
+    AGENT_MODEL_FIX: "",
+    AGENT_REVIEW_TIMEOUT_MINUTES: "",
+    AGENT_TIMEOUT_MINUTES: "",
+    AGENT_MAX_FIX_ROUNDS: "3",
+    AGENT_SETUP: "",
+  },
 };
 
 /** What a subcommand writes into its `OUTPUT_DIR`, and how it exits, or that it hangs until its time limit ends it. */
@@ -104,8 +112,8 @@ const setup = (
   const events: string[] = [];
   const launched: (Launch & { readonly emptyAtStart: boolean })[] = [];
   const asked: TokenKind[] = [];
-  const runDir = path.join(scratch, "run");
-  fs.mkdirSync(runDir);
+  // A run's own directory, fresh, so a test can run more than one job.
+  const runDir = fs.mkdtempSync(path.join(scratch, "run-"));
   const edges = {
     token: async (kind: TokenKind) => {
       asked.push(kind);
@@ -125,7 +133,18 @@ const setup = (
       return hangs ? hang(launch.signal, 143) : exit;
     },
     git: {
-      checkout: async ({ signal, ...rest }: { dir: string; sha: string; branch: string; baseRef: string; token: string; signal: AbortSignal }) => {
+      checkout: async ({
+        signal,
+        ...rest
+      }: {
+        dir: string;
+        sha: string;
+        branch: string;
+        baseRef: string;
+        token: string;
+        committer: string;
+        signal: AbortSignal;
+      }) => {
         events.push("checkout");
         checkouts.push(rest);
         if (options.checkoutHangs === true) {
@@ -148,7 +167,7 @@ const setup = (
     runDir,
     ...(options.minuteMs === undefined ? {} : { minuteMs: options.minuteMs }),
   };
-  const checkouts: { dir: string; sha: string; branch: string; baseRef: string; token: string }[] = [];
+  const checkouts: { dir: string; sha: string; branch: string; baseRef: string; token: string; committer: string }[] = [];
   const env = (subcommand: Subcommand): Readonly<Record<string, string>> => {
     const found = launched.find((launch) => launch.subcommand === subcommand);
     if (found === undefined) throw new Error(`${subcommand} was not started`);
@@ -233,7 +252,15 @@ describe("the worker's job, on an ordinary pull request", () => {
     await runJob(JOB, s.edges);
 
     expect(s.checkouts).toEqual([
-      { dir: path.join(s.runDir, "checkout"), repo: "owner/repo", branch: "agent/issue-7-a-thing", sha: HEAD, baseRef: "main", token: "read-token-1" },
+      {
+        dir: path.join(s.runDir, "checkout"),
+        repo: "owner/repo",
+        branch: "agent/issue-7-a-thing",
+        sha: HEAD,
+        baseRef: "main",
+        token: "read-token-1",
+        committer: "loop-app[bot]",
+      },
     ]);
     for (const subcommand of ["review:budget", "review:collect-checks", "review"] as const) {
       expect(s.launched.find((launch) => launch.subcommand === subcommand)?.cwd).toBe(path.join(s.runDir, "checkout"));
@@ -302,12 +329,34 @@ describe("the worker's job, on an ordinary pull request", () => {
     expect(s.asked).toEqual(["read", "read", "write"]);
   });
 
-  it("hands review:budget a fix-round budget of 0, whatever the repository's variable says", async () => {
+  it("hands review:budget the budget the gate settled from AGENT_MAX_FIX_ROUNDS, as review.yml does", async () => {
     const s = setup();
     await runJob(JOB, s.edges);
 
     expect(JOB.variables.AGENT_MAX_FIX_ROUNDS).toBe("3");
-    expect(s.env("review:budget")).toMatchObject({ FIX_ROUND_BUDGET: "0", LOOP_TOKEN_SOURCE: "app", BASE_REF: "main" });
+    expect(s.env("review:gate")["MAX_FIX_ROUNDS"]).toBe("3");
+    expect(s.env("review:budget")).toMatchObject({ FIX_ROUND_BUDGET: "3", LOOP_TOKEN_SOURCE: "app", BASE_REF: "main" });
+  });
+
+  it("hands the runner and conclude a round to start, where the budget has one left, and none where it is spent", async () => {
+    const changes = { "verdict.json": { verdict: "request_changes", fixRound: true, open: 2 } };
+    const left = setup({
+      ...ORDINARY,
+      "review:budget": { files: { "budget.json": { budget: "3", spent: "1", start: "true" } } },
+      review: { files: changes },
+    });
+    await runJob(JOB, left.edges);
+    expect(left.env("review")).toMatchObject({ AUTO_FIX: "true", FIX_ROUND_BUDGET: "3", FIX_ROUNDS_SPENT: "1" });
+    expect(left.env("review:conclude")).toMatchObject({ VERDICT: "request_changes", FIX_ROUND: "true", FIX_ROUND_BUDGET: "3", FIX_ROUNDS_SPENT: "1" });
+
+    const spent = setup({
+      ...ORDINARY,
+      "review:budget": { files: { "budget.json": { budget: "3", spent: "3", start: "false" } } },
+      review: { files: { "verdict.json": { verdict: "request_changes", fixRound: false, open: 2 } } },
+    });
+    await runJob(JOB, spent.edges);
+    expect(spent.env("review")).toMatchObject({ AUTO_FIX: "false", FIX_ROUND_BUDGET: "3", FIX_ROUNDS_SPENT: "3" });
+    expect(spent.env("review:conclude")).toMatchObject({ FIX_ROUND: "false", FIX_ROUND_BUDGET: "3", FIX_ROUNDS_SPENT: "3" });
   });
 
   it("gives every subcommand a fresh output directory of its own", async () => {
@@ -697,6 +746,315 @@ describe("the repository's setup, as a phase primitive", () => {
   });
 });
 
+const FIX_JOB: FixJob = { ...JOB, workflow: "fix" };
+const RESCUE = "agent/rescue/fix-7";
+
+/** The files each fix subcommand writes on a round that goes ahead and pushes. */
+const FIX_ORDINARY: Readonly<Partial<Record<Subcommand, Canned>>> = {
+  "fix:gate": { files: { "gate.json": { proceed: "true" } } },
+  fix: { files: { "thread_outcomes.json": [] } },
+  "fix:bundle": { files: { "branch.bundle": "the agent's commits" } },
+  "fix:publish": { files: { "published.json": { pushed: true, head: "b".repeat(40), notesPosted: false, nothingToDo: false, rescueNoted: false } } },
+};
+
+/** Every value in `env` that is one of the fake dispatcher's tokens. */
+const tokensIn = (env: Readonly<Record<string, string>>): readonly string[] =>
+  Object.values(env).filter((value) => /^(read|write|push)-token-/.test(value));
+
+/**
+ * A fix job, run as `fix.yml` runs one (spec §9): the gate, the agent's job,
+ * the publish job, and conclude, each command told what the reusable tells it.
+ */
+describe("the worker's fix job, on a round that goes ahead", () => {
+  it("runs the gate, the checkout, prepare, the setup, the runner, bundle, publish and conclude, in that order", async () => {
+    const s = setup(FIX_ORDINARY);
+    await runJob({ ...FIX_JOB, variables: { ...FIX_JOB.variables, AGENT_SETUP: "npm ci" } }, s.edges);
+
+    expect(s.events).toEqual([
+      "write token",
+      "fix:gate",
+      "read token",
+      "checkout",
+      "fix:prepare",
+      "sandbox",
+      "read token",
+      "fix",
+      "fix:bundle",
+      "push token",
+      "fix:publish",
+      "fix:conclude",
+    ]);
+  });
+
+  it("hands each command its token kind: write to the gate, read to prepare and the runner, none to bundle, push to publish and conclude", async () => {
+    const s = setup(FIX_ORDINARY);
+    await runJob(FIX_JOB, s.edges);
+
+    expect(s.asked).toEqual(["write", "read", "read", "push"]);
+    expect(tokensIn(s.env("fix:gate"))).toEqual(["write-token-1"]);
+    expect(tokensIn(s.env("fix:prepare"))).toEqual(["read-token-2"]);
+    expect(tokensIn(s.env("fix"))).toEqual(["read-token-3"]);
+    expect(tokensIn(s.env("fix:bundle"))).toEqual([]);
+    for (const subcommand of ["fix:publish", "fix:conclude"] as const) {
+      expect(s.env(subcommand), subcommand).toMatchObject({ GH_TOKEN: "push-token-4", LOOP_TOKEN: "push-token-4", LOOP_TOKEN_SOURCE: "app" });
+    }
+  });
+
+  it("puts only the read token in the runner's environment, beside the agent's own", async () => {
+    const s = setup(FIX_ORDINARY);
+    await runJob(FIX_JOB, s.edges);
+
+    const runner = s.env("fix");
+    expect(Object.entries(runner).filter(([name]) => name.endsWith("TOKEN")).sort()).toEqual([
+      ["CLAUDE_CODE_OAUTH_TOKEN", AGENT.CLAUDE_CODE_OAUTH_TOKEN],
+      ["GH_TOKEN", "read-token-3"],
+    ]);
+    expect(Object.values(runner).filter((value) => /write-token|push-token/.test(value))).toEqual([]);
+    expect(runner).not.toHaveProperty("LOOP_TOKEN");
+  });
+
+  it("checks out the head the label's event named, as the branch, with the base, committing as the App", async () => {
+    const s = setup(FIX_ORDINARY);
+    await runJob(FIX_JOB, s.edges);
+
+    const checkout = path.join(s.runDir, "checkout");
+    expect(s.checkouts).toEqual([
+      { dir: checkout, repo: "owner/repo", branch: "agent/issue-7-a-thing", sha: HEAD, baseRef: "main", token: "read-token-2", committer: "loop-app[bot]" },
+    ]);
+    expect(s.launched.find((launch) => launch.subcommand === "fix")?.cwd).toBe(checkout);
+    for (const subcommand of ["fix:prepare", "fix:bundle", "fix:publish", "fix:conclude"] as const) {
+      expect(s.env(subcommand)["CHECKOUT"], subcommand).toBe(checkout);
+    }
+  });
+
+  it("hands each subcommand the inputs fix.yml hands it", async () => {
+    const s = setup(FIX_ORDINARY);
+    await runJob({ ...FIX_JOB, variables: { ...FIX_JOB.variables, AGENT_MODEL_FIX: "a-fix-model" } }, s.edges);
+
+    expect(s.env("fix:gate")).toMatchObject({ GH_REPO: "owner/repo", PR_NUMBER: "7", BRANCH: "agent/issue-7-a-thing", HEAD_SHA: HEAD, PR_STATE: "open", PR_MERGED: "false" });
+    expect(s.env("fix:prepare")).toMatchObject({ GH_REPO: "owner/repo", RESCUE_BRANCH: RESCUE });
+    expect(s.env("fix")).toMatchObject({
+      ...AGENT,
+      PR_NUMBER: "7",
+      BRANCH: "agent/issue-7-a-thing",
+      BASE_REF: "main",
+      RESCUE_BRANCH: RESCUE,
+      AGENT_MODEL: "a-model",
+      AGENT_MODEL_FIX: "a-fix-model",
+      AGENT_LOOP_LOGINS: "loop-app[bot]",
+    });
+    expect(s.env("fix:bundle")).toMatchObject({ BRANCH: "agent/issue-7-a-thing", HEAD_SHA: HEAD });
+    expect(s.env("fix:publish")).toMatchObject({ PR_NUMBER: "7", BRANCH: "agent/issue-7-a-thing", HEAD_SHA: HEAD, RESCUE_BRANCH: RESCUE, AGENT_RESULT: "success" });
+    // No Actions run to link to.
+    for (const name of ["GITHUB_SERVER_URL", "GITHUB_REPOSITORY", "GITHUB_RUN_ID"]) expect(s.env("fix:conclude")).not.toHaveProperty(name);
+  });
+
+  it("points each command that reads another's files at that one's directory", async () => {
+    const s = setup(FIX_ORDINARY);
+    await runJob(FIX_JOB, s.edges);
+
+    const out = (subcommand: Subcommand): string | undefined => s.env(subcommand)["OUTPUT_DIR"];
+    expect(s.env("fix:publish")).toMatchObject({ FIX_DIR: out("fix"), BUNDLE_DIR: out("fix:bundle") });
+    expect(s.env("fix:conclude")).toMatchObject({
+      PUBLISH_DIR: out("fix:publish"),
+      PREPARE_DIR: out("fix:prepare"),
+      FIX_DIR: out("fix"),
+      BUNDLE_DIR: out("fix:bundle"),
+    });
+    const dirs = s.launched.map(({ env }) => env["OUTPUT_DIR"]);
+    expect(new Set(dirs).size).toBe(s.launched.length);
+  });
+
+  it("tells conclude how each job and step ended", async () => {
+    const s = setup(FIX_ORDINARY);
+    await runJob(FIX_JOB, s.edges);
+
+    expect(s.env("fix:conclude")).toMatchObject({
+      REFUSED: "false",
+      GATE_RESULT: "success",
+      AGENT_RESULT: "success",
+      TIMED_OUT: "false",
+      TIMEOUT_MINUTES: String(DEFAULT_FIX_MINUTES),
+      MINT_OUTCOME: "success",
+      DOWNLOAD_OUTCOME: "success",
+      PUBLISH_OUTCOME: "success",
+    });
+    expect(s.env("fix:conclude")).not.toHaveProperty("GATE_REASON");
+  });
+});
+
+describe("the worker's fix job, where the gate does not claim the round", () => {
+  it("runs the gate alone where it refused, since it said so and took the label off", async () => {
+    const s = setup({ ...FIX_ORDINARY, "fix:gate": { files: { "gate.json": { proceed: "false" } } } });
+    await runJob(FIX_JOB, s.edges);
+
+    expect(s.events).toEqual(["write token", "fix:gate"]);
+  });
+
+  it("concludes, with no agent's job, where the gate decided nothing", async () => {
+    const s = setup({ ...FIX_ORDINARY, "fix:gate": { exit: 1 } });
+    await runJob(FIX_JOB, s.edges);
+
+    expect(s.events).toEqual(["write token", "fix:gate", "push token", "fix:conclude"]);
+    expect(s.env("fix:conclude")).toMatchObject({ GATE_RESULT: "failure", AGENT_RESULT: "skipped", MINT_OUTCOME: "success" });
+    for (const name of ["REFUSED", "DOWNLOAD_OUTCOME", "PUBLISH_OUTCOME"]) expect(s.env("fix:conclude")).not.toHaveProperty(name);
+  });
+
+  it("hands conclude the gate's reason where it failed after claiming the round", async () => {
+    const s = setup({ ...FIX_ORDINARY, "fix:gate": { exit: 1, files: { "gate.json": { proceed: "true" }, "failure_reason.txt": "Couldn't add `agent:fix`." } } });
+    await runJob(FIX_JOB, s.edges);
+
+    expect(s.events).not.toContain("fix");
+    expect(s.env("fix:conclude")).toMatchObject({
+      REFUSED: "false",
+      GATE_RESULT: "failure",
+      GATE_REASON: "Couldn't add `agent:fix`.",
+      AGENT_RESULT: "skipped",
+    });
+  });
+
+  it("logs the reason where no token to claim the round with was granted, and concludes undecided", async () => {
+    const s = setup(FIX_ORDINARY, { refused: [1] });
+    const phases = await runJob(FIX_JOB, s.edges);
+
+    expect(phases).toContainEqual({ name: "fix:gate", outcome: "not run: the dispatcher granted no token to claim the pull request with" });
+    expect(s.events).toEqual(["write token", "push token", "fix:conclude"]);
+    expect(s.env("fix:conclude")).toMatchObject({ GATE_RESULT: "failure", AGENT_RESULT: "skipped" });
+  });
+});
+
+describe("the worker's fix job, where its agent's job fails", () => {
+  it("still bundles, and tells publish and conclude, where the runner failed", async () => {
+    const s = setup({ ...FIX_ORDINARY, fix: { exit: 1, files: { "failure_reason.txt": "The agent gave up." } } });
+    await runJob(FIX_JOB, s.edges);
+
+    expect(s.events.slice(-4)).toEqual(["fix:bundle", "push token", "fix:publish", "fix:conclude"]);
+    expect(s.env("fix:publish")["AGENT_RESULT"]).toBe("failure");
+    expect(s.env("fix:conclude")).toMatchObject({ AGENT_RESULT: "failure", TIMED_OUT: "false" });
+  });
+
+  it("starts no runner where the setup failed, and gives conclude the setup's reason as the runner's", async () => {
+    const s = setup(FIX_ORDINARY, { setupRun: { exit: 2, output: "npm ERR! missing script\n" } });
+    await runJob({ ...FIX_JOB, variables: { ...FIX_JOB.variables, AGENT_SETUP: "npm ci" } }, s.edges);
+
+    expect(s.events).not.toContain("fix");
+    expect(s.events).toContain("fix:bundle");
+    const fixDir = s.env("fix:conclude")["FIX_DIR"]!;
+    expect(fs.readFileSync(path.join(fixDir, "failure_reason.txt"), "utf8")).toMatch(/^The repository's setup \(`AGENT_SETUP`\) exited with status 2\./);
+    expect(s.env("fix:conclude")).toMatchObject({ AGENT_RESULT: "failure" });
+  });
+
+  it("starts no runner where prepare failed, and leaves its reason where conclude reads it", async () => {
+    const reason = "Couldn't check whether an earlier run left commits on `agent/rescue/fix-7`, so this run stopped rather than start over without them.";
+    const s = setup({ ...FIX_ORDINARY, "fix:prepare": { exit: 1, files: { "failure_reason.txt": reason } } });
+    await runJob(FIX_JOB, s.edges);
+
+    expect(s.events).not.toContain("fix");
+    expect(fs.readFileSync(path.join(s.env("fix:conclude")["PREPARE_DIR"]!, "failure_reason.txt"), "utf8")).toBe(reason);
+  });
+
+  it("writes prepare's reason where the head could not be checked out", async () => {
+    const s = setup(FIX_ORDINARY);
+    s.edges.git.checkout = async () => {
+      throw new Error("fatal: couldn't find remote ref");
+    };
+    await runJob(FIX_JOB, s.edges);
+
+    expect(s.events).not.toContain("fix:prepare");
+    expect(fs.readFileSync(path.join(s.env("fix:conclude")["PREPARE_DIR"]!, "failure_reason.txt"), "utf8")).toBe(
+      "The pull request's head could not be checked out: fatal: couldn't find remote ref",
+    );
+  });
+
+  it("tells conclude the mint failed, publishes nothing, and asks again for conclude's own token", async () => {
+    const s = setup(FIX_ORDINARY, { refused: [4] });
+    await runJob(FIX_JOB, s.edges);
+
+    expect(s.events).not.toContain("fix:publish");
+    expect(s.env("fix:conclude")).toMatchObject({ MINT_OUTCOME: "failure", GH_TOKEN: "push-token-5", LOOP_TOKEN: "push-token-5" });
+    expect(s.env("fix:conclude")).not.toHaveProperty("PUBLISH_OUTCOME");
+  });
+
+  it("logs why the round ended where nothing can write its ending", async () => {
+    const s = setup({ ...FIX_ORDINARY, fix: { exit: 1 } }, { refused: [4, 5] });
+    const phases = await runJob(FIX_JOB, s.edges);
+
+    expect(s.events).not.toContain("fix:conclude");
+    expect(phases.at(-1)).toEqual({
+      name: "fix:conclude",
+      outcome:
+        "not run: the dispatcher granted no token to write the ending with, and the run had ended so: the gate's result was success, and the agent's failure",
+    });
+  });
+});
+
+/**
+ * The agent's job's time limit is `AGENT_TIMEOUT_MINUTES`, as `fix.yml`'s is,
+ * and a round stopped at it still bundles, publishes and concludes, so its
+ * commits are rescued. A minute is shortened here so a limit is reached at once.
+ */
+describe("the worker's fix job, where its agent's job runs past its time limit", () => {
+  const MINUTE_MS = 5;
+
+  it.each<[string, Readonly<Partial<Record<Subcommand, Canned>>>, { readonly checkoutHangs?: boolean; readonly setupRun?: { readonly hangs: true } }]>([
+    ["the runner", { ...FIX_ORDINARY, fix: { hangs: true } }, {}],
+    ["prepare", { ...FIX_ORDINARY, "fix:prepare": { hangs: true } }, {}],
+    ["the setup", FIX_ORDINARY, { setupRun: { hangs: true } }],
+    ["the checkout", FIX_ORDINARY, { checkoutHangs: true }],
+  ])("ends %s, still bundles, publishes and concludes, and tells conclude it timed out", async (_name, canned, options) => {
+    const s = setup(canned, { minuteMs: MINUTE_MS, ...options });
+    const phases = await runJob({ ...FIX_JOB, variables: { ...FIX_JOB.variables, AGENT_SETUP: "npm ci" } }, s.edges);
+
+    expect(phases.filter(({ outcome }) => outcome === "timed out")).toHaveLength(1);
+    expect(s.events.slice(-4)).toEqual(["fix:bundle", "push token", "fix:publish", "fix:conclude"]);
+    expect(s.env("fix:publish")["AGENT_RESULT"]).toBe("cancelled");
+    expect(s.env("fix:conclude")).toMatchObject({
+      AGENT_RESULT: "cancelled",
+      TIMED_OUT: "true",
+      TIMEOUT_MINUTES: String(DEFAULT_FIX_MINUTES),
+    });
+  });
+
+  it("reads the limit from the repository's AGENT_TIMEOUT_MINUTES", async () => {
+    const s = setup({ ...FIX_ORDINARY, fix: { hangs: true } }, { minuteMs: MINUTE_MS });
+    await runJob({ ...FIX_JOB, variables: { ...FIX_JOB.variables, AGENT_TIMEOUT_MINUTES: "2" } }, s.edges);
+
+    expect(s.env("fix:conclude")).toMatchObject({ TIMED_OUT: "true", TIMEOUT_MINUTES: "2" });
+  });
+
+  it("bundles under a limit of its own, which the agent's having run out does not abort", async () => {
+    const s = setup({ ...FIX_ORDINARY, fix: { hangs: true } }, { minuteMs: MINUTE_MS });
+    await runJob(FIX_JOB, s.edges);
+
+    const signals = Object.fromEntries(s.launched.map(({ subcommand, signal }) => [subcommand, signal.aborted]));
+    expect(signals).toMatchObject({ fix: true, "fix:bundle": false, "fix:publish": false, "fix:conclude": false });
+  });
+});
+
+/**
+ * Rescue (#303) runs unchanged on the worker's checkout: a stopped round's
+ * bundle reaches `fix:conclude`, which pushes it to the rescue branch with the
+ * `push` token, and the next round's `fix:prepare` fetches that branch into
+ * its own checkout before the runner starts.
+ */
+describe("the worker's fix job, rescuing a stopped round", () => {
+  it("hands conclude the stopped round's bundle, the rescue branch and a token that pushes, and the next round's prepare the same branch", async () => {
+    const stopped = setup({ ...FIX_ORDINARY, fix: { hangs: true } }, { minuteMs: 5 });
+    await runJob(FIX_JOB, stopped.edges);
+
+    const concluded = stopped.env("fix:conclude");
+    expect(fs.existsSync(path.join(concluded["BUNDLE_DIR"]!, "branch.bundle"))).toBe(true);
+    expect(concluded).toMatchObject({ RESCUE_BRANCH: RESCUE, LOOP_TOKEN: "push-token-4", MINT_OUTCOME: "success", AGENT_RESULT: "cancelled" });
+
+    const next = setup(FIX_ORDINARY);
+    await runJob({ ...FIX_JOB, id: "job-2" }, next.edges);
+
+    expect(next.env("fix:prepare")).toMatchObject({ RESCUE_BRANCH: RESCUE, CHECKOUT: path.join(next.runDir, "checkout") });
+    expect(next.events.indexOf("fix:prepare")).toBeLessThan(next.events.indexOf("fix"));
+    expect(next.env("fix")["RESCUE_BRANCH"]).toBe(RESCUE);
+  });
+});
+
 describe("the run's directory", () => {
   const read = (runDir: string): string => fs.readFileSync(path.join(runDir, SUMMARY_FILE), "utf8");
 
@@ -758,7 +1116,7 @@ describe("the job door", () => {
     return { headers: { [SIGNATURE_HEADER]: sign(secret, body) }, body };
   };
   const door = () => {
-    const accepted: ReviewJob[] = [];
+    const accepted: Job[] = [];
     return { accepted, handle: jobDoor({ secret: SECRET, version: "9.9.9", accept: (job) => accepted.push(job) }) };
   };
 
@@ -794,7 +1152,7 @@ describe("the job door", () => {
     const response = d.handle(request(job));
 
     expect(response.status).toBe(400);
-    expect(JSON.parse(response.body)).toEqual({ refusal: "`workflow` is not one of `review`" });
+    expect(JSON.parse(response.body)).toEqual({ refusal: "`workflow` is not one of `review`, `fix`" });
     expect(d.accepted).toEqual([]);
   });
 

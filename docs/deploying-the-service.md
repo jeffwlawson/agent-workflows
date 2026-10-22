@@ -176,7 +176,9 @@ round's ending without a rescue. For update-branch: `write` for `update-branch:g
 `update-branch:merge`, which runs in the worker's checkout, outside the sandbox, and pushes nothing;
 `read` for the agent's checkout and `update-branch:prepare`, and a fresh `read` for the runner; none
 for `update-branch:bundle`; and `push` for `update-branch:publish` and `update-branch:conclude`, with
-`write` for conclude where `push` is refused, as fix's.
+`write` for conclude where `push` is refused, as fix's. A gate that refuses ends either job
+there, as it skips the publish job on Actions: no token is asked for after it, and neither publish
+nor conclude runs. A gate that failed before it decided is not a refusal, and conclude still runs.
 The runner never holds a token that writes. It needs:
 
 - Linux, Node 24.14 or later, `git`, `npm`, and the package (`npm exec
@@ -215,7 +217,7 @@ asks for the re-review, and `fix:conclude` ends the round, pushing a stopped rou
 configuration: each command is handed its token in its environment. It does keep a committer, the
 App's login and its no-reply address, as `fix.yml`'s checkout sets one, since the agent commits.
 
-An update-branch job runs `update-branch:gate`, then, where it claimed the run, checks the head out
+An update-branch job runs `update-branch:gate`, and ends there where it refused; where it claimed the run, it checks the head out
 with the base and runs `update-branch:merge` there. A clean merge, or a branch already up to date,
 goes straight to `update-branch:publish`, which makes the merge again in a checkout of its own,
 pushes it and carries the verdict over; no setup and no runner run. A merge that conflicts runs the

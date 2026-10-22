@@ -2292,7 +2292,10 @@ diffing, which the orchestrator prepares, and `RESCUE_BRANCH` fetched to
 > since the App adds one only under the budget (ADR 0008). It asks the dispatcher for a `write`
 > token and runs `fix:gate` with the head commit, state and merged flag the label's event carried:
 > the gate writes, its refusal and its permission probe, as the gate job's token does with
-> `pull-requests: write`. A refusal ends the run there. Where the gate succeeded and claimed the
+> `pull-requests: write`. A refusal ends the run there, as on Actions it skips the publish job:
+> no token is asked for after it, `fix:publish` and `fix:conclude` do not run, and the run's
+> summary notes the refusal. An undecided gate is not a refusal, and conclude still runs. Where the
+> gate succeeded and claimed the
 > run, it asks for a `read` token and checks out the event's head as `BRANCH`, fetching
 > `BASE_REF`, the token passed with each fetch and never stored in the checkout, which keeps only a
 > committer, the App's login, as `fix.yml`'s checkout step sets one. Then `fix:prepare`, with the
@@ -2716,8 +2719,10 @@ neither.
 > `OUTPUT_DIR` of its own and an environment built from its declaration, and writes nothing to the
 > record itself. It answers an `agent:update-branch` from a person who can write and from its own
 > App alike (ADR 0008). It asks the dispatcher for a `write` token and runs `update-branch:gate`
-> with the state and merged flag the label's event carried. Where the gate claimed the run, it
-> checks out the event's head as `BRANCH`, fetching `BASE_REF`, with that token passed with each
+> with the state and merged flag the label's event carried. A refusal ends the run there, as on
+> Actions it skips the publish job: no token is asked for after it, publish and
+> `update-branch:conclude` do not run, and the run's summary notes the refusal. Where the gate
+> claimed the run, it checks out the event's head as `BRANCH`, fetching `BASE_REF`, with that token passed with each
 > fetch and never stored, and runs `update-branch:merge` there with the same token: outside the
 > sandbox, since it runs none of the pull request's code, and holding no `push` token, since
 > nothing is pushed until publish. Only where the merge conflicted does the agent's job run: a
@@ -2725,7 +2730,7 @@ neither.
 > setup, `AGENT_SETUP`, in the bwrap sandbox with no token, the runner in the sandbox its settings
 > name with a fresh `read` token as `GH_TOKEN`, and `update-branch:bundle`, handed no token, where
 > those succeeded. A clean merge, or a branch already up to date, runs no setup and no runner.
-> Where the gate did not refuse, it asks for a `push` token; where the gate claimed the run and, on
+> Otherwise it asks for a `push` token; where the gate claimed the run and, on
 > a conflict, the agent's job succeeded, it checks the head out once more and runs
 > `update-branch:publish` there, pointed at the runner's and `update-branch:bundle`'s directories.
 > Then `update-branch:conclude`, however the run ended, pointed at publish's, prepare's, the
@@ -2758,8 +2763,8 @@ neither.
 >   on the worker's disk. `GITHUB_SERVER_URL`, `GITHUB_REPOSITORY` and `GITHUB_RUN_ID` are unset.
 > - **The mint is the `push` token's.** One not granted is `MINT_OUTCOME` `failure`, and nothing is
 >   published; `update-branch:conclude` is then handed a `write` token, enough for its comment and
->   labels. A refusal asks for no `push` at all, since on Actions it skips the publish job: conclude
->   runs with a `write` token, is told `REFUSED` `true`, and writes nothing. Where no token is
+>   labels. An undecided gate, one that failed or timed out before it decided, is not a refusal:
+>   conclude runs then, told `REFUSED` empty, as on Actions. Where no token is
 >   granted to conclude, nothing can write to the pull request, and the worker's log says why the
 >   run ended.
 > - **The hand back to review needs nothing new.** `update-branch:publish` adds `agent:review` with

@@ -869,8 +869,12 @@ const runFix = async (job: FixJob, edges: JobEdges): Promise<readonly Phase[]> =
   }
   // The gate job's `refused`: empty where the gate decided nothing.
   const refused = gate["proceed"] === "true" ? "false" : gate["proceed"] === "false" ? "true" : "";
-  // The gate said it, and took the label off: the publish job does not run.
-  if (refused === "true") return done();
+  // The gate said it, and took the label off: the publish job does not run,
+  // so no token is asked for after it and conclude does not run.
+  if (refused === "true") {
+    note("fix:gate", "refused: the run ends here, as the publish job does not run after a refusal");
+    return done();
+  }
 
   // 2. The agent's job, where the gate succeeded and claimed the run.
   const minutes = fixTimeLimit(job.variables.AGENT_TIMEOUT_MINUTES);
@@ -1048,7 +1052,9 @@ const runFix = async (job: FixJob, edges: JobEdges): Promise<readonly Phase[]> =
  * orchestrator:` blocks of spec §10 describe.
  *
  * 1. The gate job: a `write` token, then `update-branch:gate`, which refuses
- *    or claims the pull request. Where it claimed the run, the checkout of the
+ *    or claims the pull request. A refusal ends the run there, as on Actions
+ *    it skips the publish job: no token is asked for after it, and neither
+ *    publish nor conclude runs. Where it claimed the run, the checkout of the
  *    head the label's event named, as `BRANCH`, with the base, and
  *    `update-branch:merge` in it, with the same token. The merge runs none of
  *    the pull request's code and pushes nothing, so it holds no `push` token
@@ -1059,12 +1065,11 @@ const runFix = async (job: FixJob, edges: JobEdges): Promise<readonly Phase[]> =
  *    token, then the runner, with it as `GH_TOKEN`; and, where those
  *    succeeded, `update-branch:bundle`, with no token. A clean merge runs none
  *    of it.
- * 3. The publish job, where the gate did not refuse: a `push` token, then,
- *    where the gate claimed the run and, on a conflict, the agent's job
- *    succeeded, a checkout of its own and `update-branch:publish` in it.
- * 4. `update-branch:conclude`, however the run ended, with the `push` token;
- *    with a `write` token where `push` was refused, or never asked for, on a
- *    refusal, where conclude says nothing.
+ * 3. The publish job: a `push` token, then, where the gate claimed the run
+ *    and, on a conflict, the agent's job succeeded, a checkout of its own and
+ *    `update-branch:publish` in it.
+ * 4. `update-branch:conclude`, however the run ended, with the `push` token,
+ *    or a `write` token where `push` was refused.
  *
  * **A checkout per job**, as on Actions, where each job checks the head out
  * again: the gate's merge leaves its own checkout merged, or stopped on its
@@ -1140,6 +1145,12 @@ const runUpdateBranch = async (job: UpdateBranchJob, edges: JobEdges): Promise<r
   }
   // The gate job's `refused`: empty where the gate decided nothing.
   const refused = gate["proceed"] === "true" ? "false" : gate["proceed"] === "false" ? "true" : "";
+  // The gate said it, and took the label off: the publish job does not run,
+  // so no token is asked for after it and conclude does not run, as for fix.
+  if (refused === "true") {
+    note("update-branch:gate", "refused: the run ends here, as the publish job does not run after a refusal");
+    return done();
+  }
   const claimed = gateResult === "success" && refused === "false";
   const status = merged["status"] ?? "";
   const base = merged["base"] ?? "";
@@ -1235,11 +1246,10 @@ const runUpdateBranch = async (job: UpdateBranchJob, edges: JobEdges): Promise<r
   }
   const agentRan = agent.result !== "skipped";
 
-  // 3. The publish job, which a refusal skips: its token, then publish, in a
-  // checkout of its own. There is nothing to download: the hand-over is on
-  // this disk.
-  const push = refused === "true" ? undefined : await ask("push");
-  const mintOutcome = refused === "true" ? "" : push === undefined ? "failure" : "success";
+  // 3. The publish job: its token, then publish, in a checkout of its own.
+  // There is nothing to download: the hand-over is on this disk.
+  const push = await ask("push");
+  const mintOutcome = push === undefined ? "failure" : "success";
   let publishOutcome = "";
   const publishDir = outputDir("update-branch:publish");
   if (push !== undefined && claimed && (status !== "conflicts" || agent.result === "success")) {
@@ -1286,8 +1296,7 @@ const runUpdateBranch = async (job: UpdateBranchJob, edges: JobEdges): Promise<r
   // 4. Conclude, however the run ended, with the `push` token. Where that was
   // refused it is told the mint failed, so it asks for `write` instead, for
   // its comment and labels: a second `push` would be refused for the reason
-  // the first was. A refusal needs no more than `write` either: conclude
-  // says nothing after one.
+  // the first was.
   const concluding = push ?? (await ask("write"));
   if (concluding === undefined) {
     // Nothing can say so on the pull request, so the worker's log says why

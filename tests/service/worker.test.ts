@@ -895,11 +895,16 @@ describe("the worker's fix job, on a round that goes ahead", () => {
 });
 
 describe("the worker's fix job, where the gate does not claim the round", () => {
-  it("runs the gate alone where it refused, since it said so and took the label off", async () => {
+  it("runs nothing after the gate refused and mints no other token, since it said so and took the label off, and notes the refusal", async () => {
     const s = setup({ ...FIX_ORDINARY, "fix:gate": { files: { "gate.json": { proceed: "false" } } } });
-    await runJob(FIX_JOB, s.edges);
+    const phases = await runJob(FIX_JOB, s.edges);
 
     expect(s.events).toEqual(["write token", "fix:gate"]);
+    expect(s.asked).toEqual(["write"]);
+    expect(s.checkouts).toEqual([]);
+    expect(s.launched.map(({ subcommand }) => subcommand)).toEqual(["fix:gate"]);
+    expect(phases.at(-1)).toEqual({ name: "fix:gate", outcome: "refused: the run ends here, as the publish job does not run after a refusal" });
+    expect(fs.readFileSync(path.join(s.runDir, SUMMARY_FILE), "utf8")).toContain("refused: the run ends here");
   });
 
   it("concludes, with no agent's job, where the gate decided nothing", async () => {
@@ -1263,13 +1268,16 @@ describe("the worker's update-branch job, on a conflicted merge", () => {
 });
 
 describe("the worker's update-branch job, where it stops", () => {
-  it("checks nothing out and merges nothing where the gate refused, and still concludes, with a token that writes", async () => {
+  it("runs nothing after the gate refused and mints no other token, as the publish job is skipped, and notes the refusal", async () => {
     const s = setup({ ...UB_CLEAN, "update-branch:gate": { files: { "gate.json": { proceed: "false" } } } });
-    await runJob(UPDATE_BRANCH_JOB, s.edges);
+    const phases = await runJob(UPDATE_BRANCH_JOB, s.edges);
 
-    expect(s.events).toEqual(["write token", "update-branch:gate", "write token", "update-branch:conclude"]);
+    expect(s.events).toEqual(["write token", "update-branch:gate"]);
+    expect(s.asked).toEqual(["write"]);
     expect(s.checkouts).toEqual([]);
-    expect(s.env("update-branch:conclude")).toMatchObject({ REFUSED: "true", GATE_RESULT: "success", AGENT_RESULT: "skipped", GH_TOKEN: "write-token-2" });
+    expect(s.launched.map(({ subcommand }) => subcommand)).toEqual(["update-branch:gate"]);
+    expect(phases.at(-1)).toEqual({ name: "update-branch:gate", outcome: "refused: the run ends here, as the publish job does not run after a refusal" });
+    expect(fs.readFileSync(path.join(s.runDir, SUMMARY_FILE), "utf8")).toContain("refused: the run ends here");
   });
 
   it("concludes undecided where the gate decided nothing", async () => {

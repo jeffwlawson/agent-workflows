@@ -14,6 +14,7 @@ import {
   type Job,
   type ReviewJob,
   type TokenKind,
+  type UpdateBranchJob,
 } from "./job.js";
 
 /**
@@ -162,6 +163,16 @@ export const BUNDLE_MINUTES = 5;
  * review's posting commands do.
  */
 export const FIX_POSTING_MINUTES = 15;
+
+/** `update-branch:gate`'s and `update-branch:merge`'s time limit, in minutes, together: the gate job's `timeout-minutes` in `update-branch.yml`. */
+export const UPDATE_BRANCH_GATE_MINUTES = 15;
+
+/**
+ * The publish phase's checkout and `update-branch:publish`'s time limit, in
+ * minutes, and `update-branch:conclude`'s, each: the publish job's
+ * `timeout-minutes` in `update-branch.yml`.
+ */
+export const UPDATE_BRANCH_POSTING_MINUTES = 15;
 
 /** The run summary's name in the run's directory. */
 export const SUMMARY_FILE = "summary.json";
@@ -474,7 +485,8 @@ export const startRun = (job: Job, edges: JobEdges): Run => {
 
 /**
  * **One job**: its kind's run function, which follows that workflow's
- * `Actions orchestrator:` blocks in the spec, §8 for review and §9 for fix.
+ * `Actions orchestrator:` blocks in the spec, §8 for review, §9 for fix and
+ * §10 for update-branch.
  * Never throws: how each phase ended is in what this returns, for the
  * worker's log.
  */
@@ -484,6 +496,8 @@ export const runJob = async (job: Job, edges: JobEdges): Promise<readonly Phase[
       return runReview(job, edges);
     case "fix":
       return runFix(job, edges);
+    case "update-branch":
+      return runUpdateBranch(job, edges);
   }
 };
 
@@ -855,8 +869,12 @@ const runFix = async (job: FixJob, edges: JobEdges): Promise<readonly Phase[]> =
   }
   // The gate job's `refused`: empty where the gate decided nothing.
   const refused = gate["proceed"] === "true" ? "false" : gate["proceed"] === "false" ? "true" : "";
-  // The gate said it, and took the label off: the publish job does not run.
-  if (refused === "true") return done();
+  // The gate said it, and took the label off: the publish job does not run,
+  // so no token is asked for after it and conclude does not run.
+  if (refused === "true") {
+    note("fix:gate", "refused: the run ends here, as the publish job does not run after a refusal");
+    return done();
+  }
 
   // 2. The agent's job, where the gate succeeded and claimed the run.
   const minutes = fixTimeLimit(job.variables.AGENT_TIMEOUT_MINUTES);
@@ -1019,6 +1037,298 @@ const runFix = async (job: FixJob, edges: JobEdges): Promise<readonly Phase[]> =
       PUBLISH_DIR: publishDir,
       PREPARE_DIR: outputDir("fix:prepare"),
       FIX_DIR: fixDir,
+      BUNDLE_DIR: bundleDir,
+    },
+    edges.runDir,
+    concludeLimit.signal,
+  );
+  concludeLimit.clear();
+  return done();
+};
+
+/**
+ * **An update-branch job**: a refresh of one pull request from its base, in
+ * `update-branch.yml`'s order and under its conditions, which the `Actions
+ * orchestrator:` blocks of spec §10 describe.
+ *
+ * 1. The gate job: a `write` token, then `update-branch:gate`, which refuses
+ *    or claims the pull request. A refusal ends the run there, as on Actions
+ *    it skips the publish job: no token is asked for after it, and neither
+ *    publish nor conclude runs. Where it claimed the run, the checkout of the
+ *    head the label's event named, as `BRANCH`, with the base, and
+ *    `update-branch:merge` in it, with the same token. The merge runs none of
+ *    the pull request's code and pushes nothing, so it holds no `push` token
+ *    and runs outside the sandbox, as it runs in the gate job on Actions.
+ * 2. The agent's job, only where the merge conflicted: a `read` token, a
+ *    checkout of its own, `update-branch:prepare`, which makes the gate's
+ *    merge again there; the repository's setup, in the sandbox; a fresh `read`
+ *    token, then the runner, with it as `GH_TOKEN`; and, where those
+ *    succeeded, `update-branch:bundle`, with no token. A clean merge runs none
+ *    of it.
+ * 3. The publish job: a `push` token, then, where the gate claimed the run
+ *    and, on a conflict, the agent's job succeeded, a checkout of its own and
+ *    `update-branch:publish` in it.
+ * 4. `update-branch:conclude`, however the run ended, with the `push` token,
+ *    or a `write` token where `push` was refused.
+ *
+ * **A checkout per job**, as on Actions, where each job checks the head out
+ * again: the gate's merge leaves its own checkout merged, or stopped on its
+ * conflicts, and `update-branch:prepare` and `update-branch:publish` each
+ * make that merge again from the head the event named.
+ *
+ * **Every phase has a time limit**, as every job on Actions does: the gate,
+ * its checkout and the merge share `UPDATE_BRANCH_GATE_MINUTES`; the agent's
+ * job's steps share `AGENT_TIMEOUT_MINUTES` (`fixTimeLimit`), and one still
+ * running at it is ended and conclude told the run timed out, which on
+ * Actions the agent's job's last step measures; publish's checkout and
+ * publish share `UPDATE_BRANCH_POSTING_MINUTES`, and conclude has as long.
+ */
+const runUpdateBranch = async (job: UpdateBranchJob, edges: JobEdges): Promise<readonly Phase[]> => {
+  const { note, limit, outputDir, checkout, ask, run, runAgent, setup, notStarted, done } = startRun(job, edges);
+  const gateCheckout = path.join(edges.runDir, "gate-checkout");
+  const publishCheckout = path.join(edges.runDir, "publish-checkout");
+
+  /** What every phase of this job is told: the pull request, its base, and the loop's account, the App's login (spec §4.1). */
+  const common = {
+    GH_REPO: job.repo,
+    PR_NUMBER: String(job.pr),
+    BRANCH: job.branch,
+    BASE_REF: job.baseRef,
+    AGENT_LOOP_LOGINS: job.appLogin,
+  };
+  /** The head the label's event named, as `BRANCH`, with the base, into `dir`, with `token`. */
+  const checkOut = (dir: string, token: string, signal: AbortSignal): Promise<void> =>
+    edges.git.checkout({ dir, repo: job.repo, branch: job.branch, sha: job.headSha, baseRef: job.baseRef, token, committer: job.appLogin, signal });
+
+  // 1. The gate job. It writes, its refusal and its permission probe, so its
+  // token is `write`, as the gate job's own token has `pull-requests: write`.
+  let gateResult: JobResult = "failure";
+  let gateReason: string | undefined;
+  let gate: Readonly<Record<string, string>> = {};
+  let merged: Readonly<Record<string, string>> = {};
+  const claiming = await ask("write");
+  if (claiming === undefined) {
+    note("update-branch:gate", "not run: the dispatcher granted no token to claim the pull request with");
+  } else {
+    const gateLimit = limit(UPDATE_BRANCH_GATE_MINUTES);
+    const gated = await run(
+      "update-branch:gate",
+      { ...common, GH_TOKEN: claiming, PR_STATE: job.state, PR_MERGED: String(job.merged) },
+      edges.runDir,
+      gateLimit.signal,
+    );
+    gate = decisions(gated.dir, "gate.json");
+    gateResult = gated.timedOut ? "cancelled" : gated.ok ? "success" : "failure";
+    gateReason = reason(gated.dir, "failure_reason.txt");
+    if (gateResult === "success" && gate["proceed"] === "true") {
+      try {
+        await checkOut(gateCheckout, claiming, gateLimit.signal);
+        note("checkout", "success");
+      } catch (error) {
+        if (gateLimit.signal.aborted) {
+          note("checkout", "timed out");
+          gateResult = "cancelled";
+        } else {
+          note("checkout", `failure: ${message(error)}`);
+          gateResult = "failure";
+          gateReason = `The pull request's head could not be checked out: ${message(error)}`;
+        }
+      }
+    }
+    if (gateResult === "success" && gate["proceed"] === "true") {
+      const merging = await run("update-branch:merge", { ...common, GH_TOKEN: claiming, CHECKOUT: gateCheckout }, edges.runDir, gateLimit.signal);
+      merged = decisions(merging.dir, "merge.json");
+      gateResult = merging.timedOut ? "cancelled" : merging.ok ? "success" : "failure";
+      gateReason = reason(merging.dir, "failure_reason.txt");
+    }
+    gateLimit.clear();
+  }
+  // The gate job's `refused`: empty where the gate decided nothing.
+  const refused = gate["proceed"] === "true" ? "false" : gate["proceed"] === "false" ? "true" : "";
+  // The gate said it, and took the label off: the publish job does not run,
+  // so no token is asked for after it and conclude does not run, as for fix.
+  if (refused === "true") {
+    note("update-branch:gate", "refused: the run ends here, as the publish job does not run after a refusal");
+    return done();
+  }
+  const claimed = gateResult === "success" && refused === "false";
+  const status = merged["status"] ?? "";
+  const base = merged["base"] ?? "";
+
+  // 2. The agent's job, only where the gate claimed the run and the merge
+  // stopped on its conflicts.
+  const minutes = fixTimeLimit(job.variables.AGENT_TIMEOUT_MINUTES);
+  const agent: { result: JobResult; timedOut: boolean } = { result: "skipped", timedOut: false };
+  const runnerDir = outputDir("update-branch");
+  const bundleDir = outputDir("update-branch:bundle");
+  if (claimed && status === "conflicts") {
+    agent.result = "success";
+    const agentLimit = limit(minutes);
+    /** The agent's job ran past its time limit, which ends it as Actions ends a job at its `timeout-minutes`. */
+    const timedOut = (): void => {
+      agent.result = "cancelled";
+      agent.timedOut = true;
+    };
+    const going = (): boolean => agent.result === "success";
+
+    const read = await ask("read");
+    if (read === undefined) {
+      agent.result = "failure";
+      notStarted("update-branch:prepare", "The service's dispatcher granted no token to read the pull request with, so the conflicts were not handed to the agent.");
+    } else {
+      try {
+        await checkOut(checkout, read, agentLimit.signal);
+        note("checkout", "success");
+      } catch (error) {
+        if (agentLimit.signal.aborted) {
+          note("checkout", "timed out");
+          timedOut();
+        } else {
+          note("checkout", `failure: ${message(error)}`);
+          agent.result = "failure";
+          notStarted("update-branch:prepare", `The pull request's head could not be checked out: ${message(error)}`);
+        }
+      }
+    }
+    if (going() && read !== undefined) {
+      const prepared = await run(
+        "update-branch:prepare",
+        { ...common, GH_TOKEN: read, CHECKOUT: checkout, BASE_SHA: base },
+        edges.runDir,
+        agentLimit.signal,
+      );
+      if (prepared.timedOut) timedOut();
+      else if (!prepared.ok) agent.result = "failure";
+    }
+    if (going()) {
+      const set = await setup(job.variables.AGENT_SETUP, agentLimit.signal);
+      if (set.timedOut) timedOut();
+      else if (!set.ok) {
+        agent.result = "failure";
+        notStarted("update-branch", set.failureReason ?? "The repository's setup (`AGENT_SETUP`) failed.");
+      }
+    }
+    // The runner gets a `read` token of its own, minted as it starts, since
+    // the setup before it can take a good part of the first one's hour.
+    const runnerToken = going() ? await ask("read") : undefined;
+    if (going() && runnerToken === undefined) {
+      agent.result = "failure";
+      notStarted("update-branch", "The service's dispatcher granted no token for the agent to read the pull request with.");
+    }
+    if (going() && runnerToken !== undefined) {
+      const resolved = await runAgent(
+        "update-branch",
+        {
+          ...common,
+          GH_TOKEN: runnerToken,
+          AGENT_MODEL: job.variables.AGENT_MODEL,
+          AGENT_MODEL_UPDATE_BRANCH: job.variables.AGENT_MODEL_UPDATE_BRANCH,
+        },
+        checkout,
+        agentLimit.signal,
+      );
+      if (resolved.timedOut) timedOut();
+      else if (!resolved.ok) agent.result = "failure";
+    }
+    // Only where the runner succeeded, as the bundle step's `if: success()`:
+    // a resolution that stopped is never pushed. It is handed no token.
+    if (going()) {
+      const bundled = await run(
+        "update-branch:bundle",
+        { CHECKOUT: checkout, BRANCH: job.branch, HEAD_SHA: job.headSha, BASE_SHA: base },
+        edges.runDir,
+        agentLimit.signal,
+      );
+      if (bundled.timedOut) timedOut();
+      else if (!bundled.ok) agent.result = "failure";
+    }
+    agentLimit.clear();
+  }
+  const agentRan = agent.result !== "skipped";
+
+  // 3. The publish job: its token, then publish, in a checkout of its own.
+  // There is nothing to download: the hand-over is on this disk.
+  const push = await ask("push");
+  const mintOutcome = push === undefined ? "failure" : "success";
+  let publishOutcome = "";
+  const publishDir = outputDir("update-branch:publish");
+  if (push !== undefined && claimed && (status !== "conflicts" || agent.result === "success")) {
+    const publishLimit = limit(UPDATE_BRANCH_POSTING_MINUTES);
+    let checkedOut = false;
+    try {
+      await checkOut(publishCheckout, push, publishLimit.signal);
+      note("checkout", "success");
+      checkedOut = true;
+    } catch (error) {
+      if (publishLimit.signal.aborted) {
+        note("checkout", "timed out");
+        publishOutcome = "cancelled";
+      } else {
+        note("checkout", `failure: ${message(error)}`);
+        publishOutcome = "failure";
+        notStarted("update-branch:publish", `The pull request's head could not be checked out to publish the refresh: ${message(error)}`);
+      }
+    }
+    if (checkedOut) {
+      const published = await run(
+        "update-branch:publish",
+        {
+          ...common,
+          GH_TOKEN: push,
+          LOOP_TOKEN: push,
+          LOOP_TOKEN_SOURCE: TOKEN_SOURCE,
+          HEAD_SHA: job.headSha,
+          STATUS: status,
+          BASE_SHA: base,
+          AGENT_RESULT: agent.result,
+          CHECKOUT: publishCheckout,
+          UPDATE_BRANCH_DIR: runnerDir,
+          BUNDLE_DIR: bundleDir,
+        },
+        edges.runDir,
+        publishLimit.signal,
+      );
+      publishOutcome = published.timedOut ? "cancelled" : published.ok ? "success" : "failure";
+    }
+    publishLimit.clear();
+  }
+
+  // 4. Conclude, however the run ended, with the `push` token. Where that was
+  // refused it is told the mint failed, so it asks for `write` instead, for
+  // its comment and labels: a second `push` would be refused for the reason
+  // the first was.
+  const concluding = push ?? (await ask("write"));
+  if (concluding === undefined) {
+    // Nothing can say so on the pull request, so the worker's log says why
+    // the run ended as well.
+    const ended = agent.timedOut
+      ? `the refresh timed out after ${minutes} minutes`
+      : `the gate's result was ${gateResult}, and the agent's ${agent.result}`;
+    note("update-branch:conclude", `not run: the dispatcher granted no token to write the ending with, and the run had ended so: ${ended}`);
+    return done();
+  }
+  const concludeLimit = limit(UPDATE_BRANCH_POSTING_MINUTES);
+  await run(
+    "update-branch:conclude",
+    {
+      ...common,
+      GH_TOKEN: concluding,
+      LOOP_TOKEN: concluding,
+      LOOP_TOKEN_SOURCE: TOKEN_SOURCE,
+      HEAD_SHA: job.headSha,
+      REFUSED: refused,
+      GATE_RESULT: gateResult,
+      GATE_REASON: gateReason,
+      STATUS: status,
+      AGENT_RESULT: agent.result,
+      TIMED_OUT: String(agent.timedOut),
+      TIMEOUT_MINUTES: String(minutes),
+      MINT_OUTCOME: mintOutcome,
+      DOWNLOAD_OUTCOME: agentRan ? "success" : "",
+      PUBLISH_OUTCOME: publishOutcome,
+      PUBLISH_DIR: publishDir,
+      PREPARE_DIR: outputDir("update-branch:prepare"),
+      UPDATE_BRANCH_DIR: runnerDir,
       BUNDLE_DIR: bundleDir,
     },
     edges.runDir,

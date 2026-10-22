@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { FIX_LABEL, ORCHESTRATOR_VARIABLE, REVIEW_LABEL, SERVICE_ORCHESTRATOR } from "../shared/record.js";
+import { FIX_LABEL, ORCHESTRATOR_VARIABLE, REVIEW_LABEL, SERVICE_ORCHESTRATOR, UPDATE_BRANCH_LABEL } from "../shared/record.js";
 import {
   parseTokenRequest,
   REPOSITORY_VARIABLES,
@@ -126,6 +126,7 @@ export const TOKEN_PERMISSIONS: Readonly<Record<TokenKind, Readonly<Record<strin
 export const LABEL_KINDS: Readonly<Record<string, JobKind>> = {
   [REVIEW_LABEL]: "review",
   [FIX_LABEL]: "fix",
+  [UPDATE_BRANCH_LABEL]: "update-branch",
 };
 
 /**

@@ -3,7 +3,17 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { CI_WAIT_SECONDS } from "../../review/collect-checks.js";
-import { DEFAULT_FIX_MINUTES, DEFAULT_REVIEW_MINUTES, sign, SIGNATURE_HEADER, type FixJob, type Job, type ReviewJob, type TokenKind } from "../../service/job.js";
+import {
+  DEFAULT_FIX_MINUTES,
+  DEFAULT_REVIEW_MINUTES,
+  sign,
+  SIGNATURE_HEADER,
+  type FixJob,
+  type Job,
+  type ReviewJob,
+  type TokenKind,
+  type UpdateBranchJob,
+} from "../../service/job.js";
 import {
   jobDoor,
   REDACTED,
@@ -54,6 +64,7 @@ const JOB: ReviewJob = {
     AGENT_MODEL: "a-model",
     AGENT_MODEL_REVIEW: "",
     AGENT_MODEL_FIX: "",
+    AGENT_MODEL_UPDATE_BRANCH: "",
     AGENT_REVIEW_TIMEOUT_MINUTES: "",
     AGENT_TIMEOUT_MINUTES: "",
     AGENT_MAX_FIX_ROUNDS: "3",
@@ -884,11 +895,16 @@ describe("the worker's fix job, on a round that goes ahead", () => {
 });
 
 describe("the worker's fix job, where the gate does not claim the round", () => {
-  it("runs the gate alone where it refused, since it said so and took the label off", async () => {
+  it("runs nothing after the gate refused and mints no other token, since it said so and took the label off, and notes the refusal", async () => {
     const s = setup({ ...FIX_ORDINARY, "fix:gate": { files: { "gate.json": { proceed: "false" } } } });
-    await runJob(FIX_JOB, s.edges);
+    const phases = await runJob(FIX_JOB, s.edges);
 
     expect(s.events).toEqual(["write token", "fix:gate"]);
+    expect(s.asked).toEqual(["write"]);
+    expect(s.checkouts).toEqual([]);
+    expect(s.launched.map(({ subcommand }) => subcommand)).toEqual(["fix:gate"]);
+    expect(phases.at(-1)).toEqual({ name: "fix:gate", outcome: "refused: the run ends here, as the publish job does not run after a refusal" });
+    expect(fs.readFileSync(path.join(s.runDir, SUMMARY_FILE), "utf8")).toContain("refused: the run ends here");
   });
 
   it("concludes, with no agent's job, where the gate decided nothing", async () => {
@@ -1056,6 +1072,330 @@ describe("the worker's fix job, rescuing a stopped round", () => {
   });
 });
 
+const UPDATE_BRANCH_JOB: UpdateBranchJob = { ...JOB, workflow: "update-branch" };
+const BASE = "c".repeat(40);
+
+/** The files each update-branch subcommand writes where the merge goes cleanly. */
+const UB_CLEAN: Readonly<Partial<Record<Subcommand, Canned>>> = {
+  "update-branch:gate": { files: { "gate.json": { proceed: "true" } } },
+  "update-branch:merge": { files: { "merge.json": { status: "clean", base: BASE, conflicts: [] } } },
+  "update-branch:publish": { files: { "published.json": { pushed: true, head: "d".repeat(40), requested: false } } },
+};
+
+/** The same, where the merge conflicts and the agent resolves it. */
+const UB_CONFLICTS: Readonly<Partial<Record<Subcommand, Canned>>> = {
+  ...UB_CLEAN,
+  "update-branch:merge": { files: { "merge.json": { status: "conflicts", base: BASE, conflicts: ["a.ts", "b.ts"] } } },
+  "update-branch": { files: { "update_comment.md": "Kept both." } },
+  "update-branch:bundle": { files: { "branch.bundle": "the resolution" } },
+  "update-branch:publish": { files: { "published.json": { pushed: true, head: "d".repeat(40), requested: true } } },
+};
+
+/**
+ * An update-branch job, run as `update-branch.yml` runs one (spec §10): the
+ * gate job's gate, checkout and merge; the agent's job only on a conflict;
+ * and the publish job's publish and conclude, each in a checkout of its own,
+ * as each job on Actions checks the head out again.
+ */
+describe("the worker's update-branch job, on a clean merge", () => {
+  it("runs the gate, its checkout, the merge, then publish in a checkout of its own and conclude: no setup and no runner", async () => {
+    const s = setup(UB_CLEAN);
+    await runJob({ ...UPDATE_BRANCH_JOB, variables: { ...UPDATE_BRANCH_JOB.variables, AGENT_SETUP: "npm ci" } }, s.edges);
+
+    expect(s.events).toEqual([
+      "write token",
+      "update-branch:gate",
+      "checkout",
+      "update-branch:merge",
+      "push token",
+      "checkout",
+      "update-branch:publish",
+      "update-branch:conclude",
+    ]);
+    expect(s.sandboxed).toEqual([]);
+  });
+
+  it("merges with the gate's write token, outside the sandbox, and holds push only for publish and conclude", async () => {
+    const s = setup(UB_CLEAN);
+    await runJob(UPDATE_BRANCH_JOB, s.edges);
+
+    expect(s.asked).toEqual(["write", "push"]);
+    expect(tokensIn(s.env("update-branch:gate"))).toEqual(["write-token-1"]);
+    expect(tokensIn(s.env("update-branch:merge"))).toEqual(["write-token-1"]);
+    for (const subcommand of ["update-branch:publish", "update-branch:conclude"] as const) {
+      expect(s.env(subcommand), subcommand).toMatchObject({ GH_TOKEN: "push-token-2", LOOP_TOKEN: "push-token-2", LOOP_TOKEN_SOURCE: "app" });
+    }
+    expect(s.checkouts.map(({ token }) => token)).toEqual(["write-token-1", "push-token-2"]);
+  });
+
+  it("checks the head the label's event named out twice, once for the merge and once for publish, each a directory of its own", async () => {
+    const s = setup(UB_CLEAN);
+    await runJob(UPDATE_BRANCH_JOB, s.edges);
+
+    const merging = s.env("update-branch:merge")["CHECKOUT"];
+    const publishing = s.env("update-branch:publish")["CHECKOUT"];
+    expect(s.checkouts).toEqual([
+      { dir: merging, repo: "owner/repo", branch: "agent/issue-7-a-thing", sha: HEAD, baseRef: "main", token: "write-token-1", committer: "loop-app[bot]" },
+      { dir: publishing, repo: "owner/repo", branch: "agent/issue-7-a-thing", sha: HEAD, baseRef: "main", token: "push-token-2", committer: "loop-app[bot]" },
+    ]);
+    expect(merging).not.toBe(publishing);
+    for (const dir of [merging, publishing]) expect(dir?.startsWith(s.runDir)).toBe(true);
+  });
+
+  it("hands each subcommand the inputs update-branch.yml hands it", async () => {
+    const s = setup(UB_CLEAN);
+    await runJob(UPDATE_BRANCH_JOB, s.edges);
+
+    expect(s.env("update-branch:gate")).toMatchObject({ GH_REPO: "owner/repo", PR_NUMBER: "7", BRANCH: "agent/issue-7-a-thing", PR_STATE: "open", PR_MERGED: "false" });
+    expect(s.env("update-branch:merge")).toMatchObject({ GH_REPO: "owner/repo", BRANCH: "agent/issue-7-a-thing", BASE_REF: "main" });
+    expect(s.env("update-branch:publish")).toMatchObject({
+      PR_NUMBER: "7",
+      BRANCH: "agent/issue-7-a-thing",
+      BASE_REF: "main",
+      HEAD_SHA: HEAD,
+      STATUS: "clean",
+      BASE_SHA: BASE,
+      AGENT_RESULT: "skipped",
+      AGENT_LOOP_LOGINS: "loop-app[bot]",
+    });
+    expect(s.env("update-branch:conclude")).toMatchObject({
+      PR_NUMBER: "7",
+      HEAD_SHA: HEAD,
+      REFUSED: "false",
+      GATE_RESULT: "success",
+      STATUS: "clean",
+      AGENT_RESULT: "skipped",
+      TIMED_OUT: "false",
+      TIMEOUT_MINUTES: String(DEFAULT_FIX_MINUTES),
+      MINT_OUTCOME: "success",
+      PUBLISH_OUTCOME: "success",
+      PUBLISH_DIR: s.env("update-branch:publish")["OUTPUT_DIR"],
+    });
+    for (const name of ["GATE_REASON", "DOWNLOAD_OUTCOME"]) expect(s.env("update-branch:conclude")).not.toHaveProperty(name);
+  });
+});
+
+describe("the worker's update-branch job, on a conflicted merge", () => {
+  it("runs prepare, the setup, the runner and bundle between the merge and publish", async () => {
+    const s = setup(UB_CONFLICTS);
+    await runJob({ ...UPDATE_BRANCH_JOB, variables: { ...UPDATE_BRANCH_JOB.variables, AGENT_SETUP: "npm ci" } }, s.edges);
+
+    expect(s.events).toEqual([
+      "write token",
+      "update-branch:gate",
+      "checkout",
+      "update-branch:merge",
+      "read token",
+      "checkout",
+      "update-branch:prepare",
+      "sandbox",
+      "read token",
+      "update-branch",
+      "update-branch:bundle",
+      "push token",
+      "checkout",
+      "update-branch:publish",
+      "update-branch:conclude",
+    ]);
+  });
+
+  it("hands the runner a read token alone, prepare a read token, bundle none, and push only to publish and conclude", async () => {
+    const s = setup(UB_CONFLICTS);
+    await runJob(UPDATE_BRANCH_JOB, s.edges);
+
+    expect(s.asked).toEqual(["write", "read", "read", "push"]);
+    expect(tokensIn(s.env("update-branch:prepare"))).toEqual(["read-token-2"]);
+    expect(tokensIn(s.env("update-branch:bundle"))).toEqual([]);
+    const runner = s.env("update-branch");
+    expect(Object.entries(runner).filter(([name]) => name.endsWith("TOKEN")).sort()).toEqual([
+      ["CLAUDE_CODE_OAUTH_TOKEN", AGENT.CLAUDE_CODE_OAUTH_TOKEN],
+      ["GH_TOKEN", "read-token-3"],
+    ]);
+    expect(runner).not.toHaveProperty("LOOP_TOKEN");
+    // No phase but publish and conclude holds the push token: not a command, and not a checkout.
+    for (const { subcommand, env } of s.launched) {
+      const holds = Object.values(env).some((value) => value.startsWith("push-token-"));
+      expect(holds, subcommand).toBe(subcommand === "update-branch:publish" || subcommand === "update-branch:conclude");
+    }
+    expect(s.checkouts.map(({ token }) => token)).toEqual(["write-token-1", "read-token-2", "push-token-4"]);
+  });
+
+  it("runs the agent's job in a checkout of its own, repeating the merge the gate found, and hands it on", async () => {
+    const s = setup(UB_CONFLICTS);
+    await runJob({ ...UPDATE_BRANCH_JOB, variables: { ...UPDATE_BRANCH_JOB.variables, AGENT_MODEL_UPDATE_BRANCH: "a-merge-model" } }, s.edges);
+
+    const checkout = path.join(s.runDir, "checkout");
+    expect(s.checkouts[1]).toMatchObject({ dir: checkout, sha: HEAD, branch: "agent/issue-7-a-thing", baseRef: "main" });
+    expect(s.env("update-branch:merge")["CHECKOUT"]).not.toBe(checkout);
+    expect(s.env("update-branch:prepare")).toMatchObject({ CHECKOUT: checkout, BRANCH: "agent/issue-7-a-thing", BASE_REF: "main", BASE_SHA: BASE });
+    expect(s.launched.find((launch) => launch.subcommand === "update-branch")?.cwd).toBe(checkout);
+    expect(s.env("update-branch")).toMatchObject({
+      ...AGENT,
+      PR_NUMBER: "7",
+      BRANCH: "agent/issue-7-a-thing",
+      BASE_REF: "main",
+      AGENT_MODEL: "a-model",
+      AGENT_MODEL_UPDATE_BRANCH: "a-merge-model",
+    });
+    expect(s.env("update-branch:bundle")).toMatchObject({ CHECKOUT: checkout, BRANCH: "agent/issue-7-a-thing", HEAD_SHA: HEAD, BASE_SHA: BASE });
+  });
+
+  it("points publish and conclude at the agent's job's directories, and tells them how it ended", async () => {
+    const s = setup(UB_CONFLICTS);
+    await runJob(UPDATE_BRANCH_JOB, s.edges);
+
+    const out = (subcommand: Subcommand): string | undefined => s.env(subcommand)["OUTPUT_DIR"];
+    expect(s.env("update-branch:publish")).toMatchObject({
+      STATUS: "conflicts",
+      AGENT_RESULT: "success",
+      UPDATE_BRANCH_DIR: out("update-branch"),
+      BUNDLE_DIR: out("update-branch:bundle"),
+    });
+    expect(s.env("update-branch:conclude")).toMatchObject({
+      STATUS: "conflicts",
+      AGENT_RESULT: "success",
+      TIMED_OUT: "false",
+      DOWNLOAD_OUTCOME: "success",
+      PUBLISH_OUTCOME: "success",
+      PUBLISH_DIR: out("update-branch:publish"),
+      PREPARE_DIR: out("update-branch:prepare"),
+      UPDATE_BRANCH_DIR: out("update-branch"),
+      BUNDLE_DIR: out("update-branch:bundle"),
+    });
+    const dirs = s.launched.map(({ env }) => env["OUTPUT_DIR"]);
+    expect(new Set(dirs).size).toBe(s.launched.length);
+  });
+});
+
+describe("the worker's update-branch job, where it stops", () => {
+  it("runs nothing after the gate refused and mints no other token, as the publish job is skipped, and notes the refusal", async () => {
+    const s = setup({ ...UB_CLEAN, "update-branch:gate": { files: { "gate.json": { proceed: "false" } } } });
+    const phases = await runJob(UPDATE_BRANCH_JOB, s.edges);
+
+    expect(s.events).toEqual(["write token", "update-branch:gate"]);
+    expect(s.asked).toEqual(["write"]);
+    expect(s.checkouts).toEqual([]);
+    expect(s.launched.map(({ subcommand }) => subcommand)).toEqual(["update-branch:gate"]);
+    expect(phases.at(-1)).toEqual({ name: "update-branch:gate", outcome: "refused: the run ends here, as the publish job does not run after a refusal" });
+    expect(fs.readFileSync(path.join(s.runDir, SUMMARY_FILE), "utf8")).toContain("refused: the run ends here");
+  });
+
+  it("concludes undecided where the gate decided nothing", async () => {
+    const s = setup({ ...UB_CLEAN, "update-branch:gate": { exit: 1 } });
+    await runJob(UPDATE_BRANCH_JOB, s.edges);
+
+    expect(s.events).toEqual(["write token", "update-branch:gate", "push token", "update-branch:conclude"]);
+    expect(s.env("update-branch:conclude")).toMatchObject({ GATE_RESULT: "failure", AGENT_RESULT: "skipped", MINT_OUTCOME: "success" });
+    for (const name of ["REFUSED", "STATUS", "PUBLISH_OUTCOME"]) expect(s.env("update-branch:conclude")).not.toHaveProperty(name);
+  });
+
+  it("hands conclude the merge's reason as the gate's where the merge failed, and publishes nothing", async () => {
+    const reason = "Couldn't fetch `main` to merge it, so the branch was left untouched: not found.";
+    const s = setup({ ...UB_CLEAN, "update-branch:merge": { exit: 1, files: { "failure_reason.txt": reason } } });
+    await runJob(UPDATE_BRANCH_JOB, s.edges);
+
+    expect(s.events).not.toContain("update-branch:publish");
+    expect(s.env("update-branch:conclude")).toMatchObject({ REFUSED: "false", GATE_RESULT: "failure", GATE_REASON: reason, AGENT_RESULT: "skipped" });
+  });
+
+  it("merges nothing where the head could not be checked out, and says why as the gate's reason", async () => {
+    const s = setup(UB_CLEAN);
+    s.edges.git.checkout = async () => {
+      throw new Error("fatal: couldn't find remote ref");
+    };
+    await runJob(UPDATE_BRANCH_JOB, s.edges);
+
+    expect(s.events).not.toContain("update-branch:merge");
+    expect(s.env("update-branch:conclude")).toMatchObject({
+      GATE_RESULT: "failure",
+      GATE_REASON: "The pull request's head could not be checked out: fatal: couldn't find remote ref",
+    });
+  });
+
+  it("starts no runner where the setup failed, and gives conclude the setup's reason as the runner's", async () => {
+    const s = setup(UB_CONFLICTS, { setupRun: { exit: 2, output: "npm ERR! missing script\n" } });
+    await runJob({ ...UPDATE_BRANCH_JOB, variables: { ...UPDATE_BRANCH_JOB.variables, AGENT_SETUP: "npm ci" } }, s.edges);
+
+    expect(s.events).not.toContain("update-branch");
+    expect(s.events).not.toContain("update-branch:bundle");
+    expect(s.events).not.toContain("update-branch:publish");
+    const ran = s.env("update-branch:conclude")["UPDATE_BRANCH_DIR"]!;
+    expect(fs.readFileSync(path.join(ran, "failure_reason.txt"), "utf8")).toMatch(/^The repository's setup \(`AGENT_SETUP`\) exited with status 2\./);
+    expect(s.env("update-branch:conclude")).toMatchObject({ AGENT_RESULT: "failure", TIMED_OUT: "false" });
+  });
+
+  it("bundles nothing and publishes nothing where the runner failed, and tells conclude", async () => {
+    const s = setup({ ...UB_CONFLICTS, "update-branch": { exit: 1, files: { "failure_reason.txt": "The agent left conflicts unresolved in: a.ts." } } });
+    await runJob(UPDATE_BRANCH_JOB, s.edges);
+
+    expect(s.events.slice(-3)).toEqual(["update-branch", "push token", "update-branch:conclude"]);
+    expect(s.env("update-branch:conclude")).toMatchObject({ AGENT_RESULT: "failure", TIMED_OUT: "false", DOWNLOAD_OUTCOME: "success" });
+    expect(s.env("update-branch:conclude")).not.toHaveProperty("PUBLISH_OUTCOME");
+  });
+
+  it("ends a runner still running at AGENT_TIMEOUT_MINUTES, and tells conclude it timed out", async () => {
+    const s = setup({ ...UB_CONFLICTS, "update-branch": { hangs: true } }, { minuteMs: 5 });
+    const phases = await runJob({ ...UPDATE_BRANCH_JOB, variables: { ...UPDATE_BRANCH_JOB.variables, AGENT_TIMEOUT_MINUTES: "2" } }, s.edges);
+
+    expect(phases).toContainEqual({ name: "update-branch", outcome: "timed out" });
+    expect(s.events).not.toContain("update-branch:publish");
+    expect(s.env("update-branch:conclude")).toMatchObject({ AGENT_RESULT: "cancelled", TIMED_OUT: "true", TIMEOUT_MINUTES: "2" });
+  });
+
+  it("publishes nothing where the push token was refused, and concludes with a token that writes", async () => {
+    const s = setup(UB_CLEAN, { refused: [2] });
+    await runJob(UPDATE_BRANCH_JOB, s.edges);
+
+    expect(s.events).not.toContain("update-branch:publish");
+    expect(s.asked).toEqual(["write", "push", "write"]);
+    expect(s.checkouts).toHaveLength(1);
+    expect(s.env("update-branch:conclude")).toMatchObject({ MINT_OUTCOME: "failure", GH_TOKEN: "write-token-3", LOOP_TOKEN: "write-token-3" });
+    expect(s.env("update-branch:conclude")).not.toHaveProperty("PUBLISH_OUTCOME");
+  });
+
+  it("leaves publish's reason where conclude reads it where publish's checkout failed", async () => {
+    const s = setup(UB_CLEAN);
+    const checkout = s.edges.git.checkout;
+    let calls = 0;
+    s.edges.git.checkout = async (options) => {
+      calls += 1;
+      if (calls === 2) throw new Error("fatal: the remote hung up");
+      return checkout(options);
+    };
+    await runJob(UPDATE_BRANCH_JOB, s.edges);
+
+    expect(s.events).not.toContain("update-branch:publish");
+    const publishDir = s.env("update-branch:conclude")["PUBLISH_DIR"]!;
+    expect(fs.readFileSync(path.join(publishDir, "failure_reason.txt"), "utf8")).toBe(
+      "The pull request's head could not be checked out to publish the refresh: fatal: the remote hung up",
+    );
+    expect(s.env("update-branch:conclude")).toMatchObject({ PUBLISH_OUTCOME: "failure" });
+  });
+
+  it("logs why the run ended where nothing can write its ending", async () => {
+    const s = setup(UB_CLEAN, { refused: [2, 3] });
+    const phases = await runJob(UPDATE_BRANCH_JOB, s.edges);
+
+    expect(s.events).not.toContain("update-branch:conclude");
+    expect(phases.at(-1)).toEqual({
+      name: "update-branch:conclude",
+      outcome: "not run: the dispatcher granted no token to write the ending with, and the run had ended so: the gate's result was success, and the agent's skipped",
+    });
+  });
+
+  it("redacts every token it held in the run's summary", async () => {
+    const s = setup(UB_CONFLICTS);
+    await runJob(UPDATE_BRANCH_JOB, s.edges);
+
+    const text = fs.readFileSync(path.join(s.runDir, SUMMARY_FILE), "utf8");
+    expect(s.asked).toHaveLength(4);
+    for (const token of [...s.asked.map((kind, at) => `${kind}-token-${at + 1}`), AGENT.CLAUDE_CODE_OAUTH_TOKEN]) {
+      expect(text).not.toContain(token);
+    }
+    expect(text).toContain(REDACTED);
+  });
+});
+
 describe("the run's directory", () => {
   const read = (runDir: string): string => fs.readFileSync(path.join(runDir, SUMMARY_FILE), "utf8");
 
@@ -1153,7 +1493,7 @@ describe("the job door", () => {
     const response = d.handle(request(job));
 
     expect(response.status).toBe(400);
-    expect(JSON.parse(response.body)).toEqual({ refusal: "`workflow` is not one of `review`, `fix`" });
+    expect(JSON.parse(response.body)).toEqual({ refusal: "`workflow` is not one of `review`, `fix`, `update-branch`" });
     expect(d.accepted).toEqual([]);
   });
 
@@ -1162,5 +1502,17 @@ describe("the job door", () => {
 
     expect(d.handle(request({ ...JOB, headSha: "not-a-commit" })).status).toBe(400);
     expect(d.accepted).toEqual([]);
+  });
+
+  it("queues an update-branch job, and refuses a malformed one, naming the field", () => {
+    const d = door();
+
+    expect(d.handle(request(UPDATE_BRANCH_JOB)).status).toBe(202);
+    expect(d.accepted).toEqual([UPDATE_BRANCH_JOB]);
+
+    const malformed = d.handle(request({ ...UPDATE_BRANCH_JOB, baseRef: "" }));
+    expect(malformed.status).toBe(400);
+    expect(JSON.parse(malformed.body)).toEqual({ refusal: "`baseRef` is not a non-empty string" });
+    expect(d.accepted).toEqual([UPDATE_BRANCH_JOB]);
   });
 });

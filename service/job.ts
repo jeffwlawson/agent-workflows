@@ -18,11 +18,14 @@ import { CI_WAIT_SECONDS } from "../review/collect-checks.js";
  * dependencies (PRD #515): an admin's to set, and handed to the sandbox's
  * shell unevaluated. `AGENT_MODEL_FIX` and `AGENT_TIMEOUT_MINUTES` are what
  * `fix.yml` reads: the fix runner's model, and the agent's job's time limit.
+ * `AGENT_MODEL_UPDATE_BRANCH` is the update-branch runner's model, which
+ * `update-branch.yml` reads beside the same time limit.
  */
 export const REPOSITORY_VARIABLES = [
   "AGENT_MODEL",
   "AGENT_MODEL_REVIEW",
   "AGENT_MODEL_FIX",
+  "AGENT_MODEL_UPDATE_BRANCH",
   "AGENT_REVIEW_TIMEOUT_MINUTES",
   "AGENT_TIMEOUT_MINUTES",
   "AGENT_MAX_FIX_ROUNDS",
@@ -51,7 +54,8 @@ export const reviewTimeLimit = (variable: string): number => CI_WAIT_SECONDS / 6
 
 /**
  * The fix agent's job's time limit where `AGENT_TIMEOUT_MINUTES` is unset or
- * not a positive integer: the figure `fix.yml`'s agent's job falls back to.
+ * not a positive integer: the figure `fix.yml`'s agent's job falls back to,
+ * and `update-branch.yml`'s too.
  */
 export const DEFAULT_FIX_MINUTES = 30;
 
@@ -59,7 +63,9 @@ export const DEFAULT_FIX_MINUTES = 30;
  * The fix agent's job's time limit, in minutes, from the variable as the job
  * carries it: the agent's job's `timeout-minutes` in `fix.yml`. The
  * dispatcher's deadline for a fix job starts from it, and the worker holds the
- * checkout, `fix:prepare`, the setup and the runner to it.
+ * checkout, `fix:prepare`, the setup and the runner to it. `update-branch.yml`'s
+ * agent's job reads the same variable with the same fallback, so an
+ * update-branch job's limit is this one too.
  */
 export const fixTimeLimit = (variable: string): number =>
   /^[1-9][0-9]*$/.test(variable) ? Number(variable) : DEFAULT_FIX_MINUTES;
@@ -69,7 +75,7 @@ export const fixTimeLimit = (variable: string): number =>
  * job names its workflow in, and the worker's run function for it, follow
  * from the kind. The dispatcher routes a trigger label to one.
  */
-export const JOB_KINDS = ["review", "fix"] as const;
+export const JOB_KINDS = ["review", "fix", "update-branch"] as const;
 
 export type JobKind = (typeof JOB_KINDS)[number];
 
@@ -119,8 +125,13 @@ export interface FixJob extends PullRequestJob {
   readonly workflow: "fix";
 }
 
+/** One `agent:update-branch` delivery, as a job for the worker. */
+export interface UpdateBranchJob extends PullRequestJob {
+  readonly workflow: "update-branch";
+}
+
 /** A job the dispatcher posts and the worker runs: one member per workflow the service serves. */
-export type Job = ReviewJob | FixJob;
+export type Job = ReviewJob | FixJob | UpdateBranchJob;
 
 /**
  * Each kind's time limit, in minutes, from the repository's variables: the
@@ -129,6 +140,7 @@ export type Job = ReviewJob | FixJob;
 export const TIME_LIMITS: Readonly<Record<JobKind, (variables: Readonly<Record<RepositoryVariable, string>>) => number>> = {
   review: (variables) => reviewTimeLimit(variables.AGENT_REVIEW_TIMEOUT_MINUTES),
   fix: (variables) => fixTimeLimit(variables.AGENT_TIMEOUT_MINUTES),
+  "update-branch": (variables) => fixTimeLimit(variables.AGENT_TIMEOUT_MINUTES),
 };
 
 /** What a token is for: reading only, the posting phases' writes as well, or those and a push. */
@@ -211,6 +223,7 @@ const parsePullRequest = <K extends JobKind>(
 const PARSERS: Readonly<Record<JobKind, (base: Omit<JobBase, "workflow">, value: Fields) => Job | string>> = {
   review: (base, value) => parsePullRequest("review", base, value),
   fix: (base, value) => parsePullRequest("fix", base, value),
+  "update-branch": (base, value) => parsePullRequest("update-branch", base, value),
 };
 
 /**

@@ -517,9 +517,12 @@ GitHub App is installed on the repository. The callers can stay: each label stil
 run, and every job in it skips. `doctor` then checks what the service needs instead of what Actions
 needs, and warns about what this release's service does not do:
 
-- it answers `agent:review`, `agent:fix` and `agent:update-branch` **only**. `agent:implement`
-  does nothing on a service-served repository, and the `agent:follow-ups` a review adds files nothing
-  on merge. `doctor` names them;
+- it answers `agent:review`, `agent:fix` and `agent:update-branch` on a pull request and
+  `agent:implement` on a regular issue **only**. `agent:implement` on a PRD gets silence, as on
+  Actions, where `implement` defers it to `implement-prd`, which the service does not run yet; and
+  the `agent:follow-ups` a review adds files nothing on merge. `doctor` names `agent:follow-ups`;
+- its App must be subscribed to **Issues** events as well as **Pull request**, or nothing answers
+  `agent:implement` ([deploying-the-service.md](./deploying-the-service.md#the-webhook));
 - it reads the repository's install and setup from the repository variable `AGENT_SETUP`, not a
   caller's `setup:` input, and supports no `node-version-file`
   ([deploying-the-service.md](./deploying-the-service.md#the-repositorys-setup));

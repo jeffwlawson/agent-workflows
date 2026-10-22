@@ -178,7 +178,7 @@ export const serveWorker = async (settings: InputValues<typeof WORKER>, stdout: 
   const work = async (job: Job): Promise<void> => {
     const runDir = path.join(settings.WORK_DIR, "runs", `${new Date().toISOString().replace(/[:.]/g, "-")}-${job.id}`);
     fs.mkdirSync(runDir, { recursive: true });
-    log(`job ${job.id}: ${job.workflow} on ${job.repo}#${job.pr} at ${job.headSha}, in ${runDir}`);
+    log(`job ${job.id}: ${job.workflow} on ${job.repo}#${job.workflow === "implement" ? job.issue : `${job.pr} at ${job.headSha}`}, in ${runDir}`);
     const phases = await runJob(job, {
       token: liveTokens(settings.DISPATCHER_TOKEN_URL, settings.WORKER_SECRET, job.id),
       launch: liveLauncher,

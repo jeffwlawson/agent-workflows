@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { CI_WAIT_SECONDS } from "../../review/collect-checks.js";
 import { createDispatcher, LABEL_KINDS, parseOwners, SERVICE_LABELS, TOKEN_PERMISSIONS, type AppGitHub } from "../../service/dispatcher.js";
 import { DEFAULT_FIX_MINUTES, DEFAULT_REVIEW_MINUTES, JOB_KINDS, parseJob, sign, SIGNATURE_HEADER, verifySignature, type Job } from "../../service/job.js";
-import { FIX_LABEL, ORCHESTRATOR_VARIABLE, REVIEW_LABEL, SERVICE_ORCHESTRATOR, UPDATE_BRANCH_LABEL } from "../../shared/record.js";
+import { FIX_LABEL, IMPLEMENT_LABEL, ORCHESTRATOR_VARIABLE, REVIEW_LABEL, SERVICE_ORCHESTRATOR, UPDATE_BRANCH_LABEL } from "../../shared/record.js";
 
 /**
  * Seam 2 of PRD #453: the dispatcher's two doors, driven through the request
@@ -149,8 +149,8 @@ describe("the webhook door", () => {
   });
 
   it.each<[string, (s: ReturnType<typeof setup>) => unknown, RegExp]>([
-    ["a label the service does not answer", () => labelled({ label: "agent:implement" }), /`agent:implement` is not a label this release's service answers/],
-    ["an event that is not a pull request's", () => labelled(), /not a pull request's/],
+    ["a label the service does not answer", () => labelled({ label: "agent:follow-ups" }), /`agent:follow-ups` is not a label this release's service answers/],
+    ["an event that is neither a pull request's nor an issue's", () => labelled(), /not a pull request's or an issue's/],
     [
       "a repository the App is not installed on",
       (s) => {
@@ -183,7 +183,7 @@ describe("the webhook door", () => {
   ])("answers %s with 202, posts no job, and gives the reason", async (name, arrange, reason) => {
     const s = setup();
     const payload = arrange(s);
-    const result = await deliver(s, payload, undefined, name.includes("event") ? "issues" : "pull_request");
+    const result = await deliver(s, payload, undefined, name.includes("event") ? "push" : "pull_request");
 
     expect(result.status).toBe(202);
     expect(result.outcome).toMatch(reason);
@@ -217,6 +217,7 @@ describe("the webhook door", () => {
         AGENT_MODEL_REVIEW: "",
         AGENT_MODEL_FIX: "",
         AGENT_MODEL_UPDATE_BRANCH: "",
+        AGENT_MODEL_IMPLEMENT: "",
         AGENT_REVIEW_TIMEOUT_MINUTES: "",
         AGENT_TIMEOUT_MINUTES: "",
         AGENT_MAX_FIX_ROUNDS: "2",
@@ -272,9 +273,17 @@ describe("the webhook door", () => {
  * and the list of what it answers is that map's keys.
  */
 describe("the labels the dispatcher routes", () => {
-  it("answers exactly the labels that map to a job kind, and each maps to a kind this release runs", () => {
-    expect(SERVICE_LABELS).toEqual(Object.keys(LABEL_KINDS));
-    for (const label of SERVICE_LABELS) expect(JOB_KINDS).toContain(LABEL_KINDS[label]);
+  it("answers exactly the labels that map to a job kind, on either event, and each maps to a kind this release runs", () => {
+    const routed = [...Object.entries(LABEL_KINDS.pull_request), ...Object.entries(LABEL_KINDS.issues)];
+    expect(SERVICE_LABELS).toEqual(routed.map(([label]) => label));
+    for (const [, kind] of routed) expect(JOB_KINDS).toContain(kind);
+    expect(new Set(SERVICE_LABELS).size).toBe(SERVICE_LABELS.length);
+  });
+
+  it("answers agent:implement on an issue's event, and every other label on a pull request's", () => {
+    expect(LABEL_KINDS.issues).toEqual({ [IMPLEMENT_LABEL]: "implement" });
+    expect(Object.keys(LABEL_KINDS.pull_request)).toEqual([REVIEW_LABEL, FIX_LABEL, UPDATE_BRANCH_LABEL]);
+    expect(SERVICE_LABELS).toContain(IMPLEMENT_LABEL);
   });
 
   it("names the job's kind from its label", async () => {
@@ -551,5 +560,183 @@ describe("the token door", () => {
 
     expect(response.status).toBe(400);
     expect(s.minted).toEqual([]);
+  });
+});
+
+/** An `issues` `labeled` delivery, as GitHub sends it, with `change` laid over its parts. */
+const issueLabelled = (
+  change: { label?: string; state?: string; sender?: string; title?: string; pullRequest?: boolean; defaultBranch?: string } = {},
+) => ({
+  action: "labeled",
+  label: { name: change.label ?? IMPLEMENT_LABEL },
+  sender: { login: change.sender ?? "maintainer" },
+  repository: { full_name: REPO, default_branch: change.defaultBranch ?? "main" },
+  issue: {
+    number: 12,
+    title: change.title ?? "Add a thing",
+    state: change.state ?? "open",
+    ...(change.pullRequest === true ? { pull_request: { url: "https://api.github.com/repos/owner/repo/pulls/12" } } : {}),
+  },
+});
+
+/** The job an `issues` delivery posted to the worker. */
+const dispatchedIssue = async (s: ReturnType<typeof setup>, payload: unknown = issueLabelled()): Promise<Job> => {
+  const result = await deliver(s, payload, undefined, "issues");
+  const post = s.posted.at(-1);
+  if (post === undefined) throw new Error(`nothing was posted to the worker: ${result.outcome}`);
+  const job = parseJob(JSON.parse(post.body));
+  if (typeof job === "string") throw new Error(job);
+  return job;
+};
+
+/**
+ * An issue's route (#517): an `issues` delivery adding `agent:implement` to
+ * an open, regular issue becomes an implement job, after the same checks a
+ * pull request's delivery passes, in the same order, and with no head to
+ * check.
+ */
+describe("the issue route", () => {
+  it("dispatches one implement job for agent:implement on an open issue, from a person who can write and from the App's own login alike", async () => {
+    for (const sender of ["maintainer", "loop-app[bot]"]) {
+      const s = setup();
+      s.repository.variables["AGENT_MODEL_IMPLEMENT"] = "a-build-model";
+      const result = await deliver(s, issueLabelled({ sender }), undefined, "issues");
+
+      expect(result.status, sender).toBe(202);
+      expect(result.outcome, sender).toMatch(/^dispatched owner\/repo#12 as job job-1, deadline /);
+      expect(s.posted, sender).toHaveLength(1);
+      const job = parseJob(JSON.parse(s.posted[0]!.body));
+      expect(job, sender).toEqual({
+        workflow: "implement",
+        id: "job-1",
+        version: "9.9.9",
+        deadline: new Date(START.getTime() + (DEFAULT_FIX_MINUTES + MARGIN) * MINUTE_MS).toISOString(),
+        repo: REPO,
+        issue: 12,
+        title: "Add a thing",
+        state: "open",
+        baseRef: "main",
+        appLogin: "loop-app[bot]",
+        variables: {
+          AGENT_MODEL: "a-model",
+          AGENT_MODEL_REVIEW: "",
+          AGENT_MODEL_FIX: "",
+          AGENT_MODEL_UPDATE_BRANCH: "",
+          AGENT_MODEL_IMPLEMENT: "a-build-model",
+          AGENT_REVIEW_TIMEOUT_MINUTES: "",
+          AGENT_TIMEOUT_MINUTES: "",
+          AGENT_MAX_FIX_ROUNDS: "2",
+          AGENT_SETUP: "",
+        },
+      });
+      expect(s.looked, sender).toEqual(sender === "maintainer" ? ["maintainer"] : []);
+    }
+  });
+
+  it("takes the base from the repository's default branch, as the event carries it", async () => {
+    const job = await dispatchedIssue(setup(), issueLabelled({ defaultBranch: "trunk" }));
+
+    expect(job).toMatchObject({ workflow: "implement", baseRef: "trunk" });
+  });
+
+  it("sets an implement job's deadline from the agent's time limit, AGENT_TIMEOUT_MINUTES", async () => {
+    const s = setup();
+    s.repository.variables["AGENT_TIMEOUT_MINUTES"] = "45";
+    const job = await dispatchedIssue(s);
+
+    expect(job.deadline).toBe(new Date(START.getTime() + (45 + MARGIN) * MINUTE_MS).toISOString());
+  });
+
+  it.each<[string, (s: ReturnType<typeof setup>) => unknown, string]>([
+    ["a label not answered on an issue", () => issueLabelled({ label: REVIEW_LABEL }), "ignored on owner/repo#12: `agent:review` is not a label this release's service answers on an issue"],
+    ["an inherited property's name", () => issueLabelled({ label: "constructor" }), "ignored on owner/repo#12: `constructor` is not a label this release's service answers on an issue"],
+    ["a closed issue", () => issueLabelled({ state: "closed" }), "refused on owner/repo#12: the issue is closed, not open"],
+    [
+      "an issue that is a pull request",
+      () => issueLabelled({ pullRequest: true }),
+      "ignored on owner/repo#12: the issue is a pull request, whose labels are answered on its `pull_request` event",
+    ],
+    ["a sender who can only triage", () => issueLabelled({ sender: "triager" }), "refused on owner/repo#12: triager cannot write to owner/repo"],
+    ["another App's label", () => issueLabelled({ sender: "other-app[bot]" }), "refused on owner/repo#12: other-app[bot] cannot write to owner/repo"],
+    [
+      "a repository that has not opted in",
+      (s) => {
+        delete s.repository.variables[ORCHESTRATOR_VARIABLE];
+        return issueLabelled();
+      },
+      "refused on owner/repo#12: AGENT_ORCHESTRATOR is unset, not `service`",
+    ],
+    [
+      "a repository the App is not installed on",
+      (s) => {
+        s.repository.installed = false;
+        return issueLabelled();
+      },
+      "refused on owner/repo#12: the App is not installed on owner/repo",
+    ],
+    [
+      "an installation on an account not served",
+      (s) => {
+        s.repository.account = "stranger";
+        return issueLabelled();
+      },
+      "refused on owner/repo#12: the App's installation is on stranger, which is neither the App's owner nor an account EXTRA_OWNERS lists",
+    ],
+    ["an issue event that is not a label's", () => ({ ...issueLabelled(), action: "opened" }), "ignored: an issue `opened`, not labelled"],
+    ["a delivery missing the default branch", () => ({ ...issueLabelled(), repository: { full_name: REPO } }), "refused: the delivery is missing a field a job needs"],
+  ])("answers %s with 202, posts no job, and gives the reason", async (_name, arrange, reason) => {
+    const s = setup();
+    const payload = arrange(s);
+    const result = await deliver(s, payload, undefined, "issues");
+
+    expect(result.status).toBe(202);
+    expect(result.outcome).toBe(reason);
+    expect(s.posted).toEqual([]);
+  });
+
+  it("reads the opt-in before the issue's own fields, so a repository that has not opted in is logged as that", async () => {
+    const s = setup();
+    delete s.repository.variables[ORCHESTRATOR_VARIABLE];
+    const result = await deliver(s, issueLabelled({ state: "closed", sender: "stranger" }), undefined, "issues");
+
+    expect(result.outcome).toBe("refused on owner/repo#12: AGENT_ORCHESTRATOR is unset, not `service`");
+    expect(s.looked).toEqual([]);
+  });
+
+  it("answers agent:implement on a pull request's event with nothing, and agent:review on an issue's with nothing", async () => {
+    const s = setup();
+    const onPullRequest = await deliver(s, labelled({ label: IMPLEMENT_LABEL }));
+    const onIssue = await deliver(s, issueLabelled({ label: REVIEW_LABEL }), undefined, "issues");
+
+    expect(onPullRequest.outcome).toBe("ignored on owner/repo#7: `agent:implement` is not a label this release's service answers on a pull request");
+    expect(onIssue.outcome).toMatch(/`agent:review` is not a label this release's service answers on an issue/);
+    expect(s.posted).toEqual([]);
+  });
+
+  it("mints for an implement job it dispatched, for that repository alone", async () => {
+    const s = setup();
+    const job = await dispatchedIssue(s);
+    const response = await s.dispatcher.token(tokenRequest({ jobId: job.id, kind: "push" }));
+
+    expect(response.status).toBe(200);
+    expect(s.minted).toEqual([{ repo: REPO, permissions: TOKEN_PERMISSIONS.push }]);
+  });
+});
+
+/**
+ * The hand-off to review (#517): `implement:publish` opens the pull request as
+ * the App and adds `agent:review` with the App's token, so the `pull_request`
+ * delivery that follows names the App's login as its sender. The dispatcher
+ * trusts that login, so it answers the label as a review job.
+ */
+describe("the hand-off from implement to review", () => {
+  it("dispatches a review job for the agent:review implement:publish adds, delivered with the App's login as sender", async () => {
+    const s = setup();
+    await dispatchedIssue(s);
+    const job = await dispatched(s, labelled({ label: REVIEW_LABEL, sender: "loop-app[bot]" }));
+
+    expect(job).toMatchObject({ workflow: "review", pr: 7, branch: "agent/issue-7-a-thing", appLogin: "loop-app[bot]" });
+    expect(s.posted.map(({ body }) => (JSON.parse(body) as { workflow: string }).workflow)).toEqual(["implement", "review"]);
+    expect(s.looked).toEqual(["maintainer"]);
   });
 });

@@ -19,13 +19,16 @@ import { CI_WAIT_SECONDS } from "../review/collect-checks.js";
  * shell unevaluated. `AGENT_MODEL_FIX` and `AGENT_TIMEOUT_MINUTES` are what
  * `fix.yml` reads: the fix runner's model, and the agent's job's time limit.
  * `AGENT_MODEL_UPDATE_BRANCH` is the update-branch runner's model, which
- * `update-branch.yml` reads beside the same time limit.
+ * `update-branch.yml` reads beside the same time limit, and
+ * `AGENT_MODEL_IMPLEMENT` the implement runner's, which `implement.yml` reads
+ * beside it too.
  */
 export const REPOSITORY_VARIABLES = [
   "AGENT_MODEL",
   "AGENT_MODEL_REVIEW",
   "AGENT_MODEL_FIX",
   "AGENT_MODEL_UPDATE_BRANCH",
+  "AGENT_MODEL_IMPLEMENT",
   "AGENT_REVIEW_TIMEOUT_MINUTES",
   "AGENT_TIMEOUT_MINUTES",
   "AGENT_MAX_FIX_ROUNDS",
@@ -64,8 +67,9 @@ export const DEFAULT_FIX_MINUTES = 30;
  * carries it: the agent's job's `timeout-minutes` in `fix.yml`. The
  * dispatcher's deadline for a fix job starts from it, and the worker holds the
  * checkout, `fix:prepare`, the setup and the runner to it. `update-branch.yml`'s
- * agent's job reads the same variable with the same fallback, so an
- * update-branch job's limit is this one too.
+ * and `implement.yml`'s agent's jobs read the same variable with the same
+ * fallback, so an update-branch job's limit is this one too, and an
+ * implement job's.
  */
 export const fixTimeLimit = (variable: string): number =>
   /^[1-9][0-9]*$/.test(variable) ? Number(variable) : DEFAULT_FIX_MINUTES;
@@ -75,7 +79,7 @@ export const fixTimeLimit = (variable: string): number =>
  * job names its workflow in, and the worker's run function for it, follow
  * from the kind. The dispatcher routes a trigger label to one.
  */
-export const JOB_KINDS = ["review", "fix", "update-branch"] as const;
+export const JOB_KINDS = ["review", "fix", "update-branch", "implement"] as const;
 
 export type JobKind = (typeof JOB_KINDS)[number];
 
@@ -130,8 +134,27 @@ export interface UpdateBranchJob extends PullRequestJob {
   readonly workflow: "update-branch";
 }
 
+/**
+ * One `agent:implement` delivery on a regular issue, as a job for the worker:
+ * what the issue's event carried and what the dispatcher read. An issue has no
+ * head and no base of its own, so the job carries none read off a pull
+ * request: its base is the repository's default branch, which stands in for
+ * the `default-branch` a caller hands `implement.yml`. It carries no token.
+ */
+export interface ImplementJob extends JobBase {
+  readonly workflow: "implement";
+  readonly issue: number;
+  /** The issue's title, as the event carried it, which the branch's name and the pull request's title are made from. */
+  readonly title: string;
+  /** The issue's state, as the event carried it. */
+  readonly state: string;
+  /** The branch the work is cut from and the pull request opened against: the repository's default branch, as the event carried it. */
+  readonly baseRef: string;
+  readonly variables: Readonly<Record<RepositoryVariable, string>>;
+}
+
 /** A job the dispatcher posts and the worker runs: one member per workflow the service serves. */
-export type Job = ReviewJob | FixJob | UpdateBranchJob;
+export type Job = ReviewJob | FixJob | UpdateBranchJob | ImplementJob;
 
 /**
  * Each kind's time limit, in minutes, from the repository's variables: the
@@ -141,6 +164,7 @@ export const TIME_LIMITS: Readonly<Record<JobKind, (variables: Readonly<Record<R
   review: (variables) => reviewTimeLimit(variables.AGENT_REVIEW_TIMEOUT_MINUTES),
   fix: (variables) => fixTimeLimit(variables.AGENT_TIMEOUT_MINUTES),
   "update-branch": (variables) => fixTimeLimit(variables.AGENT_TIMEOUT_MINUTES),
+  implement: (variables) => fixTimeLimit(variables.AGENT_TIMEOUT_MINUTES),
 };
 
 /** What a token is for: reading only, the posting phases' writes as well, or those and a push. */
@@ -186,19 +210,8 @@ const SHA = /^[0-9a-f]{40}$/;
 
 type Fields = Readonly<Record<string, unknown>>;
 
-/** A pull request job's own fields, past the common ones, or the reason they are not. */
-const parsePullRequest = <K extends JobKind>(
-  workflow: K,
-  base: Omit<JobBase, "workflow">,
-  value: Fields,
-): (Omit<PullRequestJob, "workflow"> & { readonly workflow: K }) | string => {
-  const { pr, branch, headSha, baseRef, state, merged, variables } = value;
-  if (typeof pr !== "number" || !Number.isInteger(pr) || pr <= 0) return "`pr` is not a positive integer";
-  if (typeof branch !== "string" || branch === "") return "`branch` is not a non-empty string";
-  if (typeof headSha !== "string" || !SHA.test(headSha)) return "`headSha` is not a 40-character commit";
-  if (typeof baseRef !== "string" || baseRef === "") return "`baseRef` is not a non-empty string";
-  if (typeof state !== "string" || state === "") return "`state` is not a non-empty string";
-  if (typeof merged !== "boolean") return "`merged` is not a boolean";
+/** The repository's variables a job carries, or the reason they are not. */
+const parseVariables = (variables: unknown): Readonly<Record<RepositoryVariable, string>> | string => {
   if (!isObject(variables)) return "`variables` is not an object";
   const read: Partial<Record<RepositoryVariable, string>> = {};
   for (const name of REPOSITORY_VARIABLES) {
@@ -206,17 +219,37 @@ const parsePullRequest = <K extends JobKind>(
     if (typeof given !== "string") return `\`variables.${name}\` is not a string`;
     read[name] = given;
   }
-  return {
-    workflow,
-    ...base,
-    pr,
-    branch,
-    headSha,
-    baseRef,
-    state,
-    merged,
-    variables: read as Record<RepositoryVariable, string>,
-  };
+  return read as Record<RepositoryVariable, string>;
+};
+
+/** A pull request job's own fields, past the common ones, or the reason they are not. */
+const parsePullRequest = <K extends JobKind>(
+  workflow: K,
+  base: Omit<JobBase, "workflow">,
+  value: Fields,
+): (Omit<PullRequestJob, "workflow"> & { readonly workflow: K }) | string => {
+  const { pr, branch, headSha, baseRef, state, merged } = value;
+  if (typeof pr !== "number" || !Number.isInteger(pr) || pr <= 0) return "`pr` is not a positive integer";
+  if (typeof branch !== "string" || branch === "") return "`branch` is not a non-empty string";
+  if (typeof headSha !== "string" || !SHA.test(headSha)) return "`headSha` is not a 40-character commit";
+  if (typeof baseRef !== "string" || baseRef === "") return "`baseRef` is not a non-empty string";
+  if (typeof state !== "string" || state === "") return "`state` is not a non-empty string";
+  if (typeof merged !== "boolean") return "`merged` is not a boolean";
+  const variables = parseVariables(value["variables"]);
+  if (typeof variables === "string") return variables;
+  return { workflow, ...base, pr, branch, headSha, baseRef, state, merged, variables };
+};
+
+/** An implement job's own fields, past the common ones, or the reason they are not. */
+const parseIssue = (base: Omit<JobBase, "workflow">, value: Fields): ImplementJob | string => {
+  const { issue, title, state, baseRef } = value;
+  if (typeof issue !== "number" || !Number.isInteger(issue) || issue <= 0) return "`issue` is not a positive integer";
+  if (typeof title !== "string" || title === "") return "`title` is not a non-empty string";
+  if (typeof state !== "string" || state === "") return "`state` is not a non-empty string";
+  if (typeof baseRef !== "string" || baseRef === "") return "`baseRef` is not a non-empty string";
+  const variables = parseVariables(value["variables"]);
+  if (typeof variables === "string") return variables;
+  return { workflow: "implement", ...base, issue, title, state, baseRef, variables };
 };
 
 /** Each kind's own fields, read once the common ones are. */
@@ -224,6 +257,7 @@ const PARSERS: Readonly<Record<JobKind, (base: Omit<JobBase, "workflow">, value:
   review: (base, value) => parsePullRequest("review", base, value),
   fix: (base, value) => parsePullRequest("fix", base, value),
   "update-branch": (base, value) => parsePullRequest("update-branch", base, value),
+  implement: parseIssue,
 };
 
 /**

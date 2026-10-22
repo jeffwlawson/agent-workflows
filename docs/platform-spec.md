@@ -21,7 +21,7 @@ sentence. How one orchestrator does a thing is description, and sits in a quoted
 > it owns: the `dispatcher` and `worker` subcommands of this package, whose code is
 > [`service/`](../service/) and whose deployment is
 > [deploying-the-service.md](./deploying-the-service.md). It answers `agent:review`, `agent:fix` and
-> `agent:update-branch` alone, at this release. A block for it appears only where it differs from the Actions orchestrator in a way a
+> `agent:update-branch` on a pull request and `agent:implement` on a regular issue, alone, at this release. A block for it appears only where it differs from the Actions orchestrator in a way a
 > reader would trip on.
 
 Neither block binds anyone. Where they disagree with a bold sentence, the bold sentence is right.
@@ -376,9 +376,10 @@ A repository says which orchestrator serves it in the repository variable `AGENT
 answer a label on such a repository unless it would answer one with the variable unset, so a typo
 falls back to the orchestrator the repository already had rather than to two. A service
 orchestrator answers only the labels `SERVICE_LABELS` in `service/dispatcher.ts` lists, the keys
-of its map from trigger label to job kind: `agent:review`, `agent:fix` and `agent:update-branch` at
-this release, and on a
-service-served repository every other label is answered by nothing.
+of its map from trigger label to job kind, per event type: `agent:review`, `agent:fix` and
+`agent:update-branch` on a pull request's delivery and `agent:implement` on an issue's, at this
+release. A label is answered on its own event type only, and on a service-served repository every
+other label is answered by nothing.
 
 `doctor` reads the variable. It reports any value but unset or `service` as an error, and one it
 could not read as unknown. With `service`, it checks that the labels the service answers exist,
@@ -597,6 +598,81 @@ it does not trust is left out of what the agent is shown. Nothing else of the re
 > the default branch, links it on the issue, and adds `agent:review` to it; then, `always()`,
 > `implement:conclude`, which ends every run: the failure comment and `agent:blocked` where the run
 > stopped, and `agent:implement` off wherever the gate decided the run was its own.
+
+> **Service orchestrator:** the worker runs the gate job's, the agent's job's and the publish job's
+> subcommands, in the order above and under each job's and step's `if:` in `implement.yml`, not
+> under the order alone, each a child process with a fresh `OUTPUT_DIR` of its own and an
+> environment built from its declaration, and writes nothing to the record itself. The dispatcher
+> answers `agent:implement` on an `issues` delivery alone, on an issue that is not a pull
+> request's, from a person who can write or from its own App (ADR 0008); `agent:implement` on a pull
+> request's delivery starts nothing. It does not check the issue's state: a closed issue reaches
+> `implement:gate`, whose refusal says so on the issue and takes the label off, as on Actions. The worker asks the dispatcher for a `write` token and runs
+> `implement:gate` with the issue's number, title and state as the label's event carried them: the
+> gate writes, its refusals, its permission probe and the start comment, as the gate job's token does
+> with `issues: write`.
+>
+> - **A refusal or a deferral ends the run at the gate.** Where `gate.json` says `proceed` `false`,
+>   the gate job's `refused` is `true`, and on Actions neither the agent's job (`refused ==
+>   'false'`) nor the publish job (`refused != 'true'`) runs. So no token is asked for after the
+>   gate, neither the agent's phases, `implement:publish` nor `implement:conclude` run, and the
+>   run's summary notes it. An issue with sub-issues is deferred to `implement-prd` that way, so a
+>   PRD labelled `agent:implement` gets silence on the service, as it does on Actions, while the
+>   service runs no `implement-prd`.
+> - **An undecided gate**, one that failed or ran out of time before `gate.json` said `proceed`, is
+>   not a refusal: `refused` is empty, the agent's job does not run, and the publish job does. Its
+>   token is asked for and `implement:conclude` runs, told `REFUSED` empty; the checkout and the
+>   fetch, which need `refused == 'false'`, are skipped. So is the agent's job where the gate
+>   claimed the run and then failed, as at the probe, since the job needs the gate's success.
+> - **The agent's job**, where the gate succeeded and claimed the run: a `read` token; the checkout
+>   of `base`, the commit the gate read the base branch at, as that branch, with no token stored in
+>   it; `implement:prepare`, handed no token, which creates `BRANCH` there; the repository's setup,
+>   `AGENT_SETUP`, in the bwrap sandbox with no token, where Actions runs the caller's `setup:`; a
+>   fresh `read` token, then the runner in the sandbox its settings name, with it as `GH_TOKEN`;
+>   and `implement:bundle`, handed no token, only where every step before it succeeded, as the
+>   bundle step's `if: success()`.
+> - **The publish job**, wherever the gate did not refuse: a `push` token, since the job holds
+>   `contents: write`. `implement:publish` runs only where the agent's job succeeded and the steps
+>   before it in the publish job did, the mint and the checkout among them: in a checkout of `base`
+>   of its own, pointed at `implement:bundle`'s directory, it pushes `BRANCH`, opens the draft pull
+>   request as the App, links it on the issue and adds `agent:review` with the App's token. Then
+>   `implement:conclude`, however the run ended, pointed at publish's, prepare's, the runner's and
+>   bundle's directories. Both hold `push`, publish as both `GH_TOKEN` and `LOOP_TOKEN`, with
+>   `LOOP_TOKEN_SOURCE` `app`; the runner never holds a token that writes.
+>
+> Where `implement.yml` passes something the service does not have, it passes the nearest
+> equivalent:
+>
+> - **`BASE_REF` is the repository's default branch**, as the `issues` delivery carries it, which
+>   stands in for the caller's `default-branch` input.
+> - **The gate job's outputs are its files.** `REFUSED` is read from `gate.json` as for `fix`;
+>   `BRANCH`, `BASE_SHA` and `BRANCH_TIP` are its `branch`, `base` and `tip`; `GATE_REASON` is
+>   `implement:gate`'s `failure_reason.txt`.
+> - **`RUN_URL` is the App's own page**, `https://github.com/apps/<slug>`: the service has no run
+>   page, and the commands require a link, which the start comment, the pull request's frame, the
+>   link on the issue and the failure comment give where Actions links its workflow run.
+> - **The time limits are the jobs'.** `implement:gate` gets the gate job's 10 minutes. The agent's
+>   job's steps share `AGENT_TIMEOUT_MINUTES` (30 where unset or not a positive integer), and one
+>   still running at it is ended with every process it started: the agent's job is then
+>   `cancelled`, with `TIMED_OUT` `true` and `TIMEOUT_MINUTES` the limit, which on Actions the job's
+>   last step measures. Publish's checkout and `implement:publish` share the publish job's 15
+>   minutes, and `implement:conclude` gets 15 of its own. The dispatcher's deadline for the job is
+>   the agent's limit plus its margin.
+> - **A phase not started leaves its reason** where `implement:conclude` reads the next one: a
+>   `read` token not granted, or a checkout that failed, as `implement:prepare`'s
+>   `failure_reason.txt`; a setup that failed, or a runner's token not granted, as the runner's; a
+>   publish checkout that failed as `implement:publish`'s.
+> - **The download is a success** wherever the agent's job ran: the hand-over is on the worker's
+>   disk.
+> - **The mint is the `push` token's.** One not granted is `MINT_OUTCOME` `failure`, and nothing is
+>   published; `implement:conclude` is then handed a `write` token, enough for its comment and
+>   labels. Where none is granted to conclude, nothing can write to the issue, and the worker's log
+>   says why the run ended.
+> - **The hand back to review needs nothing new.** The `pull_request` delivery for the
+>   `agent:review` `implement:publish` adds names the App's login as its sender, which the
+>   dispatcher trusts, so it answers it as a review job.
+>
+> Not run: `node-version-file`, since the sandbox runs the worker box's own Node, and the session
+> transcript's upload.
 
 ### `implement:gate`
 
@@ -988,9 +1064,10 @@ earlier run of this PRD left commits on `RESCUE_BRANCH`, that branch fetched to
 
 > **Service orchestrator:** the chain moves on only when a review ends on an approval and
 > `review:advance` puts `agent:implement` back on the parent. An orchestrator that does not run it
-> leaves the chain waiting on a human to add the label. The service runs it (§8), but answers
-> `agent:review`, `agent:fix` and `agent:update-branch` only: on a repository it serves, the `agent:implement` advance re-adds waits for an
-> orchestrator that answers it, which is expected while `implement-prd` has not joined the service.
+> leaves the chain waiting on a human to add the label. The service runs it (§8), and answers the
+> `agent:implement` it re-adds with an implement job (§6), whose gate defers a PRD here without a
+> word: on a repository it serves, the chain waits for an orchestrator that runs `implement-prd`,
+> which is expected while `implement-prd` has not joined the service.
 
 ### `implement-prd:gate`
 

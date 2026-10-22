@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { CI_WAIT_SECONDS } from "../../review/collect-checks.js";
 import { createDispatcher, LABEL_KINDS, parseOwners, SERVICE_LABELS, TOKEN_PERMISSIONS, type AppGitHub } from "../../service/dispatcher.js";
-import { DEFAULT_FIX_MINUTES, DEFAULT_REVIEW_MINUTES, JOB_KINDS, parseJob, sign, SIGNATURE_HEADER, verifySignature, type Job } from "../../service/job.js";
+import { DEFAULT_FIX_MINUTES, DEFAULT_REVIEW_MINUTES, IMPLEMENT_PRD_OTHER_MINUTES, JOB_KINDS, parseJob, sign, SIGNATURE_HEADER, verifySignature, type Job } from "../../service/job.js";
 import { FIX_LABEL, IMPLEMENT_LABEL, ORCHESTRATOR_VARIABLE, REVIEW_LABEL, SERVICE_ORCHESTRATOR, UPDATE_BRANCH_LABEL } from "../../shared/record.js";
 
 /**
@@ -218,6 +218,7 @@ describe("the webhook door", () => {
         AGENT_MODEL_FIX: "",
         AGENT_MODEL_UPDATE_BRANCH: "",
         AGENT_MODEL_IMPLEMENT: "",
+        AGENT_MODEL_IMPLEMENT_PRD: "",
         AGENT_REVIEW_TIMEOUT_MINUTES: "",
         AGENT_TIMEOUT_MINUTES: "",
         AGENT_MAX_FIX_ROUNDS: "2",
@@ -274,14 +275,14 @@ describe("the webhook door", () => {
  */
 describe("the labels the dispatcher routes", () => {
   it("answers exactly the labels that map to a job kind, on either event, and each maps to a kind this release runs", () => {
-    const routed = [...Object.entries(LABEL_KINDS.pull_request), ...Object.entries(LABEL_KINDS.issues)];
+    const routed = [...Object.entries(LABEL_KINDS.pull_request).map(([label, kind]) => [label, [kind]] as const), ...Object.entries(LABEL_KINDS.issues)];
     expect(SERVICE_LABELS).toEqual(routed.map(([label]) => label));
-    for (const [, kind] of routed) expect(JOB_KINDS).toContain(kind);
+    for (const [, kinds] of routed) for (const kind of kinds) expect(JOB_KINDS).toContain(kind);
     expect(new Set(SERVICE_LABELS).size).toBe(SERVICE_LABELS.length);
   });
 
-  it("answers agent:implement on an issue's event, and every other label on a pull request's", () => {
-    expect(LABEL_KINDS.issues).toEqual({ [IMPLEMENT_LABEL]: "implement" });
+  it("answers agent:implement on an issue's event, with both implement and implement-prd, and every other label on a pull request's", () => {
+    expect(LABEL_KINDS.issues).toEqual({ [IMPLEMENT_LABEL]: ["implement", "implement-prd"] });
     expect(Object.keys(LABEL_KINDS.pull_request)).toEqual([REVIEW_LABEL, FIX_LABEL, UPDATE_BRANCH_LABEL]);
     expect(SERVICE_LABELS).toContain(IMPLEMENT_LABEL);
   });
@@ -579,38 +580,40 @@ const issueLabelled = (
   },
 });
 
-/** The job an `issues` delivery posted to the worker. */
-const dispatchedIssue = async (s: ReturnType<typeof setup>, payload: unknown = issueLabelled()): Promise<Job> => {
+/** Every job an `issues` delivery posted to the worker, in the order posted. */
+const dispatchedIssue = async (s: ReturnType<typeof setup>, payload: unknown = issueLabelled()): Promise<readonly Job[]> => {
   const result = await deliver(s, payload, undefined, "issues");
-  const post = s.posted.at(-1);
-  if (post === undefined) throw new Error(`nothing was posted to the worker: ${result.outcome}`);
-  const job = parseJob(JSON.parse(post.body));
-  if (typeof job === "string") throw new Error(job);
-  return job;
+  if (s.posted.length === 0) throw new Error(`nothing was posted to the worker: ${result.outcome}`);
+  return s.posted.map(({ body }) => {
+    const job = parseJob(JSON.parse(body));
+    if (typeof job === "string") throw new Error(job);
+    return job;
+  });
 };
 
 /**
- * An issue's route (#517): an `issues` delivery adding `agent:implement` to
- * an open, regular issue becomes an implement job, after the same checks a
- * pull request's delivery passes, in the same order, and with no head to
- * check.
+ * An issue's route (#517, #518): an `issues` delivery adding
+ * `agent:implement` to an issue becomes two jobs, an implement job and an
+ * implement-prd job, after the same checks a pull request's delivery passes,
+ * in the same order, and with no head to check. Actions starts both
+ * workflows on the label, and each gate defers the other's issue shape
+ * without a word, so the dispatcher reads nothing of the shape.
  */
 describe("the issue route", () => {
-  it("dispatches one implement job for agent:implement on an issue, from a person who can write and from the App's own login alike", async () => {
+  it("dispatches an implement job and an implement-prd job for agent:implement on an issue, from a person who can write and from the App's own login alike", async () => {
     for (const sender of ["maintainer", "loop-app[bot]"]) {
       const s = setup();
       s.repository.variables["AGENT_MODEL_IMPLEMENT"] = "a-build-model";
+      s.repository.variables["AGENT_MODEL_IMPLEMENT_PRD"] = "a-chain-model";
       const result = await deliver(s, issueLabelled({ sender }), undefined, "issues");
 
       expect(result.status, sender).toBe(202);
-      expect(result.outcome, sender).toMatch(/^dispatched owner\/repo#12 as job job-1, deadline /);
-      expect(s.posted, sender).toHaveLength(1);
-      const job = parseJob(JSON.parse(s.posted[0]!.body));
-      expect(job, sender).toEqual({
-        workflow: "implement",
-        id: "job-1",
+      expect(result.outcome, sender).toMatch(
+        /^dispatched owner\/repo#12 to implement as job job-1, deadline [^;]+; dispatched owner\/repo#12 to implement-prd as job job-2, deadline /,
+      );
+      expect(s.posted, sender).toHaveLength(2);
+      const issue = {
         version: "9.9.9",
-        deadline: new Date(START.getTime() + (DEFAULT_FIX_MINUTES + MARGIN) * MINUTE_MS).toISOString(),
         repo: REPO,
         issue: 12,
         title: "Add a thing",
@@ -623,36 +626,71 @@ describe("the issue route", () => {
           AGENT_MODEL_FIX: "",
           AGENT_MODEL_UPDATE_BRANCH: "",
           AGENT_MODEL_IMPLEMENT: "a-build-model",
+          AGENT_MODEL_IMPLEMENT_PRD: "a-chain-model",
           AGENT_REVIEW_TIMEOUT_MINUTES: "",
           AGENT_TIMEOUT_MINUTES: "",
           AGENT_MAX_FIX_ROUNDS: "2",
           AGENT_SETUP: "",
         },
-      });
+      };
+      expect(s.posted.map(({ body }) => parseJob(JSON.parse(body))), sender).toEqual([
+        { ...issue, workflow: "implement", id: "job-1", deadline: new Date(START.getTime() + (DEFAULT_FIX_MINUTES + MARGIN) * MINUTE_MS).toISOString() },
+        {
+          ...issue,
+          workflow: "implement-prd",
+          id: "job-2",
+          deadline: new Date(START.getTime() + (IMPLEMENT_PRD_OTHER_MINUTES + DEFAULT_FIX_MINUTES + MARGIN) * MINUTE_MS).toISOString(),
+        },
+      ]);
       expect(s.looked, sender).toEqual(sender === "maintainer" ? ["maintainer"] : []);
     }
   });
 
-  it("dispatches a closed issue too, carrying its state, so implement:gate refuses it on the issue as on Actions", async () => {
-    const s = setup();
-    const job = await dispatchedIssue(s, issueLabelled({ state: "closed" }));
+  it("reads nothing of the issue's shape: both jobs carry the same, what the event carried, whatever the issue is", async () => {
+    const [implement, prd] = await dispatchedIssue(setup());
 
-    expect(job).toMatchObject({ workflow: "implement", issue: 12, state: "closed" });
-    expect(s.posted).toHaveLength(1);
+    // `AppGitHub` has no read of an issue at all, so the shape cannot decide
+    // which job is dispatched: each gate decides it, from the record.
+    const carried = (job: Job | undefined) => ({ ...job, workflow: undefined, id: undefined, deadline: undefined });
+    expect(carried(prd)).toEqual(carried(implement));
+  });
+
+  it("dispatches a closed issue too, carrying its state, so the gate whose issue it is refuses it on the issue as on Actions", async () => {
+    const s = setup();
+    const jobs = await dispatchedIssue(s, issueLabelled({ state: "closed" }));
+
+    expect(jobs).toMatchObject([
+      { workflow: "implement", issue: 12, state: "closed" },
+      { workflow: "implement-prd", issue: 12, state: "closed" },
+    ]);
   });
 
   it("takes the base from the repository's default branch, as the event carries it", async () => {
-    const job = await dispatchedIssue(setup(), issueLabelled({ defaultBranch: "trunk" }));
+    const jobs = await dispatchedIssue(setup(), issueLabelled({ defaultBranch: "trunk" }));
 
-    expect(job).toMatchObject({ workflow: "implement", baseRef: "trunk" });
+    expect(jobs).toMatchObject([
+      { workflow: "implement", baseRef: "trunk" },
+      { workflow: "implement-prd", baseRef: "trunk" },
+    ]);
   });
 
-  it("sets an implement job's deadline from the agent's time limit, AGENT_TIMEOUT_MINUTES", async () => {
+  it("sets an implement job's deadline from the agent's time limit, and an implement-prd job's from the sum of its jobs' limits", async () => {
     const s = setup();
     s.repository.variables["AGENT_TIMEOUT_MINUTES"] = "45";
-    const job = await dispatchedIssue(s);
+    const [implement, prd] = await dispatchedIssue(s);
 
-    expect(job.deadline).toBe(new Date(START.getTime() + (45 + MARGIN) * MINUTE_MS).toISOString());
+    expect(implement!.deadline).toBe(new Date(START.getTime() + (45 + MARGIN) * MINUTE_MS).toISOString());
+    // The gate's 10, the catch-up's 10, the agent's 45 and publish's 15.
+    expect(IMPLEMENT_PRD_OTHER_MINUTES).toBe(35);
+    expect(prd!.deadline).toBe(new Date(START.getTime() + (35 + 45 + MARGIN) * MINUTE_MS).toISOString());
+  });
+
+  it("logs each dispatch's outcome, where the worker refuses one", async () => {
+    const s = setup({ workerStatus: 503 });
+    const result = await deliver(s, issueLabelled(), undefined, "issues");
+
+    expect(result.outcome).toBe("failed on owner/repo#12: the worker answered 503; failed on owner/repo#12: the worker answered 503");
+    expect(s.posted.map(({ body }) => (JSON.parse(body) as { workflow: string }).workflow)).toEqual(["implement", "implement-prd"]);
   });
 
   it.each<[string, (s: ReturnType<typeof setup>) => unknown, string]>([
@@ -720,13 +758,15 @@ describe("the issue route", () => {
     expect(s.posted).toEqual([]);
   });
 
-  it("mints for an implement job it dispatched, for that repository alone", async () => {
+  it("mints for each job it dispatched, for that repository alone", async () => {
     const s = setup();
-    const job = await dispatchedIssue(s);
-    const response = await s.dispatcher.token(tokenRequest({ jobId: job.id, kind: "push" }));
+    const jobs = await dispatchedIssue(s);
+    for (const job of jobs) expect((await s.dispatcher.token(tokenRequest({ jobId: job.id, kind: "push" }))).status, job.workflow).toBe(200);
 
-    expect(response.status).toBe(200);
-    expect(s.minted).toEqual([{ repo: REPO, permissions: TOKEN_PERMISSIONS.push }]);
+    expect(s.minted).toEqual([
+      { repo: REPO, permissions: TOKEN_PERMISSIONS.push },
+      { repo: REPO, permissions: TOKEN_PERMISSIONS.push },
+    ]);
   });
 });
 
@@ -743,7 +783,7 @@ describe("the hand-off from implement to review", () => {
     const job = await dispatched(s, labelled({ label: REVIEW_LABEL, sender: "loop-app[bot]" }));
 
     expect(job).toMatchObject({ workflow: "review", pr: 7, branch: "agent/issue-7-a-thing", appLogin: "loop-app[bot]" });
-    expect(s.posted.map(({ body }) => (JSON.parse(body) as { workflow: string }).workflow)).toEqual(["implement", "review"]);
+    expect(s.posted.map(({ body }) => (JSON.parse(body) as { workflow: string }).workflow)).toEqual(["implement", "implement-prd", "review"]);
     expect(s.looked).toEqual(["maintainer"]);
   });
 });

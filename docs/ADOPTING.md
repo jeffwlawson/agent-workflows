@@ -518,9 +518,8 @@ run, and every job in it skips. `doctor` then checks what the service needs inst
 needs, and warns about what this release's service does not do:
 
 - it answers `agent:review`, `agent:fix` and `agent:update-branch` on a pull request and
-  `agent:implement` on a regular issue **only**. `agent:implement` on a PRD gets silence, as on
-  Actions, where `implement` defers it to `implement-prd`, which the service does not run yet; and
-  the `agent:follow-ups` a review adds files nothing on merge. `doctor` names `agent:follow-ups`;
+  `agent:implement` on an issue, a regular one or a PRD, **only**: the `agent:follow-ups` a review
+  adds files nothing on merge. `doctor` names `agent:follow-ups`;
 - its App must be subscribed to **Issues** events as well as **Pull request**, or nothing answers
   `agent:implement` ([deploying-the-service.md](./deploying-the-service.md#the-webhook));
 - it reads the repository's install and setup from the repository variable `AGENT_SETUP`, not a

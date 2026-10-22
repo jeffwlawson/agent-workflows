@@ -1701,6 +1701,15 @@ describe("the worker's implement job, where the gate does not claim the run", ()
     expect(fs.readFileSync(path.join(s.runDir, SUMMARY_FILE), "utf8")).toContain("refused or deferred: the run ends here");
   });
 
+  it("hands a closed issue's state to the gate, and runs nothing after the gate refuses it, asking for no other token", async () => {
+    const s = setup({ ...IMPLEMENT_ORDINARY, "implement:gate": { files: { "gate.json": { proceed: "false" }, "write_log.jsonl": "{}" } } });
+    await runJob({ ...IMPLEMENT_JOB, state: "closed" }, s.edges);
+
+    expect(s.env("implement:gate")).toMatchObject({ ISSUE_STATE: "closed" });
+    expect(s.events).toEqual(["write token", "implement:gate"]);
+    expect(s.asked).toEqual(["write"]);
+  });
+
   it("runs nothing after deferring an issue with sub-issues to implement-prd, asks for no other token, and writes nothing for the PRD", async () => {
     // A deferral is the gate's `proceed: false` with no write: it leaves no write log.
     const s = setup({ ...IMPLEMENT_ORDINARY, "implement:gate": { files: { "gate.json": { proceed: "false" } } } });

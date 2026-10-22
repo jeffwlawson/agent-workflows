@@ -603,9 +603,10 @@ it does not trust is left out of what the agent is shown. Nothing else of the re
 > subcommands, in the order above and under each job's and step's `if:` in `implement.yml`, not
 > under the order alone, each a child process with a fresh `OUTPUT_DIR` of its own and an
 > environment built from its declaration, and writes nothing to the record itself. The dispatcher
-> answers `agent:implement` on an `issues` delivery alone, on an open issue that is not a pull
+> answers `agent:implement` on an `issues` delivery alone, on an issue that is not a pull
 > request's, from a person who can write or from its own App (ADR 0008); `agent:implement` on a pull
-> request's delivery starts nothing. The worker asks the dispatcher for a `write` token and runs
+> request's delivery starts nothing. It does not check the issue's state: a closed issue reaches
+> `implement:gate`, whose refusal says so on the issue and takes the label off, as on Actions. The worker asks the dispatcher for a `write` token and runs
 > `implement:gate` with the issue's number, title and state as the label's event carried them: the
 > gate writes, its refusals, its permission probe and the start comment, as the gate job's token does
 > with `issues: write`.

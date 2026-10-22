@@ -355,10 +355,13 @@ export const createDispatcher = (edges: DispatcherEdges) => {
 
   /**
    * **An issue's route**, as a pull request's, in the same order, and with
-   * no head to check: an issue has none. Its base is the repository's default
-   * branch, the nearest the event has to the `default-branch` a caller hands
-   * `implement.yml`. An `issues` delivery about a pull request is ignored: a
-   * pull request's labels are answered on its own route.
+   * no head to check: an issue has none. Nor is its state checked: a closed
+   * issue goes to `implement:gate` carrying its state, and the gate's refusal
+   * says so on the issue and takes the label off, as on Actions. Its base is
+   * the repository's default branch, the nearest the event has to the
+   * `default-branch` a caller hands `implement.yml`. An `issues` delivery
+   * about a pull request is ignored: a pull request's labels are answered on
+   * its own route.
    */
   const issue = async (payload: unknown): Promise<string> => {
     const p = (payload ?? {}) as IssueLabelEvent;
@@ -389,7 +392,6 @@ export const createDispatcher = (edges: DispatcherEdges) => {
     if (kind === undefined) return `ignored on ${where}: \`${label}\` is not a label this release's service answers on an issue`;
     const why = await unserved(repo);
     if (why !== undefined) return `refused on ${where}: ${why}`;
-    if (state !== "open") return `refused on ${where}: the issue is ${state}, not open`;
     const login = appLogin((await edges.github.app()).slug);
     const distrust = await untrusted(repo, sender, login);
     if (distrust !== undefined) return `refused on ${where}: ${distrust}`;

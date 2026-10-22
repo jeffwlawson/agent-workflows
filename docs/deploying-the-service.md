@@ -128,7 +128,8 @@ when all of these hold:
 - the installation is on the App's owner's account, or on one `EXTRA_OWNERS` lists;
 - the repository's `AGENT_ORCHESTRATOR` is `service`;
 - on a pull request, the head is in the same repository, not a fork; an issue has no head;
-- the pull request or the issue is open;
+- a pull request is open. An issue's state is not checked here: a closed issue becomes a job, and
+  `implement:gate` refuses it on the issue and takes the label off, as on Actions;
 - the label's sender can write to the repository, or is the App itself (`<slug>[bot]`), whose
   labels the loop's own commands add (ADR 0008).
 

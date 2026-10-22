@@ -596,7 +596,7 @@ const dispatchedIssue = async (s: ReturnType<typeof setup>, payload: unknown = i
  * check.
  */
 describe("the issue route", () => {
-  it("dispatches one implement job for agent:implement on an open issue, from a person who can write and from the App's own login alike", async () => {
+  it("dispatches one implement job for agent:implement on an issue, from a person who can write and from the App's own login alike", async () => {
     for (const sender of ["maintainer", "loop-app[bot]"]) {
       const s = setup();
       s.repository.variables["AGENT_MODEL_IMPLEMENT"] = "a-build-model";
@@ -633,6 +633,14 @@ describe("the issue route", () => {
     }
   });
 
+  it("dispatches a closed issue too, carrying its state, so implement:gate refuses it on the issue as on Actions", async () => {
+    const s = setup();
+    const job = await dispatchedIssue(s, issueLabelled({ state: "closed" }));
+
+    expect(job).toMatchObject({ workflow: "implement", issue: 12, state: "closed" });
+    expect(s.posted).toHaveLength(1);
+  });
+
   it("takes the base from the repository's default branch, as the event carries it", async () => {
     const job = await dispatchedIssue(setup(), issueLabelled({ defaultBranch: "trunk" }));
 
@@ -650,7 +658,6 @@ describe("the issue route", () => {
   it.each<[string, (s: ReturnType<typeof setup>) => unknown, string]>([
     ["a label not answered on an issue", () => issueLabelled({ label: REVIEW_LABEL }), "ignored on owner/repo#12: `agent:review` is not a label this release's service answers on an issue"],
     ["an inherited property's name", () => issueLabelled({ label: "constructor" }), "ignored on owner/repo#12: `constructor` is not a label this release's service answers on an issue"],
-    ["a closed issue", () => issueLabelled({ state: "closed" }), "refused on owner/repo#12: the issue is closed, not open"],
     [
       "an issue that is a pull request",
       () => issueLabelled({ pullRequest: true }),

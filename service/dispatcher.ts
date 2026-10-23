@@ -348,8 +348,11 @@ export const createDispatcher = (edges: DispatcherEdges) => {
   /**
    * **A pull request's route**: whether a `pull_request` delivery is a job,
    * and the job where it is; otherwise the reason it is not, which is logged.
-   * The cheap refusals, read off the payload, are left until after the
-   * opt-in, so a repository that has not opted in is always logged as that.
+   * What there is nothing to answer, a label no job starts on or a close
+   * with nothing to file, is ignored first, before anything of the
+   * repository is read. The cheap refusals, the fork and the state, are left
+   * until after the opt-in, so a repository that has not opted in is logged
+   * as that rather than as one of them.
    * A label is answered on an open pull request, but for `agent:follow-ups`,
    * which is answered on a closed one, merged or not, as `follow-ups.yml`'s
    * condition answers it, author gate and all; a close is a merge's route.

@@ -1389,8 +1389,10 @@ const diagnoseService = (
   }
 
   // The one list the dispatcher reads too, so the two cannot disagree. The
-  // follow-ups marker is named with the trigger labels: a review here still
-  // adds it, and on merge nothing files.
+  // follow-ups marker is named with the trigger labels, since a review adds
+  // it and the service answers it. This release's service answers every one,
+  // so the check names nothing; it stays for a label a release adds before
+  // the service answers it.
   const unanswered = [...TRIGGER_LABELS.map((label) => label.name), FOLLOW_UPS_LABEL].filter(
     (name) => !SERVICE_LABELS.includes(name),
   );

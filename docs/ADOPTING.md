@@ -515,7 +515,7 @@ orchestrator serves a repository, for every label (spec §4.2).
 **Switching to the service.** Set the variable to `service` once the service is running and its
 GitHub App is installed on the repository. The callers can stay: each label still starts a caller
 run, and every job in it skips. `doctor` then checks what the service needs instead of what Actions
-needs, and warns about what this release's service does not do:
+needs. What differs on the service:
 
 - it answers every trigger label: `agent:review`, `agent:fix`, `agent:update-branch` and
   `agent:follow-ups` on a pull request, `agent:implement` on an issue, a regular one or a PRD, and a

@@ -386,7 +386,8 @@ a pull request merged carrying it (§11).
 
 `doctor` reads the variable. It reports any value but unset or `service` as an error, and one it
 could not read as unknown. With `service`, it checks that the labels the service answers exist,
-and names the labels nothing answers there.
+and would name any label nothing answers there. At this release the service answers every one, so
+it names none.
 
 **`doctor` cannot check this.** It reads which orchestrator a repository asks for, not which one
 listens: a caller left installed listens and skips, and a service listens from outside the

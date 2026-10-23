@@ -91,12 +91,20 @@ export const IMPLEMENT_PRD_OTHER_MINUTES = 10 + 10 + 15;
 export const implementPrdTimeLimit = (variable: string): number => IMPLEMENT_PRD_OTHER_MINUTES + fixTimeLimit(variable);
 
 /**
+ * A follow-ups job's time limit, in minutes: the one job's `timeout-minutes`
+ * in `follow-ups.yml`, which the worker holds `follow-ups:file` to, and
+ * names to `follow-ups:conclude` as the limit a timeout ran out.
+ */
+export const FOLLOW_UPS_MINUTES = 10;
+
+/**
  * The workflows the service runs, one job kind each (ADR 0008): the field a
  * job names its workflow in, and the worker's run function for it, follow
  * from the kind. The dispatcher routes a trigger label to one, or, for
- * `agent:implement`, to two, as Actions starts two workflows on it.
+ * `agent:implement`, to two, as Actions starts two workflows on it; and a
+ * merge, the one trigger that is not a label, to `follow-ups`.
  */
-export const JOB_KINDS = ["review", "fix", "update-branch", "implement", "implement-prd"] as const;
+export const JOB_KINDS = ["review", "fix", "update-branch", "implement", "implement-prd", "follow-ups"] as const;
 
 export type JobKind = (typeof JOB_KINDS)[number];
 
@@ -180,8 +188,21 @@ export interface ImplementPrdJob extends Omit<ImplementJob, "workflow"> {
   readonly workflow: "implement-prd";
 }
 
+/**
+ * One merge, or one `agent:follow-ups` on a closed pull request, as a job for
+ * the worker: the pull request alone, which is all `follow-ups:file` and
+ * `follow-ups:conclude` are told of it. Nothing is checked out, so it carries
+ * no head and no base, and the commands read the pull request's state, and
+ * its marker, for themselves. It carries no token.
+ */
+export interface FollowUpsJob extends JobBase {
+  readonly workflow: "follow-ups";
+  readonly pr: number;
+  readonly variables: Readonly<Record<RepositoryVariable, string>>;
+}
+
 /** A job the dispatcher posts and the worker runs: one member per workflow the service serves. */
-export type Job = ReviewJob | FixJob | UpdateBranchJob | ImplementJob | ImplementPrdJob;
+export type Job = ReviewJob | FixJob | UpdateBranchJob | ImplementJob | ImplementPrdJob | FollowUpsJob;
 
 /**
  * Each kind's time limit, in minutes, from the repository's variables: the
@@ -193,6 +214,7 @@ export const TIME_LIMITS: Readonly<Record<JobKind, (variables: Readonly<Record<R
   "update-branch": (variables) => fixTimeLimit(variables.AGENT_TIMEOUT_MINUTES),
   implement: (variables) => fixTimeLimit(variables.AGENT_TIMEOUT_MINUTES),
   "implement-prd": (variables) => implementPrdTimeLimit(variables.AGENT_TIMEOUT_MINUTES),
+  "follow-ups": () => FOLLOW_UPS_MINUTES,
 };
 
 /** What a token is for: reading only, the posting phases' writes as well, or those and a push. */
@@ -284,6 +306,15 @@ const parseIssue = <K extends "implement" | "implement-prd">(
   return { workflow, ...base, issue, title, state, baseRef, variables };
 };
 
+/** A follow-ups job's own fields, past the common ones, or the reason they are not. */
+const parseFollowUps = (base: Omit<JobBase, "workflow">, value: Fields): FollowUpsJob | string => {
+  const { pr } = value;
+  if (typeof pr !== "number" || !Number.isInteger(pr) || pr <= 0) return "`pr` is not a positive integer";
+  const variables = parseVariables(value["variables"]);
+  if (typeof variables === "string") return variables;
+  return { workflow: "follow-ups", ...base, pr, variables };
+};
+
 /** Each kind's own fields, read once the common ones are. */
 const PARSERS: Readonly<Record<JobKind, (base: Omit<JobBase, "workflow">, value: Fields) => Job | string>> = {
   review: (base, value) => parsePullRequest("review", base, value),
@@ -291,6 +322,7 @@ const PARSERS: Readonly<Record<JobKind, (base: Omit<JobBase, "workflow">, value:
   "update-branch": (base, value) => parsePullRequest("update-branch", base, value),
   implement: (base, value) => parseIssue("implement", base, value),
   "implement-prd": (base, value) => parseIssue("implement-prd", base, value),
+  "follow-ups": parseFollowUps,
 };
 
 /**

@@ -1,8 +1,17 @@
 import { describe, expect, it } from "vitest";
 import { CI_WAIT_SECONDS } from "../../review/collect-checks.js";
 import { createDispatcher, LABEL_KINDS, parseOwners, SERVICE_LABELS, TOKEN_PERMISSIONS, type AppGitHub } from "../../service/dispatcher.js";
-import { DEFAULT_FIX_MINUTES, DEFAULT_REVIEW_MINUTES, IMPLEMENT_PRD_OTHER_MINUTES, JOB_KINDS, parseJob, sign, SIGNATURE_HEADER, verifySignature, type Job } from "../../service/job.js";
-import { FIX_LABEL, IMPLEMENT_LABEL, ORCHESTRATOR_VARIABLE, REVIEW_LABEL, SERVICE_ORCHESTRATOR, UPDATE_BRANCH_LABEL } from "../../shared/record.js";
+import { DEFAULT_FIX_MINUTES, DEFAULT_REVIEW_MINUTES, FOLLOW_UPS_MINUTES, IMPLEMENT_PRD_OTHER_MINUTES, JOB_KINDS, parseJob, sign, SIGNATURE_HEADER, verifySignature, type Job } from "../../service/job.js";
+import { STUB_LABELS } from "../../shared/follow-up-plan.js";
+import {
+  FIX_LABEL,
+  FOLLOW_UPS_LABEL,
+  IMPLEMENT_LABEL,
+  ORCHESTRATOR_VARIABLE,
+  REVIEW_LABEL,
+  SERVICE_ORCHESTRATOR,
+  UPDATE_BRANCH_LABEL,
+} from "../../shared/record.js";
 
 /**
  * Seam 2 of PRD #453: the dispatcher's two doors, driven through the request
@@ -149,7 +158,7 @@ describe("the webhook door", () => {
   });
 
   it.each<[string, (s: ReturnType<typeof setup>) => unknown, RegExp]>([
-    ["a label the service does not answer", () => labelled({ label: "agent:follow-ups" }), /`agent:follow-ups` is not a label this release's service answers/],
+    ["a label the service does not answer", () => labelled({ label: "agent:blocked" }), /`agent:blocked` is not a label this release's service answers/],
     ["an event that is neither a pull request's nor an issue's", () => labelled(), /not a pull request's or an issue's/],
     [
       "a repository the App is not installed on",
@@ -283,7 +292,7 @@ describe("the labels the dispatcher routes", () => {
 
   it("answers agent:implement on an issue's event, with both implement and implement-prd, and every other label on a pull request's", () => {
     expect(LABEL_KINDS.issues).toEqual({ [IMPLEMENT_LABEL]: ["implement", "implement-prd"] });
-    expect(Object.keys(LABEL_KINDS.pull_request)).toEqual([REVIEW_LABEL, FIX_LABEL, UPDATE_BRANCH_LABEL]);
+    expect(Object.keys(LABEL_KINDS.pull_request)).toEqual([REVIEW_LABEL, FIX_LABEL, UPDATE_BRANCH_LABEL, FOLLOW_UPS_LABEL]);
     expect(SERVICE_LABELS).toContain(IMPLEMENT_LABEL);
   });
 
@@ -785,5 +794,137 @@ describe("the hand-off from implement to review", () => {
     expect(job).toMatchObject({ workflow: "review", pr: 7, branch: "agent/issue-7-a-thing", appLogin: "loop-app[bot]" });
     expect(s.posted.map(({ body }) => (JSON.parse(body) as { workflow: string }).workflow)).toEqual(["implement", "implement-prd", "review"]);
     expect(s.looked).toEqual(["maintainer"]);
+  });
+});
+
+/** A `pull_request` `closed` delivery, as GitHub sends it, with `change` laid over its parts. */
+const closed = (change: { merged?: boolean; labels?: readonly string[]; headRepo?: string | null; sender?: string } = {}) => ({
+  action: "closed",
+  sender: { login: change.sender ?? "maintainer" },
+  repository: { full_name: REPO },
+  pull_request: {
+    number: 7,
+    state: "closed",
+    merged: change.merged ?? true,
+    labels: (change.labels ?? [FOLLOW_UPS_LABEL]).map((name) => ({ name })),
+    head: { ref: "agent/issue-7-a-thing", sha: HEAD, repo: change.headRepo === null ? null : { full_name: change.headRepo ?? REPO } },
+    base: { ref: "main" },
+  },
+});
+
+/**
+ * Follow-ups (#519): `follow-ups.yml`'s two entry points, a merge and
+ * `agent:follow-ups` added to a closed pull request, each a follow-ups job
+ * carrying the pull request alone, since nothing is checked out. A merge is
+ * filtered on the payload's own labels, which Actions cannot do, and has no
+ * author gate, which Actions does not have either.
+ */
+describe("the follow-ups route", () => {
+  it("dispatches a merge carrying agent:follow-ups as a follow-ups job, with the job's time limit as its deadline", async () => {
+    const s = setup();
+    const result = await deliver(s, closed());
+
+    expect(result.outcome).toMatch(/^dispatched owner\/repo#7 on its merge as job job-1, deadline /);
+    const job = parseJob(JSON.parse(s.posted[0]!.body));
+    expect(job).toEqual({
+      workflow: "follow-ups",
+      id: "job-1",
+      version: "9.9.9",
+      deadline: new Date(START.getTime() + (FOLLOW_UPS_MINUTES + MARGIN) * MINUTE_MS).toISOString(),
+      repo: REPO,
+      pr: 7,
+      appLogin: "loop-app[bot]",
+      variables: expect.objectContaining({ AGENT_MODEL: "a-model" }),
+    });
+    expect(FOLLOW_UPS_MINUTES).toBe(10);
+  });
+
+  it("dispatches a merge whatever its sender's permission, and looks none up: a merge queue's bot without write access included", async () => {
+    for (const sender of ["stranger", "merge-queue[bot]", "triager"]) {
+      const s = setup();
+      const job = await dispatched(s, closed({ sender }));
+
+      expect(job.workflow, sender).toBe("follow-ups");
+      expect(s.looked, sender).toEqual([]);
+    }
+  });
+
+  it("dispatches agent:follow-ups added to a closed pull request, merged or not, by a person who can write or by the App", async () => {
+    for (const [sender, merged] of [["maintainer", true], ["maintainer", false], ["loop-app[bot]", true]] as const) {
+      const s = setup();
+      const result = await deliver(s, labelled({ label: FOLLOW_UPS_LABEL, state: "closed", merged, sender }));
+
+      expect(result.outcome, sender).toMatch(/^dispatched owner\/repo#7 on its label as job job-1/);
+      expect(parseJob(JSON.parse(s.posted[0]!.body)), sender).toMatchObject({ workflow: "follow-ups", repo: REPO, pr: 7 });
+    }
+  });
+
+  it.each<[string, (s: ReturnType<typeof setup>) => unknown, string]>([
+    ["a merge without agent:follow-ups", () => closed({ labels: [REVIEW_LABEL] }), "ignored on owner/repo#7: merged without `agent:follow-ups` on it, so there is nothing to file"],
+    ["a close without a merge", () => closed({ merged: false }), "ignored on owner/repo#7: closed without being merged"],
+    ["a merge from a fork", () => closed({ headRepo: "someone/fork" }), "refused on owner/repo#7: the head is on a fork"],
+    ["a merge from a deleted fork", () => closed({ headRepo: null }), "refused on owner/repo#7: the head is on a fork"],
+    [
+      "a merge on a repository that has not opted in",
+      (s) => {
+        delete s.repository.variables[ORCHESTRATOR_VARIABLE];
+        return closed();
+      },
+      "refused on owner/repo#7: AGENT_ORCHESTRATOR is unset, not `service`",
+    ],
+    [
+      "agent:follow-ups on an open pull request",
+      () => labelled({ label: FOLLOW_UPS_LABEL }),
+      "refused on owner/repo#7: the pull request is open, and `agent:follow-ups` is answered on a closed one",
+    ],
+    [
+      "agent:follow-ups from a fork",
+      () => labelled({ label: FOLLOW_UPS_LABEL, state: "closed", merged: true, headRepo: "someone/fork" }),
+      "refused on owner/repo#7: the head is on a fork",
+    ],
+    [
+      "agent:follow-ups from a sender who cannot write",
+      () => labelled({ label: FOLLOW_UPS_LABEL, state: "closed", merged: true, sender: "triager" }),
+      "refused on owner/repo#7: triager cannot write to owner/repo",
+    ],
+  ])("answers %s with 202, posts no job, and gives the reason", async (_name, arrange, reason) => {
+    const s = setup();
+    const result = await deliver(s, arrange(s));
+
+    expect(result.status).toBe(202);
+    expect(result.outcome).toBe(reason);
+    expect(s.posted).toEqual([]);
+  });
+
+  it("refuses the other labels on a closed pull request, as before", async () => {
+    const result = await deliver(setup(), labelled({ label: FIX_LABEL, state: "closed", merged: true }));
+
+    expect(result.outcome).toBe("refused on owner/repo#7: the pull request is closed, not open");
+  });
+
+  it("reads the payload's labels, not the pull request's, so a merge whose payload lacks the label reads nothing of the repository", async () => {
+    const s = setup();
+    delete s.repository.variables[ORCHESTRATOR_VARIABLE];
+    const result = await deliver(s, closed({ labels: [] }));
+
+    expect(result.outcome).toMatch(/^ignored on owner\/repo#7: merged without/);
+  });
+
+  it("ignores every pull request action but a label and a close", async () => {
+    const result = await deliver(setup(), { ...closed(), action: "reopened" });
+
+    expect(result.outcome).toBe("ignored: a pull request `reopened`, not labelled or closed");
+  });
+
+  it("starts nothing for the labels a stub is filed with, which no route answers", async () => {
+    expect(STUB_LABELS).toEqual(["needs-triage", "pr-follow-up"]);
+    for (const label of STUB_LABELS) {
+      const s = setup();
+      const result = await deliver(s, issueLabelled({ label, sender: "loop-app[bot]" }), undefined, "issues");
+
+      expect(result.outcome, label).toBe(`ignored on owner/repo#12: \`${label}\` is not a label this release's service answers on an issue`);
+      expect(s.posted, label).toEqual([]);
+      expect(SERVICE_LABELS, label).not.toContain(label);
+    }
   });
 });

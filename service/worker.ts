@@ -5,12 +5,14 @@ import type { HostEnvironment } from "../shared/env.js";
 import { fixRescueBranch, PRD_BRANCH_PREFIX, prdRescueBranch } from "../shared/record.js";
 import type { DoorRequest, DoorResponse } from "./dispatcher.js";
 import {
+  FOLLOW_UPS_MINUTES,
   fixTimeLimit,
   parseJob,
   reviewTimeLimit,
   SIGNATURE_HEADER,
   verifySignature,
   type FixJob,
+  type FollowUpsJob,
   type ImplementJob,
   type ImplementPrdJob,
   type Job,
@@ -542,7 +544,7 @@ export const startRun = (job: Job, edges: JobEdges): Run => {
  * **One job**: its kind's run function, which follows that workflow's
  * `Actions orchestrator:` blocks in the spec, §6 for implement, §7 for
  * implement-prd, §8 for
- * review, §9 for fix and §10 for update-branch.
+ * review, §9 for fix, §10 for update-branch and §11 for follow-ups.
  * Never throws: how each phase ended is in what this returns, for the
  * worker's log.
  */
@@ -558,6 +560,8 @@ export const runJob = async (job: Job, edges: JobEdges): Promise<readonly Phase[
       return runImplement(job, edges);
     case "implement-prd":
       return runImplementPrd(job, edges);
+    case "follow-ups":
+      return runFollowUps(job, edges);
   }
 };
 
@@ -2046,6 +2050,66 @@ const runImplementPrd = async (job: ImplementPrdJob, edges: JobEdges): Promise<r
       IMPLEMENT_PRD_DIR: runnerDir,
       BUNDLE_DIR: bundleDir,
       PUBLISH_DIR: publishDir,
+    },
+    edges.runDir,
+    concludeLimit.signal,
+  );
+  concludeLimit.clear();
+  return done();
+};
+
+/**
+ * **A follow-ups job**: the filing run on one closed pull request, as
+ * `follow-ups.yml`'s one job runs it, which the `Actions orchestrator:`
+ * blocks of spec §11 describe.
+ *
+ * 1. A `write` token, the job's one: `follow-ups:file` files the stubs,
+ *    posts the report and takes the marker off with it, as the job's token
+ *    has `issues: write` and `pull-requests: write`.
+ * 2. `follow-ups:file`, held to the job's `FOLLOW_UPS_MINUTES`.
+ * 3. `follow-ups:conclude`, however file ended, told how and whether it ran
+ *    out of time, and pointed at its directory, with the same token.
+ *
+ * No checkout, no setup and no agent: nothing here reads the repository's
+ * code. Each command runs in the run's own directory.
+ *
+ * **One at a time is the lock.** Actions holds this job in the pull
+ * request's concurrency group, so a label added while a merge's run files
+ * cannot file twice. Here the worker's queue runs one job at a time, so the
+ * second run finds the marker the first took off and ends silently. That
+ * holds on one worker only.
+ */
+const runFollowUps = async (job: FollowUpsJob, edges: JobEdges): Promise<readonly Phase[]> => {
+  const { note, limit, ask, run, done } = startRun(job, edges);
+  const common = { GH_REPO: job.repo, PR_NUMBER: String(job.pr) };
+
+  const write = await ask("write");
+  if (write === undefined) {
+    // Nothing can say so on the pull request, so the worker's log says it.
+    // The marker stays on, so adding it again is the retry.
+    note("follow-ups:file", "not run: the dispatcher granted no token to file with, so neither it nor follow-ups:conclude ran, and nothing was written");
+    return done();
+  }
+
+  const fileLimit = limit(FOLLOW_UPS_MINUTES);
+  const filed = await run("follow-ups:file", { ...common, GH_TOKEN: write, AGENT_LOOP_LOGINS: job.appLogin }, edges.runDir, fileLimit.signal);
+  fileLimit.clear();
+
+  // `always()` on Actions, cancel and timeout included: conclude gets a limit
+  // of its own, as a step after a timed-out one still runs there.
+  const concludeLimit = limit(FOLLOW_UPS_MINUTES);
+  await run(
+    "follow-ups:conclude",
+    {
+      ...common,
+      GH_TOKEN: write,
+      RUN_URL: serviceRunUrl(job.appLogin),
+      // A time limit ends a job on Actions as a cancel, which the measuring
+      // step then reads as a timeout.
+      JOB_STATUS: filed.timedOut ? "cancelled" : filed.ok ? "success" : "failure",
+      TIMED_OUT: String(filed.timedOut),
+      TIMEOUT_MINUTES: String(FOLLOW_UPS_MINUTES),
+      FILE_DIR: filed.dir,
     },
     edges.runDir,
     concludeLimit.signal,

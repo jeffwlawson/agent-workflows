@@ -605,7 +605,10 @@ release the kinds are `review` (`ReviewJob`), from `agent:review`, `fix` (`FixJo
 request's delivery, and `implement` (`ImplementJob`, #517) and `implement-prd` (`ImplementPrdJob`,
 #518), both from `agent:implement` on an issue's: that label starts two jobs, as it starts two
 workflows on Actions, and each gate defers the other's issue shape without a word, so the
-dispatcher never reads the shape.
+dispatcher never reads the shape. The last kind, `follow-ups` (`FollowUpsJob`, #519), is the one
+not started by a label alone: a merge whose payload carries `agent:follow-ups` starts it, with no
+author gate, as does that label added to a closed pull request, with one. Every trigger label the
+loop has is served.
 The map is keyed by event, so a label is answered on the event type it belongs to and on no other,
 and each event has a route of its own reading its own payload: an implement or implement-prd job carries an issue,
 with no head, and the repository's default branch as its base. A job's deadline is its kind's own time limit plus the dispatcher's margin. The labels the service
@@ -619,7 +622,8 @@ deleting the variable stops a job in flight at its next phase. The job's format 
 
 The **worker** (#457) runs each job the way its workflow's reusable runs it, `review.yml` for a
 `review` job, `fix.yml` for a `fix` job, `update-branch.yml` for an `update-branch` job and
-`implement.yml` for an `implement` job, as a **thin adapter**: the same subcommands in the same
+`implement.yml` for an `implement` job, `implement-prd.yml` for an `implement-prd` job and
+`follow-ups.yml` for a `follow-ups` job, as a **thin adapter**: the same subcommands in the same
 order, under each job's and step's `if:` rather than in order alone (`service/worker.ts`),
 each a child process of its own installed package, so the service and every subcommand it runs are
 one release. Each kind has a run function of its own, following its workflow's orchestrator

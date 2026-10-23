@@ -8,15 +8,17 @@ machine of your own, so the agent spends none of your Actions minutes:
   delivery is a job, and mints a short-lived token, scoped to one repository, each time the worker
   asks for one;
 - the **worker**, which receives jobs from the dispatcher and runs review, fix, update-branch,
-  implement and implement-prd the way `review.yml`, `fix.yml`, `update-branch.yml`,
-  `implement.yml` and `implement-prd.yml` do, with the runner in a sandbox.
+  implement, implement-prd and follow-ups the way `review.yml`, `fix.yml`, `update-branch.yml`,
+  `implement.yml`, `implement-prd.yml` and `follow-ups.yml` do, with the runner in a sandbox.
 
 Each is a subcommand of the published package, so deploying the service is configuration rather
 than a build. A
 repository opts in with the repository variable `AGENT_ORCHESTRATOR=service`
 ([ADOPTING §2e](./ADOPTING.md#2e-choosing-the-orchestrator)); the service refuses every other
-repository, and answers `agent:review`, `agent:fix` and `agent:update-branch` on a pull request
-and `agent:implement` on an issue, a regular one or a PRD, and nothing else. A PRD labelled
+repository, and answers every trigger label the loop has: `agent:review`, `agent:fix`,
+`agent:update-branch` and `agent:follow-ups` on a pull request, `agent:implement` on an issue, a
+regular one or a PRD, and a merge carrying `agent:follow-ups`, which files the follow-ups its review
+recorded. A repository on the service loses nothing it had on Actions. A PRD labelled
 `agent:implement` is built one slice at a time, as on Actions, with no Actions involved.
 
 ## What a host needs
@@ -120,19 +122,26 @@ when all of these hold:
 - it is a pull request, or an issue, labelled with a label the service answers on that
   event (`SERVICE_LABELS` in `service/dispatcher.ts`, the labels its `LABEL_KINDS` maps to a job
   kind, per event: on a `pull_request` delivery `agent:review` to a review job, `agent:fix` to a
-  fix job and `agent:update-branch` to an update-branch job, and on an `issues` delivery
+  fix job, `agent:update-branch` to an update-branch job and `agent:follow-ups` to a follow-ups
+  job, and on an `issues` delivery
   `agent:implement` to two jobs, an implement job and an implement-prd job, as Actions starts both
   workflows on it). A label is answered on its own event only, and an `issues` delivery about a
   pull request is ignored. The dispatcher reads nothing of an issue's shape: each job's gate does,
-  and the one whose shape it is not ends without a word;
+  and the one whose shape it is not ends without a word. Or it is a merge: a `pull_request`
+  `closed` delivery with `merged` `true` whose payload's labels include `agent:follow-ups`, which
+  becomes a follow-ups job. A merge without that label, and a close without a merge, are ignored
+  before the repository is read, so most merges cost nothing;
 - the App is installed on the repository;
 - the installation is on the App's owner's account, or on one `EXTRA_OWNERS` lists;
 - the repository's `AGENT_ORCHESTRATOR` is `service`;
 - on a pull request, the head is in the same repository, not a fork; an issue has no head;
-- a pull request is open. An issue's state is not checked here: a closed issue becomes a job, and
-  `implement:gate` refuses it on the issue and takes the label off, as on Actions;
+- a pull request is open, but for `agent:follow-ups`, which is answered on a closed one, merged or
+  not, as `follow-ups.yml` answers it. An issue's state is not checked here: a closed issue becomes
+  a job, and `implement:gate` refuses it on the issue and takes the label off, as on Actions;
 - the label's sender can write to the repository, or is the App itself (`<slug>[bot]`), whose
-  labels the loop's own commands add (ADR 0008).
+  labels the loop's own commands add (ADR 0008). A merge has no such check: whoever merged could
+  write, and a merge queue or auto-merge can send it as a bot that would be refused, which would
+  drop the follow-ups without a word.
 
 Every other delivery is logged with its reason. A job carries what the label's event carried, the
 repository variables the service reads (`AGENT_MODEL`, `AGENT_MODEL_REVIEW`, `AGENT_MODEL_FIX`,
@@ -140,9 +149,10 @@ repository variables the service reads (`AGENT_MODEL`, `AGENT_MODEL_REVIEW`, `AG
 each unset as empty), the App's login, a job id, a deadline and the package's version. An
 implement job and an implement-prd job each carry the issue's number, title and state, and the
 repository's default branch as its base, which stands in for the `default-branch` a caller hands
-`implement.yml` and `implement-prd.yml`. The deadline is the job's own time limit, review's, or
-fix's, update-branch's and implement's, or implement-prd's, the sum of its jobs' limits (below),
-plus `JOB_DEADLINE_MARGIN_MINUTES`.
+`implement.yml` and `implement-prd.yml`. A follow-ups job carries the pull request's number alone,
+since nothing is checked out. The deadline is the job's own time limit, review's, or
+fix's, update-branch's and implement's, or implement-prd's, the sum of its jobs' limits, or
+follow-ups', 10 minutes (below), plus `JOB_DEADLINE_MARGIN_MINUTES`.
 It carries no token: the worker asks for one per phase, `read`, `write` or `push`, and the dispatcher mints
 one only for a job it dispatched, before that job's deadline, for that job's repository alone, while
 the installation is still on an account it serves, and after reading `AGENT_ORCHESTRATOR` again. Deleting the variable stops a job in flight at its next
@@ -165,7 +175,7 @@ so does an App whose own record cannot be read, since that is where the App's ow
 | `WEBHOOK_PORT` | optional | `8790` | the webhook door's port; GitHub's deliveries arrive at `POST /github` |
 | `TOKEN_HOST` | optional | `127.0.0.1` | the address the token door listens on: one the worker reaches |
 | `TOKEN_PORT` | optional | `8791` | the token door's port; the worker asks at `POST /token` |
-| `JOB_DEADLINE_MARGIN_MINUTES` | optional | `60` | added to a job's own time limit for its deadline, review's (its CI wait and `AGENT_REVIEW_TIMEOUT_MINUTES`) or fix's, update-branch's and implement's (`AGENT_TIMEOUT_MINUTES`), or implement-prd's (35 minutes and `AGENT_TIMEOUT_MINUTES`), covering the phases around the runner's and the time a job waits in the worker's queue |
+| `JOB_DEADLINE_MARGIN_MINUTES` | optional | `60` | added to a job's own time limit for its deadline, review's (its CI wait and `AGENT_REVIEW_TIMEOUT_MINUTES`) or fix's, update-branch's and implement's (`AGENT_TIMEOUT_MINUTES`), or implement-prd's (35 minutes and `AGENT_TIMEOUT_MINUTES`), or follow-ups' (10 minutes), covering the phases around the runner's and the time a job waits in the worker's queue |
 | `EXTRA_OWNERS` | optional | `""` | accounts, comma-separated, whose installations the dispatcher serves besides the App owner's; empty is none. An installation on any other account is refused |
 
 Each door also answers `GET /health` with `200`.
@@ -179,7 +189,7 @@ Each door also answers `GET /health` with `200`.
 
 ## The worker
 
-The process that runs review, fix, update-branch, implement and implement-prd. It holds no key: it asks the dispatcher for a token at the
+The process that runs review, fix, update-branch, implement, implement-prd and follow-ups. It holds no key: it asks the dispatcher for a token at the
 start of each phase. For review: `read` for the gate, the checkout, the budget and the CI wait, a
 fresh `read` for the runner, so the token's hour starts as the agent does, and `write` for
 `review:publish` and `review:conclude`. For fix: `write` for `fix:gate`, which posts its refusal and
@@ -199,7 +209,8 @@ the catch-up's checkout and `implement-prd:catch-up`, which pushes the merge of 
 into the PRD branch, before any agent runs; `read` for the agent's checkout and
 `implement-prd:prepare`, and a fresh `read` for the runner; none for `implement-prd:bundle`; and
 `push` for the publish checkout, `implement-prd:publish` and `implement-prd:conclude`, with `write`
-for the checkout and conclude where `push` is refused. A gate that refuses ends any of these jobs
+for the checkout and conclude where `push` is refused. For follow-ups: one `write` token, for
+`follow-ups:file`, which files the stubs with it as the App, and `follow-ups:conclude`. A gate that refuses ends any of these jobs
 there, as it skips the jobs after it on Actions, and so does each deferral, implement's of a PRD
 and implement-prd's of a regular issue: no token is asked for after it, and nothing after the gate
 runs. A gate that failed before it decided is not a
@@ -223,7 +234,7 @@ read-only too, through `AGENT_SANDBOX_RO_BINDS`, and put it on `AGENT_SANDBOX_PA
 
 Jobs run one at a time, in the order they arrived. Each runs the subcommands its reusable runs, in
 its order and under its conditions (spec §6 for `implement.yml`, §7 for `implement-prd.yml`, §8 for `review.yml`, §9 for
-`fix.yml`, §10 for `update-branch.yml`), each a child process of the worker's own
+`fix.yml`, §10 for `update-branch.yml`, §11 for `follow-ups.yml`), each a child process of the worker's own
 install, with an environment built from its declaration in the contract and the host's `PATH`,
 `HOME` and `LANG`, and nothing else of the worker's. Not run, at this release: the red check. The
 repository's setup is run by a fix job, an implement job, an implement-prd job that builds a slice, and an update-branch job whose merge
@@ -278,6 +289,16 @@ PRD PR over, run neither the catch-up nor the agent's job: publish does their wo
 `implement-prd:conclude` ends every run the gate did not refuse, pushing a stopped build's commits
 to `agent/rescue/prd-<parent>` for the next run to resume from.
 
+A follow-ups job runs `follow-ups:file`, then `follow-ups:conclude` however it ended, told whether
+it failed or timed out, and nothing else: no checkout, no setup and no agent. `follow-ups:file`
+reads `agent:follow-ups` again, files the stubs the newest review recorded, posts its report and
+takes the label off, as on Actions; `follow-ups:conclude` posts the one failure comment on a run
+that stopped. A stub is filed as the App, carrying `needs-triage` and `pr-follow-up`, which no
+route answers, so it starts nothing. Actions holds this job in the pull request's concurrency group
+so that a label added while a merge's run files cannot file twice; the service relies on its one
+worker instead, which runs a second run only once the first has ended, and that run finds the label
+already off and ends silently. Run one worker.
+
 On a PRD pull request (head `agent/prd-…`), where the review went ahead and the head did not move
 while it ran, the worker asks for one more `write` token and runs `review:advance` after
 `review:conclude`, as the reusable's advance job does. Advance may put `agent:implement` back on
@@ -320,7 +341,8 @@ gets 15. An implement-prd job's gate gets 10 minutes, and the catch-up's checkou
 `implement-prd:catch-up` 10 together; the agent's job's steps share `AGENT_TIMEOUT_MINUTES` (30 where
 unset); `implement-prd:bundle` gets 5 of its own, so a build stopped at its limit still hands its
 commits over for the rescue; publish's checkout and `implement-prd:publish` share 15 minutes, and
-`implement-prd:conclude` gets 15. A job that waits in the queue for longer
+`implement-prd:conclude` gets 15. A follow-ups job's `follow-ups:file` gets 10 minutes, the job's
+`timeout-minutes` in `follow-ups.yml`, and `follow-ups:conclude` 10 of its own. A job that waits in the queue for longer
 than the dispatcher's `JOB_DEADLINE_MARGIN_MINUTES` is past its deadline by the time it asks to
 post, and ends with nothing posted, so set the margin above the longest wait you expect.
 

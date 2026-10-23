@@ -125,10 +125,15 @@ export const TOKEN_PERMISSIONS: Readonly<Record<TokenKind, Readonly<Record<strin
  * belongs to, and on no other. `agent:implement` on a pull request starts
  * nothing, and neither does `agent:review` on an issue. Every other `agent:*`
  * label waits for its workflow to move into commands (#410).
+ *
+ * An issue's label starts a list of kinds: `agent:implement` starts both
+ * `implement` and `implement-prd`, as Actions starts both workflows on it.
+ * Each one's gate partitions on the issue's shape and defers the other's
+ * without a word, so the dispatcher reads nothing of the shape itself.
  */
 export const LABEL_KINDS: {
-  readonly pull_request: Readonly<Record<string, Exclude<JobKind, "implement">>>;
-  readonly issues: Readonly<Record<string, "implement">>;
+  readonly pull_request: Readonly<Record<string, Exclude<JobKind, "implement" | "implement-prd">>>;
+  readonly issues: Readonly<Record<string, readonly ("implement" | "implement-prd")[]>>;
 } = {
   pull_request: {
     [REVIEW_LABEL]: "review",
@@ -136,7 +141,7 @@ export const LABEL_KINDS: {
     [UPDATE_BRANCH_LABEL]: "update-branch",
   },
   issues: {
-    [IMPLEMENT_LABEL]: "implement",
+    [IMPLEMENT_LABEL]: ["implement", "implement-prd"],
   },
 };
 
@@ -148,8 +153,8 @@ export const LABEL_KINDS: {
  */
 export const SERVICE_LABELS: readonly string[] = Object.values(LABEL_KINDS).flatMap((kinds) => Object.keys(kinds));
 
-/** The kind `label` starts in one event's map, or `undefined` where it starts none there, an inherited property's name included. */
-const kindOf = <K extends JobKind>(kinds: Readonly<Record<string, K>>, label: string): K | undefined =>
+/** What `label` starts in one event's map, or `undefined` where it starts nothing there, an inherited property's name included. */
+const kindOf = <K>(kinds: Readonly<Record<string, K>>, label: string): K | undefined =>
   Object.hasOwn(kinds, label) ? kinds[label] : undefined;
 
 /** The permissions a label's sender needs on the repository: the loop's author gate. */
@@ -355,13 +360,15 @@ export const createDispatcher = (edges: DispatcherEdges) => {
 
   /**
    * **An issue's route**, as a pull request's, in the same order, and with
-   * no head to check: an issue has none. Nor is its state checked: a closed
-   * issue goes to `implement:gate` carrying its state, and the gate's refusal
-   * says so on the issue and takes the label off, as on Actions. Its base is
+ * no head to check: an issue has none. Nor is its state checked: a closed
+   * issue goes to the gates carrying its state, and the one whose issue it is
+   * says so on the issue and takes the label off, as on Actions. Nor is its
+   * shape: a job of each kind the label starts is dispatched, in turn, and the
+   * gate of the one whose shape it is not defers without a word. Its base is
    * the repository's default branch, the nearest the event has to the
-   * `default-branch` a caller hands `implement.yml`. An `issues` delivery
-   * about a pull request is ignored: a pull request's labels are answered on
-   * its own route.
+   * `default-branch` a caller hands `implement.yml` and `implement-prd.yml`.
+   * An `issues` delivery about a pull request is ignored: a pull request's
+   * labels are answered on its own route. The line logged is each dispatch's.
    */
   const issue = async (payload: unknown): Promise<string> => {
     const p = (payload ?? {}) as IssueLabelEvent;
@@ -388,14 +395,16 @@ export const createDispatcher = (edges: DispatcherEdges) => {
     if (p.issue?.pull_request !== undefined && p.issue.pull_request !== null) {
       return `ignored on ${where}: the issue is a pull request, whose labels are answered on its \`pull_request\` event`;
     }
-    const kind = kindOf(LABEL_KINDS.issues, label);
-    if (kind === undefined) return `ignored on ${where}: \`${label}\` is not a label this release's service answers on an issue`;
+    const kinds = kindOf(LABEL_KINDS.issues, label);
+    if (kinds === undefined) return `ignored on ${where}: \`${label}\` is not a label this release's service answers on an issue`;
     const why = await unserved(repo);
     if (why !== undefined) return `refused on ${where}: ${why}`;
     const login = appLogin((await edges.github.app()).slug);
     const distrust = await untrusted(repo, sender, login);
     if (distrust !== undefined) return `refused on ${where}: ${distrust}`;
-    return dispatch({ workflow: kind, repo, issue: number, title, state, baseRef }, login, where, "");
+    const outcomes: string[] = [];
+    for (const kind of kinds) outcomes.push(await dispatch({ workflow: kind, repo, issue: number, title, state, baseRef }, login, where, ` to ${kind}`));
+    return outcomes.join("; ");
   };
 
   /** Whether a delivery is a job, routed by its event type; otherwise the reason it is not, which is logged. */

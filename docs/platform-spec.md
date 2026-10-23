@@ -21,7 +21,7 @@ sentence. How one orchestrator does a thing is description, and sits in a quoted
 > it owns: the `dispatcher` and `worker` subcommands of this package, whose code is
 > [`service/`](../service/) and whose deployment is
 > [deploying-the-service.md](./deploying-the-service.md). It answers `agent:review`, `agent:fix` and
-> `agent:update-branch` on a pull request and `agent:implement` on a regular issue, alone, at this release. A block for it appears only where it differs from the Actions orchestrator in a way a
+> `agent:update-branch` on a pull request and `agent:implement` on an issue, a regular one or a PRD, alone, at this release. A block for it appears only where it differs from the Actions orchestrator in a way a
 > reader would trip on.
 
 Neither block binds anyone. Where they disagree with a bold sentence, the bold sentence is right.
@@ -615,9 +615,8 @@ it does not trust is left out of what the agent is shown. Nothing else of the re
 >   the gate job's `refused` is `true`, and on Actions neither the agent's job (`refused ==
 >   'false'`) nor the publish job (`refused != 'true'`) runs. So no token is asked for after the
 >   gate, neither the agent's phases, `implement:publish` nor `implement:conclude` run, and the
->   run's summary notes it. An issue with sub-issues is deferred to `implement-prd` that way, so a
->   PRD labelled `agent:implement` gets silence on the service, as it does on Actions, while the
->   service runs no `implement-prd`.
+>   run's summary notes it. An issue with sub-issues is deferred to `implement-prd` that way, and
+>   the implement-prd job the dispatcher sends beside this one on the same label builds it (§7).
 > - **An undecided gate**, one that failed or ran out of time before `gate.json` said `proceed`, is
 >   not a refusal: `refused` is empty, the agent's job does not run, and the publish job does. Its
 >   token is asked for and `implement:conclude` runs, told `REFUSED` empty; the checkout and the
@@ -1062,12 +1061,99 @@ earlier run of this PRD left commits on `RESCUE_BRANCH`, that branch fetched to
 > failure comment and `agent:blocked`, and, on a build, the stopped slice's row written back from
 > the PRD branch; every run the gate decided has `agent:implement` taken off.
 
-> **Service orchestrator:** the chain moves on only when a review ends on an approval and
-> `review:advance` puts `agent:implement` back on the parent. An orchestrator that does not run it
-> leaves the chain waiting on a human to add the label. The service runs it (§8), and answers the
-> `agent:implement` it re-adds with an implement job (§6), whose gate defers a PRD here without a
-> word: on a repository it serves, the chain waits for an orchestrator that runs `implement-prd`,
-> which is expected while `implement-prd` has not joined the service.
+> **Service orchestrator:** the worker runs the gate job's, the catch-up job's, the agent's job's
+> and the publish job's subcommands, in the order above and under each job's and step's `if:` in
+> `implement-prd.yml`, not under the order alone, each a child process with a fresh `OUTPUT_DIR` of
+> its own and an environment built from its declaration, and writes nothing to the record itself.
+> The dispatcher answers `agent:implement` on an `issues` delivery, on an issue that is not a pull
+> request's, from a person who can write or from its own App (ADR 0008), with **two** jobs, an
+> implement job (§6) and an implement-prd job, as Actions starts both workflows on the label. It
+> reads nothing of the issue's shape and checks nothing a gate would refuse with a comment: each
+> gate partitions on the shape, and the one whose shape it is not defers without a word. The worker
+> asks the dispatcher for a `write` token and runs `implement-prd:gate` with the parent's number,
+> title and state as the label's event carried them.
+>
+> - **A refusal or a deferral ends the run at the gate.** Where `gate.json` says `proceed` `false`,
+>   the gate job's `refused` is `true`, and on Actions no job after the gate runs. So no token is
+>   asked for after the gate, neither the catch-up, the agent's phases, `implement-prd:publish` nor
+>   `implement-prd:conclude` run, and the run's summary notes it. A regular issue is deferred to
+>   `implement` that way, and gets silence from this job.
+> - **An undecided gate**, one that failed or ran out of time before `gate.json` said `proceed`, is
+>   not a refusal: `refused`, `build` and `finishing` are empty, the catch-up and the agent's job do
+>   not run, and the publish job does, its checkout skipped. Neither runs where the gate claimed the
+>   run and then failed, as at the probe, since both jobs need the gate's success.
+> - **The catch-up**, only where the gate succeeded, claimed the run and decided to build: a `push`
+>   token, since it pushes the merge of the base and parks with a comment; a checkout of the base
+>   branch, by name, of its own; and `implement-prd:catch-up` in it, as both `GH_TOKEN` and
+>   `LOOP_TOKEN`. It merges with the engine's merge itself, as Actions runs it, and not through
+>   `update-branch:merge`, which pushes nothing. Its `catch-up.json` is the job's `parked`, `merged`
+>   and `head`.
+> - **The agent's job**, only where the catch-up succeeded and did not park the chain: a `read`
+>   token; the checkout of `head`, the tip the catch-up left, as the PRD branch, with the base;
+>   `implement-prd:prepare` with the same token, which fetches the PRD branch and the rescue branch;
+>   the repository's setup, `AGENT_SETUP`, in the bwrap sandbox with no token; a fresh `read`
+>   token, then the runner in the sandbox its settings name, with it as `GH_TOKEN`; and
+>   `implement-prd:bundle`, handed no token, however those ended, as the bundle step's `always()`,
+>   so a stopped build hands its commits over for the rescue.
+> - **The publish job**, wherever the gate did not refuse: a `push` token, or, where that is
+>   refused, a `write` token for conclude; and, where the gate claimed the run, a checkout of its
+>   own, with whichever was granted: of `head` as the PRD branch where the catch-up left one, which
+>   the bundle builds on and the rescue checks it against, and of the base branch by name
+>   otherwise. `implement-prd:publish` runs where the gate succeeded and the run is the finishing
+>   one, builds nothing (`open-only`), or its agent's job succeeded, and the mint and the checkout
+>   did, pointed at the gate's and bundle's directories. Then `implement-prd:conclude`, however the
+>   run ended, pointed at every producer's directory. Publish holds `push` as both `GH_TOKEN` and
+>   `LOOP_TOKEN`, and conclude the same, or the `write` token as `GH_TOKEN` and no loop token where
+>   `push` was refused; the runner never holds a token that writes.
+>
+> Where `implement-prd.yml` passes something the service does not have, it passes the nearest
+> equivalent:
+>
+> - **`BASE_REF` is the repository's default branch**, as the `issues` delivery carries it, which
+>   stands in for the caller's `default-branch` input.
+> - **The gate job's and the catch-up job's outputs are their files**, read as the glue steps read
+>   them: `REFUSED` from `gate.json`'s `proceed`; `BUILD` and `FINISHING` from its `decision`, empty
+>   where it has none; `PRD_BRANCH`, `PRD_TIP`, `PRD_PR`, `LANDED`, `SUB` and `SUB_TITLE` from its
+>   facts; `BASE_SHA` and `MERGED` from `catch-up.json`'s `head` and `merged`; `GATE_REASON` from
+>   `implement-prd:gate`'s `failure_reason.txt`.
+> - **`RESCUE_BRANCH` is `agent/rescue/prd-<parent>`**, as `prdRescueBranch` in `shared/record.ts`
+>   spells it, the name `implement-prd.yml` gives it.
+> - **`RUN_URL` is the App's own page**, `https://github.com/apps/<slug>`, as for implement (§6).
+>   `GITHUB_SERVER_URL` and `GITHUB_REPOSITORY` are unset, so the approved slice's note names its
+>   head unlinked and the progress list links no diffs.
+> - **The time limits are the jobs'.** `implement-prd:gate` gets the gate job's 10 minutes, the
+>   catch-up's checkout and `implement-prd:catch-up` share the catch-up job's 10. The agent's job's
+>   steps share `AGENT_TIMEOUT_MINUTES` (30 where unset or not a positive integer), and one still
+>   running at it is ended with every process it started: the agent's job is then `cancelled`, with
+>   `TIMED_OUT` `true` and `TIMEOUT_MINUTES` the limit. `implement-prd:bundle` gets 5 minutes of its
+>   own, as fix's does. Publish's checkout and `implement-prd:publish` share the publish job's 15
+>   minutes, and `implement-prd:conclude` gets 15 of its own. The dispatcher's deadline for the job
+>   is the sum of the jobs' limits, 35 minutes and the agent's, plus its margin, since two of its
+>   jobs ask for a token before the agent's starts.
+> - **A phase not started leaves its reason** where `implement-prd:conclude` reads the next one: a
+>   catch-up token not granted, or a catch-up checkout that failed, as `implement-prd:catch-up`'s
+>   `failure_reason.txt`; a `read` token not granted, or the agent's checkout failed, as
+>   `implement-prd:prepare`'s; a setup that failed, or a runner's token not granted, as the
+>   runner's; a publish checkout that failed, where publish would have run, as
+>   `implement-prd:publish`'s.
+> - **The download is as the reusable's**: `success` where the agent's job ran, since the hand-over
+>   is on the worker's disk; `failure` on a build whose agent's job did not run, as an artifact
+>   never uploaded is; and `skipped` on a run that builds nothing. **A publish its `if:` skips is
+>   `skipped`**, which conclude reads for a parked chain.
+> - **The catch-up's directory** holds a reason only where the catch-up failed, as its hand-over is
+>   uploaded only then.
+>
+> **The chain's loop runs on the service alone.** The chain moves on only when a review ends on an
+> approval and `review:advance` puts `agent:implement` back on the parent. The service runs it
+> (§8), and answers the `agent:implement` it re-adds with the pair again: the implement job defers
+> the PRD without a word, and the implement-prd job builds the next slice, or hands the PRD PR
+> over. Nothing about the chain is kept in the service between slices: each gate reads where the
+> chain stands from the record, as on Actions, so a worker restarted between two slices picks the
+> chain up at the next `agent:implement`. Each slice is a job of its own, so another repository's
+> jobs run between two slices of a chain.
+>
+> Not run: `node-version-file`, since the sandbox runs the worker box's own Node, the session
+> transcript's upload, and the write logs' upload, which stay in the run's directory.
 
 ### `implement-prd:gate`
 

@@ -7,18 +7,17 @@ machine of your own, so the agent spends none of your Actions minutes:
 - the **dispatcher**, which holds the GitHub App's key, receives GitHub's webhooks, decides which
   delivery is a job, and mints a short-lived token, scoped to one repository, each time the worker
   asks for one;
-- the **worker**, which receives jobs from the dispatcher and runs review, fix, update-branch and
-  implement the way `review.yml`, `fix.yml`, `update-branch.yml` and `implement.yml` do, with the
-  runner in a sandbox.
+- the **worker**, which receives jobs from the dispatcher and runs review, fix, update-branch,
+  implement and implement-prd the way `review.yml`, `fix.yml`, `update-branch.yml`,
+  `implement.yml` and `implement-prd.yml` do, with the runner in a sandbox.
 
 Each is a subcommand of the published package, so deploying the service is configuration rather
 than a build. A
 repository opts in with the repository variable `AGENT_ORCHESTRATOR=service`
 ([ADOPTING §2e](./ADOPTING.md#2e-choosing-the-orchestrator)); the service refuses every other
 repository, and answers `agent:review`, `agent:fix` and `agent:update-branch` on a pull request
-and `agent:implement` on a regular issue, and nothing else. A PRD labelled `agent:implement` gets
-silence, as on Actions, where `implement` defers it to `implement-prd`, which the service does not
-run yet.
+and `agent:implement` on an issue, a regular one or a PRD, and nothing else. A PRD labelled
+`agent:implement` is built one slice at a time, as on Actions, with no Actions involved.
 
 ## What a host needs
 
@@ -118,12 +117,14 @@ The one process that holds the App's key. It needs:
 It answers each delivery at once and does its work afterwards, and a delivery becomes a job only
 when all of these hold:
 
-- it is a pull request, or a regular issue, labelled with a label the service answers on that
+- it is a pull request, or an issue, labelled with a label the service answers on that
   event (`SERVICE_LABELS` in `service/dispatcher.ts`, the labels its `LABEL_KINDS` maps to a job
   kind, per event: on a `pull_request` delivery `agent:review` to a review job, `agent:fix` to a
   fix job and `agent:update-branch` to an update-branch job, and on an `issues` delivery
-  `agent:implement` to an implement job). A label is answered on its own event only, and an
-  `issues` delivery about a pull request is ignored;
+  `agent:implement` to two jobs, an implement job and an implement-prd job, as Actions starts both
+  workflows on it). A label is answered on its own event only, and an `issues` delivery about a
+  pull request is ignored. The dispatcher reads nothing of an issue's shape: each job's gate does,
+  and the one whose shape it is not ends without a word;
 - the App is installed on the repository;
 - the installation is on the App's owner's account, or on one `EXTRA_OWNERS` lists;
 - the repository's `AGENT_ORCHESTRATOR` is `service`;
@@ -135,11 +136,13 @@ when all of these hold:
 
 Every other delivery is logged with its reason. A job carries what the label's event carried, the
 repository variables the service reads (`AGENT_MODEL`, `AGENT_MODEL_REVIEW`, `AGENT_MODEL_FIX`,
-`AGENT_MODEL_UPDATE_BRANCH`, `AGENT_MODEL_IMPLEMENT`, `AGENT_REVIEW_TIMEOUT_MINUTES`, `AGENT_TIMEOUT_MINUTES`, `AGENT_MAX_FIX_ROUNDS` and `AGENT_SETUP`,
+`AGENT_MODEL_UPDATE_BRANCH`, `AGENT_MODEL_IMPLEMENT`, `AGENT_MODEL_IMPLEMENT_PRD`, `AGENT_REVIEW_TIMEOUT_MINUTES`, `AGENT_TIMEOUT_MINUTES`, `AGENT_MAX_FIX_ROUNDS` and `AGENT_SETUP`,
 each unset as empty), the App's login, a job id, a deadline and the package's version. An
-implement job carries the issue's number, title and state, and the repository's default branch as
-its base, which stands in for the `default-branch` a caller hands `implement.yml`. The
-deadline is the job's own time limit, review's, or fix's, update-branch's and implement's (below), plus `JOB_DEADLINE_MARGIN_MINUTES`.
+implement job and an implement-prd job each carry the issue's number, title and state, and the
+repository's default branch as its base, which stands in for the `default-branch` a caller hands
+`implement.yml` and `implement-prd.yml`. The deadline is the job's own time limit, review's, or
+fix's, update-branch's and implement's, or implement-prd's, the sum of its jobs' limits (below),
+plus `JOB_DEADLINE_MARGIN_MINUTES`.
 It carries no token: the worker asks for one per phase, `read`, `write` or `push`, and the dispatcher mints
 one only for a job it dispatched, before that job's deadline, for that job's repository alone, while
 the installation is still on an account it serves, and after reading `AGENT_ORCHESTRATOR` again. Deleting the variable stops a job in flight at its next
@@ -162,7 +165,7 @@ so does an App whose own record cannot be read, since that is where the App's ow
 | `WEBHOOK_PORT` | optional | `8790` | the webhook door's port; GitHub's deliveries arrive at `POST /github` |
 | `TOKEN_HOST` | optional | `127.0.0.1` | the address the token door listens on: one the worker reaches |
 | `TOKEN_PORT` | optional | `8791` | the token door's port; the worker asks at `POST /token` |
-| `JOB_DEADLINE_MARGIN_MINUTES` | optional | `60` | added to a job's own time limit for its deadline, review's (its CI wait and `AGENT_REVIEW_TIMEOUT_MINUTES`) or fix's, update-branch's and implement's (`AGENT_TIMEOUT_MINUTES`), covering the phases around the runner's and the time a job waits in the worker's queue |
+| `JOB_DEADLINE_MARGIN_MINUTES` | optional | `60` | added to a job's own time limit for its deadline, review's (its CI wait and `AGENT_REVIEW_TIMEOUT_MINUTES`) or fix's, update-branch's and implement's (`AGENT_TIMEOUT_MINUTES`), or implement-prd's (35 minutes and `AGENT_TIMEOUT_MINUTES`), covering the phases around the runner's and the time a job waits in the worker's queue |
 | `EXTRA_OWNERS` | optional | `""` | accounts, comma-separated, whose installations the dispatcher serves besides the App owner's; empty is none. An installation on any other account is refused |
 
 Each door also answers `GET /health` with `200`.
@@ -176,7 +179,7 @@ Each door also answers `GET /health` with `200`.
 
 ## The worker
 
-The process that runs review, fix, update-branch and implement. It holds no key: it asks the dispatcher for a token at the
+The process that runs review, fix, update-branch, implement and implement-prd. It holds no key: it asks the dispatcher for a token at the
 start of each phase. For review: `read` for the gate, the checkout, the budget and the CI wait, a
 fresh `read` for the runner, so the token's hour starts as the agent does, and `write` for
 `review:publish` and `review:conclude`. For fix: `write` for `fix:gate`, which posts its refusal and
@@ -191,9 +194,15 @@ for `update-branch:bundle`; and `push` for `update-branch:publish` and `update-b
 `implement:gate`, which posts its refusals and the start comment and probes the label; `read` for
 the checkout of the base, and a fresh `read` for the runner; none for `implement:prepare` and
 `implement:bundle`; and `push` for `implement:publish` and `implement:conclude`, with `write` for
-conclude where `push` is refused. A gate that refuses ends any of the three jobs there, as it
-skips the publish job on Actions, and so does implement's deferral of a PRD: no token is asked for
-after it, and neither publish nor conclude runs. A gate that failed before it decided is not a
+conclude where `push` is refused. For implement-prd: `write` for `implement-prd:gate`; `push` for
+the catch-up's checkout and `implement-prd:catch-up`, which pushes the merge of the default branch
+into the PRD branch, before any agent runs; `read` for the agent's checkout and
+`implement-prd:prepare`, and a fresh `read` for the runner; none for `implement-prd:bundle`; and
+`push` for the publish checkout, `implement-prd:publish` and `implement-prd:conclude`, with `write`
+for the checkout and conclude where `push` is refused. A gate that refuses ends any of these jobs
+there, as it skips the jobs after it on Actions, and so does each deferral, implement's of a PRD
+and implement-prd's of a regular issue: no token is asked for after it, and nothing after the gate
+runs. A gate that failed before it decided is not a
 refusal, and conclude still runs.
 The runner never holds a token that writes. It needs:
 
@@ -213,11 +222,11 @@ At start it installs the agent's CLI, `@anthropic-ai/claude-code` at `CLAUDE_COD
 read-only too, through `AGENT_SANDBOX_RO_BINDS`, and put it on `AGENT_SANDBOX_PATH`.
 
 Jobs run one at a time, in the order they arrived. Each runs the subcommands its reusable runs, in
-its order and under its conditions (spec §6 for `implement.yml`, §8 for `review.yml`, §9 for
+its order and under its conditions (spec §6 for `implement.yml`, §7 for `implement-prd.yml`, §8 for `review.yml`, §9 for
 `fix.yml`, §10 for `update-branch.yml`), each a child process of the worker's own
 install, with an environment built from its declaration in the contract and the host's `PATH`,
 `HOME` and `LANG`, and nothing else of the worker's. Not run, at this release: the red check. The
-repository's setup is run by a fix job, an implement job, and an update-branch job whose merge
+repository's setup is run by a fix job, an implement job, an implement-prd job that builds a slice, and an update-branch job whose merge
 conflicted, before its runner, and not by a review, as on Actions.
 
 The fix-round budget is the repository's `AGENT_MAX_FIX_ROUNDS`, read as on Actions: a review
@@ -255,12 +264,29 @@ has no run page, so the link the implement commands give where Actions links its
 start comment, the pull request's frame, the link on the issue and the failure comment) is the
 App's own page, `https://github.com/apps/<slug>`.
 
+An implement-prd job runs `implement-prd:gate`, and ends there where it refused the PRD or deferred
+a regular issue to implement. Where it claimed the run, the gate decided one of three things. **A
+build** runs the catch-up first, in a checkout of the default branch of its own:
+`implement-prd:catch-up` merges the default branch into the PRD branch where it has moved and
+pushes it, or parks the chain on a conflict, naming `agent:update-branch`. Unless it parked or
+failed, the agent's job checks out the tip the catch-up left, as the PRD branch, and runs
+`implement-prd:prepare`, which fetches a stopped run's rescue branch, the setup, the runner, and
+`implement-prd:bundle`, however those ended. Where they succeeded, `implement-prd:publish` marks the
+slice's commits, pushes them to the PRD branch, opens or reuses the PRD PR and adds `agent:review`
+as the App. **A run that only opens a missing PRD PR**, and **the finishing run**, which hands the
+PRD PR over, run neither the catch-up nor the agent's job: publish does their work alone.
+`implement-prd:conclude` ends every run the gate did not refuse, pushing a stopped build's commits
+to `agent/rescue/prd-<parent>` for the next run to resume from.
+
 On a PRD pull request (head `agent/prd-…`), where the review went ahead and the head did not move
 while it ran, the worker asks for one more `write` token and runs `review:advance` after
 `review:conclude`, as the reusable's advance job does. Advance may put `agent:implement` back on
-the PRD's parent. The service answers that label with an implement job, whose gate defers a PRD to
-implement-prd without a word, and the service does not run implement-prd yet, so on a repository it
-serves the chain waits there for an orchestrator that does, or for you: that is expected.
+the PRD's parent. The service answers that label with an implement job and an implement-prd job
+again: the implement job's gate defers the PRD without a word, and the implement-prd job builds the
+next slice. So the whole chain runs on the service, a job per slice, with other jobs between them.
+The service keeps nothing of the chain between slices: each gate reads where it stands from the
+record, so a worker restarted between two slices picks the chain up at the next
+`agent:implement`.
 
 `review:conclude` runs however the phases before it ended, and is told each one's real outcome: a
 runner that failed, with the reason it wrote; a token the dispatcher would not grant; a publish
@@ -269,7 +295,8 @@ pull request, because no token to write with was granted, says why in the worker
 
 Each run leaves a directory under `WORK_DIR/runs`, named for when it started and its job: the
 checkout (an update-branch job's `gate-checkout`, `checkout` and `publish-checkout`, and an
-implement job's `checkout` and `publish-checkout`, one per job of its reusable that checks out), each subcommand's output directory under `out/` and its log under `logs/`, and
+implement job's `checkout` and `publish-checkout`, and an implement-prd job's `catch-up-checkout`,
+`checkout` and `publish-checkout`, one per job of its reusable that checks out), each subcommand's output directory under `out/` and its log under `logs/`, and
 `summary.json`, the job, each phase's outcome, and each subcommand's environment, with every token
 redacted. The worker's own log says how each phase ended, redacted the same way. Nothing removes
 old runs: prune `WORK_DIR/runs` as you see fit.
@@ -289,7 +316,11 @@ out; publish's checkout and `update-branch:publish` share 15 minutes, and `updat
 gets 15. An implement job's gate gets 10 minutes; the agent's job's steps share
 `AGENT_TIMEOUT_MINUTES` (30 where unset), and a build ended at it publishes nothing and says it
 timed out; publish's checkout and `implement:publish` share 15 minutes, and `implement:conclude`
-gets 15. A job that waits in the queue for longer
+gets 15. An implement-prd job's gate gets 10 minutes, and the catch-up's checkout and
+`implement-prd:catch-up` 10 together; the agent's job's steps share `AGENT_TIMEOUT_MINUTES` (30 where
+unset); `implement-prd:bundle` gets 5 of its own, so a build stopped at its limit still hands its
+commits over for the rescue; publish's checkout and `implement-prd:publish` share 15 minutes, and
+`implement-prd:conclude` gets 15. A job that waits in the queue for longer
 than the dispatcher's `JOB_DEADLINE_MARGIN_MINUTES` is past its deadline by the time it asks to
 post, and ends with nothing posted, so set the margin above the longest wait you expect.
 
@@ -300,7 +331,8 @@ else its verify command needs, the same text a caller's `setup:` input holds on 
 admin can set it. The dispatcher reads it with the other variables and the job carries it; the
 worker hands it to the sandbox's shell through the environment, as written, and never splices it
 into a command line. Unset or empty, the setup is skipped. A fix job runs it after `fix:prepare`
-and before its runner, an implement job after `implement:prepare`, and an update-branch job after `update-branch:prepare`, only where its merge
+and before its runner, an implement job after `implement:prepare`, an implement-prd job after
+`implement-prd:prepare`, and an update-branch job after `update-branch:prepare`, only where its merge
 conflicted; a review runs none, as `review.yml` runs none. A setup that fails starts no
 runner, and the round's failure comment quotes the end of its output.
 

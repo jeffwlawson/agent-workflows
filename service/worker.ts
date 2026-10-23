@@ -2,7 +2,7 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import { COMMANDS, RUNNERS, type Command, type Runner } from "../shared/contract.js";
 import type { HostEnvironment } from "../shared/env.js";
-import { fixRescueBranch, PRD_BRANCH_PREFIX } from "../shared/record.js";
+import { fixRescueBranch, PRD_BRANCH_PREFIX, prdRescueBranch } from "../shared/record.js";
 import type { DoorRequest, DoorResponse } from "./dispatcher.js";
 import {
   fixTimeLimit,
@@ -12,6 +12,7 @@ import {
   verifySignature,
   type FixJob,
   type ImplementJob,
+  type ImplementPrdJob,
   type Job,
   type ReviewJob,
   type TokenKind,
@@ -61,7 +62,9 @@ export interface Git {
    * Check `sha` out in `dir`, a directory that does not exist yet, as the
    * local branch `branch`, with `baseRef` fetched as a local branch of the
    * same name beside it, and `committer` the name commits made there are
-   * made under. `token` reads `repo`, and is passed with each command that
+   * made under. `sha` is a commit, or a branch of `repo` by its name, where
+   * a run checks a branch out at whatever commit it is at, as
+   * `actions/checkout` checks out a `ref:`. `token` reads `repo`, and is passed with each command that
    * needs it, never stored in the checkout's configuration.
    */
   checkout(options: {
@@ -185,6 +188,19 @@ export const IMPLEMENT_GATE_MINUTES = 10;
  */
 export const IMPLEMENT_POSTING_MINUTES = 15;
 
+/** `implement-prd:gate`'s time limit, in minutes: the gate job's `timeout-minutes` in `implement-prd.yml`. */
+export const IMPLEMENT_PRD_GATE_MINUTES = 10;
+
+/** The catch-up's checkout and `implement-prd:catch-up`'s time limit, in minutes, together: the catch-up job's `timeout-minutes` in `implement-prd.yml`. */
+export const CATCH_UP_MINUTES = 10;
+
+/**
+ * The publish phase's checkout and `implement-prd:publish`'s time limit, in
+ * minutes, and `implement-prd:conclude`'s, each: the publish job's
+ * `timeout-minutes` in `implement-prd.yml`.
+ */
+export const IMPLEMENT_PRD_POSTING_MINUTES = 15;
+
 /**
  * `RUN_URL` on the service, which has no run page: the App's own page, which
  * names the App that ran it. The implement commands require it, and link it
@@ -256,6 +272,26 @@ const decisions = (dir: string, file: string): Readonly<Record<string, string>> 
         value === null || typeof value === "object" ? [] : [[name, String(value)] as const],
       ),
     );
+  } catch {
+    return {};
+  }
+};
+
+/**
+ * The slice a PRD gate's `gate.json` names, its number and title, as the
+ * reusable's glue copies them into `sub` and `sub_title`, or none where it
+ * names none: `decisions` leaves the nested `slice` out.
+ */
+const sliceOf = (dir: string): { readonly number?: string; readonly title?: string } => {
+  try {
+    const read: unknown = JSON.parse(fs.readFileSync(path.join(dir, "gate.json"), "utf8"));
+    const slice = typeof read === "object" && read !== null ? (read as { readonly slice?: unknown }).slice : undefined;
+    if (typeof slice !== "object" || slice === null) return {};
+    const { number, title } = slice as { readonly number?: unknown; readonly title?: unknown };
+    return {
+      ...(typeof number === "number" ? { number: String(number) } : {}),
+      ...(typeof title === "string" ? { title } : {}),
+    };
   } catch {
     return {};
   }
@@ -504,7 +540,8 @@ export const startRun = (job: Job, edges: JobEdges): Run => {
 
 /**
  * **One job**: its kind's run function, which follows that workflow's
- * `Actions orchestrator:` blocks in the spec, §6 for implement, §8 for
+ * `Actions orchestrator:` blocks in the spec, §6 for implement, §7 for
+ * implement-prd, §8 for
  * review, §9 for fix and §10 for update-branch.
  * Never throws: how each phase ended is in what this returns, for the
  * worker's log.
@@ -519,6 +556,8 @@ export const runJob = async (job: Job, edges: JobEdges): Promise<readonly Phase[
       return runUpdateBranch(job, edges);
     case "implement":
       return runImplement(job, edges);
+    case "implement-prd":
+      return runImplementPrd(job, edges);
   }
 };
 
@@ -1618,6 +1657,395 @@ const runImplement = async (job: ImplementJob, edges: JobEdges): Promise<readonl
       PREPARE_DIR: outputDir("implement:prepare"),
       IMPLEMENT_DIR: outputDir("implement"),
       BUNDLE_DIR: bundleDir,
+    },
+    edges.runDir,
+    concludeLimit.signal,
+  );
+  concludeLimit.clear();
+  return done();
+};
+
+/**
+ * **An implement-prd job**: one run of a PRD's chain, in `implement-prd.yml`'s
+ * order and under each of its jobs' and steps' `if:`s, which the `Actions
+ * orchestrator:` blocks of spec §7 describe. It is dispatched beside an
+ * implement job on every `agent:implement`, and each gate defers the other's
+ * issue shape without a word.
+ *
+ * 1. The gate job: a `write` token, then `implement-prd:gate`, which defers a
+ *    regular issue to implement without a word, refuses, or claims the PRD and
+ *    decides what the run does: `build` the next slice, `open-only` a missing
+ *    PRD PR, or `finishing`, hand the PRD PR over. A refusal or a deferral
+ *    (`refused` `true`) ends the run there, as on Actions it skips every job
+ *    after the gate: no token is asked for after it, and neither the
+ *    catch-up, the agent's job, publish nor conclude runs.
+ * 2. The catch-up job, only where the gate succeeded, claimed the run and
+ *    decided to build: a `push` token, a checkout of the base branch, and
+ *    `implement-prd:catch-up` in it, which merges the base into the PRD
+ *    branch and pushes, or parks the chain on a conflict.
+ * 3. The agent's job, only where the catch-up succeeded and did not park: a
+ *    `read` token, the checkout of the tip the catch-up left, as the PRD
+ *    branch; `implement-prd:prepare`, with the same token, which fetches the
+ *    rescue branch; the repository's setup, in the sandbox; a fresh `read`
+ *    token, then the runner, with it as `GH_TOKEN`; and
+ *    `implement-prd:bundle`, with no token, however those ended.
+ * 4. The publish job, wherever the gate did not refuse, an undecided gate
+ *    included: a `push` token, or where that is refused a `write` token, and
+ *    where the gate claimed the run a checkout of its own. Then
+ *    `implement-prd:publish`, only where the gate succeeded, the push token
+ *    was granted and the checkout made, and the run is the finishing one,
+ *    builds nothing, or its agent's job succeeded; and
+ *    `implement-prd:conclude`, however the run ended.
+ *
+ * The runner never holds a token that writes: `push` is asked for by the
+ * catch-up, before the agent's job and in a checkout of its own, and again
+ * once the agent's job is over, and handed to the commands alone.
+ *
+ * **Every phase has a time limit**, as every job on Actions does: the gate
+ * `IMPLEMENT_PRD_GATE_MINUTES`; the catch-up's checkout and the catch-up
+ * `CATCH_UP_MINUTES`; the agent's job's steps share `AGENT_TIMEOUT_MINUTES`
+ * (`fixTimeLimit`), and one still running at it is ended and conclude told
+ * the run timed out; the bundle `BUNDLE_MINUTES`, so a stopped build still
+ * hands its commits over for the rescue; publish's checkout and publish share
+ * `IMPLEMENT_PRD_POSTING_MINUTES`, and conclude has as long.
+ */
+const runImplementPrd = async (job: ImplementPrdJob, edges: JobEdges): Promise<readonly Phase[]> => {
+  const { note, limit, outputDir, checkout, ask, run, runAgent, setup, notStarted, done } = startRun(job, edges);
+  const catchUpCheckout = path.join(edges.runDir, "catch-up-checkout");
+  const publishCheckout = path.join(edges.runDir, "publish-checkout");
+  const rescueBranch = prdRescueBranch(job.issue);
+
+  /** What every phase of this job is told: the parent, its base, the run's link, and the loop's account, the App's login (spec §4.1). */
+  const common = {
+    GH_REPO: job.repo,
+    ISSUE_NUMBER: String(job.issue),
+    ISSUE_TITLE: job.title,
+    BASE_REF: job.baseRef,
+    RUN_URL: serviceRunUrl(job.appLogin),
+    AGENT_LOOP_LOGINS: job.appLogin,
+  };
+
+  // 1. The gate job. It writes, its refusals, the permission probe, the start
+  // comments and the slice building in the PRD PR's list, so its token is
+  // `write`, as the gate job's own token has `issues: write` and
+  // `pull-requests: write`.
+  let gateResult: JobResult = "failure";
+  let gateReason: string | undefined;
+  let gate: Readonly<Record<string, string>> = {};
+  let slice: { readonly number?: string; readonly title?: string } = {};
+  const gateDir = outputDir("implement-prd:gate");
+  const claiming = await ask("write");
+  if (claiming === undefined) {
+    note("implement-prd:gate", "not run: the dispatcher granted no token to claim the PRD with");
+  } else {
+    const gateLimit = limit(IMPLEMENT_PRD_GATE_MINUTES);
+    const gated = await run("implement-prd:gate", { ...common, GH_TOKEN: claiming, ISSUE_STATE: job.state }, edges.runDir, gateLimit.signal);
+    gateLimit.clear();
+    gate = decisions(gated.dir, "gate.json");
+    slice = sliceOf(gated.dir);
+    gateResult = gated.timedOut ? "cancelled" : gated.ok ? "success" : "failure";
+    gateReason = reason(gated.dir, "failure_reason.txt");
+  }
+  // The gate job's `refused`: empty where the gate decided nothing.
+  const refused = gate["proceed"] === "true" ? "false" : gate["proceed"] === "false" ? "true" : "";
+  // The gate said it and took the label off, or deferred a regular issue to
+  // implement and says nothing by design: no job after the gate runs, so no
+  // token is asked for after it and conclude does not run.
+  if (refused === "true") {
+    note("implement-prd:gate", "refused or deferred: the run ends here, as no job after the gate runs then");
+    return done();
+  }
+  // The gate job's outputs, as its glue step copies them out of `gate.json`:
+  // `build` and `finishing` empty where it decided nothing.
+  const decision = gate["decision"];
+  const build = decision === undefined ? "" : String(decision === "build");
+  const finishing = decision === undefined ? "" : String(decision === "finishing");
+  const prdBranch = gate["prdBranch"] ?? "";
+  const prdTip = gate["prdTip"] ?? "";
+  const prdPr = gate["prdPr"];
+  const sub = slice.number;
+
+  /**
+   * A checkout into `dir`, with `token`: of `head`, the tip the catch-up left,
+   * as the PRD branch, where there is one, so the bundle built on it can be
+   * checked there; otherwise of the base branch by its name, as each of the
+   * reusable's jobs checks it out. The base is fetched beside it either way.
+   */
+  const checkOut = (dir: string, token: string, signal: AbortSignal, head: string): Promise<void> =>
+    edges.git.checkout({
+      dir,
+      repo: job.repo,
+      branch: head === "" ? job.baseRef : prdBranch,
+      sha: head === "" ? job.baseRef : head,
+      baseRef: job.baseRef,
+      token,
+      committer: job.appLogin,
+      signal,
+    });
+
+  // 2. The catch-up job, where the gate succeeded, claimed the run and decided
+  // to build. It pushes, the merge of the base, and parks on a conflict, so
+  // its token is `push`.
+  let catchUpResult: JobResult = "skipped";
+  let caughtUp: Readonly<Record<string, string>> = {};
+  if (gateResult === "success" && refused === "false" && build === "true") {
+    const pushing = await ask("push");
+    if (pushing === undefined) {
+      catchUpResult = "failure";
+      notStarted("implement-prd:catch-up", "The service's dispatcher granted no token to bring the PRD branch up to date with, so nothing was built.");
+    } else {
+      const catchUpLimit = limit(CATCH_UP_MINUTES);
+      let checkedOut = false;
+      try {
+        await checkOut(catchUpCheckout, pushing, catchUpLimit.signal, "");
+        note("checkout", "success");
+        checkedOut = true;
+      } catch (error) {
+        if (catchUpLimit.signal.aborted) {
+          note("checkout", "timed out");
+          catchUpResult = "cancelled";
+        } else {
+          note("checkout", `failure: ${message(error)}`);
+          catchUpResult = "failure";
+          notStarted("implement-prd:catch-up", `\`${job.baseRef}\` could not be checked out to bring the PRD branch up to date, so nothing was built: ${message(error)}`);
+        }
+      }
+      if (checkedOut) {
+        const caught = await run(
+          "implement-prd:catch-up",
+          {
+            ...common,
+            GH_TOKEN: pushing,
+            LOOP_TOKEN: pushing,
+            LOOP_TOKEN_SOURCE: TOKEN_SOURCE,
+            PRD_BRANCH: prdBranch,
+            PRD_TIP: prdTip,
+            PRD_PR: prdPr,
+            SUB: sub,
+            CHECKOUT: catchUpCheckout,
+          },
+          edges.runDir,
+          catchUpLimit.signal,
+        );
+        caughtUp = decisions(caught.dir, "catch-up.json");
+        catchUpResult = caught.timedOut ? "cancelled" : caught.ok ? "success" : "failure";
+      }
+      catchUpLimit.clear();
+    }
+  }
+  // The catch-up job's outputs: whether it parked, the merge it pushed, and the tip it left.
+  const parked = caughtUp["parked"] ?? "";
+  const head = caughtUp["head"] ?? "";
+
+  // 3. The agent's job, where the gate and the catch-up succeeded and the
+  // catch-up did not park the chain.
+  const minutes = fixTimeLimit(job.variables.AGENT_TIMEOUT_MINUTES);
+  const agent: { result: JobResult; timedOut: boolean } = { result: "skipped", timedOut: false };
+  const runnerDir = outputDir("implement-prd");
+  const bundleDir = outputDir("implement-prd:bundle");
+  if (gateResult === "success" && refused === "false" && build === "true" && catchUpResult === "success" && parked !== "true") {
+    agent.result = "success";
+    const agentLimit = limit(minutes);
+    /** The agent's job ran past its time limit, which ends it as Actions ends a job at its `timeout-minutes`. */
+    const timedOut = (): void => {
+      agent.result = "cancelled";
+      agent.timedOut = true;
+    };
+    const going = (): boolean => agent.result === "success";
+
+    const read = await ask("read");
+    if (read === undefined) {
+      agent.result = "failure";
+      notStarted("implement-prd:prepare", "The service's dispatcher granted no token to read the repository with, so nothing was built.");
+    } else {
+      try {
+        await checkOut(checkout, read, agentLimit.signal, head);
+        note("checkout", "success");
+      } catch (error) {
+        if (agentLimit.signal.aborted) {
+          note("checkout", "timed out");
+          timedOut();
+        } else {
+          note("checkout", `failure: ${message(error)}`);
+          agent.result = "failure";
+          notStarted("implement-prd:prepare", `\`${prdBranch}\` could not be checked out to build on, so nothing was built: ${message(error)}`);
+        }
+      }
+    }
+    if (going() && read !== undefined) {
+      // The agent's job's read token, as on Actions, where it fetches the PRD
+      // branch and the rescue branch.
+      const prepared = await run(
+        "implement-prd:prepare",
+        { ...common, GH_TOKEN: read, CHECKOUT: checkout, PRD_BRANCH: prdBranch, PRD_TIP: prdTip, BASE_SHA: head, SUB: sub, RESCUE_BRANCH: rescueBranch },
+        edges.runDir,
+        agentLimit.signal,
+      );
+      if (prepared.timedOut) timedOut();
+      else if (!prepared.ok) agent.result = "failure";
+    }
+    if (going()) {
+      const set = await setup(job.variables.AGENT_SETUP, agentLimit.signal);
+      if (set.timedOut) timedOut();
+      else if (!set.ok) {
+        agent.result = "failure";
+        notStarted("implement-prd", set.failureReason ?? "The repository's setup (`AGENT_SETUP`) failed.");
+      }
+    }
+    // The runner gets a `read` token of its own, minted as it starts, since
+    // the setup before it can take a good part of the first one's hour.
+    const runnerToken = going() ? await ask("read") : undefined;
+    if (going() && runnerToken === undefined) {
+      agent.result = "failure";
+      notStarted("implement-prd", "The service's dispatcher granted no token for the agent to read the PRD with.");
+    }
+    if (going() && runnerToken !== undefined) {
+      const built = await runAgent(
+        "implement-prd",
+        {
+          ...common,
+          GH_TOKEN: runnerToken,
+          AGENT_MODEL: job.variables.AGENT_MODEL,
+          AGENT_MODEL_IMPLEMENT_PRD: job.variables.AGENT_MODEL_IMPLEMENT_PRD,
+          BRANCH: prdBranch,
+          SUB_NUMBER: sub,
+          SUB_TITLE: slice.title,
+          RESCUE_BRANCH: rescueBranch,
+        },
+        checkout,
+        agentLimit.signal,
+      );
+      if (built.timedOut) timedOut();
+      else if (!built.ok) agent.result = "failure";
+    }
+    agentLimit.clear();
+
+    // However the steps before it ended, as the bundle step's `always()`, so
+    // a stopped build hands its commits over for conclude to rescue. It is
+    // handed no token.
+    const bundleLimit = limit(BUNDLE_MINUTES);
+    const bundled = await run("implement-prd:bundle", { CHECKOUT: checkout, PRD_BRANCH: prdBranch, BASE_SHA: head }, edges.runDir, bundleLimit.signal);
+    bundleLimit.clear();
+    if (bundled.timedOut && agent.result === "success") agent.result = "cancelled";
+    else if (!bundled.ok && agent.result === "success") agent.result = "failure";
+  }
+  const agentRan = agent.result !== "skipped";
+
+  // 4. The publish job, which runs wherever the gate did not refuse. Its
+  // token, then, where the gate claimed the run, a checkout of its own: of
+  // the tip the catch-up left, where it left one, which the bundle builds on
+  // and conclude's rescue checks it against. Where `push` was refused,
+  // conclude is told the mint failed and is handed a `write` token instead,
+  // for its comment and labels, and the checkout is made with that. There is
+  // nothing to download: the hand-over is on this disk.
+  const push = await ask("push");
+  const mintOutcome = push === undefined ? "failure" : "success";
+  const concluding = push ?? (await ask("write"));
+  const publishLimit = limit(IMPLEMENT_PRD_POSTING_MINUTES);
+  let checkedOut = false;
+  let checkoutFailed: { readonly timedOut: boolean; readonly why: string } | undefined;
+  if (refused === "false" && concluding !== undefined) {
+    try {
+      await checkOut(publishCheckout, concluding, publishLimit.signal, head);
+      note("checkout", "success");
+      checkedOut = true;
+    } catch (error) {
+      const timedOut = publishLimit.signal.aborted;
+      note("checkout", timedOut ? "timed out" : `failure: ${message(error)}`);
+      checkoutFailed = { timedOut, why: message(error) };
+    }
+  }
+  // "Publish the slice" runs where the gate succeeded and the run is the
+  // finishing one, builds nothing, or its agent's job succeeded, and every
+  // step before it in the publish job did, the mint and the checkout among
+  // them. A publish its own `if:` skips is `skipped`, which conclude reads
+  // for a parked chain.
+  const publishes = gateResult === "success" && (finishing === "true" || build === "false" || agent.result === "success");
+  let publishOutcome = "skipped";
+  const publishDir = outputDir("implement-prd:publish");
+  if (publishes && push !== undefined && checkoutFailed !== undefined) {
+    publishOutcome = checkoutFailed.timedOut ? "cancelled" : "failure";
+    if (!checkoutFailed.timedOut) {
+      notStarted("implement-prd:publish", `\`${head === "" ? job.baseRef : prdBranch}\` could not be checked out to publish with: ${checkoutFailed.why}`);
+    }
+  }
+  if (publishes && push !== undefined && checkedOut) {
+    const published = await run(
+      "implement-prd:publish",
+      {
+        ...common,
+        GH_TOKEN: push,
+        LOOP_TOKEN: push,
+        LOOP_TOKEN_SOURCE: TOKEN_SOURCE,
+        CHECKOUT: publishCheckout,
+        GATE_DIR: gateDir,
+        BUNDLE_DIR: bundleDir,
+        PRD_BRANCH: prdBranch,
+        PRD_TIP: prdTip,
+        BUILD: build,
+        FINISHING: finishing,
+        PRD_PR: prdPr,
+        LANDED: gate["landed"],
+        BASE_SHA: head,
+        SUB: sub,
+        RESCUE_BRANCH: rescueBranch,
+      },
+      edges.runDir,
+      publishLimit.signal,
+    );
+    publishOutcome = published.timedOut ? "cancelled" : published.ok ? "success" : "failure";
+  }
+  publishLimit.clear();
+
+  // Conclude, however the run ended.
+  if (concluding === undefined) {
+    // Nothing can say so on the parent, so the worker's log says why the run
+    // ended as well.
+    const ended = agent.timedOut
+      ? `the build timed out after ${minutes} minutes`
+      : `the gate's result was ${gateResult}, the catch-up's ${catchUpResult}, and the agent's ${agent.result}`;
+    note("implement-prd:conclude", `not run: the dispatcher granted no token to write the ending with, and the run had ended so: ${ended}`);
+    return done();
+  }
+  const concludeLimit = limit(IMPLEMENT_PRD_POSTING_MINUTES);
+  await run(
+    "implement-prd:conclude",
+    {
+      ...common,
+      GH_TOKEN: concluding,
+      // The loop's token is the `push` token alone: empty where the mint
+      // failed, as the publish job's is, so conclude rescues nothing then.
+      LOOP_TOKEN: push,
+      LOOP_TOKEN_SOURCE: push === undefined ? undefined : TOKEN_SOURCE,
+      CHECKOUT: publishCheckout,
+      RESCUE_BRANCH: rescueBranch,
+      REFUSED: refused,
+      BUILD: build,
+      FINISHING: finishing,
+      PRD_BRANCH: prdBranch,
+      PRD_PR: prdPr,
+      SUB: sub,
+      BASE_SHA: head,
+      MERGED: caughtUp["merged"],
+      GATE_RESULT: gateResult,
+      GATE_REASON: gateReason,
+      CATCH_UP_RESULT: catchUpResult,
+      AGENT_RESULT: agent.result,
+      TIMED_OUT: String(agent.timedOut),
+      TIMEOUT_MINUTES: String(minutes),
+      MINT_OUTCOME: mintOutcome,
+      // The agent's hand-over is fetched on a build alone, and is missing
+      // where the agent's job did not run, as an artifact never uploaded is.
+      DOWNLOAD_OUTCOME: build === "true" ? (agentRan ? "success" : "failure") : "skipped",
+      PUBLISH_OUTCOME: publishOutcome,
+      GATE_DIR: gateDir,
+      // Holds a reason only where the catch-up failed, as its hand-over is
+      // uploaded only then.
+      CATCH_UP_DIR: outputDir("implement-prd:catch-up"),
+      PREPARE_DIR: outputDir("implement-prd:prepare"),
+      IMPLEMENT_PRD_DIR: runnerDir,
+      BUNDLE_DIR: bundleDir,
+      PUBLISH_DIR: publishDir,
     },
     edges.runDir,
     concludeLimit.signal,

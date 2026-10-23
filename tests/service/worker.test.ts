@@ -10,14 +10,18 @@ import {
   SIGNATURE_HEADER,
   type FixJob,
   type ImplementJob,
+  type ImplementPrdJob,
   type Job,
   type ReviewJob,
   type TokenKind,
   type UpdateBranchJob,
 } from "../../service/job.js";
 import {
+  CATCH_UP_MINUTES,
   IMPLEMENT_GATE_MINUTES,
   IMPLEMENT_POSTING_MINUTES,
+  IMPLEMENT_PRD_GATE_MINUTES,
+  IMPLEMENT_PRD_POSTING_MINUTES,
   jobDoor,
   REDACTED,
   runJob,
@@ -69,6 +73,7 @@ const JOB: ReviewJob = {
     AGENT_MODEL_FIX: "",
     AGENT_MODEL_UPDATE_BRANCH: "",
     AGENT_MODEL_IMPLEMENT: "",
+    AGENT_MODEL_IMPLEMENT_PRD: "",
     AGENT_REVIEW_TIMEOUT_MINUTES: "",
     AGENT_TIMEOUT_MINUTES: "",
     AGENT_MAX_FIX_ROUNDS: "3",
@@ -1497,7 +1502,7 @@ describe("the job door", () => {
     const response = d.handle(request(job));
 
     expect(response.status).toBe(400);
-    expect(JSON.parse(response.body)).toEqual({ refusal: "`workflow` is not one of `review`, `fix`, `update-branch`, `implement`" });
+    expect(JSON.parse(response.body)).toEqual({ refusal: "`workflow` is not one of `review`, `fix`, `update-branch`, `implement`, `implement-prd`" });
     expect(d.accepted).toEqual([]);
   });
 
@@ -1530,6 +1535,19 @@ describe("the job door", () => {
     expect(malformed.status).toBe(400);
     expect(JSON.parse(malformed.body)).toEqual({ refusal: "`issue` is not a positive integer" });
     expect(d.accepted).toEqual([IMPLEMENT_JOB]);
+  });
+
+  it("queues an implement-prd job, and refuses one with no title, naming the field", () => {
+    const d = door();
+    const job = { ...IMPLEMENT_JOB, workflow: "implement-prd" };
+
+    expect(d.handle(request(job)).status).toBe(202);
+    expect(d.accepted).toEqual([job]);
+
+    const malformed = d.handle(request({ ...job, title: "" }));
+    expect(malformed.status).toBe(400);
+    expect(JSON.parse(malformed.body)).toEqual({ refusal: "`title` is not a non-empty string" });
+    expect(d.accepted).toEqual([job]);
   });
 });
 
@@ -1857,5 +1875,442 @@ describe("the worker's implement job, where it stops", () => {
       outcome:
         "not run: the dispatcher granted no token to write the ending with, and the run had ended so: the gate's result was success, and the agent's failure",
     });
+  });
+});
+
+const PRD_JOB: ImplementPrdJob = { ...IMPLEMENT_JOB, workflow: "implement-prd", title: "Build the chain" };
+const PRD_BRANCH = "agent/prd-12-build-the-chain";
+const PRD_TIP = "d".repeat(40);
+/** The tip the catch-up left the PRD branch at: its merge of the base. */
+const CAUGHT_UP = "9".repeat(40);
+const PRD_RESCUE = "agent/rescue/prd-12";
+
+/** What `implement-prd:gate` writes where it claims the run and decides `decision`. */
+const prdGate = (decision: "build" | "open-only" | "finishing"): Canned => ({
+  files: {
+    "gate.json": {
+      proceed: "true",
+      decision,
+      prdBranch: PRD_BRANCH,
+      prdBranchExists: true,
+      prdTip: PRD_TIP,
+      prdPr: 30,
+      landed: decision === "finishing" ? 3 : 1,
+      total: 3,
+      ...(decision === "build" ? { slice: { number: 21, position: 2, title: "Second slice" } } : {}),
+    },
+    "prd-issue.json": { subIssues: { nodes: [] } },
+  },
+});
+
+/** The files each implement-prd subcommand writes on a run that builds a slice and pushes it. */
+const PRD_BUILD: Readonly<Partial<Record<Subcommand, Canned>>> = {
+  "implement-prd:gate": prdGate("build"),
+  "implement-prd:catch-up": { files: { "catch-up.json": { parked: false, merged: CAUGHT_UP, head: CAUGHT_UP } } },
+  "implement-prd:bundle": { files: { "branch.bundle": "the agent's commits" } },
+  "implement-prd:publish": { files: { "published.json": { pushed: true, head: "f".repeat(40), pr: 30, requested: true, handedOver: false } } },
+};
+
+/**
+ * An implement-prd job, run as `implement-prd.yml` runs one (spec §7): the
+ * gate job; the catch-up job and the agent's job on a build; and the publish
+ * job, with publish under its step's `if:` and conclude always, each under
+ * its job's and step's `if:` rather than in order alone.
+ */
+describe("the worker's implement-prd job, on a build", () => {
+  it("runs the gate, the catch-up in a checkout of its own, the agent's job, bundle, then publish in a third checkout and conclude, in that order", async () => {
+    const s = setup(PRD_BUILD);
+    await runJob({ ...PRD_JOB, variables: { ...PRD_JOB.variables, AGENT_SETUP: "npm ci" } }, s.edges);
+
+    expect(s.events).toEqual([
+      "write token",
+      "implement-prd:gate",
+      "push token",
+      "checkout",
+      "implement-prd:catch-up",
+      "read token",
+      "checkout",
+      "implement-prd:prepare",
+      "sandbox",
+      "read token",
+      "implement-prd",
+      "implement-prd:bundle",
+      "push token",
+      "checkout",
+      "implement-prd:publish",
+      "implement-prd:conclude",
+    ]);
+  });
+
+  it("hands each subcommand its job's token kind: write to the gate, push to the catch-up, read to prepare and alone to the runner, none to bundle, push to publish and conclude", async () => {
+    const s = setup(PRD_BUILD);
+    await runJob(PRD_JOB, s.edges);
+
+    expect(s.asked).toEqual(["write", "push", "read", "read", "push"]);
+    expect(tokensIn(s.env("implement-prd:gate"))).toEqual(["write-token-1"]);
+    expect(s.env("implement-prd:catch-up")).toMatchObject({ GH_TOKEN: "push-token-2", LOOP_TOKEN: "push-token-2", LOOP_TOKEN_SOURCE: "app" });
+    expect(tokensIn(s.env("implement-prd:prepare"))).toEqual(["read-token-3"]);
+    expect(tokensIn(s.env("implement-prd"))).toEqual(["read-token-4"]);
+    expect(tokensIn(s.env("implement-prd:bundle"))).toEqual([]);
+    expect(s.env("implement-prd:publish")).toMatchObject({ GH_TOKEN: "push-token-5", LOOP_TOKEN: "push-token-5", LOOP_TOKEN_SOURCE: "app" });
+    expect(s.env("implement-prd:conclude")).toMatchObject({ GH_TOKEN: "push-token-5", LOOP_TOKEN: "push-token-5", LOOP_TOKEN_SOURCE: "app" });
+  });
+
+  it("puts only the read token in the runner's environment, beside the agent's own", async () => {
+    const s = setup(PRD_BUILD);
+    await runJob(PRD_JOB, s.edges);
+
+    const runner = s.env("implement-prd");
+    expect(Object.entries(runner).filter(([name]) => name.endsWith("TOKEN")).sort()).toEqual([
+      ["CLAUDE_CODE_OAUTH_TOKEN", AGENT.CLAUDE_CODE_OAUTH_TOKEN],
+      ["GH_TOKEN", "read-token-4"],
+    ]);
+    expect(Object.values(runner).filter((value) => /write-token|push-token/.test(value))).toEqual([]);
+  });
+
+  it("checks the base out by name for the catch-up, and the tip the catch-up left, as the PRD branch, for the agent and for publish, each a directory of its own", async () => {
+    const s = setup(PRD_BUILD);
+    await runJob(PRD_JOB, s.edges);
+
+    const at = { repo: "owner/repo", baseRef: "main", committer: "loop-app[bot]" };
+    const checkout = path.join(s.runDir, "checkout");
+    const publishCheckout = path.join(s.runDir, "publish-checkout");
+    expect(s.checkouts).toEqual([
+      { ...at, dir: path.join(s.runDir, "catch-up-checkout"), branch: "main", sha: "main", token: "push-token-2" },
+      { ...at, dir: checkout, branch: PRD_BRANCH, sha: CAUGHT_UP, token: "read-token-3" },
+      { ...at, dir: publishCheckout, branch: PRD_BRANCH, sha: CAUGHT_UP, token: "push-token-5" },
+    ]);
+    expect(s.env("implement-prd:catch-up")["CHECKOUT"]).toBe(path.join(s.runDir, "catch-up-checkout"));
+    expect(s.launched.find((launch) => launch.subcommand === "implement-prd")?.cwd).toBe(checkout);
+    expect(s.env("implement-prd:prepare")["CHECKOUT"]).toBe(checkout);
+    expect(s.env("implement-prd:bundle")["CHECKOUT"]).toBe(checkout);
+    expect(s.env("implement-prd:publish")["CHECKOUT"]).toBe(publishCheckout);
+    expect(s.env("implement-prd:conclude")["CHECKOUT"]).toBe(publishCheckout);
+  });
+
+  it("hands each subcommand the inputs implement-prd.yml hands it, with the gate's and the catch-up's facts as their jobs' outputs", async () => {
+    const s = setup(PRD_BUILD);
+    await runJob({ ...PRD_JOB, variables: { ...PRD_JOB.variables, AGENT_MODEL_IMPLEMENT_PRD: "a-chain-model" } }, s.edges);
+
+    const parent = { GH_REPO: "owner/repo", ISSUE_NUMBER: "12" };
+    const gateDir = s.env("implement-prd:gate")["OUTPUT_DIR"];
+    expect(s.env("implement-prd:gate")).toMatchObject({ ...parent, ISSUE_TITLE: "Build the chain", ISSUE_STATE: "open", BASE_REF: "main", RUN_URL });
+    expect(s.env("implement-prd:catch-up")).toMatchObject({ ...parent, BASE_REF: "main", PRD_BRANCH, PRD_TIP, PRD_PR: "30", SUB: "21" });
+    expect(s.env("implement-prd:prepare")).toMatchObject({ PRD_BRANCH, PRD_TIP, BASE_SHA: CAUGHT_UP, SUB: "21", RESCUE_BRANCH: PRD_RESCUE });
+    expect(s.env("implement-prd")).toMatchObject({
+      ...AGENT,
+      ...parent,
+      ISSUE_TITLE: "Build the chain",
+      SUB_NUMBER: "21",
+      SUB_TITLE: "Second slice",
+      BRANCH: PRD_BRANCH,
+      BASE_REF: "main",
+      RESCUE_BRANCH: PRD_RESCUE,
+      AGENT_MODEL: "a-model",
+      AGENT_MODEL_IMPLEMENT_PRD: "a-chain-model",
+      AGENT_LOOP_LOGINS: "loop-app[bot]",
+    });
+    expect(s.env("implement-prd:bundle")).toMatchObject({ PRD_BRANCH, BASE_SHA: CAUGHT_UP });
+    expect(s.env("implement-prd:publish")).toMatchObject({
+      ...parent,
+      ISSUE_TITLE: "Build the chain",
+      BASE_REF: "main",
+      RUN_URL,
+      PRD_BRANCH,
+      PRD_TIP,
+      BUILD: "true",
+      FINISHING: "false",
+      PRD_PR: "30",
+      LANDED: "1",
+      BASE_SHA: CAUGHT_UP,
+      SUB: "21",
+      RESCUE_BRANCH: PRD_RESCUE,
+      GATE_DIR: gateDir,
+      BUNDLE_DIR: s.env("implement-prd:bundle")["OUTPUT_DIR"],
+    });
+  });
+
+  it("tells conclude how each job and step ended, pointed at each producer's directory", async () => {
+    const s = setup(PRD_BUILD);
+    await runJob(PRD_JOB, s.edges);
+
+    const out = (subcommand: Subcommand): string | undefined => s.env(subcommand)["OUTPUT_DIR"];
+    expect(s.env("implement-prd:conclude")).toMatchObject({
+      ISSUE_NUMBER: "12",
+      RUN_URL,
+      RESCUE_BRANCH: PRD_RESCUE,
+      REFUSED: "false",
+      BUILD: "true",
+      FINISHING: "false",
+      PRD_BRANCH,
+      PRD_PR: "30",
+      SUB: "21",
+      BASE_SHA: CAUGHT_UP,
+      MERGED: CAUGHT_UP,
+      GATE_RESULT: "success",
+      CATCH_UP_RESULT: "success",
+      AGENT_RESULT: "success",
+      TIMED_OUT: "false",
+      TIMEOUT_MINUTES: String(DEFAULT_FIX_MINUTES),
+      MINT_OUTCOME: "success",
+      DOWNLOAD_OUTCOME: "success",
+      PUBLISH_OUTCOME: "success",
+      GATE_DIR: out("implement-prd:gate"),
+      CATCH_UP_DIR: out("implement-prd:catch-up"),
+      PREPARE_DIR: out("implement-prd:prepare"),
+      IMPLEMENT_PRD_DIR: out("implement-prd"),
+      BUNDLE_DIR: out("implement-prd:bundle"),
+      PUBLISH_DIR: out("implement-prd:publish"),
+    });
+    expect(s.env("implement-prd:conclude")).not.toHaveProperty("GATE_REASON");
+  });
+
+  it("holds the gate and the catch-up to their jobs' 10 minutes each, and publish and conclude to the publish job's 15", () => {
+    expect(IMPLEMENT_PRD_GATE_MINUTES).toBe(10);
+    expect(CATCH_UP_MINUTES).toBe(10);
+    expect(IMPLEMENT_PRD_POSTING_MINUTES).toBe(15);
+  });
+});
+
+/**
+ * Each way an implement-prd run ends early, as `implement-prd.yml`'s `if:`s
+ * end it: which phases ran, and how many tokens were asked for.
+ */
+describe("the worker's implement-prd job, where it ends early", () => {
+  it("runs nothing after a refusal and asks for no other token, since the gate said it and took the label off", async () => {
+    const s = setup({ ...PRD_BUILD, "implement-prd:gate": { files: { "gate.json": { proceed: "false" }, "write_log.jsonl": "{}" } } });
+    const phases = await runJob(PRD_JOB, s.edges);
+
+    expect(s.events).toEqual(["write token", "implement-prd:gate"]);
+    expect(s.asked).toEqual(["write"]);
+    expect(s.checkouts).toEqual([]);
+    expect(phases.at(-1)).toEqual({ name: "implement-prd:gate", outcome: "refused or deferred: the run ends here, as no job after the gate runs then" });
+  });
+
+  it("runs nothing after deferring an issue with no sub-issues to implement, asks for no other token, and writes nothing", async () => {
+    // A deferral is the gate's `proceed: false` with no write: it leaves no write log.
+    const s = setup({ ...PRD_BUILD, "implement-prd:gate": { files: { "gate.json": { proceed: "false" } } } });
+    const phases = await runJob(PRD_JOB, s.edges);
+
+    expect(s.events).toEqual(["write token", "implement-prd:gate"]);
+    expect(s.asked).toEqual(["write"]);
+    expect(s.launched.map(({ subcommand }) => subcommand)).toEqual(["implement-prd:gate"]);
+    expect(s.checkouts).toEqual([]);
+    expect(s.sandboxed).toEqual([]);
+    expect(fs.readdirSync(s.env("implement-prd:gate")["OUTPUT_DIR"]!)).toEqual(["gate.json"]);
+    expect(phases.map(({ name }) => name)).toEqual(["write token", "implement-prd:gate", "implement-prd:gate"]);
+  });
+
+  it("runs no catch-up and no agent's job where the gate decided nothing, makes no checkout, and concludes undecided", async () => {
+    const s = setup({ ...PRD_BUILD, "implement-prd:gate": { exit: 1, files: { "failure_reason.txt": "Couldn't read the PRD's sub-issues." } } });
+    await runJob(PRD_JOB, s.edges);
+
+    expect(s.events).toEqual(["write token", "implement-prd:gate", "push token", "implement-prd:conclude"]);
+    expect(s.asked).toEqual(["write", "push"]);
+    expect(s.checkouts).toEqual([]);
+    expect(s.env("implement-prd:conclude")).toMatchObject({
+      GH_TOKEN: "push-token-2",
+      GATE_RESULT: "failure",
+      GATE_REASON: "Couldn't read the PRD's sub-issues.",
+      CATCH_UP_RESULT: "skipped",
+      AGENT_RESULT: "skipped",
+      MINT_OUTCOME: "success",
+      DOWNLOAD_OUTCOME: "skipped",
+      PUBLISH_OUTCOME: "skipped",
+    });
+    for (const name of ["REFUSED", "BUILD", "FINISHING"]) expect(s.env("implement-prd:conclude")).not.toHaveProperty(name);
+  });
+
+  it("runs no catch-up where the gate failed after claiming a build, and hands conclude its reason", async () => {
+    const claimed = prdGate("build");
+    const s = setup({ ...PRD_BUILD, "implement-prd:gate": { exit: 1, files: { ...claimed.files, "failure_reason.txt": "Couldn't add `agent:implement`." } } });
+    await runJob(PRD_JOB, s.edges);
+
+    expect(s.events).toEqual(["write token", "implement-prd:gate", "push token", "checkout", "implement-prd:conclude"]);
+    expect(s.asked).toEqual(["write", "push"]);
+    expect(s.env("implement-prd:conclude")).toMatchObject({
+      REFUSED: "false",
+      BUILD: "true",
+      GATE_RESULT: "failure",
+      GATE_REASON: "Couldn't add `agent:implement`.",
+      CATCH_UP_RESULT: "skipped",
+      AGENT_RESULT: "skipped",
+      PUBLISH_OUTCOME: "skipped",
+    });
+  });
+
+  it("runs no agent's job and publishes nothing where the catch-up parked the chain, and tells conclude the publish was skipped", async () => {
+    const s = setup({ ...PRD_BUILD, "implement-prd:catch-up": { files: { "catch-up.json": { parked: true }, "write_log.jsonl": "{}" } } });
+    await runJob(PRD_JOB, s.edges);
+
+    expect(s.events).toEqual([
+      "write token",
+      "implement-prd:gate",
+      "push token",
+      "checkout",
+      "implement-prd:catch-up",
+      "push token",
+      "checkout",
+      "implement-prd:conclude",
+    ]);
+    expect(s.asked).toEqual(["write", "push", "push"]);
+    expect(s.sandboxed).toEqual([]);
+    expect(s.env("implement-prd:conclude")).toMatchObject({
+      BUILD: "true",
+      GATE_RESULT: "success",
+      CATCH_UP_RESULT: "success",
+      AGENT_RESULT: "skipped",
+      MINT_OUTCOME: "success",
+      PUBLISH_OUTCOME: "skipped",
+    });
+    expect(s.env("implement-prd:conclude")).not.toHaveProperty("BASE_SHA");
+  });
+
+  it("runs no agent's job and publishes nothing where the catch-up failed, and leaves its reason where conclude reads it", async () => {
+    const s = setup({ ...PRD_BUILD, "implement-prd:catch-up": { exit: 1, files: { "failure_reason.txt": "Couldn't push the merge." } } });
+    await runJob(PRD_JOB, s.edges);
+
+    expect(s.events).toEqual([
+      "write token",
+      "implement-prd:gate",
+      "push token",
+      "checkout",
+      "implement-prd:catch-up",
+      "push token",
+      "checkout",
+      "implement-prd:conclude",
+    ]);
+    expect(s.asked).toEqual(["write", "push", "push"]);
+    expect(s.env("implement-prd:conclude")).toMatchObject({ CATCH_UP_RESULT: "failure", AGENT_RESULT: "skipped", DOWNLOAD_OUTCOME: "failure", PUBLISH_OUTCOME: "skipped" });
+    expect(fs.readFileSync(path.join(s.env("implement-prd:conclude")["CATCH_UP_DIR"]!, "failure_reason.txt"), "utf8")).toBe("Couldn't push the merge.");
+  });
+
+  it("starts no catch-up where its push token was refused, and says why where conclude reads the catch-up's reason", async () => {
+    const s = setup(PRD_BUILD, { refused: [2] });
+    await runJob(PRD_JOB, s.edges);
+
+    expect(s.events).toEqual(["write token", "implement-prd:gate", "push token", "push token", "checkout", "implement-prd:conclude"]);
+    expect(s.asked).toEqual(["write", "push", "push"]);
+    expect(s.env("implement-prd:conclude")).toMatchObject({ CATCH_UP_RESULT: "failure", AGENT_RESULT: "skipped" });
+    expect(fs.readFileSync(path.join(s.env("implement-prd:conclude")["CATCH_UP_DIR"]!, "failure_reason.txt"), "utf8")).toMatch(
+      /^The service's dispatcher granted no token to bring the PRD branch up to date with/,
+    );
+  });
+
+  it.each<[string, Readonly<Partial<Record<Subcommand, Canned>>>]>([
+    ["the runner", { ...PRD_BUILD, "implement-prd": { exit: 1, files: { "failure_reason.txt": "The sub-issue no longer matches the code." } } }],
+    ["bundle", { ...PRD_BUILD, "implement-prd:bundle": { exit: 1, files: { "failure_reason.txt": "The bundle could not be written." } } }],
+  ])("still bundles, publishes nothing and concludes with push for the rescue, where %s failed", async (_name, canned) => {
+    const s = setup(canned);
+    await runJob(PRD_JOB, s.edges);
+
+    expect(s.events.slice(-6)).toEqual(["read token", "implement-prd", "implement-prd:bundle", "push token", "checkout", "implement-prd:conclude"]);
+    expect(s.asked).toEqual(["write", "push", "read", "read", "push"]);
+    expect(s.env("implement-prd:conclude")).toMatchObject({
+      AGENT_RESULT: "failure",
+      MINT_OUTCOME: "success",
+      DOWNLOAD_OUTCOME: "success",
+      PUBLISH_OUTCOME: "skipped",
+      LOOP_TOKEN: "push-token-5",
+      BASE_SHA: CAUGHT_UP,
+      BUNDLE_DIR: s.env("implement-prd:bundle")["OUTPUT_DIR"],
+    });
+  });
+
+  it("ends a runner still running at AGENT_TIMEOUT_MINUTES, still bundles, publishes nothing, and tells conclude it timed out", async () => {
+    const s = setup({ ...PRD_BUILD, "implement-prd": { hangs: true } }, { minuteMs: 5 });
+    await runJob({ ...PRD_JOB, variables: { ...PRD_JOB.variables, AGENT_TIMEOUT_MINUTES: "2" } }, s.edges);
+
+    expect(s.events).toContain("implement-prd:bundle");
+    expect(s.events).not.toContain("implement-prd:publish");
+    expect(s.asked).toEqual(["write", "push", "read", "read", "push"]);
+    expect(s.env("implement-prd:conclude")).toMatchObject({ AGENT_RESULT: "cancelled", TIMED_OUT: "true", TIMEOUT_MINUTES: "2", PUBLISH_OUTCOME: "skipped" });
+  });
+
+  it("starts no runner where the setup failed, and gives conclude the setup's reason as the runner's", async () => {
+    const s = setup(PRD_BUILD, { setupRun: { exit: 2, output: "npm ERR! missing script\n" } });
+    await runJob({ ...PRD_JOB, variables: { ...PRD_JOB.variables, AGENT_SETUP: "npm ci" } }, s.edges);
+
+    expect(s.events).not.toContain("implement-prd");
+    expect(s.events).not.toContain("implement-prd:publish");
+    expect(fs.readFileSync(path.join(s.env("implement-prd:conclude")["IMPLEMENT_PRD_DIR"]!, "failure_reason.txt"), "utf8")).toMatch(
+      /^The repository's setup \(`AGENT_SETUP`\) exited with status 2\./,
+    );
+  });
+
+  it.each<["open-only" | "finishing", string]>([
+    ["open-only", "false"],
+    ["finishing", "true"],
+  ])("runs no catch-up and no agent's job on a run that is %s, and publishes in a checkout of the base, by name", async (decision, finishing) => {
+    const s = setup({ ...PRD_BUILD, "implement-prd:gate": prdGate(decision) });
+    await runJob(PRD_JOB, s.edges);
+
+    expect(s.events).toEqual(["write token", "implement-prd:gate", "push token", "checkout", "implement-prd:publish", "implement-prd:conclude"]);
+    expect(s.asked).toEqual(["write", "push"]);
+    expect(s.checkouts).toEqual([
+      { dir: path.join(s.runDir, "publish-checkout"), repo: "owner/repo", branch: "main", sha: "main", baseRef: "main", token: "push-token-2", committer: "loop-app[bot]" },
+    ]);
+    expect(s.env("implement-prd:publish")).toMatchObject({ BUILD: "false", FINISHING: finishing, PRD_PR: "30", LANDED: decision === "finishing" ? "3" : "1" });
+    expect(s.env("implement-prd:publish")).not.toHaveProperty("BASE_SHA");
+    expect(s.env("implement-prd:publish")).not.toHaveProperty("SUB");
+    expect(s.env("implement-prd:conclude")).toMatchObject({
+      REFUSED: "false",
+      BUILD: "false",
+      FINISHING: finishing,
+      GATE_RESULT: "success",
+      CATCH_UP_RESULT: "skipped",
+      AGENT_RESULT: "skipped",
+      DOWNLOAD_OUTCOME: "skipped",
+      PUBLISH_OUTCOME: "success",
+    });
+  });
+
+  it("publishes nothing where the push token was refused, and concludes with a write token and no loop token, told the mint failed", async () => {
+    const s = setup(PRD_BUILD, { refused: [5] });
+    await runJob(PRD_JOB, s.edges);
+
+    expect(s.events).not.toContain("implement-prd:publish");
+    expect(s.asked).toEqual(["write", "push", "read", "read", "push", "write"]);
+    expect(s.checkouts.at(-1)).toMatchObject({ dir: path.join(s.runDir, "publish-checkout"), token: "write-token-6" });
+    expect(s.env("implement-prd:conclude")).toMatchObject({ GH_TOKEN: "write-token-6", MINT_OUTCOME: "failure", PUBLISH_OUTCOME: "skipped" });
+    expect(s.env("implement-prd:conclude")).not.toHaveProperty("LOOP_TOKEN");
+    expect(s.env("implement-prd:conclude")).not.toHaveProperty("LOOP_TOKEN_SOURCE");
+  });
+
+  it("leaves publish's reason where conclude reads it where publish's checkout failed", async () => {
+    const s = setup(PRD_BUILD);
+    const checkout = s.edges.git.checkout;
+    s.edges.git.checkout = async (options) => {
+      if (options.dir.endsWith("publish-checkout")) throw new Error("fatal: unable to access");
+      return checkout(options);
+    };
+    await runJob(PRD_JOB, s.edges);
+
+    expect(s.events).not.toContain("implement-prd:publish");
+    expect(s.env("implement-prd:conclude")).toMatchObject({ PUBLISH_OUTCOME: "failure" });
+    expect(fs.readFileSync(path.join(s.env("implement-prd:conclude")["PUBLISH_DIR"]!, "failure_reason.txt"), "utf8")).toBe(
+      `\`${PRD_BRANCH}\` could not be checked out to publish with: fatal: unable to access`,
+    );
+  });
+
+  it("logs why the run ended where nothing can write its ending", async () => {
+    const s = setup({ ...PRD_BUILD, "implement-prd": { exit: 1 } }, { refused: [5, 6] });
+    const phases = await runJob(PRD_JOB, s.edges);
+
+    expect(s.events).not.toContain("implement-prd:conclude");
+    expect(phases.at(-1)).toEqual({
+      name: "implement-prd:conclude",
+      outcome:
+        "not run: the dispatcher granted no token to write the ending with, and the run had ended so: the gate's result was success, the catch-up's success, and the agent's failure",
+    });
+  });
+
+  it("redacts every token it held in the run's summary", async () => {
+    const s = setup(PRD_BUILD);
+    await runJob(PRD_JOB, s.edges);
+
+    const summary = fs.readFileSync(path.join(s.runDir, SUMMARY_FILE), "utf8");
+    expect(summary).not.toMatch(/(write|read|push)-token-\d/);
+    expect(summary).not.toContain(AGENT.CLAUDE_CODE_OAUTH_TOKEN);
   });
 });

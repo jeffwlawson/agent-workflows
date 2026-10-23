@@ -602,9 +602,12 @@ off the App's own record, an id, a deadline and the release. A job has a **kind*
 the service serves, named in its `workflow` field and routed to from the trigger label: at this
 release the kinds are `review` (`ReviewJob`), from `agent:review`, `fix` (`FixJob`), from
 `agent:fix`, and `update-branch` (`UpdateBranchJob`), from `agent:update-branch`, each on a pull
-request's delivery, and `implement` (`ImplementJob`), from `agent:implement` on an issue's (#517).
+request's delivery, and `implement` (`ImplementJob`, #517) and `implement-prd` (`ImplementPrdJob`,
+#518), both from `agent:implement` on an issue's: that label starts two jobs, as it starts two
+workflows on Actions, and each gate defers the other's issue shape without a word, so the
+dispatcher never reads the shape.
 The map is keyed by event, so a label is answered on the event type it belongs to and on no other,
-and each event has a route of its own reading its own payload: an implement job carries an issue,
+and each event has a route of its own reading its own payload: an implement or implement-prd job carries an issue,
 with no head, and the repository's default branch as its base. A job's deadline is its kind's own time limit plus the dispatcher's margin. The labels the service
 answers, `SERVICE_LABELS`, are that map's keys, on either event. The label's sender must be able to write to the
 repository, unless it is the App itself, whose labels the loop's commands add

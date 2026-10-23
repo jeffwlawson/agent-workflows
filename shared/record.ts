@@ -415,6 +415,13 @@ export const issueBranch = (issue: number, title: string): string => `${ISSUE_BR
 export const fixRescueBranch = (pr: number): string => `agent/rescue/fix-${pr}`;
 
 /**
+ * Where a stopped implement-prd run on PRD parent `parent` leaves its commits,
+ * its `RESCUE_BRANCH`: `agent/rescue/prd-<parent>`, as `implement-prd.yml`
+ * names it for its steps. The service's implement-prd job names it from here.
+ */
+export const prdRescueBranch = (parent: number): string => `agent/rescue/prd-${parent}`;
+
+/**
  * The stable half of every PRD branch of parent `parent`, `agent/prd-<parent>-`,
  * with the dash that stops #17 matching #171's branch: what the PRD branch is
  * found by, since the slug half comes from an editable title.

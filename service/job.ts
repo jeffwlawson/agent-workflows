@@ -21,7 +21,8 @@ import { CI_WAIT_SECONDS } from "../review/collect-checks.js";
  * `AGENT_MODEL_UPDATE_BRANCH` is the update-branch runner's model, which
  * `update-branch.yml` reads beside the same time limit, and
  * `AGENT_MODEL_IMPLEMENT` the implement runner's, which `implement.yml` reads
- * beside it too.
+ * beside it too, and `AGENT_MODEL_IMPLEMENT_PRD` the implement-prd runner's,
+ * which `implement-prd.yml` reads beside it.
  */
 export const REPOSITORY_VARIABLES = [
   "AGENT_MODEL",
@@ -29,6 +30,7 @@ export const REPOSITORY_VARIABLES = [
   "AGENT_MODEL_FIX",
   "AGENT_MODEL_UPDATE_BRANCH",
   "AGENT_MODEL_IMPLEMENT",
+  "AGENT_MODEL_IMPLEMENT_PRD",
   "AGENT_REVIEW_TIMEOUT_MINUTES",
   "AGENT_TIMEOUT_MINUTES",
   "AGENT_MAX_FIX_ROUNDS",
@@ -75,11 +77,26 @@ export const fixTimeLimit = (variable: string): number =>
   /^[1-9][0-9]*$/.test(variable) ? Number(variable) : DEFAULT_FIX_MINUTES;
 
 /**
+ * The minutes of `implement-prd.yml`'s jobs besides the agent's, each its
+ * `timeout-minutes`: the gate's 10, the catch-up's 10 and the publish job's 15.
+ */
+export const IMPLEMENT_PRD_OTHER_MINUTES = 10 + 10 + 15;
+
+/**
+ * An implement-prd job's time limit, in minutes: the sum of its jobs' limits,
+ * the agent's (`fixTimeLimit`) among them, since unlike the other kinds two of
+ * its jobs ask for a token before the agent's starts, the gate's and the
+ * catch-up's. The dispatcher's deadline for an implement-prd job starts from it.
+ */
+export const implementPrdTimeLimit = (variable: string): number => IMPLEMENT_PRD_OTHER_MINUTES + fixTimeLimit(variable);
+
+/**
  * The workflows the service runs, one job kind each (ADR 0008): the field a
  * job names its workflow in, and the worker's run function for it, follow
- * from the kind. The dispatcher routes a trigger label to one.
+ * from the kind. The dispatcher routes a trigger label to one, or, for
+ * `agent:implement`, to two, as Actions starts two workflows on it.
  */
-export const JOB_KINDS = ["review", "fix", "update-branch", "implement"] as const;
+export const JOB_KINDS = ["review", "fix", "update-branch", "implement", "implement-prd"] as const;
 
 export type JobKind = (typeof JOB_KINDS)[number];
 
@@ -135,10 +152,10 @@ export interface UpdateBranchJob extends PullRequestJob {
 }
 
 /**
- * One `agent:implement` delivery on a regular issue, as a job for the worker:
- * what the issue's event carried and what the dispatcher read. An issue has no
- * head and no base of its own, so the job carries none read off a pull
- * request: its base is the repository's default branch, which stands in for
+ * One `agent:implement` delivery on an issue, as a job for `implement`, which
+ * builds a regular issue and defers a PRD: what the issue's event carried and
+ * what the dispatcher read. An issue has no head and no base of its own, so
+ * the job carries none read off a pull request: its base is the repository's default branch, which stands in for
  * the `default-branch` a caller hands `implement.yml`. It carries no token.
  */
 export interface ImplementJob extends JobBase {
@@ -153,8 +170,18 @@ export interface ImplementJob extends JobBase {
   readonly variables: Readonly<Record<RepositoryVariable, string>>;
 }
 
+/**
+ * One `agent:implement` delivery on an issue, as a job for `implement-prd`:
+ * what an implement job carries, for the same event. Which of the two answers
+ * is `implement-prd:gate`'s to say, from the issue's shape, so the job is
+ * dispatched beside an implement job whatever the issue is.
+ */
+export interface ImplementPrdJob extends Omit<ImplementJob, "workflow"> {
+  readonly workflow: "implement-prd";
+}
+
 /** A job the dispatcher posts and the worker runs: one member per workflow the service serves. */
-export type Job = ReviewJob | FixJob | UpdateBranchJob | ImplementJob;
+export type Job = ReviewJob | FixJob | UpdateBranchJob | ImplementJob | ImplementPrdJob;
 
 /**
  * Each kind's time limit, in minutes, from the repository's variables: the
@@ -165,6 +192,7 @@ export const TIME_LIMITS: Readonly<Record<JobKind, (variables: Readonly<Record<R
   fix: (variables) => fixTimeLimit(variables.AGENT_TIMEOUT_MINUTES),
   "update-branch": (variables) => fixTimeLimit(variables.AGENT_TIMEOUT_MINUTES),
   implement: (variables) => fixTimeLimit(variables.AGENT_TIMEOUT_MINUTES),
+  "implement-prd": (variables) => implementPrdTimeLimit(variables.AGENT_TIMEOUT_MINUTES),
 };
 
 /** What a token is for: reading only, the posting phases' writes as well, or those and a push. */
@@ -240,8 +268,12 @@ const parsePullRequest = <K extends JobKind>(
   return { workflow, ...base, pr, branch, headSha, baseRef, state, merged, variables };
 };
 
-/** An implement job's own fields, past the common ones, or the reason they are not. */
-const parseIssue = (base: Omit<JobBase, "workflow">, value: Fields): ImplementJob | string => {
+/** An issue job's own fields, past the common ones, or the reason they are not. */
+const parseIssue = <K extends "implement" | "implement-prd">(
+  workflow: K,
+  base: Omit<JobBase, "workflow">,
+  value: Fields,
+): (Omit<ImplementJob, "workflow"> & { readonly workflow: K }) | string => {
   const { issue, title, state, baseRef } = value;
   if (typeof issue !== "number" || !Number.isInteger(issue) || issue <= 0) return "`issue` is not a positive integer";
   if (typeof title !== "string" || title === "") return "`title` is not a non-empty string";
@@ -249,7 +281,7 @@ const parseIssue = (base: Omit<JobBase, "workflow">, value: Fields): ImplementJo
   if (typeof baseRef !== "string" || baseRef === "") return "`baseRef` is not a non-empty string";
   const variables = parseVariables(value["variables"]);
   if (typeof variables === "string") return variables;
-  return { workflow: "implement", ...base, issue, title, state, baseRef, variables };
+  return { workflow, ...base, issue, title, state, baseRef, variables };
 };
 
 /** Each kind's own fields, read once the common ones are. */
@@ -257,7 +289,8 @@ const PARSERS: Readonly<Record<JobKind, (base: Omit<JobBase, "workflow">, value:
   review: (base, value) => parsePullRequest("review", base, value),
   fix: (base, value) => parsePullRequest("fix", base, value),
   "update-branch": (base, value) => parsePullRequest("update-branch", base, value),
-  implement: parseIssue,
+  implement: (base, value) => parseIssue("implement", base, value),
+  "implement-prd": (base, value) => parseIssue("implement-prd", base, value),
 };
 
 /**

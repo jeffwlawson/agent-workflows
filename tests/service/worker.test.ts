@@ -8,7 +8,9 @@ import {
   DEFAULT_REVIEW_MINUTES,
   sign,
   SIGNATURE_HEADER,
+  FOLLOW_UPS_MINUTES,
   type FixJob,
+  type FollowUpsJob,
   type ImplementJob,
   type ImplementPrdJob,
   type Job,
@@ -1502,7 +1504,7 @@ describe("the job door", () => {
     const response = d.handle(request(job));
 
     expect(response.status).toBe(400);
-    expect(JSON.parse(response.body)).toEqual({ refusal: "`workflow` is not one of `review`, `fix`, `update-branch`, `implement`, `implement-prd`" });
+    expect(JSON.parse(response.body)).toEqual({ refusal: "`workflow` is not one of `review`, `fix`, `update-branch`, `implement`, `implement-prd`, `follow-ups`" });
     expect(d.accepted).toEqual([]);
   });
 
@@ -2312,5 +2314,97 @@ describe("the worker's implement-prd job, where it ends early", () => {
     const summary = fs.readFileSync(path.join(s.runDir, SUMMARY_FILE), "utf8");
     expect(summary).not.toMatch(/(write|read|push)-token-\d/);
     expect(summary).not.toContain(AGENT.CLAUDE_CODE_OAUTH_TOKEN);
+  });
+});
+
+const FOLLOW_UPS_JOB: FollowUpsJob = {
+  workflow: "follow-ups",
+  id: "job-1",
+  version: "9.9.9",
+  deadline: "2026-10-11T14:00:00.000Z",
+  repo: "owner/repo",
+  pr: 7,
+  appLogin: "loop-app[bot]",
+  variables: JOB.variables,
+};
+
+/**
+ * A follow-ups job, run as `follow-ups.yml` runs its one job (spec §11):
+ * `follow-ups:file`, then `follow-ups:conclude` however it ended, told how.
+ * No checkout, no agent and no setup.
+ */
+describe("the worker's follow-ups job", () => {
+  it("runs file, then conclude, with one write token, and checks nothing out, runs no setup and no agent", async () => {
+    const s = setup({});
+    await runJob(FOLLOW_UPS_JOB, s.edges);
+
+    expect(s.events).toEqual(["write token", "follow-ups:file", "follow-ups:conclude"]);
+    expect(s.checkouts).toEqual([]);
+    expect(s.sandboxed).toEqual([]);
+    expect(s.launched.every((launch) => launch.cwd === s.runDir)).toBe(true);
+  });
+
+  it("hands each command the inputs follow-ups.yml hands it, with the App as the loop's account", async () => {
+    const s = setup({});
+    await runJob(FOLLOW_UPS_JOB, s.edges);
+
+    expect(s.env("follow-ups:file")).toMatchObject({ GH_REPO: "owner/repo", GH_TOKEN: "write-token-1", PR_NUMBER: "7", AGENT_LOOP_LOGINS: "loop-app[bot]" });
+    expect(s.env("follow-ups:conclude")).toEqual({
+      ...HOST,
+      GH_REPO: "owner/repo",
+      GH_TOKEN: "write-token-1",
+      PR_NUMBER: "7",
+      RUN_URL,
+      JOB_STATUS: "success",
+      TIMED_OUT: "false",
+      TIMEOUT_MINUTES: String(FOLLOW_UPS_MINUTES),
+      FILE_DIR: s.env("follow-ups:file")["OUTPUT_DIR"],
+      OUTPUT_DIR: s.env("follow-ups:conclude")["OUTPUT_DIR"],
+    });
+    for (const subcommand of ["follow-ups:file", "follow-ups:conclude"] as const) {
+      for (const name of Object.keys(s.env(subcommand))) expect([...Object.keys(declared(subcommand)), ...Object.keys(HOST)], name).toContain(name);
+    }
+  });
+
+  it("concludes a file that failed, told it failed, pointed at the reason it left", async () => {
+    const s = setup({ "follow-ups:file": { exit: 1, files: { "failure_reason.txt": "Couldn't file \"A thing\"." } } });
+    await runJob(FOLLOW_UPS_JOB, s.edges);
+
+    expect(s.env("follow-ups:conclude")).toMatchObject({ JOB_STATUS: "failure", TIMED_OUT: "false" });
+    expect(fs.readFileSync(path.join(s.env("follow-ups:conclude")["FILE_DIR"]!, "failure_reason.txt"), "utf8")).toBe("Couldn't file \"A thing\".");
+  });
+
+  it("ends a file still running at follow-ups.yml's time limit, and concludes it as a timeout", async () => {
+    const s = setup({ "follow-ups:file": { hangs: true } }, { minuteMs: 5 });
+    await runJob(FOLLOW_UPS_JOB, s.edges);
+
+    expect(s.events.at(-1)).toBe("follow-ups:conclude");
+    expect(s.env("follow-ups:conclude")).toMatchObject({ JOB_STATUS: "cancelled", TIMED_OUT: "true", TIMEOUT_MINUTES: "10" });
+  });
+
+  it("logs why nothing ran where no token was granted, since nothing can say so on the pull request", async () => {
+    const s = setup({}, { refused: [1] });
+    const phases = await runJob(FOLLOW_UPS_JOB, s.edges);
+
+    expect(s.launched).toEqual([]);
+    expect(phases.at(-1)).toEqual({
+      name: "follow-ups:file",
+      outcome: "not run: the dispatcher granted no token to file with, so neither it nor follow-ups:conclude ran, and nothing was written",
+    });
+  });
+
+  it("queues a follow-ups job at the door, and refuses one with no pull request, naming the field", () => {
+    const accepted: Job[] = [];
+    const handle = jobDoor({ secret: "s", version: "9.9.9", accept: (job) => accepted.push(job) });
+    const send = (job: unknown) => {
+      const body = Buffer.from(JSON.stringify(job));
+      return handle({ headers: { [SIGNATURE_HEADER]: sign("s", body) }, body });
+    };
+
+    expect(send(FOLLOW_UPS_JOB).status).toBe(202);
+    expect(accepted).toEqual([FOLLOW_UPS_JOB]);
+    const malformed = send({ ...FOLLOW_UPS_JOB, pr: 0 });
+    expect(malformed.status).toBe(400);
+    expect(JSON.parse(malformed.body)).toEqual({ refusal: "`pr` is not a positive integer" });
   });
 });

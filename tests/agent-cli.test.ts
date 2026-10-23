@@ -4160,7 +4160,13 @@ describe("doctor names the failures that otherwise look like something else", ()
 
     it("is spelt once, in the record", () => {
       expect(record.ORCHESTRATOR_VARIABLE).toBe("AGENT_ORCHESTRATOR");
-      expect(SERVICE_LABELS).toEqual([record.REVIEW_LABEL, record.FIX_LABEL, record.UPDATE_BRANCH_LABEL, record.IMPLEMENT_LABEL]);
+      expect(SERVICE_LABELS).toEqual([
+        record.REVIEW_LABEL,
+        record.FIX_LABEL,
+        record.UPDATE_BRANCH_LABEL,
+        record.FOLLOW_UPS_LABEL,
+        record.IMPLEMENT_LABEL,
+      ]);
     });
 
     it("rules on an unset variable as Actions, as before", async () => {
@@ -4176,7 +4182,7 @@ describe("doctor names the failures that otherwise look like something else", ()
     it("passes a service-served repository with no callers and its labels", () => {
       const findings = rule(empty(), service({ labels: ["agent:implement", "agent:review", "agent:fix", "agent:update-branch", "agent:blocked"] }));
 
-      expect(checks(findings)).toEqual(["note orchestrator", "note service App", "warning unanswered labels"]);
+      expect(checks(findings)).toEqual(["note orchestrator", "note service App"]);
     });
 
     it("says it cannot check whether the service's App is installed", () => {
@@ -4185,12 +4191,10 @@ describe("doctor names the failures that otherwise look like something else", ()
       expect(app?.problem).toContain("`doctor` cannot check this.");
     });
 
-    it("names every agent:* label the service does not answer, from the one list", () => {
-      const [warning] = rule(empty(), service()).filter((finding) => finding.check === "unanswered labels");
-
-      expect(warning?.problem).toMatch(
-        /answers `agent:review`, `agent:fix`, `agent:update-branch`, `agent:implement` and no other label, so `agent:follow-ups` is answered by nothing here/,
-      );
+    // #519 served the last one: the check still reads the one list, and finds
+    // nothing it does not answer.
+    it("names no label as unanswered, since the service answers every trigger label and the follow-ups marker", () => {
+      expect(rule(empty(), service()).filter((finding) => finding.check === "unanswered labels")).toEqual([]);
     });
 
     it("warns that callers left installed are skipped, and skips every Actions check", async () => {
@@ -4206,7 +4210,6 @@ describe("doctor names the failures that otherwise look like something else", ()
         "note orchestrator",
         "note service App",
         "warning callers",
-        "warning unanswered labels",
       ]);
       const [callers] = findings.filter((finding) => finding.check === "callers");
       expect(callers?.problem).toContain("installed, and skipped");

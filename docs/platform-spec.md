@@ -20,8 +20,9 @@ sentence. How one orchestrator does a thing is description, and sits in a quoted
 > **Service orchestrator:** a service that receives GitHub's webhooks and runs the runner on a box
 > it owns: the `dispatcher` and `worker` subcommands of this package, whose code is
 > [`service/`](../service/) and whose deployment is
-> [deploying-the-service.md](./deploying-the-service.md). It answers `agent:review`, `agent:fix` and
-> `agent:update-branch` on a pull request and `agent:implement` on an issue, a regular one or a PRD, alone, at this release. A block for it appears only where it differs from the Actions orchestrator in a way a
+> [deploying-the-service.md](./deploying-the-service.md). It answers every trigger label the loop
+> has: `agent:review`, `agent:fix`, `agent:update-branch` and `agent:follow-ups` on a pull request,
+> `agent:implement` on an issue, a regular one or a PRD, and a merge carrying `agent:follow-ups`. A block for it appears only where it differs from the Actions orchestrator in a way a
 > reader would trip on.
 
 Neither block binds anyone. Where they disagree with a bold sentence, the bold sentence is right.
@@ -376,10 +377,12 @@ A repository says which orchestrator serves it in the repository variable `AGENT
 answer a label on such a repository unless it would answer one with the variable unset, so a typo
 falls back to the orchestrator the repository already had rather than to two. A service
 orchestrator answers only the labels `SERVICE_LABELS` in `service/dispatcher.ts` lists, the keys
-of its map from trigger label to job kind, per event type: `agent:review`, `agent:fix` and
-`agent:update-branch` on a pull request's delivery and `agent:implement` on an issue's, at this
-release. A label is answered on its own event type only, and on a service-served repository every
-other label is answered by nothing.
+of its map from trigger label to job kind, per event type: `agent:review`, `agent:fix`,
+`agent:update-branch` and `agent:follow-ups` on a pull request's delivery and `agent:implement` on
+an issue's, which is every trigger label the loop has. A label is answered on its own event type
+only, and on a service-served repository every other label is answered by nothing. A merge is the
+one trigger that is not a label: `agent:follow-ups` is answered as well on the `closed` delivery of
+a pull request merged carrying it (§11).
 
 `doctor` reads the variable. It reports any value but unset or `service` as an error, and one it
 could not read as unknown. With `service`, it checks that the labels the service answers exist,
@@ -3347,6 +3350,42 @@ Trigger label: `agent:follow-ups`, on a merged pull request. `doctor` does not d
 since only a repository that installed the filing caller reads it.
 
 A workflow with no runner: two commands, the filing and its ending, and no agent.
+
+> **Service orchestrator:** the dispatcher starts a `follow-ups` job on either of `follow-ups.yml`'s
+> two entry points, each behind the fork guard every route has. **A merge**: a `pull_request`
+> `closed` delivery whose `merged` is literally `true` and whose payload's own labels include
+> `agent:follow-ups`. Actions starts its job on every merge, since a job condition cannot read a
+> label; the service reads the payload's, the labels as they were at the merge, so a merge without
+> the marker is ignored with its reason logged, before anything of the repository is read, and a
+> close without a merge is ignored too. `follow-ups:file` still reads the marker again when it
+> files, as on Actions. A merge has **no author gate**: whoever merged could write, and a merge
+> queue or auto-merge can send the event as a bot that a sender check would refuse, dropping the
+> follow-ups without a word, and Actions' job checks no sender either. **The manual entry point**:
+> `agent:follow-ups` added to a closed pull request, merged or not, with the author gate every
+> other label has; on an open one it is refused, as Actions' condition refuses it. Either way the
+> job carries the pull request's number alone, since nothing is checked out, and its time limit is
+> the job's `timeout-minutes`, 10.
+>
+> The worker asks for one `write` token and runs `follow-ups:file` with it, with the App's login as
+> `AGENT_LOOP_LOGINS`, since the review it reads was posted as the App, and then
+> `follow-ups:conclude` with the same token, however `file` ended, pointed at its directory. It
+> checks nothing out and runs no setup, no sandbox and no agent; each command runs in the run's own
+> directory. `follow-ups:file` gets the 10 minutes, and one still running at it is ended:
+> `follow-ups:conclude` is then told `JOB_STATUS` `cancelled` and `TIMED_OUT` `true`, as the
+> *Measure* step says it, and `TIMEOUT_MINUTES` 10, and gets 10 minutes of its own. Otherwise it is
+> told `success` or `failure`, and `TIMED_OUT` `false`. `RUN_URL` is the App's own page, as the
+> implement commands are given. Where no token is granted, neither command runs, the marker stays
+> on, and the worker's log says why.
+>
+> The token is the App's, so the stubs are filed as the App's bot, where Actions files them with
+> the workflow token, which starts no workflow. A stub carries `needs-triage` and `pr-follow-up`,
+> neither of them a trigger label, so the `issues` deliveries its labels send start nothing.
+>
+> **Concurrency relies on one worker.** Actions holds this job in the pull request's concurrency
+> group, so a label added while a merge's run files cannot file twice. The service has no lock of
+> its own: the worker's queue runs one job at a time, so a second run starts only once the first
+> has ended, finds the marker it took off, and ends silently. A deployment with more than one
+> worker would lose that guarantee.
 
 ### `follow-ups:file`
 

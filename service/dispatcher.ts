@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { FIX_LABEL, IMPLEMENT_LABEL, ORCHESTRATOR_VARIABLE, REVIEW_LABEL, SERVICE_ORCHESTRATOR, UPDATE_BRANCH_LABEL } from "../shared/record.js";
+import { FIX_LABEL, FOLLOW_UPS_LABEL, IMPLEMENT_LABEL, ORCHESTRATOR_VARIABLE, REVIEW_LABEL, SERVICE_ORCHESTRATOR, UPDATE_BRANCH_LABEL } from "../shared/record.js";
 import {
   parseTokenRequest,
   REPOSITORY_VARIABLES,
@@ -123,8 +123,10 @@ export const TOKEN_PERMISSIONS: Readonly<Record<TokenKind, Readonly<Record<strin
  * The job kind each trigger label the service answers starts (ADR 0008), by
  * the event it is answered on: a label is answered on the event type it
  * belongs to, and on no other. `agent:implement` on a pull request starts
- * nothing, and neither does `agent:review` on an issue. Every other `agent:*`
- * label waits for its workflow to move into commands (#410).
+ * nothing, and neither does `agent:review` on an issue. Every trigger label
+ * the loop has is here: `agent:follow-ups` is the last (#519), answered on a
+ * closed pull request, where every other pull request label is answered on an
+ * open one, and as the label a merge is filtered on.
  *
  * An issue's label starts a list of kinds: `agent:implement` starts both
  * `implement` and `implement-prd`, as Actions starts both workflows on it.
@@ -139,6 +141,7 @@ export const LABEL_KINDS: {
     [REVIEW_LABEL]: "review",
     [FIX_LABEL]: "fix",
     [UPDATE_BRANCH_LABEL]: "update-branch",
+    [FOLLOW_UPS_LABEL]: "follow-ups",
   },
   issues: {
     [IMPLEMENT_LABEL]: ["implement", "implement-prd"],
@@ -173,6 +176,7 @@ interface LabelEvent {
     readonly number?: unknown;
     readonly state?: unknown;
     readonly merged?: unknown;
+    readonly labels?: readonly ({ readonly name?: unknown } | null)[];
     readonly head?: { readonly ref?: unknown; readonly sha?: unknown; readonly repo?: { readonly full_name?: unknown } | null };
     readonly base?: { readonly ref?: unknown };
   };
@@ -312,14 +316,48 @@ export const createDispatcher = (edges: DispatcherEdges) => {
   };
 
   /**
+   * **A merge's route** (#519), `follow-ups.yml`'s other entry point: a
+   * follow-ups job for a pull request merged carrying `agent:follow-ups`, by
+   * the payload's own labels, as they were at the merge. Actions starts a job
+   * on every merge, since a job condition cannot read a label; this reads the
+   * payload's, so a merge with nothing to file is ignored before anything of
+   * the repository is read, as a label nothing answers is. `follow-ups:file`
+   * still reads the marker again when it files. A close without a merge is
+   * ignored too, as Actions never starts its job for one.
+   *
+   * **No author gate.** Whoever merged could write, and a merge queue or
+   * auto-merge can send the event as a bot the gate would refuse, which would
+   * drop the follow-ups without a word. Actions' job checks no sender either.
+   */
+  const merge = async (p: LabelEvent): Promise<string> => {
+    const repo = p.repository?.full_name;
+    const pr = p.pull_request?.number;
+    if (typeof repo !== "string" || typeof pr !== "number") return "refused: the delivery is missing a field a job needs";
+    const where = `${repo}#${pr}`;
+    // Literally `true`, as `follow-ups.yml`'s condition reads it.
+    if (p.pull_request?.merged !== true) return `ignored on ${where}: closed without being merged`;
+    const labels = Array.isArray(p.pull_request.labels) ? p.pull_request.labels.map((label) => label?.name) : [];
+    if (!labels.includes(FOLLOW_UPS_LABEL)) return `ignored on ${where}: merged without \`${FOLLOW_UPS_LABEL}\` on it, so there is nothing to file`;
+    const why = await unserved(repo);
+    if (why !== undefined) return `refused on ${where}: ${why}`;
+    if (p.pull_request.head?.repo?.full_name !== repo) return `refused on ${where}: the head is on a fork`;
+    const login = appLogin((await edges.github.app()).slug);
+    return dispatch({ workflow: "follow-ups", repo, pr }, login, where, " on its merge");
+  };
+
+  /**
    * **A pull request's route**: whether a `pull_request` delivery is a job,
    * and the job where it is; otherwise the reason it is not, which is logged.
    * The cheap refusals, read off the payload, are left until after the
    * opt-in, so a repository that has not opted in is always logged as that.
+   * A label is answered on an open pull request, but for `agent:follow-ups`,
+   * which is answered on a closed one, merged or not, as `follow-ups.yml`'s
+   * condition answers it, author gate and all; a close is a merge's route.
    */
   const pullRequest = async (payload: unknown): Promise<string> => {
     const p = (payload ?? {}) as LabelEvent;
-    if (p.action !== "labeled") return `ignored: a pull request \`${String(p.action)}\`, not labelled`;
+    if (p.action === "closed") return merge(p);
+    if (p.action !== "labeled") return `ignored: a pull request \`${String(p.action)}\`, not labelled or closed`;
     const label = p.label?.name;
     const repo = p.repository?.full_name;
     const pr = p.pull_request?.number;
@@ -346,10 +384,13 @@ export const createDispatcher = (edges: DispatcherEdges) => {
     const why = await unserved(repo);
     if (why !== undefined) return `refused on ${where}: ${why}`;
     if (p.pull_request?.head?.repo?.full_name !== repo) return `refused on ${where}: the head is on a fork`;
-    if (state !== "open") return `refused on ${where}: the pull request is ${state}, not open`;
+    if (kind === "follow-ups") {
+      if (state !== "closed") return `refused on ${where}: the pull request is ${state}, and \`${FOLLOW_UPS_LABEL}\` is answered on a closed one`;
+    } else if (state !== "open") return `refused on ${where}: the pull request is ${state}, not open`;
     const login = appLogin((await edges.github.app()).slug);
     const distrust = await untrusted(repo, sender, login);
     if (distrust !== undefined) return `refused on ${where}: ${distrust}`;
+    if (kind === "follow-ups") return dispatch({ workflow: kind, repo, pr }, login, where, " on its label");
     return dispatch(
       { workflow: kind, repo, pr, branch, headSha, baseRef, state, merged: p.pull_request?.merged === true },
       login,

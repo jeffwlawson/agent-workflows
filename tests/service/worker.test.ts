@@ -2018,7 +2018,7 @@ describe("the worker's implement-prd job, on a build", () => {
     expect(Object.values(runner).filter((value) => /write-token|push-token/.test(value))).toEqual([]);
   });
 
-  it("checks the base out by name for the catch-up, the agent and publish, each a directory of its own", async () => {
+  it("checks the base out by name for the catch-up and the agent, and the tip the catch-up left, as the PRD branch, for publish, which the bundle needs, each a directory of its own", async () => {
     const s = setup(PRD_BUILD);
     await runJob(PRD_JOB, s.edges);
 
@@ -2028,7 +2028,7 @@ describe("the worker's implement-prd job, on a build", () => {
     expect(s.checkouts).toEqual([
       { ...at, dir: path.join(s.runDir, "catch-up-checkout"), branch: "main", sha: "main", token: "push-token-2" },
       { ...at, dir: checkout, branch: "main", sha: "main", token: "read-token-3" },
-      { ...at, dir: publishCheckout, branch: "main", sha: "main", token: "push-token-5" },
+      { ...at, dir: publishCheckout, branch: PRD_BRANCH, sha: CAUGHT_UP, token: "push-token-5" },
     ]);
     expect(s.env("implement-prd:catch-up")["CHECKOUT"]).toBe(path.join(s.runDir, "catch-up-checkout"));
     expect(s.launched.find((launch) => launch.subcommand === "implement-prd")?.cwd).toBe(checkout);
@@ -2339,7 +2339,7 @@ describe("the worker's implement-prd job, where it ends early", () => {
     expect(s.events).not.toContain("implement-prd:publish");
     expect(s.env("implement-prd:conclude")).toMatchObject({ PUBLISH_OUTCOME: "failure" });
     expect(fs.readFileSync(path.join(s.env("implement-prd:conclude")["PUBLISH_DIR"]!, "failure_reason.txt"), "utf8")).toBe(
-      "`main` could not be checked out to publish with: fatal: unable to access",
+      `\`${PRD_BRANCH}\` could not be checked out to publish with: fatal: unable to access`,
     );
   });
 

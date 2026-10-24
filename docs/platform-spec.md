@@ -1109,10 +1109,13 @@ earlier run of this PRD left commits on `RESCUE_BRANCH`, that branch fetched to
 >   `implement-prd:bundle`, handed no token, however those ended, as the bundle step's `always()`,
 >   so a stopped build hands its commits over for the rescue.
 > - **The publish job**, wherever the gate did not refuse: a `push` token, or, where that is
->   refused, a `write` token for conclude; and, where the gate claimed the run, a checkout of the
->   base branch, by name, of its own, as `implement-prd.yml`'s, with whichever was granted:
->   `implement-prd:publish` and `implement-prd:conclude` each fetch the base and the PRD branch
->   themselves to check the bundle against `head`. `implement-prd:publish` runs where the gate succeeded and the run is the finishing
+>   refused, a `write` token for conclude; and, where the gate claimed the run, a checkout of its
+>   own, with whichever was granted: of `head` as the PRD branch where the catch-up left one, and
+>   of the base branch by name otherwise. This differs from `implement-prd.yml`'s checkout of the
+>   base on purpose: the bundle is the PRD branch less `head`, and `implement-prd:publish` and
+>   `implement-prd:conclude`'s rescue each check it before they fetch anything, which fails in a
+>   checkout without `head`. Actions' `fetch-depth: 0` fetches every branch, the PRD branch among
+>   them; the service's checkout fetches the base alone. `implement-prd:publish` runs where the gate succeeded and the run is the finishing
 >   one, builds nothing (`open-only`), or its agent's job succeeded, and the mint and the checkout
 >   did, pointed at the gate's and bundle's directories. Then `implement-prd:conclude`, however the
 >   run ended, pointed at every producer's directory. Publish holds `push` as both `GH_TOKEN` and

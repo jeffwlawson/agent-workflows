@@ -1719,8 +1719,9 @@ const runImplement = async (job: ImplementJob, edges: JobEdges): Promise<readonl
  *    `implement-prd:bundle`, with no token, however those ended.
  * 4. The publish job, wherever the gate did not refuse, an undecided gate
  *    included: a `push` token, or where that is refused a `write` token, and
- *    where the gate claimed the run a checkout of the base branch, by name, of
- *    its own. Then
+ *    where the gate claimed the run a checkout of its own: of the tip the
+ *    catch-up left, as the PRD branch, where it left one, which the bundle
+ *    needs, and of the base branch by name otherwise. Then
  *    `implement-prd:publish`, only where the gate succeeded, the push token
  *    was granted and the checkout made, and the run is the finishing one,
  *    builds nothing, or its agent's job succeeded; and
@@ -1795,14 +1796,28 @@ const runImplementPrd = async (job: ImplementPrdJob, edges: JobEdges): Promise<r
   const sub = slice.number;
 
   /**
-   * The base branch by its name, as each of the reusable's jobs checks it
-   * out, into `dir`, with `token`. Each command that works on the PRD branch
-   * fetches it itself: `implement-prd:prepare` checks it out at the tip the
-   * catch-up left, and `implement-prd:publish` and `implement-prd:conclude`
-   * check the bundle against it.
+   * A checkout into `dir`, with `token`: of the base branch by its name, as
+   * each of the reusable's jobs checks it out, unless `head` is given, the tip
+   * the catch-up left, which is then checked out as the PRD branch, with the
+   * base fetched beside it. `implement-prd:prepare` fetches the PRD branch
+   * and checks it out at that tip itself, so the agent's job takes the base.
+   * The publish job takes `head` where there is one: the bundle is the PRD
+   * branch less that tip, and `implement-prd:publish` and
+   * `implement-prd:conclude` each check it before fetching anything, so the
+   * checkout must already hold it. On Actions `fetch-depth: 0` fetches every
+   * branch, the PRD branch among them; this checkout fetches the base alone.
    */
-  const checkOut = (dir: string, token: string, signal: AbortSignal): Promise<void> =>
-    edges.git.checkout({ dir, repo: job.repo, branch: job.baseRef, sha: job.baseRef, baseRef: job.baseRef, token, committer: job.appLogin, signal });
+  const checkOut = (dir: string, token: string, signal: AbortSignal, head = ""): Promise<void> =>
+    edges.git.checkout({
+      dir,
+      repo: job.repo,
+      branch: head === "" ? job.baseRef : prdBranch,
+      sha: head === "" ? job.baseRef : head,
+      baseRef: job.baseRef,
+      token,
+      committer: job.appLogin,
+      signal,
+    });
 
   // 2. The catch-up job, where the gate succeeded, claimed the run and decided
   // to build. It pushes, the merge of the base, and parks on a conflict, so
@@ -1953,8 +1968,11 @@ const runImplementPrd = async (job: ImplementPrdJob, edges: JobEdges): Promise<r
   const agentRan = agent.result !== "skipped";
 
   // 4. The publish job, which runs wherever the gate did not refuse. Its
-  // token, then, where the gate claimed the run, a checkout of the base of
-  // its own. Where `push` was refused,
+  // token, then, where the gate claimed the run, a checkout of its own: of
+  // the tip the catch-up left, as the PRD branch, where it left one, since
+  // the bundle is built on it and publish and conclude's rescue check it
+  // there before fetching anything; of the base by name otherwise. Where
+  // `push` was refused,
   // conclude is told the mint failed and is handed a `write` token instead,
   // for its comment and labels, and the checkout is made with that. There is
   // nothing to download: the hand-over is on this disk.
@@ -1966,7 +1984,7 @@ const runImplementPrd = async (job: ImplementPrdJob, edges: JobEdges): Promise<r
   let checkoutFailed: { readonly timedOut: boolean; readonly why: string } | undefined;
   if (refused === "false" && concluding !== undefined) {
     try {
-      await checkOut(publishCheckout, concluding, publishLimit.signal);
+      await checkOut(publishCheckout, concluding, publishLimit.signal, head);
       note("checkout", "success");
       checkedOut = true;
     } catch (error) {
@@ -1988,7 +2006,7 @@ const runImplementPrd = async (job: ImplementPrdJob, edges: JobEdges): Promise<r
   if (publishes && push !== undefined && checkoutFailed !== undefined) {
     publishOutcome = checkoutFailed.timedOut ? "cancelled" : "failure";
     if (!checkoutFailed.timedOut) {
-      notStarted("implement-prd:publish", `\`${job.baseRef}\` could not be checked out to publish with: ${checkoutFailed.why}`);
+      notStarted("implement-prd:publish", `\`${head === "" ? job.baseRef : prdBranch}\` could not be checked out to publish with: ${checkoutFailed.why}`);
     }
   }
   if (publishes && push !== undefined && checkedOut) {

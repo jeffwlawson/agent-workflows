@@ -1,21 +1,25 @@
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawnSync } from "node:child_process";
 import * as fs from "node:fs";
+import { createServer, type Server } from "node:net";
 import * as os from "node:os";
 import * as path from "node:path";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { bwrapArgs } from "../../engine/bwrap-args.js";
 import { assertHostTarget, bwrap, CARRY_HOOKS, carriable, excludePattern, toHost, untrackedPaths } from "../../engine/bwrap.js";
+import { RELAY_PORT } from "../../engine/proxy-relay.js";
 import { SUBPROCESS_TIMEOUT } from "../../vitest.config.js";
 
 /**
  * The guards are what this provider exists for: the sandbox chooses every name
- * that reaches them. None of these tests runs bubblewrap itself. CI's runners
- * cannot be relied on to have it, and a test that skips where it is missing
- * passes without testing anything; a live run on a host that has it is the
- * proof of the rest.
+ * that reaches them. Only the network's tests run bubblewrap itself, at the
+ * end, and skip where it cannot run: CI's runners cannot be relied on to have
+ * it, or to allow the user namespaces it needs. The rest read the arguments
+ * the provider starts it with, through a `bwrap` on `PATH` that prints them.
  */
 
 interface Handle {
   readonly worktreePath: string;
+  exec(command: string, opts?: { cwd?: string }): Promise<{ stdout: string; stderr: string; exitCode: number }>;
   copyIn(hostPath: string, sandboxPath: string): Promise<void>;
   copyFileOut(sandboxPath: string, hostPath: string): Promise<void>;
   close(): Promise<void>;
@@ -24,13 +28,16 @@ interface Handle {
 let repo: string;
 let home: string;
 
+/** No proxy listens here; the host end connects only when a connection reaches it. */
+const NO_PROXY_HERE = "http://127.0.0.1:9";
+
+type Provider = { create(o: { env: Record<string, string> }): Promise<Handle> };
+
+const provider = (proxy = NO_PROXY_HERE): Provider =>
+  bwrap({ roBinds: [], path: "/usr/bin:/bin", proxy, repoDir: repo, homeDir: home }) as unknown as Provider;
+
 /** A sandbox as Sandcastle would create one, without running anything in it. */
-const create = (): Promise<Handle> =>
-  (
-    bwrap({ roBinds: [], path: "/usr/bin:/bin", repoDir: repo, homeDir: home }) as unknown as {
-      create(o: { env: Record<string, string> }): Promise<Handle>;
-    }
-  ).create({ env: {} });
+const create = (proxy?: string): Promise<Handle> => provider(proxy).create({ env: {} });
 
 const git = (dir: string, ...args: string[]): string =>
   execFileSync("git", ["-c", "user.name=t", "-c", "user.email=t@example.com", ...args], { cwd: dir, encoding: "utf8", timeout: SUBPROCESS_TIMEOUT });
@@ -188,22 +195,20 @@ describe("copyFileOut", () => {
  */
 describe("the session, between a runner's two passes", () => {
   it("is seeded into the next sandbox of the same provider, and copied where Sandcastle looks for it", async () => {
-    const provider = bwrap({ roBinds: [], path: "/usr/bin:/bin", repoDir: repo, homeDir: home }) as unknown as {
-      create(o: { env: Record<string, string> }): Promise<Handle>;
-    };
+    const sessions = provider();
     const src = fs.mkdtempSync(path.join(os.tmpdir(), "bwrap-test-src-"));
     try {
       fs.mkdirSync(path.join(src, "-home-agent-workspace"));
       fs.writeFileSync(path.join(src, "-home-agent-workspace", "s-1.jsonl"), "{}\n");
 
-      const first = await provider.create({ env: {} });
+      const first = await sessions.create({ env: {} });
       await first.copyIn(src, "/home/agent/.claude/projects");
       await first.close();
 
       const encoded = repo.replace(/[\\/]/g, "-");
       expect(fs.readFileSync(path.join(home, ".claude", "projects", encoded, "s-1.jsonl"), "utf8")).toBe("{}\n");
 
-      const second = await provider.create({ env: {} });
+      const second = await sessions.create({ env: {} });
       try {
         const out = path.join(repo, ".sandcastle", "patches", "r", "s-1.jsonl");
         await second.copyFileOut("/home/agent/.claude/projects/-home-agent-workspace/s-1.jsonl", out);
@@ -390,6 +395,157 @@ describe("what the checkout holds outside git", () => {
       execFileSync("sh", ["-c", hook.command.split("/home/agent/.carry").join(carry)], { cwd: worktree, timeout: SUBPROCESS_TIMEOUT });
     } finally {
       fs.rmSync(sandboxHome, { recursive: true, force: true });
+    }
+  });
+});
+
+/**
+ * The sandbox's network is its own loopback (#461): the proxy is its only way
+ * out, through a socket bound in, rather than a variable a tool may ignore.
+ */
+describe("the network", () => {
+  /** A `bwrap` that prints its arguments, one a line, put first on `PATH` for the test. */
+  const fakeBwrap = (): string => {
+    const bin = fs.mkdtempSync(path.join(os.tmpdir(), "bwrap-test-bin-"));
+    fs.writeFileSync(path.join(bin, "bwrap"), "#!/bin/sh\nprintf '%s\\n' \"$@\"\n", { mode: 0o755 });
+    vi.stubEnv("PATH", `${bin}:${process.env["PATH"] ?? ""}`);
+    return bin;
+  };
+  /** The value following `flag`'s occurrence whose next word is `next`, or each `--setenv`'s value for `name`. */
+  const after = (args: readonly string[], flag: string, next: string): string | undefined =>
+    args.find((_, i) => args[i - 1] === flag && args[i + 1] === next);
+  const setenv = (args: readonly string[], name: string): string[] =>
+    args.flatMap((arg, i) => (args[i - 1] === "--setenv" && arg === name && args[i + 1] !== undefined ? [args[i + 1]!] : []));
+
+  let bin: string | undefined;
+  afterEach(() => {
+    vi.unstubAllEnvs();
+    if (bin !== undefined) fs.rmSync(bin, { recursive: true, force: true });
+    bin = undefined;
+  });
+
+  it("is not the host's, and its one way out is the host end's socket, the relay started before the command", async () => {
+    bin = fakeBwrap();
+    const h = await create("http://agent:pw@10.0.0.5:8888");
+    try {
+      const { stdout } = await h.exec("echo hi");
+      const args = stdout.trimEnd().split("\n");
+      expect(args).toContain("--unshare-all");
+      expect(args).not.toContain("--share-net");
+      const socket = after(args, "--bind", "/run/proxy-relay/proxy.sock");
+      expect(socket).toBeDefined();
+      expect(fs.statSync(socket!).isSocket()).toBe(true);
+      expect(after(args, "--ro-bind", "/run/proxy-relay/relay.mjs")).toBe(path.resolve("engine", "relay.mjs"));
+      expect(after(args, "--ro-bind", "/run/proxy-relay/node")).toBe(process.execPath);
+      for (const name of ["HTTPS_PROXY", "HTTP_PROXY", "https_proxy", "http_proxy"]) {
+        expect(setenv(args, name), name).toEqual([`http://agent:pw@127.0.0.1:${RELAY_PORT}`]);
+      }
+      expect(args.filter((arg) => /^no_proxy$/i.test(arg))).toEqual([]);
+      expect(args.slice(-7)).toEqual([
+        "/run/proxy-relay/node",
+        "/run/proxy-relay/relay.mjs",
+        "/run/proxy-relay/proxy.sock",
+        String(RELAY_PORT),
+        "sh",
+        "-c",
+        "echo hi",
+      ]);
+    } finally {
+      await h.close();
+    }
+  });
+
+  it("is the same socket for every exec of one sandbox, gone on close, and another sandbox's is its own", async () => {
+    bin = fakeBwrap();
+    const socketOf = async (h: Handle): Promise<string> =>
+      after((await h.exec("true")).stdout.trimEnd().split("\n"), "--bind", "/run/proxy-relay/proxy.sock")!;
+    const [a, b] = await Promise.all([create(), create()]);
+    const socket = await socketOf(a);
+    try {
+      expect(await socketOf(a)).toBe(socket);
+      expect(await socketOf(b)).not.toBe(socket);
+    } finally {
+      await a.close();
+    }
+    expect(fs.existsSync(socket)).toBe(false);
+    expect(fs.existsSync(path.dirname(socket))).toBe(false);
+    try {
+      expect(fs.statSync(await socketOf(b)).isSocket()).toBe(true);
+    } finally {
+      await b.close();
+    }
+  });
+
+  it("refuses a proxy that is not a URL with a host, leaving no sandbox behind", async () => {
+    const before = fs.readdirSync(os.tmpdir()).filter((name) => name.startsWith("bwrap-job-")).length;
+    await expect(create("127.0.0.1:3128")).rejects.toThrow(/`127.0.0.1:3128` is not an `http:` or `https:` URL with a host/);
+    expect(fs.readdirSync(os.tmpdir()).filter((name) => name.startsWith("bwrap-job-")).length).toBe(before);
+  });
+
+  it("is the host's, with the proxy as every proxy variable, for a sandbox started with no relay", () => {
+    const args = bwrapArgs({ home: "/h", tmp: "/t", roBinds: [], cwd: "/h", path: "/usr/bin", proxy: "http://127.0.0.1:3128", env: {} });
+    expect(args).toContain("--share-net");
+    expect(setenv(args, "HTTPS_PROXY")).toEqual(["http://127.0.0.1:3128"]);
+    expect(args.some((arg) => arg.startsWith("/run/proxy-relay"))).toBe(false);
+  });
+});
+
+/**
+ * Whether bubblewrap runs here with a network of its own: it needs the binary
+ * and unprivileged user namespaces, which AppArmor refuses on some hosts.
+ */
+const bwrapRuns = (): boolean =>
+  spawnSync("bwrap", ["--unshare-all", "--die-with-parent", "--ro-bind", "/", "/", "true"], { timeout: SUBPROCESS_TIMEOUT }).status === 0;
+
+describe.skipIf(!bwrapRuns())("the network, in a real sandbox (skipped where bwrap or unprivileged user namespaces are unavailable)", () => {
+  /** A stand-in proxy on the host's loopback, answering every request with `200 proxied`. */
+  let proxy: Server;
+  let proxyPort: number;
+  beforeEach(async () => {
+    proxy = createServer((socket) => {
+      socket.once("data", () => socket.end("HTTP/1.1 200 OK\r\ncontent-length: 7\r\nconnection: close\r\n\r\nproxied"));
+    });
+    await new Promise<void>((resolve) => proxy.listen(0, "127.0.0.1", resolve));
+    const address = proxy.address();
+    if (address === null || typeof address === "string") throw new Error("no port");
+    proxyPort = address.port;
+  });
+  afterEach(async () => {
+    await new Promise((resolve) => proxy.close(resolve));
+  });
+
+  /** A Node one-liner, run inside by the Node bound in: connect to `host`:`port`, send a request, print the reply or the error's code. */
+  const probe = (host: string, port: string): string =>
+    `/run/proxy-relay/node -e '` +
+    `const s = require("net").connect(${port}, ${host}, () => s.write("GET http://example.com/ HTTP/1.1\\r\\nhost: example.com\\r\\n\\r\\n"));` +
+    `let out = ""; s.on("data", (d) => (out += d)); s.on("end", () => console.log("reply:" + out.split("\\r\\n\\r\\n")[1]));` +
+    `s.setTimeout(3000, () => { console.log("error:timeout"); s.destroy(); }); s.on("error", (e) => console.log("error:" + e.code));'`;
+
+  it("reaches nothing directly, the host's loopback and the proxy's own port included, and the proxy through the variables", async () => {
+    const h = await create(`http://127.0.0.1:${proxyPort}`);
+    try {
+      const direct = await h.exec(probe(`"127.0.0.1"`, String(proxyPort)));
+      expect(direct.stdout).toMatch(/^error:/);
+      const external = await h.exec(probe(`"1.1.1.1"`, "80"));
+      expect(external.stdout).toMatch(/^error:/);
+      const proxied = await h.exec(
+        probe(`new URL(process.env.HTTP_PROXY).hostname`, `Number(new URL(process.env.HTTP_PROXY).port)`),
+      );
+      expect(proxied.stdout.trim()).toBe("reply:proxied");
+      const interfaces = await h.exec("cat /proc/net/dev");
+      expect(interfaces.stdout.split("\n").slice(2).filter((line) => line.trim() !== "").map((line) => line.split(":")[0]!.trim())).toEqual(["lo"]);
+    } finally {
+      await h.close();
+    }
+  });
+
+  it("ends as the command ends, with its exit status", async () => {
+    const h = await create(`http://127.0.0.1:${proxyPort}`);
+    try {
+      expect((await h.exec("exit 3")).exitCode).toBe(3);
+      expect((await h.exec("echo out")).stdout).toBe("out\n");
+    } finally {
+      await h.close();
     }
   });
 });

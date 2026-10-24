@@ -25,6 +25,12 @@
  * which hands back every untracked path that is not ignored, never takes what
  * was carried in for the agent's own work.
  *
+ * The sandbox's network is its own loopback and nothing else (#461), so the
+ * proxy its settings name is the only way out rather than a variable a tool
+ * may ignore. For the life of each sandbox a host end (`proxy-relay.ts`)
+ * listens on a socket private to it and forwards to the proxy, and every
+ * `exec` binds the socket in and starts the inside end before its command.
+ *
  * Engine code (ADR 0005): it knows nothing of the loop and reads no
  * environment. Its settings are arguments, and the agent driver hands them in.
  * It uses the host's temporary directory as Sandcastle does, since Sandcastle
@@ -39,6 +45,7 @@ import { createInterface } from "node:readline";
 import { promisify } from "node:util";
 import { createIsolatedSandboxProvider } from "@ai-hero/sandcastle";
 import { bwrapArgs, SANDBOX_HOME } from "./bwrap-args.js";
+import { startProxyRelay } from "./proxy-relay.js";
 
 /** What a `bwrap` sandbox is given, beyond what Sandcastle hands each run. */
 export interface BwrapSettings {
@@ -46,8 +53,12 @@ export interface BwrapSettings {
   readonly roBinds: readonly string[];
   /** `PATH` inside the sandbox. */
   readonly path: string;
-  /** The proxy every request leaves through, set as every proxy variable. Absent is none. */
-  readonly proxy?: string;
+  /**
+   * The proxy every request leaves through: an `http:` or `https:` URL with a
+   * host, and the sandbox's only way out. Required, since a sandbox with a
+   * network of its own and no proxy reaches nothing, the model's API included.
+   */
+  readonly proxy: string;
   /** The host directory the run starts in, the repository Sandcastle writes its patches under. */
   readonly repoDir: string;
   /** The host's home, under which Sandcastle looks for a session before it resumes one. */
@@ -222,6 +233,10 @@ export const bwrap = (settings: BwrapSettings) => {
       if (carried.length > 0) {
         await writeFile(toHost(root, CARRY_EXCLUDE), carried.map((entry) => `${excludePattern(entry)}\n`).join(""));
       }
+      const relay = await startProxyRelay(settings.proxy).catch(async (error: unknown) => {
+        await rm(root, { recursive: true, force: true });
+        throw new Error(`bwrap: ${error instanceof Error ? error.message : String(error)}`);
+      });
 
       const args = (cwd: string): string[] =>
         bwrapArgs({
@@ -230,7 +245,7 @@ export const bwrap = (settings: BwrapSettings) => {
           roBinds: settings.roBinds,
           cwd,
           path: settings.path,
-          ...(settings.proxy === undefined ? {} : { proxy: settings.proxy }),
+          relay: { socket: relay.socket, proxy: settings.proxy },
           env: {
             // Telemetry and the auto-updater reach hosts no egress allowlist
             // should need to name; the agent's own work needs only the API.
@@ -283,6 +298,7 @@ export const bwrap = (settings: BwrapSettings) => {
         },
 
         close: async () => {
+          await relay.close();
           await keepSessions(root);
           await rm(root, { recursive: true, force: true });
         },

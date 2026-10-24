@@ -15,6 +15,12 @@ import { insideProxy, RELAY_PORT } from "./proxy-relay.js";
 /** The sandbox's home, backed by a host directory of the caller's. */
 export const SANDBOX_HOME = "/home/agent";
 
+/**
+ * Where the agent works inside its sandbox, and so where the repository's
+ * setup sees the checkout when the agent works in a copy of it (#526).
+ */
+export const SANDBOX_WORKTREE = `${SANDBOX_HOME}/workspace`;
+
 /** Files under `/etc` the toolchain needs: TLS roots, DNS, the user's name. */
 const ETC = [
   "/etc/ssl",
@@ -55,20 +61,29 @@ export interface Relay {
  */
 type Network = { readonly proxy?: string; readonly relay?: never } | { readonly relay: Relay; readonly proxy?: never };
 
+/**
+ * A host directory and where it is seen inside: a bare path at the same path,
+ * or `host` at `at`.
+ */
+export type Bind = string | { readonly host: string; readonly at: string };
+
+const mount = (flag: "--bind" | "--ro-bind", bind: Bind): string[] =>
+  typeof bind === "string" ? [flag, bind, bind] : [flag, bind.host, bind.at];
+
 /** What one sandbox sees, and where it starts. */
 export type SandboxLayout = Network & {
   /** The host directory bound at `SANDBOX_HOME`. */
   readonly home: string;
   /** The host directory bound at `/tmp`. */
   readonly tmp: string;
-  /** Host directories bound read-write at the same path inside, after the home and `/tmp`. */
-  readonly binds?: readonly string[];
+  /** Host directories bound read-write, after the home and `/tmp`. */
+  readonly binds?: readonly Bind[];
   /**
-   * Host directories bound read-only at the same path inside, after every
+   * Host directories bound read-only, after every
    * writable bind: the toolchain, and anything inside a writable bind that
    * is to stay read-only, since a later mount over the same tree wins.
    */
-  readonly roBinds: readonly string[];
+  readonly roBinds: readonly Bind[];
   /** The directory inside the sandbox it starts in. */
   readonly cwd: string;
   /** `PATH` inside the sandbox. */
@@ -115,8 +130,8 @@ export const bwrapArgs = (layout: SandboxLayout): string[] => {
     "--tmpfs", "/home",
     "--bind", layout.home, SANDBOX_HOME,
     "--bind", layout.tmp, "/tmp",
-    ...(layout.binds ?? []).flatMap((p) => ["--bind", p, p]),
-    ...layout.roBinds.flatMap((p) => ["--ro-bind", p, p]),
+    ...(layout.binds ?? []).flatMap((bind) => mount("--bind", bind)),
+    ...layout.roBinds.flatMap((bind) => mount("--ro-bind", bind)),
     ...(relay === undefined
       ? []
       : ["--bind", relay.socket, RELAY_SOCKET, "--ro-bind", RELAY_SOURCE, RELAY_SCRIPT, "--ro-bind", process.execPath, RELAY_NODE]),

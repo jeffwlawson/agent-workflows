@@ -1,5 +1,6 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
+import { SANDBOX_WORKTREE } from "../engine/bwrap-args.js";
 import { COMMANDS, RUNNERS, type Command, type Runner } from "../shared/contract.js";
 import type { HostEnvironment } from "../shared/env.js";
 import { fixRescueBranch, PRD_BRANCH_PREFIX, prdRescueBranch } from "../shared/record.js";
@@ -94,8 +95,15 @@ export interface SandboxRun {
    * `AGENT_SETUP`, and is never spliced into a command line.
    */
   readonly script: string;
-  /** The host directory bound read-write at its own path, and the script's working directory: the checkout. */
+  /** The host directory bound read-write: the checkout. */
   readonly dir: string;
+  /**
+   * Where the checkout is seen inside the sandbox, and the script's working
+   * directory: where the agent will work, so a path setup records still
+   * holds there (#526). The agent's working path with `AGENT_SANDBOX=bwrap`,
+   * and `dir` itself with `none`, where the agent works in the checkout.
+   */
+  readonly at: string;
   /** Host directories bound read-only at the same path inside: the toolchain. */
   readonly roBinds: readonly string[];
   /** `PATH` inside the sandbox. */
@@ -490,6 +498,7 @@ export const startRun = (job: Job, edges: JobEdges): Run => {
       code = await edges.sandbox({
         script,
         dir: checkout,
+        at: edges.agent["AGENT_SANDBOX"] === "bwrap" ? SANDBOX_WORKTREE : checkout,
         roBinds: (edges.agent["AGENT_SANDBOX_RO_BINDS"] ?? "").split(":").filter((dir) => dir !== ""),
         path: edges.agent["AGENT_SANDBOX_PATH"] ?? "",
         ...(proxy === "" ? {} : { proxy }),

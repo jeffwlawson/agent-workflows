@@ -44,7 +44,7 @@ import * as path from "node:path";
 import { createInterface } from "node:readline";
 import { promisify } from "node:util";
 import { createIsolatedSandboxProvider } from "@ai-hero/sandcastle";
-import { bwrapArgs, SANDBOX_HOME } from "./bwrap-args.js";
+import { bwrapArgs, SANDBOX_HOME, SANDBOX_WORKTREE } from "./bwrap-args.js";
 import { startProxyRelay } from "./proxy-relay.js";
 
 /** What a `bwrap` sandbox is given, beyond what Sandcastle hands each run. */
@@ -66,7 +66,6 @@ export interface BwrapSettings {
 }
 
 const HOME = SANDBOX_HOME;
-const WORKTREE = `${HOME}/workspace`;
 /**
  * Where, in the sandbox's home, the checkout's untracked paths wait for the
  * worktree: outside it, since Sandcastle replaces the worktree with its clone.
@@ -256,13 +255,13 @@ export const bwrap = (settings: BwrapSettings) => {
         });
 
       return {
-        worktreePath: WORKTREE,
+        worktreePath: SANDBOX_WORKTREE,
 
         exec: (command, opts) =>
           new Promise((resolve, reject) => {
             // No sudo in here: the sandbox has no root to give. Sandcastle
             // itself never asks for it (`sudo: true` appears nowhere in 0.12.0).
-            const child = spawn("bwrap", [...args(opts?.cwd ?? WORKTREE), "sh", "-c", command], {
+            const child = spawn("bwrap", [...args(opts?.cwd ?? SANDBOX_WORKTREE), "sh", "-c", command], {
               stdio: [opts?.stdin === undefined ? "ignore" : "pipe", "pipe", "pipe"],
             });
             const { stdout: out, stderr: err } = child;

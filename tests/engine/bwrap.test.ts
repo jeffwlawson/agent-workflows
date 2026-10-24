@@ -490,6 +490,26 @@ describe("the network", () => {
   });
 });
 
+describe("a bind", () => {
+  const layout = { home: "/h", tmp: "/t", cwd: "/h", path: "/usr/bin", env: {} };
+
+  it("named by its path alone is mounted at that path, read-write or read-only", () => {
+    const args = bwrapArgs({ ...layout, binds: ["/w"], roBinds: ["/w/.git", "/opt/node"] }).join(" ");
+    expect(args).toContain("--bind /t /tmp --bind /w /w --ro-bind /w/.git /w/.git --ro-bind /opt/node /opt/node --chdir /h");
+  });
+
+  it("named with a path inside is mounted there, in the same place among the mounts (#526)", () => {
+    const args = bwrapArgs({
+      ...layout,
+      binds: [{ host: "/w", at: "/home/agent/workspace" }],
+      roBinds: [{ host: "/w/.git", at: "/home/agent/workspace/.git" }, "/opt/node"],
+    }).join(" ");
+    expect(args).toContain(
+      "--bind /t /tmp --bind /w /home/agent/workspace --ro-bind /w/.git /home/agent/workspace/.git --ro-bind /opt/node /opt/node --chdir /h",
+    );
+  });
+});
+
 /**
  * Whether bubblewrap runs here with a network of its own: it needs the binary
  * and unprivileged user namespaces, which AppArmor refuses on some hosts.

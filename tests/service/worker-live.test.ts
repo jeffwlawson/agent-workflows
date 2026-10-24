@@ -4,6 +4,7 @@ import { connect, type AddressInfo } from "node:net";
 import * as os from "node:os";
 import * as path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { SANDBOX_WORKTREE } from "../../engine/bwrap-args.js";
 import { installCli, liveSandbox, liveTokens, routeThroughProxy, SETUP_SHELL } from "../../service/worker-live.js";
 import { gitEnvironment, hostEnvironment, PROXY_VARIABLES, type HostEnvironment } from "../../shared/env.js";
 import { SUBPROCESS_TIMEOUT } from "../../vitest.config.js";
@@ -128,7 +129,9 @@ describe("the worker's own requests", () => {
  * it records its arguments beside itself, applies the ones that decide what
  * the command sees (`--clearenv`, `--setenv`, `--chdir`), skips the mounts
  * and namespaces it cannot make, and runs the command that follows them,
- * exiting as it does. A real `bwrap` is the live proof of the rest.
+ * exiting as it does. A `--chdir` into a `--bind` is followed to the last
+ * such bind's host directory, since the mount that would show it there is
+ * not made. A real `bwrap` is the live proof of the rest.
  */
 const FAKE_BWRAP = `#!/usr/bin/env node
 const { spawnSync } = require("node:child_process");
@@ -139,14 +142,18 @@ fs.writeFileSync(path.join(__dirname, "argv.json"), JSON.stringify(args));
 const arity = { "--cap-drop": 1, "--hostname": 1, "--dev": 1, "--proc": 1, "--tmpfs": 1, "--chdir": 1, "--ro-bind": 2, "--bind": 2, "--symlink": 2, "--setenv": 2 };
 let env = { ...process.env };
 let cwd = process.cwd();
+const binds = [];
 let at = 0;
 while (at < args.length && args[at].startsWith("--")) {
   const option = args[at];
   if (option === "--clearenv") env = {};
   if (option === "--setenv") env[args[at + 1]] = args[at + 2];
+  if (option === "--bind") binds.push([args[at + 1], args[at + 2]]);
   if (option === "--chdir") cwd = args[at + 1];
   at += 1 + (arity[option] ?? 0);
 }
+const inside = binds.findLast(([, dest]) => cwd === dest || cwd.startsWith(dest + "/"));
+if (inside !== undefined) cwd = inside[0] + cwd.slice(inside[1].length);
 const ran = spawnSync(args[at], args.slice(at + 1), { cwd, env, stdio: "inherit" });
 process.exit(ran.status ?? 1);
 `;
@@ -173,8 +180,8 @@ describe("the sandbox the repository's setup runs in", () => {
     HTTPS_PROXY: "http://worker-proxy:3128",
   });
 
-  const run = (script: string, signal: AbortSignal = new AbortController().signal) =>
-    liveSandbox(host())({ script, dir: checkout, roBinds: ["/opt/node"], path: "/usr/bin:/bin", proxy: "http://sandbox-proxy:3128", log, signal });
+  const run = (script: string, signal: AbortSignal = new AbortController().signal, at = SANDBOX_WORKTREE) =>
+    liveSandbox(host())({ script, dir: checkout, at, roBinds: ["/opt/node"], path: "/usr/bin:/bin", proxy: "http://sandbox-proxy:3128", log, signal });
 
   const argv = (): string[] => JSON.parse(fs.readFileSync(path.join(fakes, "argv.json"), "utf8")) as string[];
 
@@ -182,12 +189,11 @@ describe("the sandbox the repository's setup runs in", () => {
     const script = [
       `printf '%s\\n' "$((6 * 7))" 'a b; c | d' "$(echo nested)" > made.txt`,
       "echo `echo backticks` >> made.txt && echo '$NOT_EXPANDED' >> made.txt",
-      'pwd >> made.txt',
     ].join("\n");
 
     expect(await run(script)).toBe(0);
 
-    expect(fs.readFileSync(path.join(checkout, "made.txt"), "utf8")).toBe(`42\na b; c | d\nnested\nbackticks\n$NOT_EXPANDED\n${checkout}\n`);
+    expect(fs.readFileSync(path.join(checkout, "made.txt"), "utf8")).toBe("42\na b; c | d\nnested\nbackticks\n$NOT_EXPANDED\n");
     const words = argv();
     expect(words.filter((word) => word === script)).toHaveLength(1);
     expect(words[words.indexOf(script) - 1]).toBe("AGENT_SETUP");
@@ -220,19 +226,37 @@ describe("the sandbox the repository's setup runs in", () => {
     });
   });
 
-  it("binds the checkout read-write at its own path, its .git read-only inside it, and the toolchain read-only", async () => {
-    await run("true");
+  /** Where in `words` `flag` mounts `from`, and the path it mounts it at: -1 and undefined where it does not. */
+  const mountedAt = (words: readonly string[], flag: string, from: string): { at: number; to: string | undefined } => {
+    const at = words.findIndex((word, i) => word === flag && words[i + 1] === from);
+    return { at, to: at === -1 ? undefined : words[at + 2] };
+  };
+
+  it("shows setup the checkout at the agent's working path, its .git read-only inside it, and the toolchain read-only (#526)", async () => {
+    await run("echo made > here.txt");
 
     const words = argv();
-    const bind = words.findIndex((word, at) => word === "--bind" && words[at + 1] === checkout);
-    const git = words.findIndex((word, at) => word === "--ro-bind" && words[at + 1] === path.join(checkout, ".git"));
-    expect(bind).toBeGreaterThan(-1);
-    expect(words[bind + 2]).toBe(checkout);
-    expect(git).toBeGreaterThan(bind);
-    expect(words[git + 2]).toBe(path.join(checkout, ".git"));
+    const bind = mountedAt(words, "--bind", checkout);
+    const git = mountedAt(words, "--ro-bind", path.join(checkout, ".git"));
+    expect(bind.to).toBe(SANDBOX_WORKTREE);
+    expect(git.at).toBeGreaterThan(bind.at);
+    expect(git.to).toBe(`${SANDBOX_WORKTREE}/.git`);
     expect(words.join(" ")).toContain("--ro-bind /opt/node /opt/node");
-    expect(words.join(" ")).toContain(`--chdir ${checkout}`);
+    expect(words.join(" ")).toContain(`--chdir ${SANDBOX_WORKTREE}`);
     expect(words).toContain("--die-with-parent");
+    expect(fs.readFileSync(path.join(checkout, "here.txt"), "utf8")).toBe("made\n");
+  });
+
+  it("binds the checkout at its own path where it is given that path, its .git read-only inside it", async () => {
+    await run("true", new AbortController().signal, checkout);
+
+    const words = argv();
+    const bind = mountedAt(words, "--bind", checkout);
+    const git = mountedAt(words, "--ro-bind", path.join(checkout, ".git"));
+    expect(bind.to).toBe(checkout);
+    expect(git.at).toBeGreaterThan(bind.at);
+    expect(git.to).toBe(path.join(checkout, ".git"));
+    expect(words.join(" ")).toContain(`--chdir ${checkout}`);
   });
 
   it("answers the script's exit status, and appends its output to the log", async () => {

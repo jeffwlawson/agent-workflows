@@ -635,9 +635,11 @@ reusable's glue steps read, copied across as it is; a phase it did not start get
 written where the next command reads that phase's, as Actions would have it written there. Each subcommand's environment is built by one
 function from its declaration in the contract, and holds nothing else of the worker's but `PATH`,
 `HOME` and `LANG`, so a token reaches a subcommand only where its phase was handed it: the runner
-gets the `read` token, never the `write` or `push` one. Where a reusable checks the head out
-again in each of its jobs because the job before it left its checkout changed, as `update-branch`'s
-gate job leaves its checkout merged, the run function does too, one checkout per job. With `fix` served, the review's fix-round
+gets the `read` token, never the `write` or `push` one. A run function checks out what each of
+its reusable's jobs checks out, a checkout per job, whether or not the job before left its checkout
+changed (#530): `fix`'s publish job checks the head out again as `update-branch`'s does. It differs
+only where a command needs it, and that workflow's *Service orchestrator* block in
+`docs/platform-spec.md` says so, as implement-prd's publish checkout of `head` does. With `fix` served, the review's fix-round
 budget is the repository's `AGENT_MAX_FIX_ROUNDS`, read as on Actions (PRD #515): it was held at 0
 until something answered the `agent:fix` a review adds. A token's **kind** is what it may write: `read`
 writes nothing, `write` adds what a posting phase writes (the pull request, issues and statuses),

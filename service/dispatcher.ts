@@ -404,7 +404,7 @@ export const createDispatcher = (edges: DispatcherEdges) => {
 
   /**
    * **An issue's route**, as a pull request's, in the same order, and with
- * no head to check: an issue has none. Nor is its state checked: a closed
+   * no head to check: an issue has none. Nor is its state checked: a closed
    * issue goes to the gates carrying its state, and the one whose issue it is
    * says so on the issue and takes the label off, as on Actions. Nor is its
    * shape: a job of each kind the label starts is dispatched, in turn, and the

@@ -524,7 +524,9 @@ needs. What differs on the service:
   `agent:implement` ([deploying-the-service.md](./deploying-the-service.md#the-webhook));
 - it reads the repository's install and setup from the repository variable `AGENT_SETUP`, not a
   caller's `setup:` input, and supports no `node-version-file`
-  ([deploying-the-service.md](./deploying-the-service.md#the-repositorys-setup));
+  ([deploying-the-service.md](./deploying-the-service.md#the-repositorys-setup)). `doctor` warns
+  where a caller still installed passes `setup:` and `AGENT_SETUP` is unset or empty, or could not
+  be read, since the service's runs there start with nothing installed;
 - whether the service's App is installed on the repository: **`doctor` cannot check this.** The App
   is the service's, not the loop's, and nothing in the repository names it.
 

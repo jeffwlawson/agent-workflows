@@ -2839,6 +2839,8 @@ describe("doctor names the failures that otherwise look like something else", ()
     timeoutMinutes: Object.fromEntries(TIMEOUT_VARIABLES.map((variable) => [variable.name, null])),
     // Unset, which is the Actions orchestrator.
     orchestrator: null,
+    // Unset, which is no setup on the service.
+    agentSetup: null,
   });
 
   /** The installed caller file holding a job, repo-relative as `doctor` names it. */
@@ -4225,6 +4227,57 @@ describe("doctor names the failures that otherwise look like something else", ()
       expect(unread?.severity).toBe("warning");
     });
 
+    /**
+     * **The repository's setup** (#525). The service runs no caller's
+     * `setup:` input and reads `AGENT_SETUP` instead, so a caller passing one
+     * on a repository that has not set the variable gets runs with nothing
+     * installed.
+     */
+    describe("the repository's setup", () => {
+      const withSetup = async (value: string): Promise<string> => {
+        const root = await installed();
+        edit(root, "fix", (text) => text.replace(/^    secrets:$/m, `    with:\n      setup: ${value}\n    secrets:`));
+        return root;
+      };
+      const setupFindings = (findings: readonly Finding[]): readonly Finding[] =>
+        findings.filter((finding) => finding.check === "repository setup");
+
+      it("warns on a caller passing setup while AGENT_SETUP is unset or empty, naming the caller and its value", async () => {
+        const root = await withSetup("npm ci");
+        for (const agentSetup of [null, ""]) {
+          const found = setupFindings(rule(root, service({ agentSetup })));
+
+          expect(found.map((finding) => finding.severity), String(agentSetup)).toEqual(["warning"]);
+          expect(found[0]?.problem).toContain(`${callerFileOf(root, "fix")}'s \`fix\` job`);
+          expect(found[0]?.problem).toContain("`setup: npm ci`");
+          expect(found[0]?.problem).toContain("does not run a caller's `setup:` input");
+          expect(found[0]?.fix).toContain("`AGENT_SETUP`");
+          expect(found[0]?.fix).toContain("docs/deploying-the-service.md#the-repositorys-setup");
+        }
+      });
+
+      it("says nothing where AGENT_SETUP is set, no caller passes setup, or none is installed", async () => {
+        expect(setupFindings(rule(await withSetup("npm ci"), service({ agentSetup: "npm ci" })))).toEqual([]);
+        expect(setupFindings(rule(await withSetup("''"), service()))).toEqual([]);
+        expect(setupFindings(rule(await installed(), service()))).toEqual([]);
+        expect(setupFindings(rule(empty(), service()))).toEqual([]);
+      });
+
+      it("does not pass a variable it could not read", async () => {
+        const found = setupFindings(rule(await withSetup("npm ci"), service({ agentSetup: undefined })));
+
+        expect(found.map((finding) => finding.severity)).toEqual(["warning"]);
+        expect(found[0]?.problem).toMatch(/^Could not read the repository variable `AGENT_SETUP`/);
+        expect(found[0]?.problem).toContain("`setup: npm ci`");
+      });
+
+      it("changes nothing on the Actions orchestrator", async () => {
+        const root = await withSetup("npm ci");
+        expect(rule(root, healthy())).toEqual(rule(root, { ...healthy(), agentSetup: undefined }));
+        expect(setupFindings(rule(root, healthy()))).toEqual([]);
+      });
+    });
+
     it("errors on any other value, and checks the repository as an Actions one", async () => {
       for (const value of ["Service", "actions", ""]) {
         const findings = rule(await installed(), { ...healthy(), orchestrator: value });
@@ -4800,6 +4853,7 @@ describe("doctor names the failures that otherwise look like something else", ()
       maxFixRounds: undefined,
       timeoutMinutes: undefined,
       orchestrator: undefined,
+      agentSetup: undefined,
     });
 
     expect(code).toBe(0);
@@ -4826,6 +4880,7 @@ describe("doctor names the failures that otherwise look like something else", ()
       maxFixRounds: undefined,
       timeoutMinutes: undefined,
       orchestrator: undefined,
+      agentSetup: undefined,
     });
 
     expect(code).toBe(0);

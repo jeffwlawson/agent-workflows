@@ -316,8 +316,8 @@ that failed; a phase ended at its time limit. A run that ends before anything ca
 pull request, because no token to write with was granted, says why in the worker's log instead.
 
 Each run leaves a directory under `WORK_DIR/runs`, named for when it started and its job: the
-checkout (an update-branch job's `gate-checkout`, `checkout` and `publish-checkout`, and an
-implement job's `checkout` and `publish-checkout`, and an implement-prd job's `catch-up-checkout`,
+checkout (a fix job's `checkout` and `publish-checkout`, an update-branch job's `gate-checkout`,
+`checkout` and `publish-checkout`, an implement job's `checkout` and `publish-checkout`, and an implement-prd job's `catch-up-checkout`,
 `checkout` and `publish-checkout`, one per job of its reusable that checks out), each subcommand's output directory under `out/` and its log under `logs/`, and
 `summary.json`, the job, each phase's outcome, and each subcommand's environment, with every token
 redacted. The worker's own log says how each phase ended, redacted the same way. Nothing removes

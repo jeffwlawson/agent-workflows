@@ -164,9 +164,9 @@ export const FIX_GATE_MINUTES = 15;
 export const BUNDLE_MINUTES = 5;
 
 /**
- * `fix:publish`'s and `fix:conclude`'s time limit, in minutes, each: the
- * publish job's `timeout-minutes` in `fix.yml`. Each gets the whole of it, as
- * review's posting commands do.
+ * The publish phase's checkout and `fix:publish`'s time limit, in minutes,
+ * and `fix:conclude`'s, each: the publish job's `timeout-minutes` in
+ * `fix.yml`.
  */
 export const FIX_POSTING_MINUTES = 15;
 
@@ -881,11 +881,18 @@ type JobResult = "success" | "failure" | "cancelled" | "skipped";
  *    repository's setup, in the sandbox; a fresh `read` token, then the
  *    runner, with it as `GH_TOKEN`; and `fix:bundle`, with no token, however
  *    the steps before it ended.
- * 3. The publish job: a `push` token, then `fix:publish`, where the agent's
- *    job ran, told how it ended.
- * 4. `fix:conclude`, however the run ended, with the `push` token, told how
- *    each job and step ended: it rescues a stopped round's commits. Where
- *    `push` was refused, a `write` token, since it then rescues nothing.
+ * 3. The publish job: a `push` token, or where that is refused a `write`
+ *    token for conclude; where the gate claimed the round, a checkout of the
+ *    head of its own, with whichever was granted; then `fix:publish` in it,
+ *    where the agent's job ran and the mint and the checkout succeeded, told
+ *    how the agent's job ended.
+ * 4. `fix:conclude`, however the run ended, in publish's checkout, with the
+ *    `push` token, told how each job and step ended: it rescues a stopped
+ *    round's commits. Where `push` was refused, the `write` token, since it
+ *    then rescues nothing.
+ *
+ * **A checkout per job**, as on Actions, where the publish job checks the
+ * head out again: nothing the agent's job touched is where `push` is used.
  *
  * The runner never holds a token that writes: `push` is asked for only once
  * the agent's job is over, and handed to publish and conclude alone, as both
@@ -896,10 +903,12 @@ type JobResult = "success" | "failure" | "cancelled" | "skipped";
  * the agent's job's, `AGENT_TIMEOUT_MINUTES` (`fixTimeLimit`), and one still
  * running at it is ended and the round told to conclude as a timeout; the
  * bundle `BUNDLE_MINUTES`, so a stopped round still hands its commits over;
- * publish and conclude `FIX_POSTING_MINUTES` each.
+ * publish's checkout and publish share `FIX_POSTING_MINUTES`, and conclude
+ * has as long.
  */
 const runFix = async (job: FixJob, edges: JobEdges): Promise<readonly Phase[]> => {
   const { note, limit, outputDir, checkout, ask, run, runAgent, setup, notStarted, done } = startRun(job, edges);
+  const publishCheckout = path.join(edges.runDir, "publish-checkout");
   const rescueBranch = fixRescueBranch(job.pr);
 
   /** What every phase of this job is told: the pull request, and the loop's account, the App's login (spec §4.1). */
@@ -909,6 +918,9 @@ const runFix = async (job: FixJob, edges: JobEdges): Promise<readonly Phase[]> =
     BRANCH: job.branch,
     AGENT_LOOP_LOGINS: job.appLogin,
   };
+  /** The head the label's event named, as `BRANCH`, with the base, into `dir`, with `token`. */
+  const checkOut = (dir: string, token: string, signal: AbortSignal): Promise<void> =>
+    edges.git.checkout({ dir, repo: job.repo, branch: job.branch, sha: job.headSha, baseRef: job.baseRef, token, committer: job.appLogin, signal });
 
   // 1. The gate. It writes, its refusal and its label transitions, so its
   // token is `write`, as the gate job's own token has `pull-requests: write`.
@@ -961,16 +973,7 @@ const runFix = async (job: FixJob, edges: JobEdges): Promise<readonly Phase[]> =
       notStarted("fix:prepare", "The service's dispatcher granted no token to read the pull request with, so the fix did not start.");
     } else {
       try {
-        await edges.git.checkout({
-          dir: checkout,
-          repo: job.repo,
-          branch: job.branch,
-          sha: job.headSha,
-          baseRef: job.baseRef,
-          token: read,
-          committer: job.appLogin,
-          signal: agentLimit.signal,
-        });
+        await checkOut(checkout, read, agentLimit.signal);
         note("checkout", "success");
       } catch (error) {
         if (agentLimit.signal.aborted) {
@@ -1037,14 +1040,43 @@ const runFix = async (job: FixJob, edges: JobEdges): Promise<readonly Phase[]> =
   }
   const agentRan = agent.result !== "skipped";
 
-  // 3. The publish job's token, then publish, where the agent's job ran.
-  // There is nothing to download: the hand-over is on this disk.
+  // 3. The publish job's token, then, where the gate claimed the round, a
+  // checkout of the head of its own, which publish checks the bundle in and
+  // pushes from and conclude rescues from. Where `push` was refused, conclude
+  // is told the mint failed and is handed a `write` token instead, for its
+  // comment and labels: a second `push` would be refused for the reason the
+  // first was. The checkout is made with whichever was granted, so conclude
+  // still checks the bundle in it. There is nothing to download: the
+  // hand-over is on this disk.
   const push = await ask("push");
   const mintOutcome = push === undefined ? "failure" : "success";
+  const concluding = push ?? (await ask("write"));
+  const publishLimit = limit(FIX_POSTING_MINUTES);
+  let checkedOut = false;
+  let checkoutFailed: { readonly timedOut: boolean; readonly why: string } | undefined;
+  if (refused === "false" && concluding !== undefined) {
+    try {
+      await checkOut(publishCheckout, concluding, publishLimit.signal);
+      note("checkout", "success");
+      checkedOut = true;
+    } catch (error) {
+      const timedOut = publishLimit.signal.aborted;
+      note("checkout", timedOut ? "timed out" : `failure: ${message(error)}`);
+      checkoutFailed = { timedOut, why: message(error) };
+    }
+  }
+  // Publish, where the agent's job ran and the mint and the checkout
+  // succeeded. A checkout that failed is publish's failure, with its reason,
+  // or its cancel where it ran out of time.
   let publishOutcome = "";
   const publishDir = outputDir("fix:publish");
-  if (push !== undefined && agentRan) {
-    const publishLimit = limit(FIX_POSTING_MINUTES);
+  if (push !== undefined && agentRan && checkoutFailed !== undefined) {
+    publishOutcome = checkoutFailed.timedOut ? "cancelled" : "failure";
+    if (!checkoutFailed.timedOut) {
+      notStarted("fix:publish", `The pull request's head could not be checked out to publish the fix: ${checkoutFailed.why}`);
+    }
+  }
+  if (push !== undefined && agentRan && checkedOut) {
     const published = await run(
       "fix:publish",
       {
@@ -1055,22 +1087,20 @@ const runFix = async (job: FixJob, edges: JobEdges): Promise<readonly Phase[]> =
         HEAD_SHA: job.headSha,
         RESCUE_BRANCH: rescueBranch,
         AGENT_RESULT: agent.result,
-        CHECKOUT: checkout,
+        CHECKOUT: publishCheckout,
         FIX_DIR: fixDir,
         BUNDLE_DIR: bundleDir,
       },
       edges.runDir,
       publishLimit.signal,
     );
-    publishLimit.clear();
     publishOutcome = published.timedOut ? "cancelled" : published.ok ? "success" : "failure";
   }
+  publishLimit.clear();
 
   // 4. Conclude, however the run ended, with the `push` token, since it
-  // rescues. Where that was refused it is told the mint failed and pushes
-  // nothing, so it asks for `write` instead, for its comment and labels: a
-  // second `push` would be refused for the reason the first was.
-  const concluding = push ?? (await ask("write"));
+  // rescues, or the `write` token where that was refused, when it rescues
+  // nothing.
   if (concluding === undefined) {
     // Nothing can say so on the pull request, so the worker's log says why
     // the run ended as well.
@@ -1088,7 +1118,7 @@ const runFix = async (job: FixJob, edges: JobEdges): Promise<readonly Phase[]> =
       LOOP_TOKEN_SOURCE: TOKEN_SOURCE,
       HEAD_SHA: job.headSha,
       RESCUE_BRANCH: rescueBranch,
-      CHECKOUT: checkout,
+      CHECKOUT: publishCheckout,
       REFUSED: refused,
       GATE_RESULT: gateResult,
       GATE_REASON: gateReason,
@@ -1310,8 +1340,10 @@ const runUpdateBranch = async (job: UpdateBranchJob, edges: JobEdges): Promise<r
   }
   const agentRan = agent.result !== "skipped";
 
-  // 3. The publish job: its token, then publish, in a checkout of its own.
-  // There is nothing to download: the hand-over is on this disk.
+  // 3. The publish job: its token, then publish, in a checkout of its own. A
+  // checkout that failed is publish's failure, with its reason, or its cancel
+  // where it ran out of time, where Actions runs publish in an empty
+  // workspace. There is nothing to download: the hand-over is on this disk.
   const push = await ask("push");
   const mintOutcome = push === undefined ? "failure" : "success";
   let publishOutcome = "";
@@ -1414,14 +1446,14 @@ const runUpdateBranch = async (job: UpdateBranchJob, edges: JobEdges): Promise<r
  *    asked for after it, and neither the agent's job, publish nor conclude
  *    runs. A PRD therefore gets silence, as it does on Actions.
  * 2. The agent's job, where the gate succeeded and claimed the run: a `read`
- *    token, the checkout of the commit the gate read the base at, as
- *    `BASE_REF`; `implement:prepare`, which creates the gate's `BRANCH` there,
+ *    token, the checkout of `BASE_REF` by name; `implement:prepare`, which
+ *    creates the gate's `BRANCH` there at the commit the gate read the base at,
  *    handed no token; the repository's setup, in the sandbox; a fresh `read`
  *    token, then the runner, with it as `GH_TOKEN`; and, where those
  *    succeeded, `implement:bundle`, with no token.
  * 3. The publish job, wherever the gate did not refuse, an undecided gate
  *    included: a `push` token, then, where the agent's job and the mint
- *    succeeded, a checkout of the base of its own and `implement:publish` in
+ *    succeeded, a checkout of the base, by name, of its own and `implement:publish` in
  *    it, which pushes, opens the pull request, links it on the issue and adds
  *    `agent:review`.
  * 4. `implement:conclude`, however the run ended, with the `push` token, or a
@@ -1440,6 +1472,13 @@ const runImplement = async (job: ImplementJob, edges: JobEdges): Promise<readonl
   const { note, limit, outputDir, checkout, ask, run, runAgent, setup, notStarted, done } = startRun(job, edges);
   const publishCheckout = path.join(edges.runDir, "publish-checkout");
   const runUrl = serviceRunUrl(job.appLogin);
+  /**
+   * The base branch by its name, as each of the reusable's jobs checks it
+   * out, into `dir`, with `token`: `implement:prepare` and
+   * `implement:publish` each find `BASE_SHA` in it themselves.
+   */
+  const checkOut = (dir: string, token: string, signal: AbortSignal): Promise<void> =>
+    edges.git.checkout({ dir, repo: job.repo, branch: job.baseRef, sha: job.baseRef, baseRef: job.baseRef, token, committer: job.appLogin, signal });
 
   /** What every phase of this job is told: the issue, its base, the run's link, and the loop's account, the App's login (spec §4.1). */
   const common = {
@@ -1500,16 +1539,7 @@ const runImplement = async (job: ImplementJob, edges: JobEdges): Promise<readonl
       notStarted("implement:prepare", "The service's dispatcher granted no token to read the repository with, so the issue was not built.");
     } else {
       try {
-        await edges.git.checkout({
-          dir: checkout,
-          repo: job.repo,
-          branch: job.baseRef,
-          sha: base,
-          baseRef: job.baseRef,
-          token: read,
-          committer: job.appLogin,
-          signal: agentLimit.signal,
-        });
+        await checkOut(checkout, read, agentLimit.signal);
         note("checkout", "success");
       } catch (error) {
         if (agentLimit.signal.aborted) {
@@ -1577,7 +1607,9 @@ const runImplement = async (job: ImplementJob, edges: JobEdges): Promise<readonl
 
   // 3. The publish job, which runs wherever the gate did not refuse: its
   // token, then, where the agent's job succeeded and the mint did, publish, in
-  // a checkout of the base of its own. There is nothing to download: the
+  // a checkout of the base of its own. A checkout that failed is publish's
+  // failure, with its reason, or its cancel where it ran out of time, where
+  // Actions skips publish. There is nothing to download: the
   // hand-over is on this disk.
   const push = await ask("push");
   const mintOutcome = push === undefined ? "failure" : "success";
@@ -1587,16 +1619,7 @@ const runImplement = async (job: ImplementJob, edges: JobEdges): Promise<readonl
     const publishLimit = limit(IMPLEMENT_POSTING_MINUTES);
     let checkedOut = false;
     try {
-      await edges.git.checkout({
-        dir: publishCheckout,
-        repo: job.repo,
-        branch: job.baseRef,
-        sha: base,
-        baseRef: job.baseRef,
-        token: push,
-        committer: job.appLogin,
-        signal: publishLimit.signal,
-      });
+      await checkOut(publishCheckout, push, publishLimit.signal);
       note("checkout", "success");
       checkedOut = true;
     } catch (error) {
@@ -1688,14 +1711,16 @@ const runImplement = async (job: ImplementJob, edges: JobEdges): Promise<readonl
  *    `implement-prd:catch-up` in it, which merges the base into the PRD
  *    branch and pushes, or parks the chain on a conflict.
  * 3. The agent's job, only where the catch-up succeeded and did not park: a
- *    `read` token, the checkout of the tip the catch-up left, as the PRD
- *    branch; `implement-prd:prepare`, with the same token, which fetches the
- *    rescue branch; the repository's setup, in the sandbox; a fresh `read`
+ *    `read` token, a checkout of the base branch, by name, of its own;
+ *    `implement-prd:prepare`, with the same token, which fetches the PRD
+ *    branch and checks it out at the tip the catch-up left, and the rescue
+ *    branch; the repository's setup, in the sandbox; a fresh `read`
  *    token, then the runner, with it as `GH_TOKEN`; and
  *    `implement-prd:bundle`, with no token, however those ended.
  * 4. The publish job, wherever the gate did not refuse, an undecided gate
  *    included: a `push` token, or where that is refused a `write` token, and
- *    where the gate claimed the run a checkout of its own. Then
+ *    where the gate claimed the run a checkout of the base branch, by name, of
+ *    its own. Then
  *    `implement-prd:publish`, only where the gate succeeded, the push token
  *    was granted and the checkout made, and the run is the finishing one,
  *    builds nothing, or its agent's job succeeded; and
@@ -1770,22 +1795,14 @@ const runImplementPrd = async (job: ImplementPrdJob, edges: JobEdges): Promise<r
   const sub = slice.number;
 
   /**
-   * A checkout into `dir`, with `token`: of `head`, the tip the catch-up left,
-   * as the PRD branch, where there is one, so the bundle built on it can be
-   * checked there; otherwise of the base branch by its name, as each of the
-   * reusable's jobs checks it out. The base is fetched beside it either way.
+   * The base branch by its name, as each of the reusable's jobs checks it
+   * out, into `dir`, with `token`. Each command that works on the PRD branch
+   * fetches it itself: `implement-prd:prepare` checks it out at the tip the
+   * catch-up left, and `implement-prd:publish` and `implement-prd:conclude`
+   * check the bundle against it.
    */
-  const checkOut = (dir: string, token: string, signal: AbortSignal, head: string): Promise<void> =>
-    edges.git.checkout({
-      dir,
-      repo: job.repo,
-      branch: head === "" ? job.baseRef : prdBranch,
-      sha: head === "" ? job.baseRef : head,
-      baseRef: job.baseRef,
-      token,
-      committer: job.appLogin,
-      signal,
-    });
+  const checkOut = (dir: string, token: string, signal: AbortSignal): Promise<void> =>
+    edges.git.checkout({ dir, repo: job.repo, branch: job.baseRef, sha: job.baseRef, baseRef: job.baseRef, token, committer: job.appLogin, signal });
 
   // 2. The catch-up job, where the gate succeeded, claimed the run and decided
   // to build. It pushes, the merge of the base, and parks on a conflict, so
@@ -1801,7 +1818,7 @@ const runImplementPrd = async (job: ImplementPrdJob, edges: JobEdges): Promise<r
       const catchUpLimit = limit(CATCH_UP_MINUTES);
       let checkedOut = false;
       try {
-        await checkOut(catchUpCheckout, pushing, catchUpLimit.signal, "");
+        await checkOut(catchUpCheckout, pushing, catchUpLimit.signal);
         note("checkout", "success");
         checkedOut = true;
       } catch (error) {
@@ -1863,7 +1880,7 @@ const runImplementPrd = async (job: ImplementPrdJob, edges: JobEdges): Promise<r
       notStarted("implement-prd:prepare", "The service's dispatcher granted no token to read the repository with, so nothing was built.");
     } else {
       try {
-        await checkOut(checkout, read, agentLimit.signal, head);
+        await checkOut(checkout, read, agentLimit.signal);
         note("checkout", "success");
       } catch (error) {
         if (agentLimit.signal.aborted) {
@@ -1872,7 +1889,7 @@ const runImplementPrd = async (job: ImplementPrdJob, edges: JobEdges): Promise<r
         } else {
           note("checkout", `failure: ${message(error)}`);
           agent.result = "failure";
-          notStarted("implement-prd:prepare", `\`${prdBranch}\` could not be checked out to build on, so nothing was built: ${message(error)}`);
+          notStarted("implement-prd:prepare", `\`${job.baseRef}\` could not be checked out to build on, so nothing was built: ${message(error)}`);
         }
       }
     }
@@ -1936,9 +1953,8 @@ const runImplementPrd = async (job: ImplementPrdJob, edges: JobEdges): Promise<r
   const agentRan = agent.result !== "skipped";
 
   // 4. The publish job, which runs wherever the gate did not refuse. Its
-  // token, then, where the gate claimed the run, a checkout of its own: of
-  // the tip the catch-up left, where it left one, which the bundle builds on
-  // and conclude's rescue checks it against. Where `push` was refused,
+  // token, then, where the gate claimed the run, a checkout of the base of
+  // its own. Where `push` was refused,
   // conclude is told the mint failed and is handed a `write` token instead,
   // for its comment and labels, and the checkout is made with that. There is
   // nothing to download: the hand-over is on this disk.
@@ -1950,7 +1966,7 @@ const runImplementPrd = async (job: ImplementPrdJob, edges: JobEdges): Promise<r
   let checkoutFailed: { readonly timedOut: boolean; readonly why: string } | undefined;
   if (refused === "false" && concluding !== undefined) {
     try {
-      await checkOut(publishCheckout, concluding, publishLimit.signal, head);
+      await checkOut(publishCheckout, concluding, publishLimit.signal);
       note("checkout", "success");
       checkedOut = true;
     } catch (error) {
@@ -1962,15 +1978,17 @@ const runImplementPrd = async (job: ImplementPrdJob, edges: JobEdges): Promise<r
   // "Publish the slice" runs where the gate succeeded and the run is the
   // finishing one, builds nothing, or its agent's job succeeded, and every
   // step before it in the publish job did, the mint and the checkout among
-  // them. A publish its own `if:` skips is `skipped`, which conclude reads
-  // for a parked chain.
+  // them. A checkout that failed is publish's failure, with its reason, or
+  // its cancel where it ran out of time, where Actions skips publish; a
+  // publish its own `if:` skips is `skipped`, which conclude reads for a
+  // parked chain.
   const publishes = gateResult === "success" && (finishing === "true" || build === "false" || agent.result === "success");
   let publishOutcome = "skipped";
   const publishDir = outputDir("implement-prd:publish");
   if (publishes && push !== undefined && checkoutFailed !== undefined) {
     publishOutcome = checkoutFailed.timedOut ? "cancelled" : "failure";
     if (!checkoutFailed.timedOut) {
-      notStarted("implement-prd:publish", `\`${head === "" ? job.baseRef : prdBranch}\` could not be checked out to publish with: ${checkoutFailed.why}`);
+      notStarted("implement-prd:publish", `\`${job.baseRef}\` could not be checked out to publish with: ${checkoutFailed.why}`);
     }
   }
   if (publishes && push !== undefined && checkedOut) {

@@ -788,7 +788,7 @@ const tokensIn = (env: Readonly<Record<string, string>>): readonly string[] =>
  * the publish job, and conclude, each command told what the reusable tells it.
  */
 describe("the worker's fix job, on a round that goes ahead", () => {
-  it("runs the gate, the checkout, prepare, the setup, the runner, bundle, publish and conclude, in that order", async () => {
+  it("runs the gate, the checkout, prepare, the setup, the runner, bundle, then publish in a checkout of its own and conclude, in that order", async () => {
     const s = setup(FIX_ORDINARY);
     await runJob({ ...FIX_JOB, variables: { ...FIX_JOB.variables, AGENT_SETUP: "npm ci" } }, s.edges);
 
@@ -803,6 +803,7 @@ describe("the worker's fix job, on a round that goes ahead", () => {
       "fix",
       "fix:bundle",
       "push token",
+      "checkout",
       "fix:publish",
       "fix:conclude",
     ]);
@@ -835,17 +836,23 @@ describe("the worker's fix job, on a round that goes ahead", () => {
     expect(runner).not.toHaveProperty("LOOP_TOKEN");
   });
 
-  it("checks out the head the label's event named, as the branch, with the base, committing as the App", async () => {
+  it("checks out the head the label's event named, as the branch, with the base, committing as the App, once for the agent and once for publish, each a directory of its own", async () => {
     const s = setup(FIX_ORDINARY);
     await runJob(FIX_JOB, s.edges);
 
     const checkout = path.join(s.runDir, "checkout");
+    const publishCheckout = path.join(s.runDir, "publish-checkout");
+    const head = { repo: "owner/repo", branch: "agent/issue-7-a-thing", sha: HEAD, baseRef: "main", committer: "loop-app[bot]" };
     expect(s.checkouts).toEqual([
-      { dir: checkout, repo: "owner/repo", branch: "agent/issue-7-a-thing", sha: HEAD, baseRef: "main", token: "read-token-2", committer: "loop-app[bot]" },
+      { ...head, dir: checkout, token: "read-token-2" },
+      { ...head, dir: publishCheckout, token: "push-token-4" },
     ]);
     expect(s.launched.find((launch) => launch.subcommand === "fix")?.cwd).toBe(checkout);
-    for (const subcommand of ["fix:prepare", "fix:bundle", "fix:publish", "fix:conclude"] as const) {
+    for (const subcommand of ["fix:prepare", "fix:bundle"] as const) {
       expect(s.env(subcommand)["CHECKOUT"], subcommand).toBe(checkout);
+    }
+    for (const subcommand of ["fix:publish", "fix:conclude"] as const) {
+      expect(s.env(subcommand)["CHECKOUT"], subcommand).toBe(publishCheckout);
     }
   });
 
@@ -931,7 +938,7 @@ describe("the worker's fix job, where the gate does not claim the round", () => 
     const s = setup({ ...FIX_ORDINARY, "fix:gate": { exit: 1, files: { "gate.json": { proceed: "true" }, "failure_reason.txt": "Couldn't add `agent:fix`." } } });
     await runJob(FIX_JOB, s.edges);
 
-    expect(s.events).not.toContain("fix");
+    expect(s.events).toEqual(["write token", "fix:gate", "push token", "checkout", "fix:conclude"]);
     expect(s.env("fix:conclude")).toMatchObject({
       REFUSED: "false",
       GATE_RESULT: "failure",
@@ -955,7 +962,7 @@ describe("the worker's fix job, where its agent's job fails", () => {
     const s = setup({ ...FIX_ORDINARY, fix: { exit: 1, files: { "failure_reason.txt": "The agent gave up." } } });
     await runJob(FIX_JOB, s.edges);
 
-    expect(s.events.slice(-4)).toEqual(["fix:bundle", "push token", "fix:publish", "fix:conclude"]);
+    expect(s.events.slice(-5)).toEqual(["fix:bundle", "push token", "checkout", "fix:publish", "fix:conclude"]);
     expect(s.env("fix:publish")["AGENT_RESULT"]).toBe("failure");
     expect(s.env("fix:conclude")).toMatchObject({ AGENT_RESULT: "failure", TIMED_OUT: "false" });
   });
@@ -999,8 +1006,40 @@ describe("the worker's fix job, where its agent's job fails", () => {
 
     expect(s.events).not.toContain("fix:publish");
     expect(s.asked).toEqual(["write", "read", "read", "push", "write"]);
+    expect(s.checkouts.at(-1)).toMatchObject({ dir: path.join(s.runDir, "publish-checkout"), token: "write-token-5" });
     expect(s.env("fix:conclude")).toMatchObject({ MINT_OUTCOME: "failure", GH_TOKEN: "write-token-5", LOOP_TOKEN: "write-token-5" });
     expect(s.env("fix:conclude")).not.toHaveProperty("PUBLISH_OUTCOME");
+  });
+
+  it("leaves publish's reason where conclude reads it where publish's checkout failed", async () => {
+    const s = setup(FIX_ORDINARY);
+    const checkout = s.edges.git.checkout;
+    s.edges.git.checkout = async (options) => {
+      if (options.dir.endsWith("publish-checkout")) throw new Error("fatal: the remote hung up");
+      return checkout(options);
+    };
+    await runJob(FIX_JOB, s.edges);
+
+    expect(s.events).not.toContain("fix:publish");
+    expect(s.env("fix:conclude")).toMatchObject({ AGENT_RESULT: "success", PUBLISH_OUTCOME: "failure" });
+    expect(fs.readFileSync(path.join(s.env("fix:conclude")["PUBLISH_DIR"]!, "failure_reason.txt"), "utf8")).toBe(
+      "The pull request's head could not be checked out to publish the fix: fatal: the remote hung up",
+    );
+  });
+
+  it("tells conclude publish was cancelled where publish's checkout ran past the publish job's time limit", async () => {
+    const s = setup(FIX_ORDINARY, { minuteMs: 5 });
+    const checkout = s.edges.git.checkout;
+    s.edges.git.checkout = async (options) => {
+      if (!options.dir.endsWith("publish-checkout")) return checkout(options);
+      await hang(options.signal, 0);
+      throw new Error("The operation was aborted");
+    };
+    const phases = await runJob(FIX_JOB, s.edges);
+
+    expect(s.events).not.toContain("fix:publish");
+    expect(phases).toContainEqual({ name: "checkout", outcome: "timed out" });
+    expect(s.env("fix:conclude")).toMatchObject({ AGENT_RESULT: "success", PUBLISH_OUTCOME: "cancelled" });
   });
 
   it("logs why the round ended where nothing can write its ending", async () => {
@@ -1029,12 +1068,21 @@ describe("the worker's fix job, where its agent's job runs past its time limit",
     ["prepare", { ...FIX_ORDINARY, "fix:prepare": { hangs: true } }, {}],
     ["the setup", FIX_ORDINARY, { setupRun: { hangs: true } }],
     ["the checkout", FIX_ORDINARY, { checkoutHangs: true }],
-  ])("ends %s, still bundles, publishes and concludes, and tells conclude it timed out", async (_name, canned, options) => {
+  ])("ends %s, still bundles, publishes and concludes, and tells conclude it timed out", async (_name, canned, { checkoutHangs, ...options }) => {
     const s = setup(canned, { minuteMs: MINUTE_MS, ...options });
+    if (checkoutHangs === true) {
+      // The agent's checkout alone: publish's is a job of its own, which checks the head out again.
+      const checkout = s.edges.git.checkout;
+      s.edges.git.checkout = async (given) => {
+        if (given.dir.endsWith("publish-checkout")) return checkout(given);
+        await hang(given.signal, 0);
+        throw new Error("The operation was aborted");
+      };
+    }
     const phases = await runJob({ ...FIX_JOB, variables: { ...FIX_JOB.variables, AGENT_SETUP: "npm ci" } }, s.edges);
 
     expect(phases.filter(({ outcome }) => outcome === "timed out")).toHaveLength(1);
-    expect(s.events.slice(-4)).toEqual(["fix:bundle", "push token", "fix:publish", "fix:conclude"]);
+    expect(s.events.slice(-5)).toEqual(["fix:bundle", "push token", "checkout", "fix:publish", "fix:conclude"]);
     expect(s.env("fix:publish")["AGENT_RESULT"]).toBe("cancelled");
     expect(s.env("fix:conclude")).toMatchObject({
       AGENT_RESULT: "cancelled",
@@ -1630,13 +1678,13 @@ describe("the worker's implement job, on a run that goes ahead", () => {
     expect(Object.values(runner).filter((value) => /write-token|push-token/.test(value))).toEqual([]);
   });
 
-  it("checks out the commit the gate read the base at, once for the agent and once for publish, each a directory of its own", async () => {
+  it("checks the base out by name, once for the agent and once for publish, each a directory of its own", async () => {
     const s = setup(IMPLEMENT_ORDINARY);
     await runJob(IMPLEMENT_JOB, s.edges);
 
     const checkout = path.join(s.runDir, "checkout");
     const publishCheckout = path.join(s.runDir, "publish-checkout");
-    const base = { repo: "owner/repo", branch: "main", sha: BASE, baseRef: "main", committer: "loop-app[bot]" };
+    const base = { repo: "owner/repo", branch: "main", sha: "main", baseRef: "main", committer: "loop-app[bot]" };
     expect(s.checkouts).toEqual([
       { ...base, dir: checkout, token: "read-token-2" },
       { ...base, dir: publishCheckout, token: "push-token-4" },
@@ -1970,7 +2018,7 @@ describe("the worker's implement-prd job, on a build", () => {
     expect(Object.values(runner).filter((value) => /write-token|push-token/.test(value))).toEqual([]);
   });
 
-  it("checks the base out by name for the catch-up, and the tip the catch-up left, as the PRD branch, for the agent and for publish, each a directory of its own", async () => {
+  it("checks the base out by name for the catch-up, the agent and publish, each a directory of its own", async () => {
     const s = setup(PRD_BUILD);
     await runJob(PRD_JOB, s.edges);
 
@@ -1979,8 +2027,8 @@ describe("the worker's implement-prd job, on a build", () => {
     const publishCheckout = path.join(s.runDir, "publish-checkout");
     expect(s.checkouts).toEqual([
       { ...at, dir: path.join(s.runDir, "catch-up-checkout"), branch: "main", sha: "main", token: "push-token-2" },
-      { ...at, dir: checkout, branch: PRD_BRANCH, sha: CAUGHT_UP, token: "read-token-3" },
-      { ...at, dir: publishCheckout, branch: PRD_BRANCH, sha: CAUGHT_UP, token: "push-token-5" },
+      { ...at, dir: checkout, branch: "main", sha: "main", token: "read-token-3" },
+      { ...at, dir: publishCheckout, branch: "main", sha: "main", token: "push-token-5" },
     ]);
     expect(s.env("implement-prd:catch-up")["CHECKOUT"]).toBe(path.join(s.runDir, "catch-up-checkout"));
     expect(s.launched.find((launch) => launch.subcommand === "implement-prd")?.cwd).toBe(checkout);
@@ -2291,7 +2339,7 @@ describe("the worker's implement-prd job, where it ends early", () => {
     expect(s.events).not.toContain("implement-prd:publish");
     expect(s.env("implement-prd:conclude")).toMatchObject({ PUBLISH_OUTCOME: "failure" });
     expect(fs.readFileSync(path.join(s.env("implement-prd:conclude")["PUBLISH_DIR"]!, "failure_reason.txt"), "utf8")).toBe(
-      `\`${PRD_BRANCH}\` could not be checked out to publish with: fatal: unable to access`,
+      "`main` could not be checked out to publish with: fatal: unable to access",
     );
   });
 

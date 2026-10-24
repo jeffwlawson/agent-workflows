@@ -9,6 +9,8 @@
  * argument, and the host directories it binds are the caller's.
  */
 import { existsSync } from "node:fs";
+import { fileURLToPath } from "node:url";
+import { insideProxy, RELAY_PORT } from "./proxy-relay.js";
 
 /** The sandbox's home, backed by a host directory of the caller's. */
 export const SANDBOX_HOME = "/home/agent";
@@ -25,8 +27,36 @@ const ETC = [
   "/etc/alternatives",
 ];
 
+/**
+ * Where the way out is bound inside a sandbox with a network of its own: the
+ * host end's socket, the inside end (`relay.mjs`) and the Node that runs it,
+ * which is the host's own, so the relay needs no `node` on the sandbox's
+ * `PATH`.
+ */
+const RELAY_DIR = "/run/proxy-relay";
+const RELAY_SOCKET = `${RELAY_DIR}/proxy.sock`;
+const RELAY_SCRIPT = `${RELAY_DIR}/relay.mjs`;
+const RELAY_NODE = `${RELAY_DIR}/node`;
+/** The inside end, beside this module in a checkout and in `dist/` alike. */
+const RELAY_SOURCE = fileURLToPath(new URL("./relay.mjs", import.meta.url));
+
+/** A sandbox's way out when its network is its own: a host end's socket, leading to `proxy`. */
+export interface Relay {
+  /** The host path of the socket the host end listens on (`startProxyRelay`). */
+  readonly socket: string;
+  /** The proxy the host end forwards to, as configured: its scheme and user-info carry inside. */
+  readonly proxy: string;
+}
+
+/**
+ * The sandbox's network: the host's, with `proxy` set as every proxy variable
+ * where it is given, or, with `relay`, one of its own, whose only way out is
+ * the relay's socket.
+ */
+type Network = { readonly proxy?: string; readonly relay?: never } | { readonly relay: Relay; readonly proxy?: never };
+
 /** What one sandbox sees, and where it starts. */
-export interface SandboxLayout {
+export type SandboxLayout = Network & {
   /** The host directory bound at `SANDBOX_HOME`. */
   readonly home: string;
   /** The host directory bound at `/tmp`. */
@@ -43,26 +73,30 @@ export interface SandboxLayout {
   readonly cwd: string;
   /** `PATH` inside the sandbox. */
   readonly path: string;
-  /** The proxy every request leaves through, set as every proxy variable. Absent is none. */
-  readonly proxy?: string;
   /** The rest of the sandbox's environment, set after its own. */
   readonly env: Readonly<Record<string, string>>;
-}
+};
 
 /**
  * `bwrap`'s arguments for `layout`, up to the command it runs, which follows
- * them. The sandbox shares the host's network and nothing else: its
- * environment is cleared and set from `layout` alone, it sees `/usr`, a few
- * named files under `/etc` and the directories `layout` binds, and it ends
- * with the process that started it.
+ * them. The sandbox shares nothing with the host but, without a relay, its
+ * network: its environment is cleared and set from `layout` alone, it sees
+ * `/usr`, a few named files under `/etc` and the directories `layout` binds,
+ * and it ends with the process that started it.
+ *
+ * With a relay its network is its own loopback and nothing else, the relay's
+ * socket is bound in, the proxy variables name the inside end, and the
+ * arguments end by starting the inside end, which runs the command after it.
+ * No `NO_PROXY` is set: nothing inside has anywhere else to go.
  */
 export const bwrapArgs = (layout: SandboxLayout): string[] => {
-  const { proxy } = layout;
+  const { relay } = layout;
+  const proxy = relay === undefined ? layout.proxy : insideProxy(relay.proxy);
   const proxyVars =
     proxy === undefined ? [] : ["HTTPS_PROXY", "HTTP_PROXY", "https_proxy", "http_proxy"].flatMap((name) => ["--setenv", name, proxy]);
   return [
     "--unshare-all",
-    "--share-net",
+    ...(relay === undefined ? ["--share-net"] : []),
     "--die-with-parent",
     "--new-session",
     "--cap-drop", "ALL",
@@ -83,6 +117,9 @@ export const bwrapArgs = (layout: SandboxLayout): string[] => {
     "--bind", layout.tmp, "/tmp",
     ...(layout.binds ?? []).flatMap((p) => ["--bind", p, p]),
     ...layout.roBinds.flatMap((p) => ["--ro-bind", p, p]),
+    ...(relay === undefined
+      ? []
+      : ["--bind", relay.socket, RELAY_SOCKET, "--ro-bind", RELAY_SOURCE, RELAY_SCRIPT, "--ro-bind", process.execPath, RELAY_NODE]),
     "--chdir", layout.cwd,
     "--setenv", "HOME", SANDBOX_HOME,
     "--setenv", "PATH", layout.path,
@@ -90,5 +127,6 @@ export const bwrapArgs = (layout: SandboxLayout): string[] => {
     "--setenv", "TMPDIR", "/tmp",
     ...proxyVars,
     ...Object.entries(layout.env).flatMap(([k, v]) => ["--setenv", k, v]),
+    ...(relay === undefined ? [] : [RELAY_NODE, RELAY_SCRIPT, RELAY_SOCKET, String(RELAY_PORT)]),
   ];
 };

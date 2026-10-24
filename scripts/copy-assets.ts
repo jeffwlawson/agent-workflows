@@ -36,7 +36,9 @@ import { fileURLToPath } from "node:url";
 const SKIPPED_DIRS = new Set(["dist", "node_modules", "output", "docs"]);
 
 /**
- * What counts as an asset: a prompt, or a reference caller.
+ * What counts as an asset: a prompt, a reference caller, or the `bwrap`
+ * sandbox's inside relay, `engine/relay.mjs`, which runs alone inside the
+ * sandbox and so is plain JavaScript `tsc` does not emit (#461).
  *
  * The `.yml` half is scoped to `examples/` rather than written as an extension
  * rule, and that is not tidiness. `.github/workflows/` is a sibling directory
@@ -46,7 +48,9 @@ const SKIPPED_DIRS = new Set(["dist", "node_modules", "output", "docs"]);
  * this walk the thing that publishes them.
  */
 const isAsset = (rel: string, name: string): boolean =>
-  name.endsWith(".md") || (rel.startsWith("examples/") && name.endsWith(".yml"));
+  name.endsWith(".md") ||
+  (rel.startsWith("examples/") && name.endsWith(".yml")) ||
+  (rel.startsWith("engine/") && name.endsWith(".mjs"));
 
 /**
  * Relative paths of every asset under `packageDir` that a runner may resolve.
@@ -66,7 +70,7 @@ const assetsUnder = (dir: string, prefix = ""): readonly string[] =>
     return prefix && isAsset(rel, entry.name) ? [rel] : [];
   });
 
-/** Copy every prompt into `outDir`, keeping the path a runner will look under. */
+/** Copy every asset into `outDir`, keeping the path a runner will look under. */
 export const copyAssets = (packageDir: string, outDir: string): readonly string[] => {
   const assets = assetsUnder(packageDir);
   for (const rel of assets) {

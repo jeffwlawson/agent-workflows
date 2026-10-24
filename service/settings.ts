@@ -77,7 +77,9 @@ export const DISPATCHER = {
  *   handed to the runner as they are, except that `AGENT_SANDBOX` is `bwrap`
  *   where unset: a worker runs agents on a box of its own, so running one
  *   unsandboxed is a choice made by name. The CLI's prefix goes on the front
- *   of `AGENT_SANDBOX_PATH` and into `AGENT_SANDBOX_RO_BINDS` besides.
+ *   of `AGENT_SANDBOX_PATH` and into `AGENT_SANDBOX_RO_BINDS` besides. With
+ *   `bwrap`, `AGENT_SANDBOX_PROXY` is required, and the worker refuses to
+ *   start without it (#461).
  * - `WORKER_PROXY`: the proxy the worker's own requests, the CLI's install
  *   and its token requests, leave through, and every subcommand it starts is
  *   told to use (#460). Empty is none: each connects directly. It does not

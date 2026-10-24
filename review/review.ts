@@ -96,6 +96,8 @@ import type {
 } from "./hand-over.js";
 
 const INPUTS = readInputs(RUNNERS["review"].inputs);
+/** Chosen at start, so a sandbox that cannot run the agent stops the run before any of its work. */
+const SANDBOX = agentSandbox(INPUTS);
 const LOOP_ACCOUNTS = readLoopAccounts(INPUTS.AGENT_LOOP_LOGINS);
 const { writeJson, writeText } = writers(RUNNERS["review"].outputs);
 
@@ -407,7 +409,7 @@ try {
   const result = await runWithExtraction({
     name: `review-pr-${PR_NUMBER}`,
     agent: claudeAgent("review", INPUTS),
-    ...agentSandbox(INPUTS),
+    ...SANDBOX,
     logging: { type: "stdout" },
     promptFile: path.join(import.meta.dirname, "prompt.md"),
     promptArgs: {

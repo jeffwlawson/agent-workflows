@@ -3,6 +3,7 @@ import { createServer, type IncomingMessage, type Server } from "node:http";
 import * as path from "node:path";
 import { hostEnvironment, type InputValues } from "../shared/env.js";
 import { VERSION } from "../shared/manifest.js";
+import { sandboxRefusal } from "../shared/sandbox.js";
 import { createDispatcher, parseOwners, type DoorRequest, type DoorResponse } from "./dispatcher.js";
 import { liveAppGitHub } from "./github-app.js";
 import type { Job } from "./job.js";
@@ -153,12 +154,17 @@ export const serveDispatcher = async (
  * own under `WORK_DIR/runs`, kept afterwards with each subcommand's output
  * directory and log and the run's summary. Each phase's outcome is logged as the job ends.
  * Where `WORKER_PROXY` names a proxy, everything the worker asks of the
- * network, and everything it starts, goes through it.
+ * network, and everything it starts, goes through it. A `bwrap` sandbox with
+ * no `AGENT_SANDBOX_PROXY` is refused before anything is installed (#461).
  */
 export const serveWorker = async (settings: InputValues<typeof WORKER>, stdout: (text: string) => void): Promise<void> => {
   const log = (line: string): void => stdout(`${new Date().toISOString()} ${line}\n`);
   const port = wholeNumber("JOBS_PORT", settings.JOBS_PORT);
   const host = hostEnvironment(proxyUrl("WORKER_PROXY", settings.WORKER_PROXY));
+  // Refused here as a runner would refuse it, but at start: `AGENT_SANDBOX` is
+  // `bwrap` where unset, and every job would otherwise fail the same way.
+  const refusal = sandboxRefusal(settings.AGENT_SANDBOX, settings.AGENT_SANDBOX_PROXY);
+  if (refusal !== undefined) throw new Error(refusal);
   routeThroughProxy(host);
   const prefix = path.join(settings.WORK_DIR, "claude-code", settings.CLAUDE_CODE_VERSION);
   log(`installing the agent's CLI, @anthropic-ai/claude-code@${settings.CLAUDE_CODE_VERSION}, into ${prefix}`);

@@ -1373,6 +1373,24 @@ describe("the build ships every prompt beside its runner", () => {
   });
 
   /**
+   * `bwrapArgs` binds the inside relay into the sandbox from beside its own
+   * module (#461), and it is plain JavaScript, which `tsc` would leave behind:
+   * a `bwrap` sandbox from the tarball would then fail every `exec`.
+   */
+  it("ships the bwrap sandbox's inside relay beside the module that binds it", () => {
+    const out = fs.mkdtempSync(path.join(os.tmpdir(), "agent-assets-"));
+    try {
+      copyAssets(PACKAGE_DIR, out);
+
+      expect(fs.readFileSync(path.join(out, "engine", "relay.mjs"), "utf8")).toBe(
+        fs.readFileSync(path.join(PACKAGE_DIR, "engine", "relay.mjs"), "utf8"),
+      );
+    } finally {
+      fs.rmSync(out, { recursive: true, force: true });
+    }
+  });
+
+  /**
    * The package's own README is documentation for whoever installs it, not an
    * asset a runner resolves — shipping it into `dist/` would put a second copy
    * beside `cli.js` for npm to serve from the tarball root anyway.

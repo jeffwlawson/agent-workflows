@@ -138,8 +138,8 @@ export const SETUP_SHELL = ["bash", "--noprofile", "--norc", "-eo", "pipefail", 
  * only as the sandbox's parent, never as its shell (#522): the agent's shape
  * (`engine/bwrap-args.ts`) but for its network, which is the host's, with the
  * proxy set as its proxy variables rather than its only way out (#461). The
- * checkout is bound read-write at its own path and its `.git` read-only inside
- * it, so a setup that runs the pull request's code cannot plant a hook or a
+ * checkout is bound read-write at the path the worker gives, where the agent
+ * will work (#526), and its `.git` read-only inside it, so a setup that runs the pull request's code cannot plant a hook or a
  * configuration that host-side git, holding a token later, would run. Its
  * home and `/tmp` are fresh and removed after. Its
  * environment is the sandbox's own and `AGENT_SETUP`, so no token, and nothing
@@ -147,7 +147,7 @@ export const SETUP_SHELL = ["bash", "--noprofile", "--norc", "-eo", "pipefail", 
  */
 export const liveSandbox =
   (host: HostEnvironment): Sandbox =>
-  async ({ script, dir, roBinds, path: sandboxPath, proxy, log, signal }) => {
+  async ({ script, dir, at, roBinds, path: sandboxPath, proxy, log, signal }) => {
     const state = await mkdtemp(path.join(tmpdir(), "agent-setup-"));
     try {
       const home = path.join(state, "home");
@@ -158,9 +158,9 @@ export const liveSandbox =
       const args = bwrapArgs({
         home,
         tmp,
-        binds: [dir],
-        roBinds: [...(fs.existsSync(git) ? [git] : []), ...roBinds],
-        cwd: dir,
+        binds: [{ host: dir, at }],
+        roBinds: [...(fs.existsSync(git) ? [{ host: git, at: path.join(at, ".git") }] : []), ...roBinds],
+        cwd: at,
         path: sandboxPath,
         ...(proxy === undefined ? {} : { proxy }),
         env: { AGENT_SETUP: script },

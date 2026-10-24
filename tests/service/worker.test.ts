@@ -2,6 +2,7 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { SANDBOX_WORKTREE } from "../../engine/bwrap-args.js";
 import { CI_WAIT_SECONDS } from "../../review/collect-checks.js";
 import {
   DEFAULT_FIX_MINUTES,
@@ -675,6 +676,7 @@ describe("the repository's setup, as a phase primitive", () => {
       {
         script: "npm ci",
         dir: path.join(s.runDir, "checkout"),
+        at: SANDBOX_WORKTREE,
         roBinds: ["/opt/node", "/work/claude-code"],
         path: "/work/claude-code/bin:/usr/bin",
         proxy: "http://proxy:3128",
@@ -684,6 +686,13 @@ describe("the repository's setup, as a phase primitive", () => {
     ]);
     const handed = JSON.stringify(s.sandboxed);
     for (const token of ["read-token-1", "push-token-2", AGENT.CLAUDE_CODE_OAUTH_TOKEN]) expect(handed).not.toContain(token);
+  });
+
+  it("shows setup the checkout at its own path where the agent works in the checkout itself, under AGENT_SANDBOX=none", async () => {
+    const s = setup();
+    await ranSetup({ ...s.edges, agent: { ...AGENT, AGENT_SANDBOX: "none" } }, "npm ci");
+
+    expect(s.sandboxed[0]?.at).toBe(path.join(s.runDir, "checkout"));
   });
 
   it("hands the sandbox no proxy where the worker's settings give it none", async () => {

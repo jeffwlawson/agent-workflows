@@ -367,7 +367,7 @@ runner, and the round's failure comment quotes the end of its output.
 It runs **in the bwrap sandbox, never on the worker's host**, whatever `AGENT_SANDBOX` says of the
 agent's, since the host holds what can ask for tokens and setup runs the pull request's code. So
 `bwrap` is needed on the worker's host even with `AGENT_SANDBOX=none`. The sandbox is the agent's
-shape: the checkout bound read-write at its own path, its `.git` read-only, so nothing setup runs can
+shape: the checkout bound read-write at the path the agent will work at (below), its `.git` read-only, so nothing setup runs can
 plant a hook or a configuration that host-side git would later run; `AGENT_SANDBOX_RO_BINDS` and
 `AGENT_SANDBOX_PATH` for the toolchain; a fresh home and `/tmp`, removed after; no token in its
 environment; and its traffic through `AGENT_SANDBOX_PROXY`, which must therefore **let the package
@@ -379,12 +379,14 @@ at the first failing command, under the job's time limit, and ended with everyth
 that limit. A setup that exits non-zero fails its phase with the exit status and the end of its
 output, kept in full in the run's `logs/setup.log`.
 
-What it leaves in the checkout reaches the agent under either `AGENT_SANDBOX`. With `none` the
-agent works in the checkout itself. With `bwrap` it works in a copy at `/home/agent/workspace`,
-cloned from the checkout's history, and everything the checkout holds outside git, ignored or not,
-is copied in beside it, and excluded there, so none of it comes back as the agent's work. So what setup builds **must not depend on the checkout's absolute path**:
-`node_modules` moves as it is, and a Python virtual environment, whose scripts name its path, does
-not.
+What it leaves in the checkout reaches the agent under either `AGENT_SANDBOX`, and setup sees the
+checkout at the path the agent will work at, so a path setup records still holds for the agent. With
+`none` the agent works in the checkout itself, and setup sees the checkout at its own path. With
+`bwrap` the agent works in a copy at `/home/agent/workspace`, cloned from the checkout's history,
+and everything the checkout holds outside git, ignored or not, is copied in beside it, and excluded
+there, so none of it comes back as the agent's work; setup sees the checkout at
+`/home/agent/workspace` too (#526). So a Python virtual environment, whose scripts name its path,
+works for the agent as `node_modules` does.
 
 **`node-version-file` is not supported.** The sandbox runs the agent box's own Node, the one
 `AGENT_SANDBOX_RO_BINDS` and `AGENT_SANDBOX_PATH` give it. A repository that needs another

@@ -158,8 +158,10 @@ const LOOP_ACCOUNTS = {
  * - `AGENT_SANDBOX_RO_BINDS`: host directories, `:`-separated, that `bwrap`
  *   binds read-only at the same path, for the toolchain. Empty is none.
  * - `AGENT_SANDBOX_PATH`: `PATH` inside `bwrap`.
- * - `AGENT_SANDBOX_PROXY`: the proxy every `bwrap` request leaves through.
- *   Empty is none.
+ * - `AGENT_SANDBOX_PROXY`: the proxy every `bwrap` request leaves through,
+ *   and the only way out of its network (#461). Optional here, since `none`
+ *   needs none, but required with `bwrap`: `agentSandbox` refuses it empty,
+ *   through `shared/sandbox.ts`.
  *
  * The last three mean nothing under `none`, where the agent has the runner's
  * own environment and filesystem.

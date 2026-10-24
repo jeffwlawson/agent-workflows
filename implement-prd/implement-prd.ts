@@ -16,6 +16,8 @@ import { staleFailure, staleReason } from "../shared/stale.js";
 import { rescueRef, resumeFromRescue, resumeSection } from "../shared/rescue.js";
 
 const INPUTS = readInputs(RUNNERS["implement-prd"].inputs);
+/** Chosen at start, so a sandbox that cannot run the agent stops the run before any of its work. */
+const SANDBOX = agentSandbox(INPUTS);
 const LOOP_ACCOUNTS = readLoopAccounts(INPUTS.AGENT_LOOP_LOGINS);
 const { writeJson } = writers(RUNNERS["implement-prd"].outputs);
 
@@ -106,7 +108,7 @@ try {
   const result = await sandcastle.run({
     name: `implement-prd-#${ISSUE_NUMBER}-sub-#${SUB_NUMBER}`,
     agent: claudeAgent("implement-prd", INPUTS),
-    ...agentSandbox(INPUTS),
+    ...SANDBOX,
     logging: { type: "stdout" },
     promptFile: path.join(import.meta.dirname, "prompt.md"),
     promptArgs: {

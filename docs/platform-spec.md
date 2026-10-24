@@ -155,7 +155,7 @@ orchestrator that sets none of them gets `none`. Each is a row in each runner's 
 | `AGENT_SANDBOX` | optional | `none` | Accepts `none` or `bwrap`: the sandbox the agent runs in (§3). Unset or empty is `none`, and any other value fails the run, naming it. |
 | `AGENT_SANDBOX_RO_BINDS` | optional | `""` | Host directories, `:`-separated, that `bwrap` binds read-only at the same path: the toolchain, `claude` and `node`. Empty is none. |
 | `AGENT_SANDBOX_PATH` | optional | `/usr/local/bin:/usr/bin:/bin` | `PATH` inside `bwrap`. |
-| `AGENT_SANDBOX_PROXY` | optional | `""` | The proxy every `bwrap` request leaves through, set as every proxy variable. Empty is none. |
+| `AGENT_SANDBOX_PROXY` | optional | `""` | An `http:` or `https:` URL with a host: the proxy every `bwrap` request leaves through, and the sandbox's only way out (§3). **Required when `AGENT_SANDBOX` is `bwrap`**: empty, or not such a URL, fails the run before the agent starts, naming it. Means nothing under `none`. |
 
 The last three mean nothing under `none`, where the agent has the runner's own environment and
 filesystem.
@@ -270,11 +270,23 @@ agent runs in the runner's own process environment and filesystem, and the orche
 of the whole run is all there is. `bwrap` runs the agent in bubblewrap on the host, with no access to
 the host's home, credentials or other runs:
 
-- every command the agent runs gets a fresh namespace, with the network shared, every capability
-  dropped and the environment cleared but for what the runner hands the agent;
+- every command the agent runs gets a fresh namespace, every capability dropped and the
+  environment cleared but for what the runner hands the agent;
+- the network is the sandbox's own: no interface but its loopback, no DNS, and `AGENT_SANDBOX_PROXY`
+  the only way out. For the life of the sandbox, a process on the host listens on a Unix socket
+  private to the run and copies every connection to the proxy's host and port, taking no
+  destination from the sandbox; the socket is bound in, and before each command a relay inside
+  listens on the sandbox's loopback and forwards to it. A direct connection to any address, the
+  host's own included, fails. The relay is untrusted, and nothing depends on it: killed or replaced,
+  it still reaches nothing but the proxy, whose allowlist is the policy;
 - `/usr` and the directories `AGENT_SANDBOX_RO_BINDS` names are read-only, and the run gets a
   writable home and temporary directory of its own;
-- `AGENT_SANDBOX_PROXY` is set as every proxy variable;
+- the proxy variables, `HTTPS_PROXY`, `HTTP_PROXY` and their lower-case forms, name the relay's
+  loopback address, with `AGENT_SANDBOX_PROXY`'s scheme and any user-info, and no `NO_PROXY` is set;
+- **`bwrap` requires a proxy.** Without one the agent could reach nothing, the model's API
+  included, and would fail later on a connection error that names nothing, while the host's shared
+  network in its place would fail open. So `bwrap` with `AGENT_SANDBOX_PROXY` empty, or not an
+  `http:` or `https:` URL with a host, fails the run before the agent starts, naming it;
 - the agent works in a copy of the checkout: its history, cloned in, and what the checkout holds
   outside git, ignored or not, such as the install the repository's setup left there, copied in
   beside it, so the agent sees what it would see in the checkout itself; each path carried in is
@@ -299,7 +311,10 @@ repository.
 > 0.12.0, the version this package pins, resumes a session only for bind-mount providers; its
 > `docker` and `podman` are isolated, so they resume none. So `bwrap` carries the session between
 > the two passes itself: it keeps the agent's sessions when a pass ends and seeds the next pass's
-> sandbox with them.
+> sandbox with them. It sets `AGENT_SANDBOX_PROXY` too, since `bwrap` requires it, and its worker
+> refuses to start with `bwrap` and no proxy rather than fail every job the same way. The
+> repository's setup runs in a `bwrap` sandbox of the same shape but for its network, which is the
+> host's, with `AGENT_SANDBOX_PROXY` set as its proxy variables.
 
 ## 4. The record
 
@@ -565,7 +580,7 @@ from the commit the orchestrator read the default branch at, where it read one (
 | `AGENT_SANDBOX` | optional | `none` | Accepts `none` or `bwrap`: the agent's sandbox (§2.2, §3). Any other value fails the run, naming it. |
 | `AGENT_SANDBOX_RO_BINDS` | optional | `""` | Read-only binds for `bwrap` (§2.2). |
 | `AGENT_SANDBOX_PATH` | optional | `/usr/local/bin:/usr/bin:/bin` | `PATH` inside `bwrap` (§2.2). |
-| `AGENT_SANDBOX_PROXY` | optional | `""` | The proxy for `bwrap` (§2.2). |
+| `AGENT_SANDBOX_PROXY` | optional | `""` | The proxy for `bwrap`, required with it (§2.2). |
 | `AGENT_LOOP_LOGINS` | optional | `""` | The loop's accounts, a comma-separated list, recognised beside `github-actions[bot]` (§4.1). Empty is that one alone. This is trust. |
 | `ISSUE_NUMBER` | required | | The issue to build. |
 | `ISSUE_TITLE` | required | | Its title. |
@@ -1025,7 +1040,7 @@ earlier run of this PRD left commits on `RESCUE_BRANCH`, that branch fetched to
 | `AGENT_SANDBOX` | optional | `none` | Accepts `none` or `bwrap`: the agent's sandbox (§2.2, §3). Any other value fails the run, naming it. |
 | `AGENT_SANDBOX_RO_BINDS` | optional | `""` | Read-only binds for `bwrap` (§2.2). |
 | `AGENT_SANDBOX_PATH` | optional | `/usr/local/bin:/usr/bin:/bin` | `PATH` inside `bwrap` (§2.2). |
-| `AGENT_SANDBOX_PROXY` | optional | `""` | The proxy for `bwrap` (§2.2). |
+| `AGENT_SANDBOX_PROXY` | optional | `""` | The proxy for `bwrap`, required with it (§2.2). |
 | `AGENT_LOOP_LOGINS` | optional | `""` | The loop's accounts, a comma-separated list, recognised beside `github-actions[bot]` (§4.1). Empty is that one alone. This is trust. |
 | `ISSUE_NUMBER` | required | | The PRD parent. |
 | `ISSUE_TITLE` | required | | Its title. |
@@ -1749,7 +1764,7 @@ so the diff matches GitHub's.
 | `AGENT_SANDBOX` | optional | `none` | Accepts `none` or `bwrap`: the agent's sandbox (§2.2, §3). Any other value fails the run, naming it. |
 | `AGENT_SANDBOX_RO_BINDS` | optional | `""` | Read-only binds for `bwrap` (§2.2). |
 | `AGENT_SANDBOX_PATH` | optional | `/usr/local/bin:/usr/bin:/bin` | `PATH` inside `bwrap` (§2.2). |
-| `AGENT_SANDBOX_PROXY` | optional | `""` | The proxy for `bwrap` (§2.2). |
+| `AGENT_SANDBOX_PROXY` | optional | `""` | The proxy for `bwrap`, required with it (§2.2). |
 | `AGENT_LOOP_LOGINS` | optional | `""` | The loop's accounts, a comma-separated list, recognised beside `github-actions[bot]` (§4.1). Empty is that one alone. This is trust. |
 | `PR_NUMBER` | required | | The pull request. |
 | `BRANCH` | required | | Its head branch. |
@@ -2419,7 +2434,7 @@ diffing, which the orchestrator prepares, and `RESCUE_BRANCH` fetched to
 | `AGENT_SANDBOX` | optional | `none` | Accepts `none` or `bwrap`: the agent's sandbox (§2.2, §3). Any other value fails the run, naming it. |
 | `AGENT_SANDBOX_RO_BINDS` | optional | `""` | Read-only binds for `bwrap` (§2.2). |
 | `AGENT_SANDBOX_PATH` | optional | `/usr/local/bin:/usr/bin:/bin` | `PATH` inside `bwrap` (§2.2). |
-| `AGENT_SANDBOX_PROXY` | optional | `""` | The proxy for `bwrap` (§2.2). |
+| `AGENT_SANDBOX_PROXY` | optional | `""` | The proxy for `bwrap`, required with it (§2.2). |
 | `AGENT_LOOP_LOGINS` | optional | `""` | The loop's accounts, a comma-separated list, recognised beside `github-actions[bot]` (§4.1). Empty is that one alone. This is trust. |
 | `PR_NUMBER` | required | | The pull request. |
 | `BRANCH` | required | | Its head branch. |
@@ -2880,7 +2895,7 @@ leaves the checkout so, and refuses where it cannot. A merge that does not confl
 | `AGENT_SANDBOX` | optional | `none` | Accepts `none` or `bwrap`: the agent's sandbox (§2.2, §3). Any other value fails the run, naming it. |
 | `AGENT_SANDBOX_RO_BINDS` | optional | `""` | Read-only binds for `bwrap` (§2.2). |
 | `AGENT_SANDBOX_PATH` | optional | `/usr/local/bin:/usr/bin:/bin` | `PATH` inside `bwrap` (§2.2). |
-| `AGENT_SANDBOX_PROXY` | optional | `""` | The proxy for `bwrap` (§2.2). |
+| `AGENT_SANDBOX_PROXY` | optional | `""` | The proxy for `bwrap`, required with it (§2.2). |
 | `PR_NUMBER` | required | | The pull request. |
 | `BRANCH` | required | | Its head branch. |
 | `BASE_REF` | required | | The branch being merged in. |

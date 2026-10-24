@@ -1,4 +1,7 @@
-import { describe, expect, it } from "vitest";
+import * as fs from "node:fs";
+import * as os from "node:os";
+import * as path from "node:path";
+import { afterEach, beforeEach, describe, expect, it, vi, type MockInstance } from "vitest";
 import { CARRY_HOOKS } from "../engine/bwrap.js";
 import { agentSandbox, type SandboxInputs } from "../shared/agent.js";
 import { SANDBOX } from "../shared/contract.js";
@@ -23,8 +26,53 @@ describe("agentSandbox: the provider a runner's inputs select", () => {
   });
 
   it("selects bwrap, with the hooks that carry the checkout's untracked files into its worktree", () => {
-    const selected = agentSandbox({ ...unset, AGENT_SANDBOX: "bwrap" });
+    const selected = agentSandbox({ ...unset, AGENT_SANDBOX: "bwrap", AGENT_SANDBOX_PROXY: "http://127.0.0.1:3128" });
     expect(selected.sandbox.name).toBe("bwrap");
     expect(selected).toHaveProperty("hooks", CARRY_HOOKS);
+  });
+
+  /**
+   * `bwrap`'s network is its own, the proxy its only way out (#461), so with
+   * none the agent would reach nothing: the run ends before the agent starts,
+   * through `fail()`, so `failure_reason.txt` names the input.
+   */
+  describe("refusing bwrap without a proxy it can reach", () => {
+    class Exited extends Error {}
+    let scratch: string;
+    let exit: MockInstance<typeof process.exit>;
+    let logged: MockInstance<typeof console.error>;
+
+    beforeEach(() => {
+      scratch = fs.mkdtempSync(path.join(os.tmpdir(), "agent-sandbox-"));
+      vi.stubEnv("OUTPUT_DIR", scratch);
+      exit = vi.spyOn(process, "exit").mockImplementation((() => {
+        throw new Exited();
+      }) as never);
+      logged = vi.spyOn(console, "error").mockImplementation(() => {});
+    });
+    afterEach(() => {
+      exit.mockRestore();
+      logged.mockRestore();
+      vi.unstubAllEnvs();
+      fs.rmSync(scratch, { recursive: true, force: true });
+    });
+
+    const reason = (): string => fs.readFileSync(path.join(scratch, "failure_reason.txt"), "utf8");
+
+    it("ends the run on an empty AGENT_SANDBOX_PROXY, naming it", () => {
+      expect(() => agentSandbox({ ...unset, AGENT_SANDBOX: "bwrap" })).toThrow(Exited);
+      expect(exit).toHaveBeenCalledWith(1);
+      expect(reason()).toContain("`AGENT_SANDBOX_PROXY`");
+    });
+
+    it.each(["127.0.0.1:3128", "socks5://127.0.0.1:1080"])("ends the run on an AGENT_SANDBOX_PROXY of %s, naming it", (proxy) => {
+      expect(() => agentSandbox({ ...unset, AGENT_SANDBOX: "bwrap", AGENT_SANDBOX_PROXY: proxy })).toThrow(Exited);
+      expect(reason()).toBe(`\`AGENT_SANDBOX_PROXY\` is \`${proxy}\`, which is not an \`http:\` or \`https:\` URL with a host.`);
+    });
+
+    it("asks no proxy of none", () => {
+      expect(agentSandbox(unset).sandbox.name).toBe("no-sandbox");
+      expect(exit).not.toHaveBeenCalled();
+    });
   });
 });

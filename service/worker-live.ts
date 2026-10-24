@@ -136,10 +136,12 @@ export const SETUP_SHELL = ["bash", "--noprofile", "--norc", "-eo", "pipefail", 
 /**
  * The repository's setup in a bwrap sandbox of its own, on the worker's host
  * only as the sandbox's parent, never as its shell (#522): the agent's shape
- * (`engine/bwrap-args.ts`), with the checkout bound read-write at its own path
- * and its `.git` read-only inside it, so a setup that runs the pull request's
- * code cannot plant a hook or a configuration that host-side git, holding a
- * token later, would run. Its home and `/tmp` are fresh and removed after. Its
+ * (`engine/bwrap-args.ts`) but for its network, which is the host's, with the
+ * proxy set as its proxy variables rather than its only way out (#461). The
+ * checkout is bound read-write at its own path and its `.git` read-only inside
+ * it, so a setup that runs the pull request's code cannot plant a hook or a
+ * configuration that host-side git, holding a token later, would run. Its
+ * home and `/tmp` are fresh and removed after. Its
  * environment is the sandbox's own and `AGENT_SETUP`, so no token, and nothing
  * else of the worker's, reaches it. `bwrap` is found on `host`'s `PATH`.
  */

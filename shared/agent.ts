@@ -4,7 +4,8 @@ import type { OutputObjectDefinition, RunOptions, RunResult } from "@ai-hero/san
 import { noSandbox } from "@ai-hero/sandcastle/sandboxes/no-sandbox";
 import { bwrap, CARRY_HOOKS } from "../engine/bwrap.js";
 import type { SANDBOX } from "./contract.js";
-import type { InputValues } from "./env.js";
+import { fail, type InputValues } from "./env.js";
+import { sandboxRefusal } from "./sandbox.js";
 
 /**
  * The agent driver: everything that loads the agent SDK, and the one module
@@ -137,7 +138,10 @@ export type SandboxInputs = InputValues<typeof SANDBOX>;
  *   means the agent's environment and CI's are identical by construction: no
  *   image drift, no "works in the sandbox, fails in CI".
  * - `bwrap`: the agent runs in bubblewrap on the host (`engine/bwrap.ts`),
- *   with the toolchain, `PATH` and proxy its inputs name. The run starts in
+ *   with the toolchain, `PATH` and proxy its inputs name, and a network of
+ *   its own whose only way out is that proxy. Without a proxy it is refused,
+ *   through `fail()`, naming `AGENT_SANDBOX_PROXY` (`shared/sandbox.ts`), so
+ *   call it at start, before any of the runner's own work. The run starts in
  *   the checkout, which is where Sandcastle writes its patches. Its hooks
  *   carry what the checkout holds outside git, the setup's install, into the
  *   agent's copy of it, so the agent sees what it would with no sandbox.
@@ -147,6 +151,8 @@ export type SandboxInputs = InputValues<typeof SANDBOX>;
  * between them itself.
  */
 export const agentSandbox = (inputs: SandboxInputs) => {
+  const refusal = sandboxRefusal(inputs.AGENT_SANDBOX, inputs.AGENT_SANDBOX_PROXY);
+  if (refusal !== undefined) return fail(refusal);
   switch (inputs.AGENT_SANDBOX) {
     case "none":
       return { sandbox: noSandbox() };
@@ -155,7 +161,7 @@ export const agentSandbox = (inputs: SandboxInputs) => {
         sandbox: bwrap({
           roBinds: inputs.AGENT_SANDBOX_RO_BINDS.split(":").filter((dir) => dir !== ""),
           path: inputs.AGENT_SANDBOX_PATH,
-          ...(inputs.AGENT_SANDBOX_PROXY === "" ? {} : { proxy: inputs.AGENT_SANDBOX_PROXY }),
+          proxy: inputs.AGENT_SANDBOX_PROXY,
           repoDir: process.cwd(),
           homeDir: homedir(),
         }),

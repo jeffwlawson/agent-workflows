@@ -17,6 +17,8 @@ import { agentSandbox, claudeAgent, runWithExtraction } from "../shared/agent.js
 import { RUNNERS } from "../shared/contract.js";
 
 const INPUTS = readInputs(RUNNERS["update-branch"].inputs);
+/** Chosen at start, so a sandbox that cannot run the agent stops the run before any of its work. */
+const SANDBOX = agentSandbox(INPUTS);
 const { writeText } = writers(RUNNERS["update-branch"].outputs);
 
 const PR_NUMBER = INPUTS.PR_NUMBER;
@@ -59,7 +61,7 @@ try {
   const result = await runWithExtraction({
     name: `update-branch-pr-${PR_NUMBER}`,
     agent: claudeAgent("update-branch", INPUTS),
-    ...agentSandbox(INPUTS),
+    ...SANDBOX,
     logging: { type: "stdout" },
     promptFile: path.join(import.meta.dirname, "prompt.md"),
     promptArgs: {

@@ -32,9 +32,14 @@ Whatever the machine, the service needs:
 - **A webhook endpoint GitHub can reach**: the dispatcher's webhook door, published through a
   reverse proxy or a tunnel. Nothing else of either process is published.
 - **A proxy** the agent's traffic leaves through (`AGENT_SANDBOX_PROXY`), allowing what a review
-  needs (GitHub, the model's API, the package registries) and nothing else. bubblewrap shares the
-  host's network with the sandbox, so the proxy, and a firewall around the worker's host, are
-  where its egress is controlled.
+  needs (GitHub, the model's API, the package registries) and nothing else. Required with
+  `AGENT_SANDBOX=bwrap`, the default: the worker refuses to start without one. **The sandbox
+  enforces it itself** (spec §3): the agent's network is its own loopback and nothing else, and its
+  one way out is a socket the worker's process holds, which forwards to the proxy alone. A direct
+  connection from the agent to any address, the worker's host included, fails whatever the host's
+  firewall allows, so the proxy's allowlist is the agent's egress policy. A firewall around the
+  worker's host is defence in depth for the agent, and still the control for the repository's
+  setup, whose sandbox shares the host's network with the proxy set as its variables (below).
   Where the host's firewall lets the worker out only through a proxy, the worker's own traffic
   needs it too: its install of the agent's CLI, its token requests, and every step it runs, which
   `WORKER_PROXY` sends through it.
@@ -222,7 +227,8 @@ The runner never holds a token that writes. It needs:
   dispatcher**: a job from a dispatcher of another release is refused, `409`, and the dispatcher
   logs that the worker answered it;
 - `bwrap` (bubblewrap), unless `AGENT_SANDBOX` says `none`, and a proxy for the agent's traffic
-  (`AGENT_SANDBOX_PROXY`);
+  (`AGENT_SANDBOX_PROXY`), the sandbox's only way out, without which a `bwrap` worker refuses to
+  start;
 - its **job door** reachable from the dispatcher, and from nothing else;
 - the dispatcher's token door reachable from it.
 
@@ -366,7 +372,10 @@ shape: the checkout bound read-write at its own path, its `.git` read-only, so n
 plant a hook or a configuration that host-side git would later run; `AGENT_SANDBOX_RO_BINDS` and
 `AGENT_SANDBOX_PATH` for the toolchain; a fresh home and `/tmp`, removed after; no token in its
 environment; and its traffic through `AGENT_SANDBOX_PROXY`, which must therefore **let the package
-registry through** for setup's install. It is run as Actions runs a `run:` step, by `bash` stopping
+registry through** for setup's install. Unlike the agent's, setup's sandbox **shares the host's
+network**: the proxy is set as its proxy variables, and a tool that ignores them connects wherever
+the host lets the worker's user connect. So for setup, a firewall around the worker's host is still
+what limits its egress. It is run as Actions runs a `run:` step, by `bash` stopping
 at the first failing command, under the job's time limit, and ended with everything it started at
 that limit. A setup that exits non-zero fails its phase with the exit status and the end of its
 output, kept in full in the run's `logs/setup.log`.
@@ -400,7 +409,7 @@ Read from the environment. A missing required one stops the worker at start, nam
 | `AGENT_SANDBOX` | optional | `bwrap` | the sandbox the agent runs in, `bwrap` or `none` (spec §3); `none` runs the agent with the worker's own filesystem |
 | `AGENT_SANDBOX_RO_BINDS` | optional | `""` | host directories, `:`-separated, bound read-only into the sandbox for the toolchain; the CLI's prefix is added |
 | `AGENT_SANDBOX_PATH` | optional | `/usr/local/bin:/usr/bin:/bin` | `PATH` inside the sandbox; the CLI's directory is put first |
-| `AGENT_SANDBOX_PROXY` | optional | `""` | the proxy every request from the sandbox leaves through |
+| `AGENT_SANDBOX_PROXY` | optional | `""` | an `http:` or `https:` URL with a host: the proxy every request from the sandbox leaves through, and the agent's only way out (spec §3). **Required when `AGENT_SANDBOX` is `bwrap`**, the default: the worker refuses to start with it empty or not such a URL. Inside, the proxy variables name a relay on the sandbox's loopback, keeping this URL's scheme and user-info |
 
 The job door also answers `GET /health` with `200`.
 
@@ -450,7 +459,12 @@ Inside it:
   dispatcher's token door, `192.168.250.1`, which the worker reaches through it. Node tunnels a
   plain `http:` request through `CONNECT` too, so `ConnectPort 8791` sits beside `ConnectPort 443`;
 - an nft rule (`meta skuid`) letting the worker's user open connections on loopback alone,
-  that is to tinyproxy, so nothing on the box leaves except through the proxy, the worker included;
+  that is to tinyproxy, so nothing on the box leaves except through the proxy, the worker included.
+  For the agent it is now defence in depth: the sandbox has a network of its own, which reaches
+  tinyproxy only through the worker's socket, and loopback in there is the sandbox's own, so the
+  box's services on `lo`, the job door among them, are out of the agent's reach whatever this rule
+  says. What it still limits on its own is the worker's own traffic and the repository's setup,
+  whose sandbox shares the box's network;
 - the package installed once, as root, into `/opt/agent-workflows` (`npm install --prefix`), so
   the worker never reaches the registry itself and the box holds no registry token: an upgrade is
   the same install at a new version, then a restart;
@@ -482,9 +496,12 @@ Tailscale do not reorder, matching traffic from `virbr-agent`: established conne
 to `192.168.250.1:53`, DHCP, and the dispatcher's token door at `192.168.250.1:8791` are allowed;
 everything to `0/8`, `10/8`, `100.64/10`, `127/8`, `169.254/16`, `172.16/12`, `192.168/16`, `224/4`
 and `240/4` is dropped, and all of the bridge's IPv6. Only then does the script start the VM, so
-the VM's own Autostart stays off. The token door is reachable from inside the agent box, the
-sandbox included, which is why it mints only for a request signed with `WORKER_SECRET`, a file the
-sandbox cannot see.
+the VM's own Autostart stays off. This firewall is a control in its own right, not made redundant
+by the sandbox's network: it is what holds the whole VM, not only the agent, off the LAN and the
+NAS, and what holds tinyproxy itself to the token door among `agentnet`'s addresses. The token door
+is reachable from inside the agent box, the sandbox included through tinyproxy, which is why it
+mints only for a request signed with `WORKER_SECRET`, a file the sandbox cannot see; that signature,
+too, stays a control of its own.
 
 **The dispatcher** lives in `/mnt/user/appdata/agent-dispatcher/`: the App's key, `app.pem`, its
 settings, `service.env`, and the package, installed once into `pkg/` by a throwaway container

@@ -27,6 +27,8 @@ import { rescueRef, resumeFromRescue, resumeSection } from "../shared/rescue.js"
 import type { SliceRanges } from "../shared/slice-ranges.js";
 
 const INPUTS = readInputs(RUNNERS["fix"].inputs);
+/** Chosen at start, so a sandbox that cannot run the agent stops the run before any of its work. */
+const SANDBOX = agentSandbox(INPUTS);
 const LOOP_ACCOUNTS = readLoopAccounts(INPUTS.AGENT_LOOP_LOGINS);
 const { writeJson, writeText } = writers(RUNNERS["fix"].outputs);
 
@@ -124,7 +126,7 @@ try {
   const result = await runWithExtraction({
     name: `fix-${PR_NUMBER}`,
     agent: claudeAgent("fix", INPUTS),
-    ...agentSandbox(INPUTS),
+    ...SANDBOX,
     logging: { type: "stdout" },
     promptFile: path.join(import.meta.dirname, "prompt.md"),
     promptArgs: {

@@ -199,9 +199,9 @@ start of each phase. For review: `read` for the gate, the checkout, the budget a
 fresh `read` for the runner, so the token's hour starts as the agent does, and `write` for
 `review:publish` and `review:conclude`. For fix: `write` for `fix:gate`, which posts its refusal and
 probes the label; `read` for the checkout and `fix:prepare`, and a fresh `read` for the runner;
-none for `fix:bundle`; and `push` for `fix:publish` and `fix:conclude`, the only phases that push. Where the `push`
-token is refused, nothing is published, and `fix:conclude` asks for `write` instead, to post the
-round's ending without a rescue. For update-branch: `write` for `update-branch:gate` and
+none for `fix:bundle`; and `push` for the publish checkout, `fix:publish` and `fix:conclude`, the only phases that push. Where the `push`
+token is refused, nothing is published, and `fix:conclude` asks for `write` instead, which the publish
+checkout is made with, to post the round's ending without a rescue. For update-branch: `write` for `update-branch:gate` and
 `update-branch:merge`, which runs in the worker's checkout, outside the sandbox, and pushes nothing;
 `read` for the agent's checkout and `update-branch:prepare`, and a fresh `read` for the runner; none
 for `update-branch:bundle`; and `push` for `update-branch:publish` and `update-branch:conclude`, with
@@ -254,8 +254,8 @@ for it has finished, and the `agent-fix-round` status the budget counts stops th
 
 A fix job runs `fix:gate`, then the agent's job: the checkout of the head the label's event named,
 with the base, `fix:prepare`, which fetches a stopped round's rescue branch into it, the setup, the
-runner, and `fix:bundle`, however those ended. Then `fix:publish` pushes the agent's commits and
-asks for the re-review, and `fix:conclude` ends the round, pushing a stopped round's commits to
+runner, and `fix:bundle`, however those ended. Then, in a checkout of the head of its own, as
+`fix.yml`'s publish job makes, `fix:publish` pushes the agent's commits and asks for the re-review, and `fix:conclude` ends the round, pushing a stopped round's commits to
 `agent/rescue/fix-<n>` for the next round to resume from. The checkout keeps no token in its
 configuration: each command is handed its token in its environment. It does keep a committer, the
 App's login and its no-reply address, as `fix.yml`'s checkout sets one, since the agent commits.
@@ -286,8 +286,9 @@ a regular issue to implement. Where it claimed the run, the gate decided one of 
 build** runs the catch-up first, in a checkout of the default branch of its own:
 `implement-prd:catch-up` merges the default branch into the PRD branch where it has moved and
 pushes it, or parks the chain on a conflict, naming `agent:update-branch`. Unless it parked or
-failed, the agent's job checks out the tip the catch-up left, as the PRD branch, and runs
-`implement-prd:prepare`, which fetches a stopped run's rescue branch, the setup, the runner, and
+failed, the agent's job checks out the default branch, as `implement-prd.yml`'s does, and runs
+`implement-prd:prepare`, which checks the PRD branch out at the tip the catch-up left and fetches a
+stopped run's rescue branch, the setup, the runner, and
 `implement-prd:bundle`, however those ended. Where they succeeded, `implement-prd:publish` marks the
 slice's commits, pushes them to the PRD branch, opens or reuses the PRD PR and adds `agent:review`
 as the App. **A run that only opens a missing PRD PR**, and **the finishing run**, which hands the
@@ -321,8 +322,8 @@ that failed; a phase ended at its time limit. A run that ends before anything ca
 pull request, because no token to write with was granted, says why in the worker's log instead.
 
 Each run leaves a directory under `WORK_DIR/runs`, named for when it started and its job: the
-checkout (an update-branch job's `gate-checkout`, `checkout` and `publish-checkout`, and an
-implement job's `checkout` and `publish-checkout`, and an implement-prd job's `catch-up-checkout`,
+checkout (a fix job's `checkout` and `publish-checkout`, an update-branch job's `gate-checkout`,
+`checkout` and `publish-checkout`, an implement job's `checkout` and `publish-checkout`, and an implement-prd job's `catch-up-checkout`,
 `checkout` and `publish-checkout`, one per job of its reusable that checks out), each subcommand's output directory under `out/` and its log under `logs/`, and
 `summary.json`, the job, each phase's outcome, and each subcommand's environment, with every token
 redacted. The worker's own log says how each phase ended, redacted the same way. Nothing removes
@@ -335,7 +336,7 @@ get 10 minutes each, and `review:advance` 5. A phase still running at its limit 
 and the pull request's ending says the review timed out. A fix job's gate gets 15 minutes; the
 checkout, `fix:prepare`, the setup and the runner share `AGENT_TIMEOUT_MINUTES` (30 where unset);
 `fix:bundle` gets 5 minutes of its own, so a round stopped at its limit still hands its commits
-over; and `fix:publish` and `fix:conclude` 15 each. A round ended at its limit still bundles,
+over; publish's checkout and `fix:publish` share 15 minutes, and `fix:conclude` gets 15. A round ended at its limit still bundles,
 publishes and concludes: its ending says it timed out, and any commits it made are rescued. An
 update-branch job's gate, checkout and merge share 15 minutes; the agent's job's steps share
 `AGENT_TIMEOUT_MINUTES` (30 where unset), and a refresh ended at it pushes nothing and says it timed

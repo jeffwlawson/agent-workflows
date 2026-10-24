@@ -641,17 +641,18 @@ it does not trust is left out of what the agent is shown. Nothing else of the re
 >   token is asked for and `implement:conclude` runs, told `REFUSED` empty; the checkout and the
 >   fetch, which need `refused == 'false'`, are skipped. So is the agent's job where the gate
 >   claimed the run and then failed, as at the probe, since the job needs the gate's success.
-> - **The agent's job**, where the gate succeeded and claimed the run: a `read` token; the checkout
->   of `base`, the commit the gate read the base branch at, as that branch, with no token stored in
->   it; `implement:prepare`, handed no token, which creates `BRANCH` there; the repository's setup,
+> - **The agent's job**, where the gate succeeded and claimed the run: a `read` token; a checkout
+>   of the base branch, by name, as `implement.yml`'s, with no token stored in it;
+>   `implement:prepare`, handed no token, which creates `BRANCH` there at `base`, the commit the
+>   gate read the base branch at; the repository's setup,
 >   `AGENT_SETUP`, in the bwrap sandbox with no token, where Actions runs the caller's `setup:`; a
 >   fresh `read` token, then the runner in the sandbox its settings name, with it as `GH_TOKEN`;
 >   and `implement:bundle`, handed no token, only where every step before it succeeded, as the
 >   bundle step's `if: success()`.
 > - **The publish job**, wherever the gate did not refuse: a `push` token, since the job holds
 >   `contents: write`. `implement:publish` runs only where the agent's job succeeded and the steps
->   before it in the publish job did, the mint and the checkout among them: in a checkout of `base`
->   of its own, pointed at `implement:bundle`'s directory, it pushes `BRANCH`, opens the draft pull
+>   before it in the publish job did, the mint and the checkout among them: in a checkout of the
+>   base branch, by name, of its own, pointed at `implement:bundle`'s directory, it pushes `BRANCH`, opens the draft pull
 >   request as the App, links it on the issue and adds `agent:review` with the App's token. Then
 >   `implement:conclude`, however the run ended, pointed at publish's, prepare's, the runner's and
 >   bundle's directories. Both hold `push`, publish as both `GH_TOKEN` and `LOOP_TOKEN`, with
@@ -679,6 +680,13 @@ it does not trust is left out of what the agent is shown. Nothing else of the re
 >   `read` token not granted, or a checkout that failed, as `implement:prepare`'s
 >   `failure_reason.txt`; a setup that failed, or a runner's token not granted, as the runner's; a
 >   publish checkout that failed as `implement:publish`'s.
+> - **A checkout that fails before publish is publish's failure, on purpose.** Where publish's
+>   checkout fails, `implement:publish` does not run, and conclude is told `PUBLISH_OUTCOME` `failure`
+>   with the checkout's reason as publish's, or `cancelled` where the checkout ran out of the
+>   publish job's time. On Actions the failed checkout fails its step, and the publish step's
+>   status check then reports `skipped`, which tells conclude, and so the person reading its
+>   comment, nothing of why. The service names the cause instead, as every run function with a
+>   checkout before publish does.
 > - **The download is a success** wherever the agent's job ran: the hand-over is on the worker's
 >   disk.
 > - **The mint is the `push` token's.** One not granted is `MINT_OUTCOME` `failure`, and nothing is
@@ -1108,17 +1116,21 @@ earlier run of this PRD left commits on `RESCUE_BRANCH`, that branch fetched to
 >   `update-branch:merge`, which pushes nothing. Its `catch-up.json` is the job's `parked`, `merged`
 >   and `head`.
 > - **The agent's job**, only where the catch-up succeeded and did not park the chain: a `read`
->   token; the checkout of `head`, the tip the catch-up left, as the PRD branch, with the base;
->   `implement-prd:prepare` with the same token, which fetches the PRD branch and the rescue branch;
+>   token; a checkout of the base branch, by name, of its own, as `implement-prd.yml`'s;
+>   `implement-prd:prepare` with the same token, which fetches the PRD branch, checks it out at
+>   `head`, the tip the catch-up left, and fetches the rescue branch;
 >   the repository's setup, `AGENT_SETUP`, in the bwrap sandbox with no token; a fresh `read`
 >   token, then the runner in the sandbox its settings name, with it as `GH_TOKEN`; and
 >   `implement-prd:bundle`, handed no token, however those ended, as the bundle step's `always()`,
 >   so a stopped build hands its commits over for the rescue.
 > - **The publish job**, wherever the gate did not refuse: a `push` token, or, where that is
 >   refused, a `write` token for conclude; and, where the gate claimed the run, a checkout of its
->   own, with whichever was granted: of `head` as the PRD branch where the catch-up left one, which
->   the bundle builds on and the rescue checks it against, and of the base branch by name
->   otherwise. `implement-prd:publish` runs where the gate succeeded and the run is the finishing
+>   own, with whichever was granted: of `head` as the PRD branch where the catch-up left one, and
+>   of the base branch by name otherwise. This differs from `implement-prd.yml`'s checkout of the
+>   base on purpose: the bundle is the PRD branch less `head`, and `implement-prd:publish` and
+>   `implement-prd:conclude`'s rescue each check it before they fetch anything, which fails in a
+>   checkout without `head`. Actions' `fetch-depth: 0` fetches every branch, the PRD branch among
+>   them; the service's checkout fetches the base alone. `implement-prd:publish` runs where the gate succeeded and the run is the finishing
 >   one, builds nothing (`open-only`), or its agent's job succeeded, and the mint and the checkout
 >   did, pointed at the gate's and bundle's directories. Then `implement-prd:conclude`, however the
 >   run ended, pointed at every producer's directory. Publish holds `push` as both `GH_TOKEN` and
@@ -1155,10 +1167,18 @@ earlier run of this PRD left commits on `RESCUE_BRANCH`, that branch fetched to
 >   `implement-prd:prepare`'s; a setup that failed, or a runner's token not granted, as the
 >   runner's; a publish checkout that failed, where publish would have run, as
 >   `implement-prd:publish`'s.
+> - **A checkout that fails before publish is publish's failure, on purpose.** Where publish's
+>   checkout fails, `implement-prd:publish` does not run, and conclude is told `PUBLISH_OUTCOME` `failure`
+>   with the checkout's reason as publish's, or `cancelled` where the checkout ran out of the
+>   publish job's time. On Actions the failed checkout fails its step, and the publish step's
+>   status check then reports `skipped`, which tells conclude, and so the person reading its
+>   comment, nothing of why. The service names the cause instead, as every run function with a
+>   checkout before publish does. This holds only where publish would have run: **a publish its `if:` skips is
+>   `skipped`**, as on Actions, whatever the checkout did, since conclude reads `skipped` as an
+>   ending of its own, a parked chain, which a checkout's failure is not.
 > - **The download is as the reusable's**: `success` where the agent's job ran, since the hand-over
 >   is on the worker's disk; `failure` on a build whose agent's job did not run, as an artifact
->   never uploaded is; and `skipped` on a run that builds nothing. **A publish its `if:` skips is
->   `skipped`**, which conclude reads for a parked chain.
+>   never uploaded is; and `skipped` on a run that builds nothing.
 > - **The catch-up's directory** holds a reason only where the catch-up failed, as its hand-over is
 >   uploaded only then.
 >
@@ -2484,9 +2504,12 @@ diffing, which the orchestrator prepares, and `RESCUE_BRANCH` fetched to
 > same token, which fetches `RESCUE_BRANCH` into the checkout; the repository's setup, `AGENT_SETUP`,
 > in the bwrap sandbox with no token; and the runner, in the sandbox its settings name, with a fresh
 > `read` token as `GH_TOKEN`. Then `fix:bundle`, however those ended, handed no token. It asks for
-> a `push` token, runs `fix:publish` where the agent's job ran, pointed at the runner's and
-> `fix:bundle`'s directories, and then `fix:conclude`, however the run ended, pointed at publish's,
-> prepare's, the runner's and bundle's. `fix:publish` and `fix:conclude` alone hold `push`, each as
+> a `push` token, or, where that is refused, a `write` token for conclude, and where the gate
+> claimed the run checks the event's head out again, in a directory of its own, with whichever
+> was granted, as `fix.yml`'s publish job does. In it, `fix:publish` runs where the agent's job ran
+> and the mint and the checkout succeeded, pointed at the runner's and `fix:bundle`'s directories,
+> and then `fix:conclude`, however the run ended, pointed at publish's, prepare's, the runner's and
+> bundle's. `fix:publish` and `fix:conclude` alone hold `push`, each as
 > both `GH_TOKEN` and `LOOP_TOKEN`, with `LOOP_TOKEN_SOURCE` `app`; the runner never holds a token
 > that writes. Where `fix.yml` passes something the service does not have, it passes the nearest
 > equivalent:
@@ -2499,14 +2522,21 @@ diffing, which the orchestrator prepares, and `RESCUE_BRANCH` fetched to
 >   where unset or not a positive integer), and one still running at it is ended with every
 >   process it started: the agent's job is then `cancelled`, with `TIMED_OUT` `true` and
 >   `TIMEOUT_MINUTES` the limit, as the *Measure* step says it. `fix:bundle` gets 5 minutes of its
->   own, so a round stopped at its limit still hands its commits over, and `fix:publish` and
->   `fix:conclude` the publish job's 15 each. The dispatcher's deadline for the job is the agent's
+>   own, so a round stopped at its limit still hands its commits over. Publish's checkout and
+>   `fix:publish` share the publish job's 15 minutes, and `fix:conclude` gets 15 of its own. The dispatcher's deadline for the job is the agent's
 >   limit plus its margin.
 > - **A phase not started leaves its reason** where `fix:conclude` reads the next one: a `read`
 >   token not granted, or a checkout that failed, as `fix:prepare`'s `failure_reason.txt`; a setup
 >   that failed, with its exit status and the end of its output, or a runner's token not granted,
->   as the runner's. On Actions a failed setup leaves no reason, and the comment says none was
->   given.
+>   as the runner's; a publish checkout that failed as `fix:publish`'s. On Actions a failed setup
+>   leaves no reason, and the comment says none was given.
+> - **A checkout that fails before publish is publish's failure, on purpose.** Where publish's
+>   checkout fails, `fix:publish` does not run, and conclude is told `PUBLISH_OUTCOME` `failure`
+>   with the checkout's reason as publish's, or `cancelled` where the checkout ran out of the
+>   publish job's time. On Actions the publish step's `if:` opens with `always()`, so it runs after
+>   the failed checkout, in an empty workspace, and fails there with a reason that names the
+>   missing repository rather than the checkout. The service names the cause instead, as every
+>   run function with a checkout before publish does.
 > - **No run link, and the download is a success** wherever the agent's job ran: the hand-over is
 >   on the worker's disk. `GITHUB_SERVER_URL`, `GITHUB_REPOSITORY` and `GITHUB_RUN_ID` are unset.
 > - **The mint is the `push` token's.** One not granted is `MINT_OUTCOME` `failure`, and nothing is
@@ -2514,10 +2544,9 @@ diffing, which the orchestrator prepares, and `RESCUE_BRANCH` fetched to
 >   as the first was, and uses it for its comment and labels alone: told the mint failed, it
 >   rescues nothing, so it needs no push. Where none is granted to conclude
 >   either, nothing can write to the pull request, and the worker's log says why the run ended.
-> - **One checkout.** `fix:publish` and `fix:conclude` work in the agent's checkout, where the
->   publish job checks the head out again: under the bwrap sandbox the agent works on a copy and
->   the setup sees `.git` read-only, so nothing of the pull request's can have planted a hook or a
->   configuration there, and the commands push with `--no-verify`.
+> - **A checkout per job**, as on Actions: `fix:publish` and `fix:conclude` work in a checkout of
+>   the head of their own, never the agent's, so nothing the agent's job touched is where the
+>   `push` token is used, and a rescue is checked against the head the round started from.
 >
 > Not run: `node-version-file`, since the sandbox runs the worker box's own Node, and the session
 > transcript's upload.
@@ -2941,6 +2970,13 @@ neither.
 >   `read` token not granted, or a checkout that failed, as `update-branch:prepare`'s
 >   `failure_reason.txt`; a setup that failed, or a runner's token not granted, as the runner's; a
 >   publish checkout that failed as `update-branch:publish`'s.
+> - **A checkout that fails before publish is publish's failure, on purpose.** Where publish's
+>   checkout fails, `update-branch:publish` does not run, and conclude is told `PUBLISH_OUTCOME` `failure`
+>   with the checkout's reason as publish's, or `cancelled` where the checkout ran out of the
+>   publish job's time. On Actions the publish step's `if:` opens with `always()`, so it runs after
+>   the failed checkout, in an empty workspace, and fails there with a reason that names the
+>   missing repository rather than the checkout. The service names the cause instead, as every
+>   run function with a checkout before publish does.
 > - **No run link, and the download is a success** wherever the agent's job ran: the hand-over is
 >   on the worker's disk. `GITHUB_SERVER_URL`, `GITHUB_REPOSITORY` and `GITHUB_RUN_ID` are unset.
 > - **The mint is the `push` token's.** One not granted is `MINT_OUTCOME` `failure`, and nothing is

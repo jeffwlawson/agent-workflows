@@ -316,8 +316,10 @@ repository.
 > the two passes itself: it keeps the agent's sessions when a pass ends and seeds the next pass's
 > sandbox with them. It sets `AGENT_SANDBOX_PROXY` too, since `bwrap` requires it, and its worker
 > refuses to start with `bwrap` and no proxy rather than fail every job the same way. The
-> repository's setup runs in a `bwrap` sandbox of the same shape but for its network, which is the
-> host's, with `AGENT_SANDBOX_PROXY` set as its proxy variables.
+> repository's setup runs in a `bwrap` sandbox of the same shape, its network included: wherever
+> `AGENT_SANDBOX_PROXY` is set, under `AGENT_SANDBOX=none` too, setup's network is its own
+> loopback with the proxy its only way out, as the agent's is (#537). Under `none` with no proxy,
+> setup's network is the host's, with no proxy variables, as the agent's is there.
 
 ## 4. The record
 

@@ -7,6 +7,7 @@ import * as path from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import { bwrapArgs } from "../engine/bwrap-args.js";
+import { startProxyRelay, type ProxyRelay } from "../engine/proxy-relay.js";
 import type { HostEnvironment } from "../shared/env.js";
 import { sign, SIGNATURE_HEADER, type TokenKind } from "./job.js";
 import type { Git, Launcher, Sandbox, TokenSource } from "./worker.js";
@@ -136,24 +137,36 @@ export const SETUP_SHELL = ["bash", "--noprofile", "--norc", "-eo", "pipefail", 
 /**
  * The repository's setup in a bwrap sandbox of its own, on the worker's host
  * only as the sandbox's parent, never as its shell (#522): the agent's shape
- * (`engine/bwrap-args.ts`) but for its network, which is the host's, with the
- * proxy set as its proxy variables rather than its only way out (#461). The
- * checkout is bound read-write at the path the worker gives, where the agent
- * will work (#526), and its `.git` read-only inside it, so a setup that runs the pull request's code cannot plant a hook or a
- * configuration that host-side git, holding a token later, would run. Its
- * home and `/tmp` are fresh and removed after. Its
- * environment is the sandbox's own and `AGENT_SETUP`, so no token, and nothing
- * else of the worker's, reaches it. `bwrap` is found on `host`'s `PATH`.
+ * (`engine/bwrap-args.ts`), its network included. Where it is handed a proxy
+ * its network is its own loopback, with the proxy its only way out (#537): for
+ * the life of the setup a host end (`startProxyRelay`) listens on a socket
+ * private to it and forwards to the proxy, and the sandbox starts the inside
+ * end, on the worker's own Node, before setup's shell. With no proxy, which
+ * only `AGENT_SANDBOX=none` allows, its network is the host's, with no proxy
+ * variables, as the agent's is there.
+ *
+ * The checkout is bound read-write at the path the worker gives, where the
+ * agent will work (#526), and its `.git` read-only inside it, so a setup that
+ * runs the pull request's code cannot plant a hook or a configuration that
+ * host-side git, holding a token later, would run. Its home and `/tmp` are
+ * fresh and removed after. Its environment is the sandbox's own and
+ * `AGENT_SETUP`, so no token, and nothing else of the worker's, reaches it. `bwrap` is found on `host`'s `PATH`.
+ *
+ * The host end is closed once `bwrap` has ended, however it ends, so no
+ * sandbox is ever left using a socket that has gone, and before the state is
+ * removed.
  */
 export const liveSandbox =
   (host: HostEnvironment): Sandbox =>
   async ({ script, dir, at, roBinds, path: sandboxPath, proxy, log, signal }) => {
     const state = await mkdtemp(path.join(tmpdir(), "agent-setup-"));
+    let relay: ProxyRelay | undefined;
     try {
       const home = path.join(state, "home");
       const tmp = path.join(state, "tmp");
       fs.mkdirSync(home);
       fs.mkdirSync(tmp);
+      if (proxy !== undefined) relay = await startProxyRelay(proxy);
       const git = path.join(dir, ".git");
       const args = bwrapArgs({
         home,
@@ -162,11 +175,12 @@ export const liveSandbox =
         roBinds: [...(fs.existsSync(git) ? [{ host: git, at: path.join(at, ".git") }] : []), ...roBinds],
         cwd: at,
         path: sandboxPath,
-        ...(proxy === undefined ? {} : { proxy }),
+        ...(relay === undefined || proxy === undefined ? {} : { relay: { socket: relay.socket, proxy } }),
         env: { AGENT_SETUP: script },
       });
       return await spawnGroup("bwrap", [...args, ...SETUP_SHELL], { cwd: dir, env: { ...host }, log, signal });
     } finally {
+      await relay?.close();
       await rm(state, { recursive: true, force: true });
     }
   };

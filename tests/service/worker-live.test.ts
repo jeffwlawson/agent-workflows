@@ -1,10 +1,12 @@
+import { spawnSync } from "node:child_process";
 import * as fs from "node:fs";
 import { createServer, type Server } from "node:http";
-import { connect, type AddressInfo } from "node:net";
+import { connect, createServer as createNetServer, type AddressInfo, type Server as NetServer } from "node:net";
 import * as os from "node:os";
 import * as path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { SANDBOX_WORKTREE } from "../../engine/bwrap-args.js";
+import { RELAY_PORT } from "../../engine/proxy-relay.js";
 import { installCli, liveSandbox, liveTokens, routeThroughProxy, SETUP_SHELL } from "../../service/worker-live.js";
 import { gitEnvironment, hostEnvironment, PROXY_VARIABLES, type HostEnvironment } from "../../shared/env.js";
 import { SUBPROCESS_TIMEOUT } from "../../vitest.config.js";
@@ -131,7 +133,11 @@ describe("the worker's own requests", () => {
  * and namespaces it cannot make, and runs the command that follows them,
  * exiting as it does. A `--chdir` into a `--bind` is followed to the last
  * such bind's host directory, since the mount that would show it there is
- * not made. A real `bwrap` is the live proof of the rest.
+ * not made. Where the arguments end by starting the relay's inside end, it
+ * records which bound paths are live sockets as it starts, and runs the
+ * command after the inside end's own four words, since the Node and the
+ * script they name are seen only inside. A real `bwrap` is the live proof of
+ * the rest.
  */
 const FAKE_BWRAP = `#!/usr/bin/env node
 const { spawnSync } = require("node:child_process");
@@ -152,6 +158,11 @@ while (at < args.length && args[at].startsWith("--")) {
   if (option === "--chdir") cwd = args[at + 1];
   at += 1 + (arity[option] ?? 0);
 }
+if (args[at] === "/run/proxy-relay/node") {
+  const sockets = binds.filter(([from]) => fs.statSync(from, { throwIfNoEntry: false })?.isSocket() === true);
+  fs.writeFileSync(path.join(__dirname, "sockets.json"), JSON.stringify(sockets));
+  at += 4;
+}
 const inside = binds.findLast(([, dest]) => cwd === dest || cwd.startsWith(dest + "/"));
 if (inside !== undefined) cwd = inside[0] + cwd.slice(inside[1].length);
 const ran = spawnSync(args[at], args.slice(at + 1), { cwd, env, stdio: "inherit" });
@@ -163,7 +174,13 @@ describe("the sandbox the repository's setup runs in", () => {
   let fakes: string;
   let log: string;
 
+  /** The host's temporary directory for these tests, so every socket directory a host end leaves is one of theirs. */
+  let tmp: string;
+
   beforeEach(() => {
+    tmp = path.join(scratch, "tmp");
+    fs.mkdirSync(tmp);
+    vi.stubEnv("TMPDIR", tmp);
     checkout = path.join(scratch, "checkout");
     fs.mkdirSync(path.join(checkout, ".git"), { recursive: true });
     fakes = path.join(scratch, "fakes");
@@ -180,8 +197,29 @@ describe("the sandbox the repository's setup runs in", () => {
     HTTPS_PROXY: "http://worker-proxy:3128",
   });
 
-  const run = (script: string, signal: AbortSignal = new AbortController().signal, at = SANDBOX_WORKTREE) =>
-    liveSandbox(host())({ script, dir: checkout, at, roBinds: ["/opt/node"], path: "/usr/bin:/bin", proxy: "http://sandbox-proxy:3128", log, signal });
+  /** The proxy the sandbox is handed: the host end connects to it only when a connection reaches it, and none does here. */
+  const SANDBOX_PROXY = "http://sandbox-proxy:3128";
+  /** The proxy as the sandbox names it: the inside end, on its own loopback (#537). */
+  const INSIDE = `http://127.0.0.1:${RELAY_PORT}`;
+
+  const run = (
+    script: string,
+    signal: AbortSignal = new AbortController().signal,
+    at = SANDBOX_WORKTREE,
+    /** `null` is no proxy, as under `AGENT_SANDBOX=none` with none set. */
+    proxy: string | null = SANDBOX_PROXY,
+    env: HostEnvironment = host(),
+  ) =>
+    liveSandbox(env)({
+      script,
+      dir: checkout,
+      at,
+      roBinds: ["/opt/node"],
+      path: "/usr/bin:/bin",
+      ...(proxy === null ? {} : { proxy }),
+      log,
+      signal,
+    });
 
   const argv = (): string[] => JSON.parse(fs.readFileSync(path.join(fakes, "argv.json"), "utf8")) as string[];
 
@@ -218,10 +256,10 @@ describe("the sandbox the repository's setup runs in", () => {
       PATH: "/usr/bin:/bin",
       LANG: "C.UTF-8",
       TMPDIR: "/tmp",
-      HTTPS_PROXY: "http://sandbox-proxy:3128",
-      HTTP_PROXY: "http://sandbox-proxy:3128",
-      https_proxy: "http://sandbox-proxy:3128",
-      http_proxy: "http://sandbox-proxy:3128",
+      HTTPS_PROXY: INSIDE,
+      HTTP_PROXY: INSIDE,
+      https_proxy: INSIDE,
+      http_proxy: INSIDE,
       AGENT_SETUP: "env > seen.txt",
     });
   });
@@ -281,10 +319,145 @@ describe("the sandbox the repository's setup runs in", () => {
     expect(Date.now() - started).toBeLessThan(SUBPROCESS_TIMEOUT);
   });
 
+  /** The socket directories host ends have left in the host's temporary directory. */
+  const socketDirs = (): string[] => fs.readdirSync(tmp).filter((name) => name.startsWith("bwrap-proxy-"));
+
+  it("gives setup a network of its own, the host end's socket bound in and the proxy variables naming the inside end (#537)", async () => {
+    expect(await run("true")).toBe(0);
+
+    const words = argv();
+    expect(words).not.toContain("--share-net");
+    const socket = mountedAt(words, "--bind", JSON.parse(fs.readFileSync(path.join(fakes, "sockets.json"), "utf8"))[0][0] as string);
+    expect(socket.to).toBe("/run/proxy-relay/proxy.sock");
+    for (const name of ["HTTPS_PROXY", "HTTP_PROXY", "https_proxy", "http_proxy"]) {
+      expect(words[words.indexOf(name) + 1]).toBe(INSIDE);
+    }
+    expect(words).not.toContain("NO_PROXY");
+    expect(words.slice(-SETUP_SHELL.length - 4)).toEqual([
+      "/run/proxy-relay/node",
+      "/run/proxy-relay/relay.mjs",
+      "/run/proxy-relay/proxy.sock",
+      String(RELAY_PORT),
+      ...SETUP_SHELL,
+    ]);
+  });
+
+  it("starts the host end before the sandbox, and stops it and removes its socket once setup exits zero or non-zero", async () => {
+    expect(await run("true")).toBe(0);
+    const sockets = JSON.parse(fs.readFileSync(path.join(fakes, "sockets.json"), "utf8")) as [string, string][];
+    expect(sockets.map(([, at]) => at)).toEqual(["/run/proxy-relay/proxy.sock"]);
+    expect(socketDirs()).toEqual([]);
+
+    expect(await run("exit 4")).toBe(4);
+    expect(socketDirs()).toEqual([]);
+  });
+
+  it("stops the host end and removes its socket once the time limit has ended setup", async () => {
+    const limit = new AbortController();
+    const ended = run("sleep 30", limit.signal);
+    setTimeout(() => limit.abort(), 200);
+
+    expect(await ended).not.toBe(0);
+    expect(socketDirs()).toEqual([]);
+  });
+
+  it("stops the host end and removes its socket where bwrap cannot be started", async () => {
+    const empty = path.join(scratch, "no-bwrap");
+    fs.mkdirSync(empty);
+
+    await expect(run("true", undefined, SANDBOX_WORKTREE, SANDBOX_PROXY, { ...host(), PATH: empty })).rejects.toThrow(/ENOENT/);
+    expect(socketDirs()).toEqual([]);
+  });
+
+  it("starts no bwrap where the host end cannot be started", async () => {
+    await expect(run("true", undefined, SANDBOX_WORKTREE, "sandbox-proxy:3128")).rejects.toThrow(/not an `http:` URL with a host/);
+
+    expect(fs.existsSync(path.join(fakes, "argv.json"))).toBe(false);
+    expect(socketDirs()).toEqual([]);
+    expect(fs.readdirSync(tmp).filter((name) => name.startsWith("agent-setup-"))).toEqual([]);
+  });
+
+  it("keeps the host's network, with no proxy variable and no host end, where it is handed no proxy", async () => {
+    expect(await run("env > seen.txt", undefined, checkout, null)).toBe(0);
+
+    const words = argv();
+    expect(words).toContain("--share-net");
+    expect(words.some((word) => word.startsWith("/run/proxy-relay"))).toBe(false);
+    expect(words.slice(-SETUP_SHELL.length)).toEqual([...SETUP_SHELL]);
+    expect(fs.readFileSync(path.join(checkout, "seen.txt"), "utf8")).not.toMatch(/proxy/i);
+    expect(fs.existsSync(path.join(fakes, "sockets.json"))).toBe(false);
+    expect(socketDirs()).toEqual([]);
+  });
+
   it("removes the sandbox's home and /tmp once it has ended", async () => {
     const before = fs.readdirSync(os.tmpdir()).filter((name) => name.startsWith("agent-setup-"));
     await run("true");
 
     expect(fs.readdirSync(os.tmpdir()).filter((name) => name.startsWith("agent-setup-"))).toEqual(before);
+  });
+});
+
+/**
+ * Whether bubblewrap runs here with a network of its own: it needs the binary
+ * and unprivileged user namespaces, which AppArmor refuses on some hosts.
+ */
+const bwrapRuns = (): boolean =>
+  spawnSync("bwrap", ["--unshare-all", "--die-with-parent", "--ro-bind", "/", "/", "true"], { timeout: SUBPROCESS_TIMEOUT }).status === 0;
+
+describe.skipIf(!bwrapRuns())("setup's network, in a real sandbox (skipped where bwrap or unprivileged user namespaces are unavailable)", () => {
+  /** A stand-in proxy on the host's loopback, answering every request with `200 proxied`. */
+  let standIn: NetServer;
+  let standInPort: number;
+  let checkout: string;
+
+  beforeEach(async () => {
+    standIn = createNetServer((socket) => {
+      socket.once("data", () => socket.end("HTTP/1.1 200 OK\r\ncontent-length: 7\r\nconnection: close\r\n\r\nproxied"));
+    });
+    await new Promise<void>((resolve) => standIn.listen(0, "127.0.0.1", resolve));
+    standInPort = (standIn.address() as AddressInfo).port;
+    checkout = path.join(scratch, "checkout");
+    fs.mkdirSync(checkout);
+  });
+
+  afterEach(async () => {
+    await new Promise((resolve) => standIn.close(resolve));
+  });
+
+  /** A Node one-liner, run inside by the Node the relay binds in: connect to `host`:`port`, send a request, print the reply or the error's code. */
+  const probe = (host: string, port: string): string =>
+    `/run/proxy-relay/node -e '` +
+    `const s = require("net").connect(${port}, ${host}, () => s.write("GET http://example.com/ HTTP/1.1\\r\\nhost: example.com\\r\\n\\r\\n"));` +
+    `let out = ""; s.on("data", (d) => (out += d)); s.on("end", () => console.log("reply:" + out.split("\\r\\n\\r\\n")[1]));` +
+    `s.setTimeout(3000, () => { console.log("error:timeout"); s.destroy(); }); s.on("error", (e) => console.log("error:" + e.code));'`;
+
+  it("reaches nothing directly, the host's loopback and the proxy's own port included, and the proxy through the variables (#537)", async () => {
+    const script = [
+      `${probe(`"127.0.0.1"`, String(standInPort))} > direct.txt`,
+      `${probe(`"1.1.1.1"`, "80")} > external.txt`,
+      `${probe(`new URL(process.env.HTTP_PROXY).hostname`, `Number(new URL(process.env.HTTP_PROXY).port)`)} > proxied.txt`,
+      "cat /proc/net/dev > interfaces.txt",
+    ].join("\n");
+    const log = path.join(scratch, "setup.log");
+    const host = { PATH: process.env["PATH"] ?? "", HOME: scratch, LANG: "C.UTF-8" };
+
+    const code = await liveSandbox(host)({
+      script,
+      dir: checkout,
+      at: SANDBOX_WORKTREE,
+      roBinds: [],
+      path: "/usr/bin:/bin",
+      proxy: `http://127.0.0.1:${standInPort}`,
+      log,
+      signal: new AbortController().signal,
+    });
+
+    const read = (name: string): string => fs.readFileSync(path.join(checkout, name), "utf8");
+    expect(code, fs.readFileSync(log, "utf8")).toBe(0);
+    expect(read("direct.txt")).toMatch(/^error:/);
+    expect(read("external.txt")).toMatch(/^error:/);
+    expect(read("proxied.txt").trim()).toBe("reply:proxied");
+    const interfaces = read("interfaces.txt").split("\n").slice(2).filter((line) => line.trim() !== "");
+    expect(interfaces.map((line) => line.split(":")[0]!.trim())).toEqual(["lo"]);
   });
 });

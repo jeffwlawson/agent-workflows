@@ -526,7 +526,9 @@ needs. What differs on the service:
   caller's `setup:` input, and supports no `node-version-file`
   ([deploying-the-service.md](./deploying-the-service.md#the-repositorys-setup)). `doctor` warns
   where a caller still installed passes `setup:` and `AGENT_SETUP` is unset or empty, or could not
-  be read, since the service's runs there start with nothing installed;
+  be read, since the service's runs there start with nothing installed. The service runs setup
+  with the proxy as its only way out, so a setup that reaches the network other than through the
+  proxy variables, which works on Actions, fails on the service;
 - whether the service's App is installed on the repository: **`doctor` cannot check this.** The App
   is the service's, not the loop's, and nothing in the repository names it.
 

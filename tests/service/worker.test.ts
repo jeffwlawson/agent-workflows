@@ -702,6 +702,27 @@ describe("the repository's setup, as a phase primitive", () => {
     expect(s.sandboxed[0]).not.toHaveProperty("proxy");
   });
 
+  it("hands the sandbox the proxy under AGENT_SANDBOX=none too, so setup's network is its own wherever there is one (#537)", async () => {
+    const s = setup();
+    await ranSetup({ ...s.edges, agent: { ...AGENT, AGENT_SANDBOX: "none" } }, "npm ci");
+
+    expect(s.sandboxed[0]?.proxy).toBe("http://proxy:3128");
+  });
+
+  it("fails unstarted, naming AGENT_SANDBOX_PROXY and no credential, under AGENT_SANDBOX=none with a proxy the relay would not take", async () => {
+    for (const proxy of ["https://someone:hunter2@proxy:3128", "someone:hunter2@proxy:3128"]) {
+      const s = setup();
+      const { ran, phases } = await ranSetup({ ...s.edges, agent: { ...AGENT, AGENT_SANDBOX: "none", AGENT_SANDBOX_PROXY: proxy } }, "npm ci");
+
+      expect(ran.ok).toBe(false);
+      expect(ran.timedOut).toBe(false);
+      expect(ran.failureReason).toMatch(/^The repository's setup \(`AGENT_SETUP`\) could not be started in the sandbox: `AGENT_SANDBOX_PROXY` is /);
+      expect(ran.failureReason).not.toMatch(/someone|hunter2/);
+      expect(s.sandboxed).toEqual([]);
+      expect(phases).toContainEqual({ name: SETUP_PHASE, outcome: `failure: ${ran.failureReason}` });
+    }
+  });
+
   it("is skipped where AGENT_SETUP is unset, and noted as skipped", async () => {
     const s = setup();
     const { ran, phases } = await ranSetup(s.edges, "");

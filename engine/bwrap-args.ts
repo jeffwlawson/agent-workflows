@@ -55,13 +55,6 @@ export interface Relay {
 }
 
 /**
- * The sandbox's network: the host's, with `proxy` set as every proxy variable
- * where it is given, or, with `relay`, one of its own, whose only way out is
- * the relay's socket.
- */
-type Network = { readonly proxy?: string; readonly relay?: never } | { readonly relay: Relay; readonly proxy?: never };
-
-/**
  * A host directory and where it is seen inside: a bare path at the same path,
  * or `host` at `at`.
  */
@@ -71,7 +64,16 @@ const mount = (flag: "--bind" | "--ro-bind", bind: Bind): string[] =>
   typeof bind === "string" ? [flag, bind, bind] : [flag, bind.host, bind.at];
 
 /** What one sandbox sees, and where it starts. */
-export type SandboxLayout = Network & {
+export interface SandboxLayout {
+  /**
+   * The sandbox's network: with a relay, one of its own, whose only way out is
+   * the relay's socket; without, the host's, with no proxy variables at all,
+   * which only a repository's setup under `AGENT_SANDBOX=none` with no proxy
+   * is started with. Nothing here shares the host's network with a proxy set, since a proxy
+   * given only as variables is one a tool may ignore: wherever there is a
+   * proxy there is a relay (#537).
+   */
+  readonly relay?: Relay;
   /** The host directory bound at `SANDBOX_HOME`. */
   readonly home: string;
   /** The host directory bound at `/tmp`. */
@@ -90,14 +92,14 @@ export type SandboxLayout = Network & {
   readonly path: string;
   /** The rest of the sandbox's environment, set after its own. */
   readonly env: Readonly<Record<string, string>>;
-};
+}
 
 /**
  * `bwrap`'s arguments for `layout`, up to the command it runs, which follows
  * them. The sandbox shares nothing with the host but, without a relay, its
- * network: its environment is cleared and set from `layout` alone, it sees
- * `/usr`, a few named files under `/etc` and the directories `layout` binds,
- * and it ends with the process that started it.
+ * network, and then sets no proxy variable: its environment is cleared and
+ * set from `layout` alone, it sees `/usr`, a few named files under `/etc`
+ * and the directories `layout` binds, and it ends with the process that started it.
  *
  * With a relay its network is its own loopback and nothing else, the relay's
  * socket is bound in, the proxy variables name the inside end, and the
@@ -106,9 +108,10 @@ export type SandboxLayout = Network & {
  */
 export const bwrapArgs = (layout: SandboxLayout): string[] => {
   const { relay } = layout;
-  const proxy = relay === undefined ? layout.proxy : insideProxy(relay.proxy);
   const proxyVars =
-    proxy === undefined ? [] : ["HTTPS_PROXY", "HTTP_PROXY", "https_proxy", "http_proxy"].flatMap((name) => ["--setenv", name, proxy]);
+    relay === undefined
+      ? []
+      : ["HTTPS_PROXY", "HTTP_PROXY", "https_proxy", "http_proxy"].flatMap((name) => ["--setenv", name, insideProxy(relay.proxy)]);
   return [
     "--unshare-all",
     ...(relay === undefined ? ["--share-net"] : []),

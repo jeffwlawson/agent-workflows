@@ -3,6 +3,7 @@ import * as path from "node:path";
 import { SANDBOX_WORKTREE } from "../engine/bwrap-args.js";
 import { COMMANDS, RUNNERS, type Command, type Runner } from "../shared/contract.js";
 import type { HostEnvironment } from "../shared/env.js";
+import { sandboxRefusal } from "../shared/sandbox.js";
 import { fixRescueBranch, PRD_BRANCH_PREFIX, prdRescueBranch } from "../shared/record.js";
 import type { DoorRequest, DoorResponse } from "./dispatcher.js";
 import {
@@ -108,7 +109,12 @@ export interface SandboxRun {
   readonly roBinds: readonly string[];
   /** `PATH` inside the sandbox. */
   readonly path: string;
-  /** The proxy every request from the sandbox leaves through. Absent is none. */
+  /**
+   * The proxy every request from the sandbox leaves through, and its only way
+   * out: the sandbox's network is its own, as the agent's is (#537). Absent is
+   * none, possible only with `AGENT_SANDBOX=none`, and the one case whose
+   * network is the host's, with no proxy variables.
+   */
   readonly proxy?: string;
   /** The file its output goes to. */
   readonly log: string;
@@ -377,9 +383,11 @@ export interface Run {
   readonly runAgent: (runner: Runner, values: Readonly<Record<string, string | undefined>>, cwd: string, signal: AbortSignal) => Promise<Ran>;
   /**
    * Runs the repository's setup, `script`, the job's `AGENT_SETUP`, in the
-   * bwrap sandbox, in the checkout, with no token, behind the sandbox's proxy,
-   * and notes how it ended, as Actions runs a caller's `setup:` in the agent's
-   * job. Empty is skipped, and noted so, as an empty `setup:` is on Actions.
+   * bwrap sandbox, in the checkout, with no token, the sandbox's proxy its
+   * only way out where the worker's settings name one, and notes how it
+   * ended, as Actions runs a caller's `setup:` in the agent's job. A proxy
+   * the relay would not take fails it unstarted, with the reason the worker's
+   * start-up check would give under `bwrap`. Empty is skipped, and noted so, as an empty `setup:` is on Actions.
    * A setup that could not start, or exited non-zero, is a failure with its
    * reason; one still running at `signal` is ended with its sandbox.
    */
@@ -493,6 +501,16 @@ export const startRun = (job: Job, edges: JobEdges): Run => {
     const log = path.join(logs, `${SETUP_PHASE}.log`);
     const proxy = edges.agent["AGENT_SANDBOX_PROXY"] ?? "";
     started.push({ subcommand: SETUP_PHASE, env: { AGENT_SETUP: script }, cwd: checkout, log });
+    // A proxy is the sandbox's only way out (#537), so one the relay would not
+    // take is refused here, by the rule the worker's start-up check reads
+    // under `bwrap`: under `none` the worker starts with it, and a sandbox
+    // started on it would reach nothing.
+    const refused = proxy === "" ? undefined : sandboxRefusal("bwrap", proxy);
+    if (refused !== undefined) {
+      const failureReason = `The repository's setup (\`AGENT_SETUP\`) could not be started in the sandbox: ${refused}`;
+      note(SETUP_PHASE, `failure: ${failureReason}`);
+      return { ok: false, timedOut: false, failureReason };
+    }
     let code: number;
     try {
       code = await edges.sandbox({

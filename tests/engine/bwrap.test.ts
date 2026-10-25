@@ -482,11 +482,29 @@ describe("the network", () => {
     expect(fs.readdirSync(os.tmpdir()).filter((name) => name.startsWith("bwrap-job-")).length).toBe(before);
   });
 
-  it("is the host's, with the proxy as every proxy variable, for a sandbox started with no relay", () => {
-    const args = bwrapArgs({ home: "/h", tmp: "/t", roBinds: [], cwd: "/h", path: "/usr/bin", proxy: "http://127.0.0.1:3128", env: {} });
+  it("is the host's, with no proxy variable at all, for a sandbox started with no relay (#537)", () => {
+    const args = bwrapArgs({ home: "/h", tmp: "/t", roBinds: [], cwd: "/h", path: "/usr/bin", env: {} });
     expect(args).toContain("--share-net");
-    expect(setenv(args, "HTTPS_PROXY")).toEqual(["http://127.0.0.1:3128"]);
+    for (const name of ["HTTPS_PROXY", "HTTP_PROXY", "https_proxy", "http_proxy", "NO_PROXY", "no_proxy"]) expect(setenv(args, name)).toEqual([]);
     expect(args.some((arg) => arg.startsWith("/run/proxy-relay"))).toBe(false);
+  });
+
+  it("is its own for a sandbox started with a relay, the socket bound in and the inside end last", () => {
+    const args = bwrapArgs({
+      home: "/h",
+      tmp: "/t",
+      roBinds: [],
+      cwd: "/h",
+      path: "/usr/bin",
+      relay: { socket: "/s/proxy.sock", proxy: "http://u:p@proxy:3128" },
+      env: {},
+    });
+    expect(args).not.toContain("--share-net");
+    expect(args.join(" ")).toContain("--bind /s/proxy.sock /run/proxy-relay/proxy.sock");
+    for (const name of ["HTTPS_PROXY", "HTTP_PROXY", "https_proxy", "http_proxy"]) {
+      expect(setenv(args, name)).toEqual([`http://u:p@127.0.0.1:${RELAY_PORT}`]);
+    }
+    expect(args.slice(-4)).toEqual(["/run/proxy-relay/node", "/run/proxy-relay/relay.mjs", "/run/proxy-relay/proxy.sock", String(RELAY_PORT)]);
   });
 });
 

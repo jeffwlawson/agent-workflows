@@ -37,9 +37,10 @@ Whatever the machine, the service needs:
   enforces it itself** (spec §3): the agent's network is its own loopback and nothing else, and its
   one way out is a socket the worker's process holds, which forwards to the proxy alone. A direct
   connection from the agent to any address, the worker's host included, fails whatever the host's
-  firewall allows, so the proxy's allowlist is the agent's egress policy. A firewall around the
-  worker's host is defence in depth for the agent, and still the control for the repository's
-  setup, whose sandbox shares the host's network with the proxy set as its variables (below).
+  firewall allows, so the proxy's allowlist is the agent's egress policy. The repository's setup
+  gets the same network wherever a proxy is set, under `AGENT_SANDBOX=none` too (below), so a
+  firewall around the worker's host is defence in depth for both. Under `none` with no proxy, the
+  agent and setup both have the host's network, and the host's firewall is what limits them.
   Where the host's firewall lets the worker out only through a proxy, the worker's own traffic
   needs it too: its install of the agent's CLI, its token requests, and every step it runs, which
   `WORKER_PROXY` sends through it.
@@ -371,11 +372,14 @@ agent's, since the host holds what can ask for tokens and setup runs the pull re
 shape: the checkout bound read-write at the path the agent will work at (below), its `.git` read-only, so nothing setup runs can
 plant a hook or a configuration that host-side git would later run; `AGENT_SANDBOX_RO_BINDS` and
 `AGENT_SANDBOX_PATH` for the toolchain; a fresh home and `/tmp`, removed after; no token in its
-environment; and its traffic through `AGENT_SANDBOX_PROXY`, which must therefore **let the package
-registry through** for setup's install. Unlike the agent's, setup's sandbox **shares the host's
-network**: the proxy is set as its proxy variables, and a tool that ignores them connects wherever
-the host lets the worker's user connect. So for setup, a firewall around the worker's host is still
-what limits its egress. It is run as Actions runs a `run:` step, by `bash` stopping
+environment; and the agent's network (#537): wherever `AGENT_SANDBOX_PROXY` is set, under `none`
+too, setup's network is its own loopback, and **the proxy is its only way out**, so the proxy must
+**let the package registry through** for setup's install. A tool that ignores the proxy variables,
+or resolves names itself, fails there: nothing inside resolves a name or reaches an address but
+through the proxy. A proxy the sandbox cannot use, an `https:` one or one that is not a URL, fails
+setup's phase under `none` with the reason the worker refuses it for under `bwrap`, and starts no
+sandbox. Under `none` with no proxy, setup has the host's network, with no proxy variables, as the
+agent has there, and the host's firewall is what limits its egress. It is run as Actions runs a `run:` step, by `bash` stopping
 at the first failing command, under the job's time limit, and ended with everything it started at
 that limit. A setup that exits non-zero fails its phase with the exit status and the end of its
 output, kept in full in the run's `logs/setup.log`.
@@ -411,7 +415,7 @@ Read from the environment. A missing required one stops the worker at start, nam
 | `AGENT_SANDBOX` | optional | `bwrap` | the sandbox the agent runs in, `bwrap` or `none` (spec §3); `none` runs the agent with the worker's own filesystem |
 | `AGENT_SANDBOX_RO_BINDS` | optional | `""` | host directories, `:`-separated, bound read-only into the sandbox for the toolchain; the CLI's prefix is added |
 | `AGENT_SANDBOX_PATH` | optional | `/usr/local/bin:/usr/bin:/bin` | `PATH` inside the sandbox; the CLI's directory is put first |
-| `AGENT_SANDBOX_PROXY` | optional | `""` | an `http:` URL with a host: the proxy every request from the sandbox leaves through, and the agent's only way out (spec §3). **Required when `AGENT_SANDBOX` is `bwrap`**, the default: the worker refuses to start with it empty or not such a URL, and refuses an `https:` one, since the sandbox reaches the proxy by a loopback address its TLS certificate does not name. Inside, the proxy variables name a relay on the sandbox's loopback, as an `http:` URL keeping this one's user-info |
+| `AGENT_SANDBOX_PROXY` | optional | `""` | an `http:` URL with a host: the proxy every request from the sandbox leaves through, the only way out of the agent's sandbox, and, wherever it is set, of the repository's setup's (spec §3). **Required when `AGENT_SANDBOX` is `bwrap`**, the default: the worker refuses to start with it empty or not such a URL, and refuses an `https:` one, since the sandbox reaches the proxy by a loopback address its TLS certificate does not name. Inside, the proxy variables name a relay on the sandbox's loopback, as an `http:` URL keeping this one's user-info |
 
 The job door also answers `GET /health` with `200`.
 
@@ -465,8 +469,8 @@ Inside it:
   For the agent it is now defence in depth: the sandbox has a network of its own, which reaches
   tinyproxy only through the worker's socket, and loopback in there is the sandbox's own, so the
   box's services on `lo`, the job door among them, are out of the agent's reach whatever this rule
-  says. What it still limits on its own is the worker's own traffic and the repository's setup,
-  whose sandbox shares the box's network;
+  says. The repository's setup has the same network (#537), so for setup too it is defence in
+  depth. What it still limits on its own is the worker's own traffic;
 - the package installed once, as root, into `/opt/agent-workflows` (`npm install --prefix`), so
   the worker never reaches the registry itself and the box holds no registry token: an upgrade is
   the same install at a new version, then a restart;

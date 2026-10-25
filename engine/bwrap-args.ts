@@ -50,7 +50,7 @@ const RELAY_SOURCE = fileURLToPath(new URL("./relay.mjs", import.meta.url));
 export interface Relay {
   /** The host path of the socket the host end listens on (`startProxyRelay`). */
   readonly socket: string;
-  /** The proxy the host end forwards to, as configured: its scheme and user-info carry inside. */
+  /** The proxy the host end forwards to, as configured: an `http:` URL, whose user-info carries inside. */
   readonly proxy: string;
 }
 

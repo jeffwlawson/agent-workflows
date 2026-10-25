@@ -34,28 +34,42 @@ const MAX_SOCKET_PATH = 107;
 /** Where the socket goes when the host's temporary directory is too deep for one. */
 const SHORT_TMP = "/tmp";
 
-/** Where the proxy is, as `proxy`, an `http:` or `https:` URL with a host, names it; or a throw. */
+/**
+ * The refusal of an `https:` proxy (#535), apart from the one for a value that
+ * is not a URL with a host, so a caller can say which. The sandbox names the
+ * proxy by the inside end's loopback address, and a client speaking TLS to it
+ * checks the proxy's certificate against that address, which the certificate
+ * does not name: every request would fail.
+ */
+export class HttpsProxyRefused extends Error {}
+
+/** Where the proxy is, as `proxy`, an `http:` URL with a host, names it; or a throw. */
 export const proxyTarget = (proxy: string): { readonly host: string; readonly port: number } => {
   const url = URL.parse(proxy);
-  if (url === null || (url.protocol !== "http:" && url.protocol !== "https:") || url.hostname === "") {
-    throw new Error(`the proxy \`${proxy}\` is not an \`http:\` or \`https:\` URL with a host`);
+  if (url?.protocol === "https:") {
+    throw new HttpsProxyRefused(
+      `the proxy \`${proxy}\` is an \`https:\` URL: the sandbox reaches the proxy by a loopback address, which its TLS certificate does not name. Give the proxy's \`http:\` URL`,
+    );
+  }
+  if (url === null || url.protocol !== "http:" || url.hostname === "") {
+    throw new Error(`the proxy \`${proxy}\` is not an \`http:\` URL with a host`);
   }
   return {
     host: url.hostname.replace(/^\[(.*)\]$/, "$1"),
-    port: url.port === "" ? (url.protocol === "https:" ? 443 : 80) : Number(url.port),
+    port: url.port === "" ? 80 : Number(url.port),
   };
 };
 
 /**
- * The proxy as the sandbox names it: the inside end's loopback address, with
- * `proxy`'s scheme and any user-info, so a proxy that asks for credentials
- * still gets them.
+ * The proxy as the sandbox names it: the inside end's loopback address, always
+ * `http:`, with any user-info `proxy` has, so a proxy that asks for
+ * credentials still gets them.
  */
 export const insideProxy = (proxy: string): string => {
   proxyTarget(proxy);
   const url = new URL(proxy);
   const userInfo = url.username === "" ? "" : `${url.username}${url.password === "" ? "" : `:${url.password}`}@`;
-  return `${url.protocol}//${userInfo}127.0.0.1:${RELAY_PORT}`;
+  return `http://${userInfo}127.0.0.1:${RELAY_PORT}`;
 };
 
 /** A host end, listening: the socket to bind into the sandbox, and how to stop it. */

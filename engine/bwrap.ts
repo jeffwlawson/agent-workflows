@@ -54,8 +54,9 @@ export interface BwrapSettings {
   /** `PATH` inside the sandbox. */
   readonly path: string;
   /**
-   * The proxy every request leaves through: an `http:` or `https:` URL with a
-   * host, and the sandbox's only way out. Required, since a sandbox with a
+   * The proxy every request leaves through: an `http:` URL with a host, never
+   * `https:`, since the sandbox names it by a loopback address its certificate
+   * would not name (#535), and the sandbox's only way out. Required, since a sandbox with a
    * network of its own and no proxy reaches nothing, the model's API included.
    */
   readonly proxy: string;

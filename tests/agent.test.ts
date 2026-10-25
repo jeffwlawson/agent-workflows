@@ -67,7 +67,19 @@ describe("agentSandbox: the provider a runner's inputs select", () => {
 
     it.each(["127.0.0.1:3128", "socks5://127.0.0.1:1080"])("ends the run on an AGENT_SANDBOX_PROXY of %s, naming it", (proxy) => {
       expect(() => agentSandbox({ ...unset, AGENT_SANDBOX: "bwrap", AGENT_SANDBOX_PROXY: proxy })).toThrow(Exited);
-      expect(reason()).toBe(`\`AGENT_SANDBOX_PROXY\` is \`${proxy}\`, which is not an \`http:\` or \`https:\` URL with a host.`);
+      expect(reason()).toBe(`\`AGENT_SANDBOX_PROXY\` is \`${proxy}\`, which is not an \`http:\` URL with a host.`);
+    });
+
+    // #535: the sandbox names the proxy by a loopback address, which an
+    // `https:` proxy's certificate does not name, so TLS to it would fail.
+    it("ends the run on an https: AGENT_SANDBOX_PROXY, naming it and asking for the http: URL", () => {
+      const proxy = "https://proxy.example:3128";
+      expect(() => agentSandbox({ ...unset, AGENT_SANDBOX: "bwrap", AGENT_SANDBOX_PROXY: proxy })).toThrow(Exited);
+      expect(exit).toHaveBeenCalledWith(1);
+      expect(reason()).toContain(`\`AGENT_SANDBOX_PROXY\` is \`${proxy}\`, an \`https:\` URL`);
+      expect(reason()).toContain("loopback address");
+      expect(reason()).toContain("Set `AGENT_SANDBOX_PROXY` to the proxy's `http:` URL.");
+      expect(reason()).not.toContain("not an `http:` URL with a host");
     });
 
     it("asks no proxy of none", () => {

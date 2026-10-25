@@ -155,7 +155,7 @@ orchestrator that sets none of them gets `none`. Each is a row in each runner's 
 | `AGENT_SANDBOX` | optional | `none` | Accepts `none` or `bwrap`: the sandbox the agent runs in (§3). Unset or empty is `none`, and any other value fails the run, naming it. |
 | `AGENT_SANDBOX_RO_BINDS` | optional | `""` | Host directories, `:`-separated, that `bwrap` binds read-only at the same path: the toolchain, `claude` and `node`. Empty is none. |
 | `AGENT_SANDBOX_PATH` | optional | `/usr/local/bin:/usr/bin:/bin` | `PATH` inside `bwrap`. |
-| `AGENT_SANDBOX_PROXY` | optional | `""` | An `http:` or `https:` URL with a host: the proxy every `bwrap` request leaves through, and the sandbox's only way out (§3). **Required when `AGENT_SANDBOX` is `bwrap`**: empty, or not such a URL, fails the run before the agent starts, naming it. Means nothing under `none`. |
+| `AGENT_SANDBOX_PROXY` | optional | `""` | An `http:` URL with a host: the proxy every `bwrap` request leaves through, and the sandbox's only way out (§3). **Required when `AGENT_SANDBOX` is `bwrap`**: empty, or not such a URL, fails the run before the agent starts, naming it. An `https:` URL fails it too, with a reason of its own: the sandbox names the proxy by a loopback address, which the proxy's TLS certificate does not name. Means nothing under `none`. |
 
 The last three mean nothing under `none`, where the agent has the runner's own environment and
 filesystem.
@@ -282,11 +282,14 @@ the host's home, credentials or other runs:
 - `/usr` and the directories `AGENT_SANDBOX_RO_BINDS` names are read-only, and the run gets a
   writable home and temporary directory of its own;
 - the proxy variables, `HTTPS_PROXY`, `HTTP_PROXY` and their lower-case forms, name the relay's
-  loopback address, with `AGENT_SANDBOX_PROXY`'s scheme and any user-info, and no `NO_PROXY` is set;
+  loopback address, always as an `http:` URL, with any user-info `AGENT_SANDBOX_PROXY` has, and no
+  `NO_PROXY` is set;
 - **`bwrap` requires a proxy.** Without one the agent could reach nothing, the model's API
   included, and would fail later on a connection error that names nothing, while the host's shared
   network in its place would fail open. So `bwrap` with `AGENT_SANDBOX_PROXY` empty, or not an
-  `http:` or `https:` URL with a host, fails the run before the agent starts, naming it;
+  `http:` URL with a host, fails the run before the agent starts, naming it. An `https:` one fails it
+  too, with its own reason: a client checks an `https:` proxy's certificate against the name it was
+  given, here the relay's loopback address, which no certificate names, so every request would fail;
 - the agent works in a copy of the checkout: its history, cloned in, and what the checkout holds
   outside git, ignored or not, such as the install the repository's setup left there, copied in
   beside it, so the agent sees what it would see in the checkout itself; each path carried in is

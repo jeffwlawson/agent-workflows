@@ -478,7 +478,7 @@ describe("the network", () => {
 
   it("refuses a proxy that is not a URL with a host, leaving no sandbox behind", async () => {
     const before = fs.readdirSync(os.tmpdir()).filter((name) => name.startsWith("bwrap-job-")).length;
-    await expect(create("127.0.0.1:3128")).rejects.toThrow(/`127.0.0.1:3128` is not an `http:` or `https:` URL with a host/);
+    await expect(create("127.0.0.1:3128")).rejects.toThrow(/`127.0.0.1:3128` is not an `http:` URL with a host/);
     expect(fs.readdirSync(os.tmpdir()).filter((name) => name.startsWith("bwrap-job-")).length).toBe(before);
   });
 

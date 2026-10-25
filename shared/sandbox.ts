@@ -1,4 +1,4 @@
-import { proxyTarget } from "../engine/proxy-relay.js";
+import { HttpsProxyRefused, proxyTarget } from "../engine/proxy-relay.js";
 
 /**
  * Why the sandbox inputs cannot start an agent, or `undefined` where they can
@@ -6,7 +6,9 @@ import { proxyTarget } from "../engine/proxy-relay.js";
  * `AGENT_SANDBOX_PROXY`, so `bwrap` with no proxy, or one that is not a URL
  * the relay can reach, would start an agent that reaches nothing, and die
  * later on a connection error that names nothing. Today's shared network in
- * its place would fail open. `none` needs no proxy.
+ * its place would fail open. An `https:` proxy is refused with a reason of its
+ * own (#535): the sandbox names the proxy by a loopback address, so TLS to it
+ * fails every request. `none` needs no proxy.
  *
  * One rule, read twice: by a runner before the agent starts (`agentSandbox`
  * in `shared/agent.ts`), and by the service's worker at start, where
@@ -24,7 +26,14 @@ export const sandboxRefusal = (sandbox: "none" | "bwrap", proxy: string): string
   try {
     proxyTarget(proxy);
     return undefined;
-  } catch {
-    return `\`AGENT_SANDBOX_PROXY\` is \`${proxy}\`, which is not an \`http:\` or \`https:\` URL with a host.`;
+  } catch (error) {
+    if (error instanceof HttpsProxyRefused) {
+      return (
+        `\`AGENT_SANDBOX_PROXY\` is \`${proxy}\`, an \`https:\` URL, which \`bwrap\` refuses: the sandbox reaches the proxy ` +
+        "by a loopback address, which the proxy's TLS certificate does not name, so every request would fail. " +
+        "Set `AGENT_SANDBOX_PROXY` to the proxy's `http:` URL."
+      );
+    }
+    return `\`AGENT_SANDBOX_PROXY\` is \`${proxy}\`, which is not an \`http:\` URL with a host.`;
   }
 };

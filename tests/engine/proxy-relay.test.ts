@@ -3,7 +3,7 @@ import { connect, createServer, type Server, type Socket } from "node:net";
 import * as os from "node:os";
 import * as path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { insideProxy, proxyTarget, RELAY_PORT, startProxyRelay } from "../../engine/proxy-relay.js";
+import { HttpsProxyRefused, insideProxy, proxyTarget, RELAY_PORT, startProxyRelay } from "../../engine/proxy-relay.js";
 
 /**
  * The host end of a `bwrap` sandbox's one way out (#461), with no sandbox: a
@@ -46,25 +46,34 @@ afterEach(async () => {
 });
 
 describe("proxyTarget: where the host end forwards", () => {
-  it("is the proxy's host and port, the scheme's port where none is written", () => {
+  it("is the proxy's host and port, 80 where none is written", () => {
     expect(proxyTarget("http://127.0.0.1:3128")).toEqual({ host: "127.0.0.1", port: 3128 });
     expect(proxyTarget("http://user:pw@proxy.internal:8080/")).toEqual({ host: "proxy.internal", port: 8080 });
     expect(proxyTarget("http://proxy.internal")).toEqual({ host: "proxy.internal", port: 80 });
-    expect(proxyTarget("https://proxy.internal")).toEqual({ host: "proxy.internal", port: 443 });
     expect(proxyTarget("http://[::1]:3128")).toEqual({ host: "::1", port: 3128 });
   });
 
   it.each(["127.0.0.1:3128", "proxy", "socks5://127.0.0.1:1080", "http://", "file:///tmp/proxy.sock"])("refuses %s", (proxy) => {
-    expect(() => proxyTarget(proxy)).toThrow(/is not an `http:` or `https:` URL with a host/);
+    expect(() => proxyTarget(proxy)).toThrow(/is not an `http:` URL with a host/);
+  });
+
+  // #535: the sandbox names the proxy by the relay's loopback address, which
+  // an `https:` proxy's certificate does not name.
+  it.each(["https://proxy.internal", "https://agent:pw@proxy.internal:3128"])("refuses %s, saying why and to give the `http:` URL", (proxy) => {
+    expect(() => proxyTarget(proxy)).toThrow(HttpsProxyRefused);
+    expect(() => proxyTarget(proxy)).toThrow(/is an `https:` URL: .*loopback address.*`http:` URL/);
   });
 });
 
 describe("insideProxy: the proxy as the sandbox names it", () => {
-  it("is the inside end's loopback address, keeping the scheme and any user-info", () => {
+  it("is the inside end's loopback address, over http:, keeping any user-info", () => {
     expect(insideProxy("http://10.0.0.5:8888")).toBe(`http://127.0.0.1:${RELAY_PORT}`);
-    expect(insideProxy("https://proxy.internal")).toBe(`https://127.0.0.1:${RELAY_PORT}`);
     expect(insideProxy("http://agent:s%40cret@proxy.internal:3128/")).toBe(`http://agent:s%40cret@127.0.0.1:${RELAY_PORT}`);
     expect(insideProxy("http://agent@proxy.internal:3128")).toBe(`http://agent@127.0.0.1:${RELAY_PORT}`);
+  });
+
+  it.each(["https://proxy.internal", "https://agent:pw@proxy.internal:3128"])("refuses %s", (proxy) => {
+    expect(() => insideProxy(proxy)).toThrow(HttpsProxyRefused);
   });
 });
 
@@ -93,7 +102,14 @@ describe("startProxyRelay: the host end", () => {
   });
 
   it("refuses a proxy that is not a URL with a host, before it listens", async () => {
-    await expect(startProxyRelay("proxy:3128")).rejects.toThrow(/`proxy:3128` is not an `http:` or `https:` URL with a host/);
+    await expect(startProxyRelay("proxy:3128")).rejects.toThrow(/`proxy:3128` is not an `http:` URL with a host/);
+  });
+
+  it("refuses an https: proxy before it makes a socket directory", async () => {
+    const dirs = (): string[] => [os.tmpdir(), "/tmp"].flatMap((dir) => fs.readdirSync(dir).filter((name) => name.startsWith("bwrap-proxy-")));
+    const before = dirs();
+    await expect(startProxyRelay("https://proxy.internal:3128")).rejects.toThrow(HttpsProxyRefused);
+    expect(dirs()).toEqual(before);
   });
 
   // The trap triage found: `sun_path` holds 108 bytes, and `listen` fails with

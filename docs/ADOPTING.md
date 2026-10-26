@@ -518,8 +518,9 @@ run, and every job in it skips. `doctor` then checks what the service needs inst
 needs. What differs on the service:
 
 - it answers every trigger label: `agent:review`, `agent:fix`, `agent:update-branch` and
-  `agent:follow-ups` on a pull request, `agent:implement` on an issue, a regular one or a PRD, and a
-  merge carrying `agent:follow-ups`, which files the review's follow-ups as on Actions;
+  `agent:follow-ups` on a pull request, `agent:implement` on an issue, a regular one or a PRD, and
+  every merge, which posts the post-merge checklist and, where `agent:follow-ups` is on, files the
+  review's follow-ups, as on Actions;
 - its App must be subscribed to **Issues** events as well as **Pull request**, or nothing answers
   `agent:implement` ([deploying-the-service.md](./deploying-the-service.md#the-webhook));
 - it reads the repository's install and setup from the repository variable `AGENT_SETUP`, not a
@@ -1126,10 +1127,16 @@ duplicate as an error wherever it finds one, and the older layout itself only as
 by hand, move the jobs into one file per side as `examples/callers/` holds them, delete the files
 they came from, and re-run `init`, which moves the `pull_request_target` policy (§1) to the new file.
 
-**`follow-ups` is the first genuinely optional caller.** It files a merged pull request's recorded
-out-of-scope findings as triageable issues, and having its job is the whole of switching that on:
+**`follow-ups` is the first genuinely optional caller.** It has two jobs. On every merge, labelled
+or not, it posts one **post-merge checklist**: the *After merge, by a human* items of the linked
+issue's latest brief, or on a PRD PR of the parent's and every sub-issue's, each under its issue,
+read from trusted text only, and posted once (#544). And where `agent:follow-ups` is on, it files
+the pull request's recorded out-of-scope findings as triageable issues: the label gates the filing
+alone, so removing it opts out of filing and not of the checklist. Having its job is the whole of
+switching both on:
 the runner subcommand ships inside the package and the reusable lives here, but nothing invokes a
-reusable except a caller's reference, so a repository without that job files nothing. Not a
+reusable except a caller's reference, so a repository without that job files nothing and posts no
+checklist. Not a
 mechanism invented for this: it is the same per-caller granularity that already lets you skip
 `implement-prd`.
 

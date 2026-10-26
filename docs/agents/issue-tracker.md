@@ -227,6 +227,13 @@ comment carries one, **it replaces the issue body's list for review rather than 
   it is not read as one, so it does not end the criteria section.
 - **A brief restates every criterion it keeps from the issue body.** One it leaves out is silently
   dropped from review.
+- ***After merge, by a human* sits outside the acceptance-criteria heading too**, under its own
+  heading, or a bold label alone on its line, naming exactly that (case and a trailing colon
+  ignored). It lists the checks only a person can make once the pull request merges, **as a list,
+  one check per item**. The follow-ups run reads it by that heading, from the same brief the
+  criteria come from, and posts the items on the merged pull request as one checklist, on every
+  merge (#544). Prose under it is not read, and neither is a section in an older brief that a later
+  one dropped.
 
 ### What this overrides upstream
 

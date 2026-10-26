@@ -22,7 +22,7 @@ sentence. How one orchestrator does a thing is description, and sits in a quoted
 > [`service/`](../service/) and whose deployment is
 > [deploying-the-service.md](./deploying-the-service.md). It answers every trigger label the loop
 > has: `agent:review`, `agent:fix`, `agent:update-branch` and `agent:follow-ups` on a pull request,
-> `agent:implement` on an issue, a regular one or a PRD, and a merge carrying `agent:follow-ups`. A block for it appears only where it differs from the Actions orchestrator in a way a
+> `agent:implement` on an issue, a regular one or a PRD, and every merge, for `follow-ups`. A block for it appears only where it differs from the Actions orchestrator in a way a
 > reader would trip on.
 
 Neither block binds anyone. Where they disagree with a bold sentence, the bold sentence is right.
@@ -140,7 +140,7 @@ The inputs every runner reads, set once for any of them:
 |---|---|---|---|
 | `OUTPUT_DIR` | required | | The directory the runner writes its files into (§2.3). |
 | `GH_REPO` | required | | The repository, `owner/name`. Required rather than left to whatever `gh` infers. |
-| `GH_TOKEN` | required | | The token `gh` reads. The runners only read with it, `fix:prepare` reads and fetches the rescue branch with it, and `update-branch:merge`, `update-branch:prepare` and `update-branch:publish` fetch the base branch with it; `follow-ups:file` files its issues, posts its report and takes `agent:follow-ups` off with it, through the writer, `follow-ups:conclude` posts its failure comment with it, `implement:gate` makes its refusals, its start comment and its label transitions with it, `implement:publish` the link on the issue with it, `implement:conclude` its failure comment, `agent:implement` off and `agent:blocked` on, `implement-prd:gate` its refusals, its start comments, its label transitions, the approved slice's note and the PRD PR's building row, `implement-prd:catch-up` fetches the PRD branch and the base branch with it and parks the chain with it, `implement-prd:prepare` reads and fetches the PRD branch and the rescue branch with it, `implement-prd:publish` fetches the base branch and the PRD branch and reads the rescue branch's tip, the open pull requests from the PRD branch and a reused PRD PR's rounds and head with it, `implement-prd:conclude` its set-aside note, its failure comment, `agent:implement` off and `agent:blocked` on, and fetches the base branch and the PRD branch and reads the rescue branch's tip and the PRD PR's rounds with it, and `review:publish` posts the review, the summary and the verdict with it, `review:conclude` its comments, its error verdict and the labels nothing fires on, `review:advance` a PRD PR's progress list and its notes there, `fix:gate` its refusals and its label transitions, `fix:publish` its thread replies, its comments and notes, and the rescue branch's deletion, `fix:conclude` its failure comment, the rescue-set-aside note where `fix:publish` did not post it, and `agent:fix` off and `agent:blocked` on, `update-branch:gate` its refusal and its label transitions, `update-branch:publish` the verdict it carries over, its comment, and the comment that no review will start, and `update-branch:conclude` its failure comment, `agent:update-branch` off and `agent:blocked` on, and the comment that no refresh of a moved head will start. |
+| `GH_TOKEN` | required | | The token `gh` reads. The runners only read with it, `fix:prepare` reads and fetches the rescue branch with it, and `update-branch:merge`, `update-branch:prepare` and `update-branch:publish` fetch the base branch with it; `follow-ups:file` posts the post-merge checklist, files its issues, posts its report and takes `agent:follow-ups` off with it, through the writer, `follow-ups:conclude` posts its failure comment with it, `implement:gate` makes its refusals, its start comment and its label transitions with it, `implement:publish` the link on the issue with it, `implement:conclude` its failure comment, `agent:implement` off and `agent:blocked` on, `implement-prd:gate` its refusals, its start comments, its label transitions, the approved slice's note and the PRD PR's building row, `implement-prd:catch-up` fetches the PRD branch and the base branch with it and parks the chain with it, `implement-prd:prepare` reads and fetches the PRD branch and the rescue branch with it, `implement-prd:publish` fetches the base branch and the PRD branch and reads the rescue branch's tip, the open pull requests from the PRD branch and a reused PRD PR's rounds and head with it, `implement-prd:conclude` its set-aside note, its failure comment, `agent:implement` off and `agent:blocked` on, and fetches the base branch and the PRD branch and reads the rescue branch's tip and the PRD PR's rounds with it, and `review:publish` posts the review, the summary and the verdict with it, `review:conclude` its comments, its error verdict and the labels nothing fires on, `review:advance` a PRD PR's progress list and its notes there, `fix:gate` its refusals and its label transitions, `fix:publish` its thread replies, its comments and notes, and the rescue branch's deletion, `fix:conclude` its failure comment, the rescue-set-aside note where `fix:publish` did not post it, and `agent:fix` off and `agent:blocked` on, `update-branch:gate` its refusal and its label transitions, `update-branch:publish` the verdict it carries over, its comment, and the comment that no review will start, and `update-branch:conclude` its failure comment, `agent:update-branch` off and `agent:blocked` on, and the comment that no refresh of a moved head will start. |
 
 A command that runs where no token is held, as the red check's two do beside the pull request's own
 code, `fix:bundle`, `update-branch:bundle`, `implement:bundle` and `implement-prd:bundle` do after the agent and
@@ -401,8 +401,8 @@ of its map from trigger label to job kind, per event type: `agent:review`, `agen
 `agent:update-branch` and `agent:follow-ups` on a pull request's delivery and `agent:implement` on
 an issue's, which is every trigger label the loop has. A label is answered on its own event type
 only, and on a service-served repository every other label is answered by nothing. A merge is the
-one trigger that is not a label: `agent:follow-ups` is answered as well on the `closed` delivery of
-a pull request merged carrying it (§11).
+one trigger that is not a label: a `follow-ups` job is started as well on the `closed` delivery of
+every pull request merged, whatever its labels (§11).
 
 `doctor` reads the variable. It reports any value but unset or `service` as an error, and one it
 could not read as unknown. With `service`, it checks that the labels the service answers exist,
@@ -464,6 +464,8 @@ string the agent wrote, so the agent cannot forge one of those through a review.
 | `<!--{"version",…,"location","pr","seq"}-->` | The end of a filed follow-up issue's body. | `follow-ups:file`, which files it through `createIssue`, as `stubMarker` in `shared/record.ts` spells it | `follow-ups:file`, to not file one twice, and to read back a stub GitHub filed while answering with a server error |
 | `<!-- agent:prd-started -->` | The end of a PRD chain's first run's comment on the parent, saying which sub-issue it builds first. | `implement-prd:gate`, as `PRD_STARTED_MARK` in `shared/record.ts` spells it | `implement-prd:gate`, to not post it twice on a retry |
 | `<!-- agent:slice-approved <sha> -->` | The end of the note on an approved slice's sub-issue, `<sha>` the PRD PR head it was approved on. | `implement-prd:gate`, past an approval, as `sliceApprovedMark` in `shared/record.ts` spells it | `implement-prd:gate`, to not post it twice on a retry |
+| `<!-- agent:post-merge-checklist -->` | The end of the post-merge checklist on a merged pull request (§11). | `follow-ups:file`, as `POST_MERGE_CHECKLIST_MARK` in `shared/record.ts` spells it | `follow-ups:file`, to not post it twice on a retry |
+| `### After merge, by a human`, or `**After merge, by a human:**` on a line of its own | A brief's list of checks only a person can make after merging, in the linked issue's latest brief (the text the review reads its criteria from). Read from a trusted author's text only (§4.1). | triage, by hand | `follow-ups:file`, for the post-merge checklist |
 
 **Markers in a pull request's body.** The orchestrator writes the body, and a regular pull
 request's is written by `implement:publish`, as `renderPullRequestFrame` in `shared/pr-frame.ts`
@@ -487,7 +489,7 @@ body.
 | `<!-- agent:summary -->` … `<!-- /agent:summary -->` | The review's summary of the pull request. | `review` |
 | `<!-- agent:summary-head <sha> -->` | Inside the summary: the commit it was written at, which decides whether it is due again. | `review` |
 | `<!-- agent:summary-final -->` | Inside the summary: the final review wrote it. | `review` |
-| `Closes #<n>`, `Fixes #<n>`, `Resolves #<n>` | The issue the pull request delivers, whose criteria a review checks. | `review` |
+| `Closes #<n>`, `Fixes #<n>`, `Resolves #<n>` | The issue the pull request delivers, the first one named, whose criteria a review checks and whose brief's post-merge checks the merge lists. | `review`; `follow-ups:file` |
 | `<!-- agent:progress -->` … `<!-- /agent:progress -->`, `<!-- agent:status -->` … `<!-- /agent:status -->` | A PRD PR's progress list and its status line, rendered by `shared/progress-list.ts`. Written by `implement-prd:publish` with the slice in review, into the frame of a PRD PR it opens and over the blocks of one it reuses; by `implement-prd:conclude` where a build run stops, rendered from the PRD branch's trailers as the run left it (#325); then by `review:advance` at each round's end. | nothing: a view of the chain, re-rendered by the next writer |
 | `<!-- agent:closes -->` … `<!-- /agent:closes -->` | A PRD PR's `Closes` line: the parent and every sub-issue still open. Written by `implement-prd:publish`, as `closesBlock` in `shared/record.ts` spells it, in the frame, and appended to a reused PRD PR an older release opened, whose body has no `Closes` marker. | `review`, through `Closes #<n>`; `implement-prd:publish`, for whether a reused body has the block |
 | `<!-- agent:draft-note -->` … `<!-- /agent:draft-note -->` | A PRD PR's note that it stays a draft until every slice is done. Written by `implement-prd:publish` in the frame. | `review`, whose final review's write of the summary removes it |
@@ -524,7 +526,7 @@ only a status whose creator is the loop's identity (§4.1).
 | Event | What it records | Read by |
 |---|---|---|
 | `agent:fix` added to the pull request | One fix round, automatic or by hand, each time it was added. | `review`, `fix`, `implement-prd`, to count rounds |
-| `agent:follow-ups` on the pull request | Findings wait to be filed. Read live, and taken off once filed, by `follow-ups:file` through `removeLabel`, last, and left on by any run that fails: `follow-ups:conclude`, which says so, never takes it off. | `follow-ups:file` |
+| `agent:follow-ups` on the pull request | Findings wait to be filed. It gates the filing alone, not the post-merge checklist (§11). Read live, and taken off once filed, by `follow-ups:file` through `removeLabel`, last, and left on by any run that fails: `follow-ups:conclude`, which says so, never takes it off. | `follow-ups:file` |
 | `pr-follow-up` on an issue | An issue `follow-ups:file` filed earlier, labelled as `createIssue` creates it, where the repository has the label, and read with its body's key. | `follow-ups:file` |
 
 **`doctor` cannot check this.** These strings are written by the orchestrator's posting code, and
@@ -3403,20 +3405,23 @@ everything else with `GH_TOKEN`.
 
 ## 11. `follow-ups`
 
-Trigger label: `agent:follow-ups`, on a merged pull request. `doctor` does not demand the label,
-since only a repository that installed the filing caller reads it.
+Trigger label: `agent:follow-ups`, added to a closed pull request; and every merge of a
+same-repository pull request, labelled or not. `doctor` does not demand the label, since only a
+repository that installed the filing caller reads it.
 
-A workflow with no runner: two commands, the filing and its ending, and no agent.
+A workflow with no runner: two commands, the filing and its ending, and no agent. The run has
+**two jobs** (#544). On every merge, labelled or not, it posts the **post-merge checklist**: one
+comment listing the *After merge, by a human* items of the linked issue's latest brief, or on a PRD
+PR of the parent's and every sub-issue's, each under its issue. Then, only where
+`agent:follow-ups` is on, it **files** the out-of-scope findings: the label gates the filing alone.
 
 > **Service orchestrator:** the dispatcher starts a `follow-ups` job on either of `follow-ups.yml`'s
 > two entry points, each behind the fork guard every route has. **A merge**: a `pull_request`
-> `closed` delivery whose `merged` is literally `true` and whose payload's own labels include
-> `agent:follow-ups`. Actions starts its job on every merge, since a job condition cannot read a
-> label; the service reads the payload's, the labels as they were at the merge, so a merge without
-> the marker is ignored with its reason logged, before anything of the repository is read, and a
-> close without a merge is ignored too. `follow-ups:file` still reads the marker again when it
-> files, as on Actions. A merge has **no author gate**: whoever merged could write, and a merge
-> queue or auto-merge can send the event as a bot that a sender check would refuse, dropping the
+> `closed` delivery whose `merged` is literally `true`, whatever its labels, as Actions starts its
+> job on every merge (#544): the checklist is posted on every merge, and `follow-ups:file` reads the
+> marker live to decide whether to file, as on Actions. A merge with neither ends silently, and a
+> close without a merge is ignored with its reason logged. A merge has **no author gate**: whoever
+> merged could write, and a merge queue or auto-merge can send the event as a bot that a sender check would refuse, dropping the
 > follow-ups without a word, and Actions' job checks no sender either. **The manual entry point**:
 > `agent:follow-ups` added to a closed pull request, merged or not, with the author gate every
 > other label has; on an open one it is refused, as Actions' condition refuses it. Either way the
@@ -3441,13 +3446,14 @@ A workflow with no runner: two commands, the filing and its ending, and no agent
 > **Concurrency relies on one worker.** Actions holds this job in the pull request's concurrency
 > group, so a label added while a merge's run files cannot file twice. The service has no lock of
 > its own: the worker's queue runs one job at a time, so a second run starts only once the first
-> has ended, finds the marker it took off, and ends silently. A deployment with more than one
+> has ended, finds the checklist it posted and the marker it took off, and ends silently. A deployment with more than one
 > worker would lose that guarantee.
 
 ### `follow-ups:file`
 
-Files the out-of-scope findings a pull request's reviews recorded, as issues. It runs no model, so
-it needs no `claude` and no checkout.
+Posts the post-merge checklist, then files the out-of-scope findings a pull request's reviews
+recorded, as issues, where `agent:follow-ups` is on. It runs no model, so it needs no `claude` and
+no checkout.
 
 #### Inputs
 
@@ -3466,8 +3472,20 @@ it needs no `claude` and no checkout.
 
 #### What it reads from the record
 
-- `agent:follow-ups` on the pull request, read live, so a second run files nothing.
-- The newest review by the loop's identity carrying `agent-follow-ups`; an edited one is refused.
+- The pull request's body, for its linked issue: the first `Closes #<n>`, `Fixes #<n>` or
+  `Resolves #<n>`. Where that issue has sub-issues it is a PRD's parent, read first, then each
+  sub-issue in the sub-issue list's order, open or closed.
+- Each of those issues' body and comments, with their authors, and from them the latest brief: the
+  last trusted text, oldest first, with an acceptance section, as the review reads it (§4.3). Its
+  *After merge, by a human* items are the checklist's, each passed through `clean`. An issue's body
+  is read only where its author passes the trust gate (§4.1), and its comments one by one the
+  same way. One that cannot be read fails the run.
+- The comments on the pull request, for a checklist already posted: one carrying
+  `<!-- agent:post-merge-checklist -->` by the loop's identity. One by anyone else does not count.
+- `agent:follow-ups` on the pull request, read live, which gates the filing and nothing else, so a
+  merge without it files nothing, and a second run files nothing.
+- The newest review by the loop's identity carrying `agent-follow-ups`; an edited one is refused,
+  after the checklist is posted.
 - Every `pr-follow-up` issue, with the key in its body, so as not to file one twice.
 
 **`doctor` cannot check this.** The record is written by the orchestrator's posting code, for the reason §4.3 gives.
@@ -3484,7 +3502,7 @@ Ends every filing run, success included. It runs no model and needs no checkout.
 the job ended and whether it ran out of time, and works out the ending from them:
 
 - **A run that finished** (`JOB_STATUS` is `success`): nothing. The report is `follow-ups:file`'s,
-  and a merge with nothing to file stays silent.
+  and a merge with no checklist and nothing to file stays silent.
 - **A run that stopped** (`failure` or `cancelled`): one comment, `` **`agent:follow-ups`
   stopped:** `` and the reason as a sentence, starting with a capital and ending in a full stop
   (#253), the run's link, and `` The post-merge checklist may not have been posted, and some

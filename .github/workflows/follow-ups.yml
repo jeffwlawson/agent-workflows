@@ -1,7 +1,8 @@
 name: Agent Follow-ups (reusable)
 
 # File the out-of-scope findings a review recorded, once the pull request has
-# closed (#50). The `follow-ups` job in `agent-pr.yml` is the caller (a grant,
+# closed (#50), and on every merge post the linked briefs' *After merge, by a
+# human* checklist (#544). The `follow-ups` job in `agent-pr.yml` is the caller (a grant,
 # with no inputs and no secrets to wire), and every control stays here, in a
 # file an adopting repo *references* rather than copies.
 #
@@ -18,10 +19,10 @@ name: Agent Follow-ups (reusable)
 #
 # | Event | PR state | Marker on the PR | What happens |
 # |---|---|---|---|
-# | `closed` | merged | present | the latest review's findings are filed, the PR is told what happened to each, the marker is removed |
-# | `closed` | merged | absent | the job starts and exits silently — no comment, no refusal, no label |
+# | `closed` | merged | present | the post-merge checklist is posted where a linked brief names a check; the latest review's findings are filed, the PR is told what happened to each, the marker is removed |
+# | `closed` | merged | absent | the post-merge checklist is posted where a linked brief names a check; nothing is filed, and otherwise the job exits silently: no comment, no refusal, no label |
 # | `closed` | not merged | any | the job never starts; abandoned work does not populate the tracker |
-# | `labeled` `agent:follow-ups` | closed, merged or not | present, by construction | the same filing run — the manual entry point, for a missed close event, a reconsidered opt-out or a partial failure |
+# | `labeled` `agent:follow-ups` | closed, merged or not | present, by construction | the same run: the manual entry point, for a missed close event, a reconsidered opt-out or a partial failure; a checklist already posted is not posted again |
 # | `labeled` `agent:follow-ups` | open | any | the job never starts; filing round 3's findings would strand round 9's |
 # | `labeled` anything else | any | any | the job never starts |
 # | any of the above, from a fork | any | any | the job never starts |
@@ -45,9 +46,11 @@ name: Agent Follow-ups (reusable)
 # filing time rather than taken from the event payload — "remove the label,
 # then click merge" is precisely the race it exists for — which means it cannot
 # be part of the condition. So this job starts on *every* merge in the
-# repository and mostly ends having done nothing at all. A merge whose pull
-# request carries no marker is a **silent exit 0**: most merges have no
-# findings, and a comment on each of those is how a channel teaches people to
+# repository, which the post-merge checklist needs anyway (#544): the marker
+# gates the filing alone, since removing it is the opt-out of filing, not of
+# being reminded. A merge whose linked briefs name no post-merge check and
+# whose pull request carries no marker is a **silent exit 0**: most merges have
+# neither, and a comment on each of those is how a channel teaches people to
 # stop reading it.
 #
 # **The manual entry point does not override the edited-body refusal.** A

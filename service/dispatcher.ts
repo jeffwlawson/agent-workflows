@@ -346,7 +346,7 @@ export const createDispatcher = (edges: DispatcherEdges) => {
    * **A pull request's route**: whether a `pull_request` delivery is a job,
    * and the job where it is; otherwise the reason it is not, which is logged.
    * What there is nothing to answer, a label no job starts on or a close
-   * with nothing to file, is ignored first, before anything of the
+   * without a merge, is ignored first, before anything of the
    * repository is read. The cheap refusals, the fork and the state, are left
    * until after the opt-in, so a repository that has not opted in is logged
    * as that rather than as one of them.

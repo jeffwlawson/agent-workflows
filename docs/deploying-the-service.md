@@ -17,8 +17,8 @@ repository opts in with the repository variable `AGENT_ORCHESTRATOR=service`
 ([ADOPTING §2e](./ADOPTING.md#2e-choosing-the-orchestrator)); the service refuses every other
 repository, and answers every trigger label the loop has: `agent:review`, `agent:fix`,
 `agent:update-branch` and `agent:follow-ups` on a pull request, `agent:implement` on an issue, a
-regular one or a PRD, and a merge carrying `agent:follow-ups`, which files the follow-ups its review
-recorded. A repository on the service loses nothing it had on Actions. A PRD labelled
+regular one or a PRD, and every merge, which posts the post-merge checklist and, where
+`agent:follow-ups` is on, files the follow-ups its review recorded. A repository on the service loses nothing it had on Actions. A PRD labelled
 `agent:implement` is built one slice at a time, as on Actions, with no Actions involved.
 
 ## What a host needs

@@ -40,6 +40,7 @@ import {
   type CiResult,
   type FollowUp,
   type ReviewOutput,
+  type SinceBrief,
   type VerdictRow,
 } from "../shared/review-output.js";
 import { FOLLOW_UPS_MARKER, VERDICT_CONTEXT } from "../shared/record.js";
@@ -3157,5 +3158,126 @@ describe("the review body against GitHub's size limit", () => {
     expect(() =>
       renderDecided({ ...parts, movedToFollowUps: 70, followUps: moved }),
     ).toThrow(new RegExp(`is \\d+ bytes .*${REVIEW_BODY_LIMIT}-character limit`));
+  });
+});
+
+/**
+ * What merged since the brief (#541): the group beside *Acceptance criteria*,
+ * laid out by the workflow from what the check found and the review's one-line
+ * ruling, and nothing the verdict is derived from.
+ */
+describe("the body's *Since the brief* group", () => {
+  const output = (over: Partial<ReviewOutput> = {}): ReviewOutput => ({ findings: [], followUps: [], verified: [], ...over });
+  const CRITERION = { id: "C1", text: "It works.", status: "met" as const };
+  const parts: Decided = {
+    verdict: VERDICTS["approval recommended"],
+    output: output(),
+    placed: [],
+    movedToFollowUps: 0,
+    stillOpen: [],
+    resolved: [],
+    followUps: [],
+    droppedFollowUps: 0,
+    criteria: [CRITERION],
+    linkedIssue: { kind: "read", number: 541 },
+  };
+  const ran = (over: Partial<Extract<SinceBrief, { kind: "ran" }>> = {}): SinceBrief => ({
+    kind: "ran",
+    commit: "abcdef1",
+    files: ["src/a.ts", "src/b.ts"],
+    gone: [],
+    notFound: [],
+    onBase: { commits: [{ sha: "1234567890abcdef", subject: "feat: change a" }], more: 0 },
+    ...over,
+  });
+  const RULING = "C1 means something else since 1234567, which moved the guard it names.";
+
+  it("names the commits, and carries the review's ruling", () => {
+    const body = renderDecided({ ...parts, output: output({ sinceBrief: RULING }), sinceBrief: ran() });
+    expect(body).toContain(
+      [
+        "<details open>",
+        "<summary><b>Since the brief</b> (1) · commits since <code>abcdef1</code> that touched the files it names</summary>",
+        "",
+        "Files checked: `src/a.ts`, `src/b.ts`.",
+        "",
+        "On the base branch, newest first:",
+        "",
+        "- `1234567` feat: change a",
+        "",
+        `**Ruling:** ${RULING}`,
+        "",
+        "</details>",
+      ].join("\n"),
+    );
+    // Beside the criteria, after them.
+    expect(body.indexOf("<b>Since the brief</b>")).toBeGreaterThan(body.indexOf("<b>Acceptance criteria</b>"));
+  });
+
+  it("says where the review gave no ruling", () => {
+    expect(renderDecided({ ...parts, sinceBrief: ran() })).toContain("_The review gave no ruling on these._");
+  });
+
+  it("lists a slice round's earlier commits apart, and how many more there were", () => {
+    const body = renderDecided({
+      ...parts,
+      sinceBrief: ran({
+        onBase: { commits: [{ sha: "1234567890", subject: "feat: change a" }], more: 4 },
+        onBranch: { commits: [{ sha: "0987654321", subject: "feat: slice one" }], more: 0 },
+      }),
+    });
+    expect(body).toContain("(6) · commits since");
+    expect(body).toContain("- `1234567` feat: change a\n- …and 4 more.");
+    expect(body).toContain("On this branch before this slice, newest first:\n\n- `0987654` feat: slice one");
+  });
+
+  it("says no commit touched the files, and drops a ruling there was nothing for", () => {
+    const body = renderDecided({ ...parts, output: output({ sinceBrief: RULING }), sinceBrief: ran({ onBase: { commits: [], more: 0 } }) });
+    expect(body).toContain("_**Since the brief:** no commit since `abcdef1` touched the 2 files its *Where things are* names._");
+    expect(body).not.toContain(RULING);
+  });
+
+  it("names a file gone from the base, and a path not found at the read-at commit", () => {
+    const body = renderDecided({ ...parts, sinceBrief: ran({ gone: ["src/b.ts"], notFound: ["src/nowhere.ts"] }) });
+    expect(body).toContain("**No longer at the base:** `src/b.ts`.");
+    expect(body).toContain("**Not found at `abcdef1`:** `src/nowhere.ts`.");
+  });
+
+  it.each([
+    ["no section", undefined, "because the brief has no *Where things are* section._"],
+    ["no read-at commit", undefined, "because the brief's *Where things are* section names no commit it was read at._"],
+    ["unresolved", "abcdef1", "because the commit the brief says it was read at, `abcdef1`, could not be found._"],
+    ["not an ancestor", "abcdef1", "because the commit the brief says it was read at, `abcdef1`, is not on the base branch._"],
+    ["no file found", "abcdef1", "because no file the brief's *Where things are* names exists at `abcdef1`._"],
+  ] as const)("says the check could not run on %s, and nothing else changes", (reason, commit, line) => {
+    const sinceBrief: SinceBrief = { kind: "not run", reason, ...(commit === undefined ? {} : { commit }) };
+    const body = renderDecided({ ...parts, sinceBrief });
+    expect(body).toContain(`_**Since the brief:** not checked, ${line}`);
+    expect(
+      body
+        .split("\n\n")
+        .filter((part) => !part.startsWith("_**Since the brief:**"))
+        .join("\n\n"),
+    ).toBe(renderDecided(parts));
+  });
+
+  it("shows nothing where the check was not asked: the final review, or no criteria", () => {
+    expect(renderDecided(parts)).not.toContain("Since the brief");
+    expect(renderDecided({ ...parts, criteria: [], linkedIssue: { kind: "none" } })).not.toContain("Since the brief");
+  });
+
+  it("derives no verdict from the list or the ruling", () => {
+    const inputs = { autoFix: false, ci: "green" as const, fixRoundProgress: undefined, stillOpen: 0, movedToFollowUps: 0 };
+    const listed = output({ sinceBrief: RULING, criteria: [{ id: "C1", status: "changed", reason: "1234567 made it moot." }] });
+    const empty = output({ criteria: [{ id: "C1", status: "met" }] });
+    expect(deriveVerdict(listed, inputs)).toEqual(deriveVerdict(empty, inputs));
+    expect(deriveVerdict(listed, inputs).verdict).toBe("approval recommended");
+  });
+
+  it("reads the ruling off the review's output as one line", () => {
+    expect(parse({ findings: [], followUps: [], verified: [], sinceBrief: "  None changes\n a criterion. " }).sinceBrief).toBe(
+      "None changes a criterion.",
+    );
+    expect(parse({ findings: [], followUps: [], verified: [], sinceBrief: "  " }).sinceBrief).toBeUndefined();
   });
 });

@@ -1,4 +1,4 @@
-import { extractCriteria } from "./acceptance-criteria.js";
+import { readBrief, type Brief } from "./acceptance-criteria.js";
 import {
   fetchTrustedCommentList,
   fetchTrustedIssue,
@@ -36,13 +36,19 @@ export interface PullRequestContext {
   /** Whether there is a linked issue, and whether its text was read (#435): the case its criteria's absence is. */
   readonly issueRead: LinkedIssue;
   /**
-   * The linked issue's acceptance criteria, as `extractCriteria` reads them
+   * The linked issue's acceptance criteria, as `readBrief` reads them
    * off its body and its trusted comments, where triage posts its brief (#214). Where
    * its author is untrusted, off its trusted comments alone (#444): its own text
    * never reaches the agent. Empty where there is no linked issue, or where it
    * names none.
    */
   readonly criteria: readonly string[];
+  /**
+   * The text `criteria` were read from, the linked issue's brief, for the
+   * sections of it a review reads besides (#541). Undefined where there is no
+   * linked issue.
+   */
+  readonly brief: Brief | undefined;
   /** Collaborator-authored conversation comments on the PR and linked issue. */
   readonly discussion: string;
   /**
@@ -130,7 +136,7 @@ export const fetchPullRequestContext = (
   // carries the quote in, as it already does on a trusted issue.
   let issueTitle = "";
   let linkedIssue = "(no linked issue found)";
-  let criteria: string[] = [];
+  let brief: Brief | undefined;
   let issueRead: LinkedIssue = { kind: "none" };
   // Read once, for both the discussion below and the criteria: triage posts
   // its brief, and with it the criteria the work was scoped to, as a comment
@@ -142,13 +148,13 @@ export const fetchPullRequestContext = (
       issueRead = { kind: "read", number: Number(issueNumber) };
       issueTitle = fetched.title;
       linkedIssue = fetched.body || "(linked issue has no description)";
-      criteria = extractCriteria(
+      brief = readBrief(
         fetched.body,
         trustedIssueComments.map((comment) => comment.body),
       );
     } else {
       issueRead = { kind: "untrusted", number: Number(issueNumber) };
-      criteria = extractCriteria(
+      brief = readBrief(
         "",
         trustedIssueComments.map((comment) => comment.body),
       );
@@ -199,7 +205,8 @@ export const fetchPullRequestContext = (
     issueTitle,
     linkedIssue,
     issueRead,
-    criteria,
+    criteria: brief?.criteria ?? [],
+    brief,
     discussion,
     unreadableFeedback: feedback.unreadable,
     // Assembled here rather than in the fetch, which reads GitHub surfaces and

@@ -570,6 +570,66 @@ describe("review:publish says why a review checked no acceptance criteria", () =
   });
 });
 
+/**
+ * What merged since the brief (#541) reaches publish as data, and publish lays
+ * the group out: the commits, the review's ruling, or why the check could not
+ * run. No hand-over file carries a sentence of it.
+ */
+describe("review:publish says what merged since the brief", () => {
+  const CRITERION = { id: "C1", text: "Tests cover it.", status: "met" as const };
+  const SINCE = {
+    kind: "ran",
+    commit: "abcdef1",
+    files: ["src/queue.ts"],
+    gone: [],
+    notFound: ["src/nowhere.ts"],
+    onBase: { commits: [{ sha: "1234567890", subject: "feat: move the lock" }], more: 0 },
+  } as const;
+
+  it("posts the commits and the review's ruling", async () => {
+    const decided = decide({
+      criteria: [CRITERION],
+      linkedIssue: { kind: "read", number: 5 },
+      output: output({ sinceBrief: "None of them changes what C1 means." }),
+      sinceBrief: SINCE,
+    });
+    handOver(decided);
+    expect(fs.readFileSync(path.join(dir, "review_body.json"), "utf8")).not.toContain("Since the brief");
+
+    await run();
+
+    const body = posted()?.body ?? "";
+    expect(body).toContain("<summary><b>Since the brief</b> (1)");
+    expect(body).toContain("- `1234567` feat: move the lock");
+    expect(body).toContain("**Ruling:** None of them changes what C1 means.");
+    expect(body).toBe(renderDecided({ ...decided.decisions, runUrl: RUN_URL }));
+  });
+
+  it("posts why the check could not run", async () => {
+    handOver(decide({ criteria: [CRITERION], linkedIssue: { kind: "read", number: 5 }, sinceBrief: { kind: "not run", reason: "unresolved", commit: "abcdef1" } }));
+
+    await run();
+
+    expect(posted()?.body).toContain("_**Since the brief:** not checked, because the commit the brief says it was read at, `abcdef1`, could not be found._");
+  });
+
+  it.each([
+    ["a check beside no criteria", { sinceBrief: SINCE }],
+    ["a check that ran and names no files", { criteria: [CRITERION], criteriaCase: { kind: "criteria found" }, sinceBrief: { ...SINCE, files: [] } }],
+    ["a check that did not run and lists commits", { criteria: [CRITERION], criteriaCase: { kind: "criteria found" }, sinceBrief: { ...SINCE, kind: "not run", reason: "unresolved" } }],
+    ["a reason that names no commit where its line does", { criteria: [CRITERION], criteriaCase: { kind: "criteria found" }, sinceBrief: { kind: "not run", reason: "unresolved" } }],
+    ["a commit that is not hex", { criteria: [CRITERION], criteriaCase: { kind: "criteria found" }, sinceBrief: { ...SINCE, commit: "--all" } }],
+    ["a sentence in place of the reason", { criteria: [CRITERION], criteriaCase: { kind: "criteria found" }, sinceBrief: { kind: "not run", reason: "The brief is old." } }],
+  ])("refuses %s", async (_case, change) => {
+    handOver(decide({ criteria: [] }));
+    const body = JSON.parse(fs.readFileSync(path.join(dir, "review_body.json"), "utf8")) as Record<string, unknown>;
+    put("review_body.json", { ...body, ...change });
+
+    await expect(run()).rejects.toThrow(/^review's review_body\.json /);
+    expect(writes()).toEqual([]);
+  });
+});
+
 describe("review:publish fails before its first write on a hand-over it cannot trust", () => {
   it("refuses a thread that is not a review thread on this pull request", async () => {
     const decided = decide();

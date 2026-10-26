@@ -210,6 +210,13 @@ given (`C1`, `C2`, …). An id you were not given is dropped. Empty where you we
 
 A criterion you omit is listed as not checked.
 
+## What merged since the brief: `sinceBrief`
+
+Where the brief listed commits since the linked issue's brief was read, the review's ruling on
+them, in one line: whether any changes what a criterion means, naming the criterion and the commit
+where one does, or that none does. Omit it where no commits were listed; one omitted where there
+were is shown as no ruling given.
+
 ```json
 <output>
 {
@@ -248,7 +255,8 @@ A criterion you omit is listed as not checked.
     { "id": "C1", "status": "met" },
     { "id": "C2", "status": "changed", "reason": "The service answers before the work exists, so the change returns its tracking id instead." },
     { "id": "C3", "status": "unmet", "reason": "The body does not say which tests cover the failure path.", "severity": "low", "path": "src/example.ts", "line": 42 }
-  ]
+  ],
+  "sinceBrief": "None of the listed commits changes what a criterion means: they move code the criteria do not name."
 }
 </output>
 ```
@@ -257,5 +265,5 @@ A criterion you omit is listed as not checked.
 empty array for any of the eight lists with no entries (`verified` is empty when you were
 given no open findings to rule on, `noteRulings` when you were given no notes, and `criteria` when
 you were given no criteria). Leave
-`needsYou` out entirely unless it applies, and `title`, `summary` and the Merge Danger fields out
+`needsYou` out entirely unless it applies, `sinceBrief` out where no commits were listed, and `title`, `summary` and the Merge Danger fields out
 where the brief said this review leaves them as they are.

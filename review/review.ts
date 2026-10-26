@@ -44,6 +44,7 @@ import {
   type SliceRedTests,
 } from "../shared/red-check.js";
 import { fetchPullRequestContext } from "./review-context.js";
+import { checkSinceBrief, renderSinceBriefForReview } from "./since-brief.js";
 import {
   findingsHandOver,
   isPreviouslyMissed,
@@ -316,6 +317,33 @@ try {
     }
   }
 
+  // What merged since the linked issue's brief was read (#541): the commits
+  // since the commit its *Where things are* names that touched the files it
+  // names, read from git before the agent starts, so the review only rules on
+  // them. Only where the review is handed criteria: not on the final review,
+  // not without a linked issue, and not where its brief yields none. On a
+  // slice round, also the PRD branch's commits before this slice, which the
+  // slice range's base marks; never the slice's own.
+  const sliceBase =
+    round?.kind === "slice" && round.slice !== undefined
+      ? (prdBranch?.ranges.slices.find((s) => s.subIssue === round.slice?.subIssue)?.range?.base ?? undefined)
+      : undefined;
+  const sinceBrief =
+    criteria.length === 0 || context.brief === undefined ? undefined : checkSinceBrief(context.brief, BASE_REF, sliceBase);
+  console.log(
+    `Since the brief: ${
+      sinceBrief === undefined
+        ? "not checked, since there are no criteria"
+        : sinceBrief.kind === "not run"
+          ? `could not run (${sinceBrief.reason}${sinceBrief.commit === undefined ? "" : `, ${sinceBrief.commit}`})`
+          : `${sinceBrief.onBase.commits.length + sinceBrief.onBase.more} commits on the base${
+              sinceBrief.onBranch === undefined
+                ? ""
+                : ` and ${sinceBrief.onBranch.commits.length + sinceBrief.onBranch.more} on the branch before this slice`
+            } since ${sinceBrief.commit} touched ${sinceBrief.files.length} named files`
+    }.`,
+  );
+
   // Every review and fix round on this pull request so far, by slice on a PRD
   // PR (#298): what this review's header is numbered from, and what the
   // progress table counts. Undefined where they could not be read, and the
@@ -421,6 +449,7 @@ try {
       ISSUE_TITLE: context.issueTitle || "(no linked issue)",
       LINKED_ISSUE: context.linkedIssue,
       ACCEPTANCE_CRITERIA: renderCriteriaForReview(criteria, context.prBody),
+      SINCE_BRIEF: renderSinceBriefForReview(sinceBrief),
       DISCUSSION: context.discussion || "(no collaborator comments)",
       CI_STATUS: readCiStatus(),
       // The final review's red evidence is each slice round's record (#235),
@@ -601,6 +630,7 @@ try {
       criteria: criteriaRulings.results,
       // The final review skips criteria on purpose, and says nothing about it.
       ...(round?.kind === "final" ? {} : { linkedIssue: context.issueRead }),
+      ...(sinceBrief === undefined ? {} : { sinceBrief }),
     }),
     ...(header === undefined ? {} : { header }),
     ...(history.unreadable === undefined ? {} : { historyUnreadable: history.unreadable }),

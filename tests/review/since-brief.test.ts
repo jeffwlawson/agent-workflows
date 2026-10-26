@@ -173,6 +173,27 @@ describe("checkSinceBrief", () => {
   );
 
   it(
+    "on a slice round whose start could not be read, lists the base's commits and says the branch's were not",
+    () => {
+      write("src/a.ts", "a, changed\n");
+      const touched = commitAll("feat: change a");
+
+      const since = checkSinceBrief(brief(`### Where things are\n\nRead at ${short(readAt)}.\n- \`src/a.ts\``), "main", null);
+
+      expect(since).toEqual({
+        kind: "ran",
+        commit: short(readAt),
+        files: ["src/a.ts"],
+        gone: [],
+        notFound: [],
+        onBase: { commits: [{ sha: touched, subject: "feat: change a" }], more: 0 },
+        branchUnread: true,
+      });
+    },
+    ceiling,
+  );
+
+  it(
     `lists at most ${MAX_SINCE_COMMITS} commits, newest first, and counts the rest`,
     () => {
       const shas = Array.from({ length: MAX_SINCE_COMMITS + 3 }, (_, i) => {
@@ -314,6 +335,18 @@ describe("renderSinceBriefForReview", () => {
     expect(text).toContain("- `1234567` feat: change a\n- (and 2 more, which `git log` lists)");
     expect(text).toContain("before this slice");
     expect(text).toContain("- `0987654` feat: slice one");
+  });
+
+  it("says the branch before this slice could not be read, with commits or without", () => {
+    const unread = { ...ran, onBranch: undefined, branchUnread: true } as const;
+    expect(renderSinceBriefForReview(unread)).toContain("branch before this slice could not be read");
+    expect(renderSinceBriefForReview({ ...unread, onBase: { commits: [], more: 0 } })).toContain(
+      "branch before this slice could not be read",
+    );
+  });
+
+  it("says where git could not read the commits", () => {
+    expect(renderSinceBriefForReview({ kind: "not run", reason: "unreadable" })).toContain("could not run: unreadable");
   });
 
   it.each([

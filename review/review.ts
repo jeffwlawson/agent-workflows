@@ -324,18 +324,22 @@ try {
   // them. Only where the review is handed criteria: not on the final review,
   // not without a linked issue, and not where its brief yields none. On a
   // slice round, also the PRD branch's commits before this slice, which the
-  // slice range's base marks; never the slice's own.
+  // slice range's base marks; never the slice's own. Null on a slice round
+  // where that base could not be read, which the body says.
   const sliceBase =
-    round?.kind === "slice" && round.slice !== undefined
-      ? (prdBranch?.ranges.slices.find((s) => s.subIssue === round.slice?.subIssue)?.range?.base ?? undefined)
+    round?.kind === "slice"
+      ? (prdBranch?.ranges.slices.find((s) => s.subIssue === round.slice?.subIssue)?.range?.base ?? null)
       : undefined;
-  // A git failure the check does not expect costs the check, never the review.
+  // A git failure the check does not expect costs the check, never the review,
+  // and is said in the body like any other reason it could not run.
   let sinceBrief: SinceBrief | undefined;
-  try {
-    sinceBrief =
-      criteria.length === 0 || context.brief === undefined ? undefined : checkSinceBrief(context.brief, BASE_REF, sliceBase);
-  } catch (error) {
-    console.log(`::warning::What merged since the brief could not be read, so the review is not handed it: ${firstLine(error)}`);
+  if (criteria.length > 0 && context.brief !== undefined) {
+    try {
+      sinceBrief = checkSinceBrief(context.brief, BASE_REF, sliceBase);
+    } catch (error) {
+      console.log(`::warning::What merged since the brief could not be read: ${firstLine(error)}`);
+      sinceBrief = { kind: "not run", reason: "unreadable" };
+    }
   }
   console.log(
     `Since the brief: ${
@@ -347,6 +351,8 @@ try {
               sinceBrief.onBranch === undefined
                 ? ""
                 : ` and ${sinceBrief.onBranch.commits.length + sinceBrief.onBranch.more} on the branch before this slice`
+            }${
+              sinceBrief.branchUnread === true ? " (the branch before this slice could not be read)" : ""
             } since ${sinceBrief.commit} touched ${sinceBrief.files.length} named files`
     }.`,
   );

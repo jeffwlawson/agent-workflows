@@ -87,11 +87,13 @@ const capped = (commits: readonly SinceCommit[], room: number): SinceCommits => 
  * a local ref, and `branchBefore`, on a PRD PR's slice round, the commit this
  * slice was built on, so the PRD branch's earlier slices and catch-up merges
  * are listed apart from the base's. The commits under review are on neither.
+ * `null` is a slice round whose start could not be read: the base's commits
+ * are listed, and the result says the branch's were not.
  *
  * At most `MAX_SINCE_COMMITS` in all, the base's first, each group with a
  * count of the rest.
  */
-export const checkSinceBrief = (brief: Brief, base: string, branchBefore?: string): SinceBrief => {
+export const checkSinceBrief = (brief: Brief, base: string, branchBefore?: string | null): SinceBrief => {
   const section = briefSection(brief, WHERE_THINGS_ARE);
   if (section === undefined) return { kind: "not run", reason: "no section" };
   const text = section.join("\n");
@@ -117,7 +119,7 @@ export const checkSinceBrief = (brief: Brief, base: string, branchBefore?: strin
   }
 
   const onBase = commitsTouching([base, `^${readAt}`], files);
-  const onBranch = branchBefore === undefined ? undefined : commitsTouching([branchBefore, `^${base}`, `^${readAt}`], files);
+  const onBranch = branchBefore === undefined || branchBefore === null ? undefined : commitsTouching([branchBefore, `^${base}`, `^${readAt}`], files);
   const baseGroup = capped(onBase, MAX_SINCE_COMMITS);
   return {
     kind: "ran",
@@ -127,6 +129,7 @@ export const checkSinceBrief = (brief: Brief, base: string, branchBefore?: strin
     notFound,
     onBase: baseGroup,
     ...(onBranch === undefined ? {} : { onBranch: capped(onBranch, MAX_SINCE_COMMITS - baseGroup.commits.length) }),
+    ...(branchBefore === null ? { branchUnread: true } : {}),
   };
 };
 
@@ -139,8 +142,12 @@ const SKIPPED = "Nothing to rule on: leave `sinceBrief` out.";
 export const renderSinceBriefForReview = (since: SinceBrief | undefined): string => {
   if (since === undefined) return `(No check ran, since there are no criteria. ${SKIPPED})`;
   if (since.kind === "not run") return `(The check could not run: ${since.reason}. ${SKIPPED})`;
+  const unread =
+    since.branchUnread === true
+      ? " This pull request's branch before this slice could not be read, so its commits are not listed."
+      : "";
   if (!sinceBriefListed(since)) {
-    return `(No commit since \`${since.commit}\`, where the brief was read, touched the files it names. ${SKIPPED})`;
+    return `(No commit since \`${since.commit}\`, where the brief was read, touched the files it names.${unread} ${SKIPPED})`;
   }
   const group = (title: string, group: SinceCommits | undefined): string[] =>
     group === undefined || group.commits.length + group.more === 0
@@ -161,6 +168,7 @@ export const renderSinceBriefForReview = (since: SinceBrief | undefined): string
       "Commits on this pull request's branch before this slice (earlier slices and merges of the base) that touched them, newest first:",
       since.onBranch,
     ),
+    ...(unread === "" ? [] : [unread.trim()]),
   ]
     .join("\n")
     .trimEnd();

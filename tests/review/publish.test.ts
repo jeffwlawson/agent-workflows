@@ -614,11 +614,25 @@ describe("review:publish says what merged since the brief", () => {
   });
 
   it.each([
+    ["git could not read", { kind: "not run", reason: "unreadable" }, "because git could not read the commits since"],
+    ["the branch before this slice could not be read", { ...SINCE, branchUnread: true }, "**Not listed:** this branch's commits before this slice"],
+  ] as const)("posts that %s", async (_case, sinceBrief, line) => {
+    handOver(decide({ criteria: [CRITERION], linkedIssue: { kind: "read", number: 5 }, sinceBrief }));
+
+    await run();
+
+    expect(posted()?.body).toContain(line);
+  });
+
+  it.each([
     ["a check beside no criteria", { sinceBrief: SINCE }],
     ["a check that ran and names no files", { criteria: [CRITERION], criteriaCase: { kind: "criteria found" }, sinceBrief: { ...SINCE, files: [] } }],
     ["a check that did not run and lists commits", { criteria: [CRITERION], criteriaCase: { kind: "criteria found" }, sinceBrief: { ...SINCE, kind: "not run", reason: "unresolved" } }],
     ["a reason that names no commit where its line does", { criteria: [CRITERION], criteriaCase: { kind: "criteria found" }, sinceBrief: { kind: "not run", reason: "unresolved" } }],
     ["a commit that is not hex", { criteria: [CRITERION], criteriaCase: { kind: "criteria found" }, sinceBrief: { ...SINCE, commit: "--all" } }],
+    ["a git failure that names a commit", { criteria: [CRITERION], criteriaCase: { kind: "criteria found" }, sinceBrief: { kind: "not run", reason: "unreadable", commit: "abcdef1" } }],
+    ["a branch both listed and unread", { criteria: [CRITERION], criteriaCase: { kind: "criteria found" }, sinceBrief: { ...SINCE, onBranch: { commits: [], more: 0 }, branchUnread: true } }],
+    ["a check that did not run and says the branch was unread", { criteria: [CRITERION], criteriaCase: { kind: "criteria found" }, sinceBrief: { kind: "not run", reason: "no section", branchUnread: true } }],
     ["a sentence in place of the reason", { criteria: [CRITERION], criteriaCase: { kind: "criteria found" }, sinceBrief: { kind: "not run", reason: "The brief is old." } }],
   ])("refuses %s", async (_case, change) => {
     handOver(decide({ criteria: [] }));

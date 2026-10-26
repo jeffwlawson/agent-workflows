@@ -339,9 +339,10 @@ never the commits under review. The review rules in one line on whether any of t
 criterion means, and moves a criterion through the rulings it already has (*changed*, *unmet*, or
 `needsYou`), so the list adds no verdict of its own. `review:publish` shows the list and the ruling
 in a *Since the brief* group beside *Acceptance criteria*, naming any named file gone from the base
-or path not found at the read-at commit; where the check could not run (no such section, no
-read-at commit, one that does not resolve or is not on the base, no named file at it) it says why
-in one line there instead.
+or path not found at the read-at commit, and on a slice round where the PRD branch's commits
+before it could not be listed; where the check could not run (no such section, no read-at commit,
+one that does not resolve or is not on the base, no named file at it, or git failing to read it) it
+says why in one line there instead.
 
 **What the change is lives in the pull request's body, not the review** (#218). The run that opens
 a pull request writes its **frame** once and never again, in the order #298 settled: a note saying

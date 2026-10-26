@@ -1216,10 +1216,11 @@ export const MAX_SINCE_COMMITS = 20;
 /**
  * Why the since-the-brief check could not run (#541): the brief has no *Where
  * things are* section, or no read-at commit in it; the commit it names does
- * not resolve, or is not an ancestor of the base; or no file it names exists
- * at that commit.
+ * not resolve, or is not an ancestor of the base; no file it names exists
+ * at that commit; or git failed reading it, which costs the check and never
+ * the review.
  */
-export type SinceBriefSkip = "no section" | "no read-at commit" | "unresolved" | "not an ancestor" | "no file found";
+export type SinceBriefSkip = "no section" | "no read-at commit" | "unresolved" | "not an ancestor" | "no file found" | "unreadable";
 
 /**
  * The since-the-brief check (#541): the commits that touched the files a
@@ -1248,6 +1249,12 @@ export type SinceBrief =
       readonly onBase: SinceCommits;
       /** On a slice round, the PRD branch's commits before this slice: earlier slices and catch-up merges. */
       readonly onBranch?: SinceCommits | undefined;
+      /**
+       * On a slice round, set where this slice starts on the PRD branch
+       * could not be read, so its earlier commits are not listed and the body
+       * says so rather than showing the base's alone.
+       */
+      readonly branchUnread?: true | undefined;
       readonly ruling?: string | undefined;
     };
 
@@ -2440,7 +2447,12 @@ const SINCE_SKIPPED: Readonly<Record<SinceBriefSkip, (commit: string) => string>
   unresolved: (commit) => `the commit the brief says it was read at, \`${commit}\`, could not be found`,
   "not an ancestor": (commit) => `the commit the brief says it was read at, \`${commit}\`, is not on the base branch`,
   "no file found": (commit) => `no file the brief's *Where things are* names exists at \`${commit}\``,
+  unreadable: () => "git could not read the commits since the commit the brief says it was read at",
 };
+
+/** The body's note where a slice round's earlier commits could not be listed. */
+const BRANCH_UNREAD =
+  "**Not listed:** this branch's commits before this slice, since where this slice starts on the PRD branch could not be read.";
 
 const codeList = (words: readonly string[]): string => words.map((word) => `\`${word}\``).join(", ");
 
@@ -2468,6 +2480,7 @@ export const renderSinceBrief = (since: SinceBrief | undefined, shorten = false)
   const notes = [
     since.gone.length === 0 ? undefined : `**No longer at the base:** ${codeList(since.gone)}.`,
     since.notFound.length === 0 ? undefined : `**Not found at \`${since.commit}\`:** ${codeList(since.notFound)}.`,
+    since.branchUnread === true ? BRANCH_UNREAD : undefined,
   ].filter((note) => note !== undefined);
   const files = `${since.files.length} ${since.files.length === 1 ? "file" : "files"}`;
   if (!sinceBriefListed(since)) {

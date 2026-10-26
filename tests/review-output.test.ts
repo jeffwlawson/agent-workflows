@@ -3243,12 +3243,21 @@ describe("the body's *Since the brief* group", () => {
     expect(body).toContain("**Not found at `abcdef1`:** `src/nowhere.ts`.");
   });
 
+  it("says where a slice round's earlier commits could not be listed, with commits or without", () => {
+    const NOTE =
+      "**Not listed:** this branch's commits before this slice, since where this slice starts on the PRD branch could not be read.";
+    expect(renderDecided({ ...parts, sinceBrief: ran({ branchUnread: true }) })).toContain(NOTE);
+    expect(renderDecided({ ...parts, sinceBrief: ran({ branchUnread: true, onBase: { commits: [], more: 0 } }) })).toContain(NOTE);
+    expect(renderDecided({ ...parts, sinceBrief: ran() })).not.toContain("**Not listed:**");
+  });
+
   it.each([
     ["no section", undefined, "because the brief has no *Where things are* section._"],
     ["no read-at commit", undefined, "because the brief's *Where things are* section names no commit it was read at._"],
     ["unresolved", "abcdef1", "because the commit the brief says it was read at, `abcdef1`, could not be found._"],
     ["not an ancestor", "abcdef1", "because the commit the brief says it was read at, `abcdef1`, is not on the base branch._"],
     ["no file found", "abcdef1", "because no file the brief's *Where things are* names exists at `abcdef1`._"],
+    ["unreadable", undefined, "because git could not read the commits since the commit the brief says it was read at._"],
   ] as const)("says the check could not run on %s, and nothing else changes", (reason, commit, line) => {
     const sinceBrief: SinceBrief = { kind: "not run", reason, ...(commit === undefined ? {} : { commit }) };
     const body = renderDecided({ ...parts, sinceBrief });

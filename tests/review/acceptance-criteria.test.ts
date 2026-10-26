@@ -481,7 +481,15 @@ describe("the review brief's commits since the brief", () => {
 
   it("runs only where the review is handed criteria", () => {
     expect(RUNNER).toContain("const criteria = round?.kind === \"final\" ? [] : context.criteria;");
-    expect(RUNNER).toContain("criteria.length === 0 || context.brief === undefined ? undefined : checkSinceBrief(");
+    expect(RUNNER).toContain("if (criteria.length > 0 && context.brief !== undefined) {");
+  });
+
+  it("says where git failed, rather than handing the agent no check", () => {
+    expect(RUNNER).toContain('sinceBrief = { kind: "not run", reason: "unreadable" };');
+  });
+
+  it("marks a slice round whose start could not be read, rather than dropping its earlier commits", () => {
+    expect(RUNNER).toContain("?.range?.base ?? null)");
   });
 
   it.each([

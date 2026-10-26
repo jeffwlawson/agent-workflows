@@ -268,22 +268,30 @@ const sinceCommits = object({
 const sinceBrief = refine(
   object({
     kind: choice(["not run", "ran"]),
-    reason: optional(choice(["no section", "no read-at commit", "unresolved", "not an ancestor", "no file found"])),
+    reason: optional(choice(["no section", "no read-at commit", "unresolved", "not an ancestor", "no file found", "unreadable"])),
     commit: optional(SHA),
     files: optional(list(filePath, { max: MAX_ENTRIES })),
     gone: optional(list(filePath, { max: MAX_ENTRIES })),
     notFound: optional(list(text, { max: MAX_ENTRIES })),
     onBase: optional(sinceCommits),
     onBranch: optional(sinceCommits),
+    branchUnread: optional(choice([true])),
     ruling: optional(text),
   }),
-  ({ kind, reason, commit, files, gone, notFound, onBase, onBranch, ruling }, wrong): SinceBrief => {
+  ({ kind, reason, commit, files, gone, notFound, onBase, onBranch, branchUnread, ruling }, wrong): SinceBrief => {
     if (kind === "not run") {
       if (reason === undefined) return wrong("did not run, and says no reason");
-      if (files !== undefined || gone !== undefined || onBase !== undefined || onBranch !== undefined || ruling !== undefined) {
+      if (
+        files !== undefined ||
+        gone !== undefined ||
+        onBase !== undefined ||
+        onBranch !== undefined ||
+        branchUnread !== undefined ||
+        ruling !== undefined
+      ) {
         return wrong("did not run, and lists what it found");
       }
-      if ((reason === "no section" || reason === "no read-at commit") !== (commit === undefined)) {
+      if ((reason === "no section" || reason === "no read-at commit" || reason === "unreadable") !== (commit === undefined)) {
         return wrong(`did not run because of ${reason}, and ${commit === undefined ? "names no commit" : "names a commit"}`);
       }
       return { kind, reason, ...(commit === undefined ? {} : { commit }), ...(notFound === undefined ? {} : { notFound }) };
@@ -292,6 +300,7 @@ const sinceBrief = refine(
     if (commit === undefined || files === undefined || files.length === 0 || onBase === undefined) {
       return wrong("ran, and does not name its commit, its files and what it listed");
     }
+    if (onBranch !== undefined && branchUnread !== undefined) return wrong("lists this branch's earlier commits, and says they could not be read");
     if (onBase.commits.length + (onBranch?.commits.length ?? 0) > MAX_SINCE_COMMITS) {
       return wrong(`lists more than ${MAX_SINCE_COMMITS} commits`);
     }
@@ -303,6 +312,7 @@ const sinceBrief = refine(
       notFound: notFound ?? [],
       onBase,
       ...(onBranch === undefined ? {} : { onBranch }),
+      ...(branchUnread === undefined ? {} : { branchUnread }),
       ...(ruling === undefined ? {} : { ruling }),
     };
   },

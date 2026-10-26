@@ -211,7 +211,8 @@ The one failure here that has nothing to do with `GITHUB_TOKEN`, and the only on
 correct PAT does not fix.
 
 Every trigger in this loop listens on `types: [labeled]` and gates on `github.event.label.name`
-(one also listens on `closed`: `follow-ups`, which files on a merge).
+(one also listens on `closed`: `follow-ups`, which on a merge posts the post-merge checklist and
+files where `agent:follow-ups` is set).
 Labels passed in the **create** call produce only `issues.opened` — they ride along in that
 payload, but no `labeled` event is emitted and `github.event.label` does not exist on `opened`. The
 label is really on the issue, and the workflow correctly never saw an event.

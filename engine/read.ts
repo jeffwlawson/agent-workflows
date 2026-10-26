@@ -111,6 +111,16 @@ export interface AuthoredText {
   readonly association: string;
 }
 
+/**
+ * An issue's body with its author, and whether the number is an issue of this
+ * repository at all: REST answers a pull request's number at the same path,
+ * and follows an issue transferred out to the repository it went to.
+ */
+export interface IssueText extends AuthoredText {
+  /** False for a pull request, or an issue transferred to another repository. */
+  readonly isIssue: boolean;
+}
+
 /** An issue's place in the hierarchy, and its labels, as one query reads them together. */
 export interface IssueShape {
   /** The issue it is a sub-issue of, where it is one. */
@@ -174,8 +184,8 @@ export interface GitHubReader {
   blockedBy(number: number): Promise<readonly Blocker[]>;
   /** The body of every comment on the issue, oldest first. */
   issueComments(number: number): Promise<readonly string[]>;
-  /** The issue's body, or a pull request's, with its author. */
-  issueBody(number: number): Promise<AuthoredText>;
+  /** The issue's body, or a pull request's, with its author, and which it is. */
+  issueBody(number: number): Promise<IssueText>;
   /** Every comment on the issue or pull request's conversation, oldest first, each with its author: every page. */
   authoredComments(number: number): Promise<readonly AuthoredText[]>;
   /**
@@ -438,6 +448,12 @@ interface RawAuthored {
   readonly author_association?: string;
 }
 
+/** An issue as REST gives it, as far as `IssueText` reads it. */
+interface RawIssue extends RawAuthored {
+  readonly pull_request?: unknown;
+  readonly repository_url?: string;
+}
+
 const authored = (raw: RawAuthored): AuthoredText => ({
   body: raw.body ?? "",
   author: raw.user?.login ?? "",
@@ -492,7 +508,12 @@ export const githubReader = (repo: string, transport: Transport): GitHubReader =
       (await paged(`/repos/${repo}/issues/${number}/comments`, (page) => page as readonly { readonly body: string | null }[])).map(
         (comment) => comment.body ?? "",
       ),
-    issueBody: async (number) => authored((await transport.rest({ method: "GET", path: `/repos/${repo}/issues/${number}` })) as RawAuthored),
+    issueBody: async (number) => {
+      const raw = (await transport.rest({ method: "GET", path: `/repos/${repo}/issues/${number}` })) as RawIssue;
+      // A transferred issue is answered from where it went, by redirect.
+      const here = raw.repository_url === undefined || raw.repository_url.toLowerCase().endsWith(`/repos/${repo}`.toLowerCase());
+      return { ...authored(raw), isIssue: raw.pull_request === undefined && here };
+    },
     authoredComments: async (number) =>
       (await paged(`/repos/${repo}/issues/${number}/comments`, (page) => page as readonly RawAuthored[])).map(authored),
     branchesStarting: async (prefix) => {

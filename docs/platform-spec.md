@@ -3481,7 +3481,9 @@ no checkout.
   last trusted text, oldest first, with an acceptance section, as the review reads it (§4.3). Its
   *After merge, by a human* items are the checklist's, each passed through `clean`. An issue's body
   is read only where its author passes the trust gate (§4.1), and its comments one by one the
-  same way. One that cannot be read fails the run.
+  same way. A linked number that is no issue of this repository (a pull request, an issue deleted
+  or transferred out) names no brief, and posts no checklist. Any other that cannot be read fails
+  the run, but only after the filing, which it never prevents.
 - The comments on the pull request, for a checklist already posted: one carrying
   `<!-- agent:post-merge-checklist -->` by the loop's identity. One by anyone else does not count.
 - `agent:follow-ups` on the pull request, read live, which gates the filing and nothing else, so a
@@ -3508,8 +3510,10 @@ the job ended and whether it ran out of time, and works out the ending from them
 - **A run that stopped** (`failure` or `cancelled`): one comment, `` **`agent:follow-ups`
   stopped:** `` and the reason as a sentence, starting with a capital and ending in a full stop
   (#253), the run's link, and `` The post-merge checklist may not have been posted, and some
-  follow-up issues may not have been filed. To try again, add `agent:follow-ups`, or remove it and
-  add it back where it is on; nothing is posted or filed twice. ``
+  follow-up issues may not have been filed. To try again, remove `agent:follow-ups` and add it
+  back. Where it is not on, adding it is the retry, but it also files the follow-ups the review
+  recorded; re-running the failed job on Actions retries without filing. Nothing is posted or filed
+  twice. ``
 
 The reason is, in this order: `` It timed out after <TIMEOUT_MINUTES> minutes. `` where `TIMED_OUT`
 is `true`; `It was cancelled before it finished, by hand or by GitHub.` where the job was cancelled;

@@ -1,3 +1,4 @@
+import { GitHubError } from "../engine/github.js";
 import type { GitHubReader } from "../engine/read.js";
 import { ReadBackFailed, WriteFailed, type Limits, type Writer } from "../engine/writer.js";
 import { describe, inWriteLog, pullRequestNumber } from "../shared/command-helpers.js";
@@ -77,16 +78,33 @@ export const file = async (inputs: Inputs, io: Io): Promise<void> => {
   // manual entry point also starts this run on a pull request closed without
   // merging, on either orchestrator, and its work never landed, so there is
   // nothing to check after it. Read live, as REST's `merged` says it.
-  if (pull.merged) await postChecklist(io.github, workflow, pr, pull.body, accounts);
-  else console.log(`#${pr} has not merged, so there is no post-merge checklist.`);
+  //
+  // A checklist that cannot be gathered or posted never costs the filing: its
+  // failure is held while the findings are filed, and fails the run after
+  // them, so the conclude comment still says the checklist may be missing.
+  let checklistFailed: Error | undefined;
+  if (pull.merged) {
+    try {
+      await postChecklist(io.github, workflow, pr, pull.body, accounts);
+    } catch (error) {
+      checklistFailed = error instanceof Error ? error : new Error(String(error));
+      console.log(`::warning::${checklistFailed.message} Filing goes on.`);
+    }
+  } else console.log(`#${pr} has not merged, so there is no post-merge checklist.`);
 
+  await fileFindings(io, workflow, pr, pull.labels, accounts);
+  if (checklistFailed !== undefined) throw checklistFailed;
+};
+
+/** The filing: the findings the reviews recorded, filed where the marker is on. */
+const fileFindings = async (io: Io, workflow: Writer, pr: number, labels: readonly string[], accounts: LoopAccounts): Promise<void> => {
   // The only branch in the filing. The label is the opt-out, so it is re-read
   // here rather than taken from the event payload, which is assembled when the
   // event fires and does not reflect a label removed a second before the merge
   // button. A pull request that cannot be read throws rather than reading as
   // unmarked: that would drop its findings in silence, with the marker that
   // makes the retry possible still on.
-  if (!pull.labels.includes(FOLLOW_UPS_LABEL)) {
+  if (!labels.includes(FOLLOW_UPS_LABEL)) {
     // No comment, no refusal, no label. A job condition cannot make an API
     // call, so this job starts on every merge and mostly ends here: most
     // merges have no findings, and a comment on each of those is how a
@@ -143,8 +161,9 @@ const LIMITS: Limits = { createIssue: FOLLOW_UPS_LIST_LIMIT, comment: 2, removeL
  * sub-issue in the list's order, open or closed: the list, not the `Closes`
  * block, which names only those open when it was last written.
  *
- * An issue that cannot be read fails the run rather than leaving its items out
- * of a checklist that would then look whole.
+ * A link to a number that is no issue here posts nothing. An issue that cannot
+ * be read otherwise fails the run, after the filing, rather than leaving its
+ * items out of a checklist that would then look whole.
  */
 const postChecklist = async (github: GitHubReader, workflow: Writer, pr: number, body: string, accounts: LoopAccounts): Promise<void> => {
   const linked = LINKED_ISSUE.exec(body)?.[1];
@@ -153,11 +172,28 @@ const postChecklist = async (github: GitHubReader, workflow: Writer, pr: number,
     return;
   }
   const parent = Number(linked);
-  const numbers = await reading(`#${parent}`, async () =>
-    (await github.issueShape(parent)).subIssues > 0 ? [parent, ...(await github.subIssues(parent)).map((sub) => sub.number)] : [parent],
+  // The link is read as the review reads it, where the number is no issue of
+  // this repository: a pull request's number, an issue deleted, or one
+  // transferred out. Those name no brief, so there is no checklist, and they
+  // fail nothing. Any other read that fails, fails the run.
+  const parentBody = await reading(`#${parent}`, async () => {
+    try {
+      const text = await github.issueBody(parent);
+      return text.isIssue ? text : undefined;
+    } catch (error) {
+      if (error instanceof GitHubError && (error.status === 404 || error.status === 410)) return undefined;
+      throw error;
+    }
+  });
+  if (parentBody === undefined) {
+    console.log(`#${pr} links #${parent}, which is not an issue of this repository, so there is no post-merge checklist.`);
+    return;
+  }
+  const subs = await reading(`#${parent}`, async () =>
+    (await github.issueShape(parent)).subIssues > 0 ? (await github.subIssues(parent)).map((sub) => sub.number) : [],
   );
-  const issues: ChecklistIssue[] = [];
-  for (const number of numbers) {
+  const issues: ChecklistIssue[] = [{ number: parent, body: parentBody, comments: await reading(`#${parent}`, () => github.authoredComments(parent)) }];
+  for (const number of subs) {
     issues.push(await reading(`#${number}`, async () => ({ number, body: await github.issueBody(number), comments: await github.authoredComments(number) })));
   }
   const existing = await reading(`the comments on #${pr}`, () => github.authoredComments(pr));

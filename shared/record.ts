@@ -361,13 +361,15 @@ export const stubMarker = (location: string, prNumber: number, seq: number): str
  * already there fires no event, so the gesture is remove, then add. Since
  * #544 the run posts the post-merge checklist first, on every merge, so the
  * retry names it too: on a merge without the label, adding it is the retry,
- * and a retry posts no second checklist.
+ * and a retry posts no second checklist. Adding it also files, and removing
+ * it is the opt-out of filing, so the retry says so, and names the one route
+ * that does not file: a re-run of the job, which reads the label live.
  */
 export const FOLLOW_UPS_STOPPED = {
   timedOut: (minutes: string): string => `It timed out after ${minutes} minutes.`,
   cancelled: "It was cancelled before it finished, by hand or by GitHub.",
   noReason: "It stopped without giving a reason. The workflow run's log has the details.",
-  retry: `The post-merge checklist may not have been posted, and some follow-up issues may not have been filed. To try again, add \`${FOLLOW_UPS_LABEL}\`, or remove it and add it back where it is on; nothing is posted or filed twice.`,
+  retry: `The post-merge checklist may not have been posted, and some follow-up issues may not have been filed. To try again, remove \`${FOLLOW_UPS_LABEL}\` and add it back. Where it is not on, adding it is the retry, but it also files the follow-ups the review recorded; re-running the failed job on Actions retries without filing. Nothing is posted or filed twice.`,
 } as const;
 
 /**

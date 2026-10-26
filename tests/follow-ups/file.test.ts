@@ -331,7 +331,7 @@ describe("follow-ups:file's post-merge checklist", () => {
 
     expect(writes()).toEqual(["workflow comment"]);
     expect(comments()).toEqual([`${OPENING}\n\nFrom #5:\n- [ ] Run setup on a real worker.\n\n${POST_MERGE_CHECKLIST_MARK}`]);
-    expect(reads.map((r) => r.method)).toEqual(["pullRequest", "issueShape", "issueBody", "authoredComments", "authoredComments"]);
+    expect(reads.map((r) => r.method)).toEqual(["pullRequest", "issueBody", "issueShape", "authoredComments", "authoredComments"]);
     expect(reads.filter((r) => r.method === "authoredComments").map((r) => r.args)).toEqual([[5], [PR]]);
     expect(markerOn()).toBe(false);
     expect(logged()).toEqual([`Posted the post-merge checklist on #${PR}.`, `#${PR} does not carry \`${FOLLOW_UPS_LABEL}\`. Nothing to file.`]);
@@ -413,15 +413,27 @@ describe("follow-ups:file's post-merge checklist", () => {
     expect(markerOn()).toBe(true);
   });
 
-  it("fails the run, naming the issue and writing nothing, where an issue cannot be read", async () => {
+  it("files first and then fails the run, naming the issue, where a sub-issue cannot be read", async () => {
     closes("Closes #20");
     linked(20, brief("Check."));
     github.issues.set(20, { subIssues: 1, blockedBy: [], children: [{ number: 21, title: "gone", state: "OPEN" }] });
     reviewed([followUp(0)]);
 
     await expect(run()).rejects.toThrow(/^Couldn't read #21 for the post-merge checklist: .*404/);
+    expect(checklists()).toEqual([]);
+    expect(filed().map(([, title]) => title)).toEqual(["Finding 0"]);
+    expect(markerOn()).toBe(false);
+  });
+
+  it("fails the run without the marker too, where a sub-issue cannot be read, having written nothing", async () => {
+    github.pullRequests.get(PR)?.labels.splice(0);
+    closes("Closes #20");
+    linked(20, brief("Check."));
+    github.issues.set(20, { subIssues: 1, blockedBy: [], children: [{ number: 21, title: "gone", state: "OPEN" }] });
+
+    await expect(run()).rejects.toThrow(/^Couldn't read #21 for the post-merge checklist/);
     expect(writes()).toEqual([]);
-    expect(markerOn()).toBe(true);
+    expect(logged()).toContain(`#${PR} does not carry \`${FOLLOW_UPS_LABEL}\`. Nothing to file.`);
   });
 
   it("is not posted on a pull request closed without merging, which the manual entry point still files from", async () => {
@@ -439,10 +451,21 @@ describe("follow-ups:file's post-merge checklist", () => {
     expect(logged()[0]).toBe(`#${PR} has not merged, so there is no post-merge checklist.`);
   });
 
-  it("fails the run where the linked issue cannot be read", async () => {
+  it.each([
+    ["an issue not found", () => undefined],
+    ["a pull request's number", () => github.pullRequests.set(8, { ...github.pullRequests.get(PR)!, number: 8, body: "### After merge, by a human\n- Not a brief." })],
+    ["an issue transferred out", () => linked(5, brief("Check."))],
+  ])("posts nothing and fails nothing where the link names %s, and still files", async (_case, seed) => {
     closes("Closes #5");
+    seed();
+    if (github.pullRequests.has(8)) closes("Closes #8");
+    if (github.bodies.has(5)) github.bodies.set(5, { ...github.bodies.get(5)!, isIssue: false });
+    reviewed([followUp(0)]);
 
-    await expect(run()).rejects.toThrow(/^Couldn't read #5 for the post-merge checklist: .*404/);
-    expect(writes()).toEqual([]);
+    await run();
+
+    expect(checklists()).toEqual([]);
+    expect(filed().map(([, title]) => title)).toEqual(["Finding 0"]);
+    expect(logged()[0]).toMatch(/^#\d+ links #\d+, which is not an issue of this repository, so there is no post-merge checklist\.$/);
   });
 });

@@ -863,8 +863,17 @@ describe("githubReader", () => {
   it("reads an issue's body with its author's login and association", async () => {
     const { transport, sent } = recording(() => ({ body: "A brief.", user: { login: "maintainer" }, author_association: "OWNER" }));
 
-    expect(await githubReader(REPO, transport).issueBody(9)).toEqual({ body: "A brief.", author: "maintainer", association: "OWNER" });
+    expect(await githubReader(REPO, transport).issueBody(9)).toEqual({ body: "A brief.", author: "maintainer", association: "OWNER", isIssue: true });
     expect(paths(sent)).toEqual(["/repos/o/r/issues/9"]);
+  });
+
+  it("reads a pull request's number, and an issue transferred out, as not an issue of this repository", async () => {
+    const isIssue = async (raw: Record<string, unknown>) =>
+      (await githubReader(REPO, recording(() => ({ body: "x", user: { login: "a" }, author_association: "OWNER", ...raw })).transport).issueBody(9)).isIssue;
+
+    expect(await isIssue({ repository_url: "https://api.github.com/repos/O/R" })).toBe(true);
+    expect(await isIssue({ pull_request: { url: "https://api.github.com/repos/o/r/pulls/9" } })).toBe(false);
+    expect(await isIssue({ repository_url: "https://api.github.com/repos/o/elsewhere" })).toBe(false);
   });
 
   it("reads every comment on an issue with its author, every page, a deleted account and a null body included", async () => {

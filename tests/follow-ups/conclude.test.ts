@@ -95,7 +95,7 @@ const comments = (): string[] => github.comments.map((c) => c.body);
 
 /** What the retired step's `printf` wrote for `sentence`, byte for byte. */
 const SHELL = (sentence: string): string =>
-  `**\`agent:follow-ups\` stopped:** ${sentence}\n\n[Workflow run](${RUN_URL}) · The post-merge checklist may not have been posted, and some follow-up issues may not have been filed. To try again, add \`agent:follow-ups\`, or remove it and add it back where it is on; nothing is posted or filed twice.\n`;
+  `**\`agent:follow-ups\` stopped:** ${sentence}\n\n[Workflow run](${RUN_URL}) · The post-merge checklist may not have been posted, and some follow-up issues may not have been filed. To try again, remove \`agent:follow-ups\` and add it back. Where it is not on, adding it is the retry, but it also files the follow-ups the review recorded; re-running the failed job on Actions retries without filing. Nothing is posted or filed twice.\n`;
 
 const NO_REASON = "It stopped without giving a reason. The workflow run's log has the details.";
 const CANCELLED = "It was cancelled before it finished, by hand or by GitHub.";

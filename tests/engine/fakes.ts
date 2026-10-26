@@ -106,8 +106,12 @@ export interface FakeGitHub {
   /** Per workflow run, the log of each of its jobs that failed. A run not here has none. */
   readonly jobLogs: Map<number, string[]>;
   readonly comments: { readonly token: string; readonly issue: number; readonly body: string }[];
-  /** Issue bodies with their authors, by number: what `issueBody` reads. One not here is not found. */
-  readonly bodies: Map<number, AuthoredText>;
+  /**
+   * Issue bodies with their authors, by number: what `issueBody` reads, as an
+   * issue of this repository unless `isIssue` says not. A pull request not here
+   * is read as one; anything else is not found.
+   */
+  readonly bodies: Map<number, AuthoredText & { readonly isIssue?: boolean }>;
   /**
    * Per issue or pull request, the comments a test put on it, with their
    * authors, oldest first. `authoredComments` reads these, then every comment
@@ -278,8 +282,10 @@ export const fakeReader = (github: FakeGitHub): { readonly reader: GitHubReader;
     issueBody: async (number) => {
       reads.push({ method: "issueBody", args: [number] });
       const body = github.bodies.get(number);
-      if (body === undefined) throw new GitHubError(`issue #${number}: 404 Not Found`, 404);
-      return body;
+      if (body !== undefined) return { ...body, isIssue: body.isIssue ?? true };
+      const pr = github.pullRequests.get(number);
+      if (pr !== undefined) return { body: pr.body, author: "", association: "NONE", isIssue: false };
+      throw new GitHubError(`issue #${number}: 404 Not Found`, 404);
     },
     authoredComments: async (number) => {
       reads.push({ method: "authoredComments", args: [number] });

@@ -199,7 +199,23 @@ and what broke were criteria naming *where* (such as "`tests/workflows.test.ts` 
   pattern does not match `follow-ups`"), never a location.
 - **File, function and step names go in a separate *Where things are* part** of the brief, dated
   (and naming the commit on `main` they were read at), as hints for the implementer. #447's check
-  resolves them at build time.
+  does not resolve them against that commit: it tells the implementing agent to check that the
+  things named still exist, to note a move in its commit message, and to stop as stale where the
+  premise is gone. It catches a name that moved or went, not a change in what an unchanged name does.
+- **The review checks the files against the read-at commit** (#541). It lists the commits since
+  that commit that touched the files the *Where things are* part names, rules on whether any
+  changes what a criterion means, and shows both in its body. It reads the part leniently:
+  - the part opens at a heading, or a bold label alone on its line, containing "Where things are",
+    and runs to the next of either, in the same text the criteria are read from;
+  - the read-at commit is the first 7-to-40-character hex word in it, so each of these reads:
+    ``Read at `main` 340ebd1, 2026-10-26.``,
+    ``Read at `main` 77709f1 (v0.8.11), 2026-10-24.``,
+    `Read at 340ebd1 (2026-10-25).`;
+  - the files are its backticked words that name a path at that commit. A backticked word with a
+    `/` that names none is listed as not found; any other (a function, a step) is ignored.
+
+  A brief with no such part, or no read-at commit in it, is not reconstructed: the review says the
+  check could not run.
 
 Two placement rules follow from how the review reads criteria. The review takes acceptance criteria
 from a heading (or a bold label on its own line) containing "Acceptance criteria", and when a

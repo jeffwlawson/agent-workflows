@@ -65,6 +65,7 @@ import {
   reviewOutputSchema,
   type CiResult,
   type FixRounds,
+  type SinceBrief,
 } from "../shared/review-output.js";
 import {
   describeHistory,
@@ -328,8 +329,14 @@ try {
     round?.kind === "slice" && round.slice !== undefined
       ? (prdBranch?.ranges.slices.find((s) => s.subIssue === round.slice?.subIssue)?.range?.base ?? undefined)
       : undefined;
-  const sinceBrief =
-    criteria.length === 0 || context.brief === undefined ? undefined : checkSinceBrief(context.brief, BASE_REF, sliceBase);
+  // A git failure the check does not expect costs the check, never the review.
+  let sinceBrief: SinceBrief | undefined;
+  try {
+    sinceBrief =
+      criteria.length === 0 || context.brief === undefined ? undefined : checkSinceBrief(context.brief, BASE_REF, sliceBase);
+  } catch (error) {
+    console.log(`::warning::What merged since the brief could not be read, so the review is not handed it: ${firstLine(error)}`);
+  }
   console.log(
     `Since the brief: ${
       sinceBrief === undefined

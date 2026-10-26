@@ -3472,6 +3472,8 @@ no checkout.
 
 #### What it reads from the record
 
+- Whether the pull request merged, read live: the checklist is posted only where it did, since the
+  manual entry point also runs on a pull request closed without merging.
 - The pull request's body, for its linked issue: the first `Closes #<n>`, `Fixes #<n>` or
   `Resolves #<n>`. Where that issue has sub-issues it is a PRD's parent, read first, then each
   sub-issue in the sub-issue list's order, open or closed.

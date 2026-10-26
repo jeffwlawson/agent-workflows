@@ -73,8 +73,12 @@ export const file = async (inputs: Inputs, io: Io): Promise<void> => {
   // On every merge, labelled or not (#544): the label is the opt-out of
   // filing, not of being reminded, and a brief can name a post-merge check on
   // a pull request whose review found nothing out of scope. So it comes first,
-  // and the label below gates the filing alone.
-  await postChecklist(io.github, workflow, pr, pull.body, accounts);
+  // and the label below gates the filing alone. Only on a merge, though: the
+  // manual entry point also starts this run on a pull request closed without
+  // merging, on either orchestrator, and its work never landed, so there is
+  // nothing to check after it. Read live, as REST's `merged` says it.
+  if (pull.merged) await postChecklist(io.github, workflow, pr, pull.body, accounts);
+  else console.log(`#${pr} has not merged, so there is no post-merge checklist.`);
 
   // The only branch in the filing. The label is the opt-out, so it is re-read
   // here rather than taken from the event payload, which is assembled when the

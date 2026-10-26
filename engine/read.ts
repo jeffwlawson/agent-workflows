@@ -9,6 +9,8 @@ export interface PullRequest {
   readonly number: number;
   readonly nodeId: string;
   readonly state: "open" | "closed";
+  /** Whether it merged: a closed pull request may not have. */
+  readonly merged: boolean;
   readonly draft: boolean;
   readonly headSha: string;
   readonly title: string;
@@ -264,6 +266,7 @@ export interface RawPullRequest {
   readonly number: number;
   readonly node_id: string;
   readonly state: "open" | "closed";
+  readonly merged?: boolean;
   readonly draft: boolean;
   readonly title: string;
   readonly body: string | null;
@@ -275,6 +278,8 @@ export const toPullRequest = (raw: RawPullRequest): PullRequest => ({
   number: raw.number,
   nodeId: raw.node_id,
   state: raw.state,
+  // Literally `true`, as `follow-ups.yml`'s condition reads it.
+  merged: raw.merged === true,
   draft: raw.draft,
   headSha: raw.head.sha,
   title: raw.title,

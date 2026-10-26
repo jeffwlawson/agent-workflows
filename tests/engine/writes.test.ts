@@ -458,12 +458,22 @@ describe("githubReader", () => {
       number: 7,
       nodeId: "PR_7",
       state: "open",
+      merged: false,
       draft: true,
       headSha: SHA,
       title: "Title",
       body: "Body",
       labels: ["agent:x"],
     });
+  });
+
+  it("reads whether a pull request merged, as REST's `merged` says it, literally `true`", async () => {
+    const merged = async (raw: Record<string, unknown>) =>
+      (await githubReader(REPO, recording(() => ({ ...rawPull(), state: "closed", ...raw })).transport).pullRequest(7)).merged;
+
+    expect(await merged({ merged: true })).toBe(true);
+    expect(await merged({ merged: false })).toBe(false);
+    expect(await merged({ merged: "true" })).toBe(false);
   });
 
   it("reads every page of a commit's statuses", async () => {

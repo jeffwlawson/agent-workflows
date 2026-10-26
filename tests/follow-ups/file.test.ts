@@ -55,7 +55,7 @@ const stub = (number: number, body: string): void => {
 };
 
 beforeEach(() => {
-  github = fakeGitHub([{ number: PR, state: "closed", labels: [FOLLOW_UPS_LABEL] }]);
+  github = fakeGitHub([{ number: PR, state: "closed", merged: true, labels: [FOLLOW_UPS_LABEL] }]);
   github.repoLabels.push(TRIAGE_LABEL, FOLLOW_UP_STUB_LABEL);
   made = undefined;
   asked = undefined;
@@ -422,6 +422,21 @@ describe("follow-ups:file's post-merge checklist", () => {
     await expect(run()).rejects.toThrow(/^Couldn't read #21 for the post-merge checklist: .*404/);
     expect(writes()).toEqual([]);
     expect(markerOn()).toBe(true);
+  });
+
+  it("is not posted on a pull request closed without merging, which the manual entry point still files from", async () => {
+    const pull = github.pullRequests.get(PR);
+    if (pull !== undefined) pull.merged = false;
+    closes("Closes #5");
+    linked(5, brief("Check."));
+    reviewed([followUp(0)]);
+
+    await run();
+
+    expect(checklists()).toEqual([]);
+    expect(reads.map((r) => r.method)).not.toContain("issueBody");
+    expect(filed().map(([, title]) => title)).toEqual(["Finding 0"]);
+    expect(logged()[0]).toBe(`#${PR} has not merged, so there is no post-merge checklist.`);
   });
 
   it("fails the run where the linked issue cannot be read", async () => {

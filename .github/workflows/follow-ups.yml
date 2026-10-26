@@ -22,7 +22,7 @@ name: Agent Follow-ups (reusable)
 # | `closed` | merged | present | the post-merge checklist is posted where a linked brief names a check; the latest review's findings are filed, the PR is told what happened to each, the marker is removed |
 # | `closed` | merged | absent | the post-merge checklist is posted where a linked brief names a check; nothing is filed, and otherwise the job exits silently: no comment, no refusal, no label |
 # | `closed` | not merged | any | the job never starts; abandoned work does not populate the tracker |
-# | `labeled` `agent:follow-ups` | closed, merged or not | present, by construction | the same run: the manual entry point, for a missed close event, a reconsidered opt-out or a partial failure; a checklist already posted is not posted again |
+# | `labeled` `agent:follow-ups` | closed, merged or not | present, by construction | the same run: the manual entry point, for a missed close event, a reconsidered opt-out or a partial failure; a checklist already posted is not posted again, and none is posted on a pull request that did not merge |
 # | `labeled` `agent:follow-ups` | open | any | the job never starts; filing round 3's findings would strand round 9's |
 # | `labeled` anything else | any | any | the job never starts |
 # | any of the above, from a fork | any | any | the job never starts |

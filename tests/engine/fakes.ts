@@ -41,6 +41,8 @@ export interface FakePullRequest {
   number: number;
   nodeId: string;
   state: "open" | "closed";
+  /** Whether it merged; not where a test does not say. */
+  merged?: boolean;
   draft: boolean;
   headSha: string;
   title: string;
@@ -250,7 +252,7 @@ export const fakeReader = (github: FakeGitHub): { readonly reader: GitHubReader;
     pullRequest: async (number) => {
       reads.push({ method: "pullRequest", args: [number] });
       const pr = pullRequestOf(github, number);
-      return { ...pr, labels: [...pr.labels] } satisfies PullRequest;
+      return { ...pr, merged: pr.merged ?? false, labels: [...pr.labels] } satisfies PullRequest;
     },
     issueShape: async (number) => {
       reads.push({ method: "issueShape", args: [number] });

@@ -1,11 +1,13 @@
+import type { GitHubReader } from "../engine/read.js";
 import { ReadBackFailed, WriteFailed, type Limits, type Writer } from "../engine/writer.js";
 import { describe, inWriteLog, pullRequestNumber } from "../shared/command-helpers.js";
 import type { CommandIo } from "../shared/command-io.js";
 import type { COMMANDS } from "../shared/contract.js";
 import type { InputValues } from "../shared/env.js";
+import { planChecklist, type ChecklistIssue } from "./checklist.js";
 import { isStubFor, planFollowUps, type PlannedIssue } from "../shared/follow-up-plan.js";
-import { loopAccounts } from "../shared/loop-accounts.js";
-import { FOLLOW_UP_STUB_LABEL, FOLLOW_UPS_LABEL } from "../shared/record.js";
+import { loopAccounts, type LoopAccounts } from "../shared/loop-accounts.js";
+import { FOLLOW_UP_STUB_LABEL, FOLLOW_UPS_LABEL, LINKED_ISSUE } from "../shared/record.js";
 import { FOLLOW_UPS_LIST_LIMIT } from "../shared/review-output.js";
 
 type Declared = (typeof COMMANDS)["follow-ups:file"];
@@ -24,9 +26,13 @@ type Io = CommandIo<Declared["outputs"]>;
  * would be the agent's judgement is a pure function instead: `planFollowUps`,
  * which every dedup and authenticity rule is unit-tested through.
  *
- * So this function is three lines of work and an order: gather, plan, perform.
+ * It has two jobs since #544. On every merge it posts the **post-merge
+ * checklist**, the linked briefs' *After merge, by a human* items, planned by
+ * `planChecklist` (`follow-ups/checklist.ts`). Then, only where the marker is
+ * on, it **files**: three lines of work and an order, gather, plan, perform.
  * It decides exactly one thing itself, and only because a plan cannot be made
- * without it: whether the marker is still on the pull request. The CLI reads
+ * without it: whether the marker is still on the pull request, which gates
+ * the filing and nothing else. The CLI reads
  * its inputs and hands them over, and turns anything it throws into `fail()`.
  *
  * It reads through the engine's reader and writes through its writer (#510),
@@ -61,17 +67,26 @@ export const file = async (inputs: Inputs, io: Io): Promise<void> => {
   // retry into a second copy of every stub.
   const pr = pullRequestNumber(inputs.PR_NUMBER);
 
-  // The only branch in this file. The label is the opt-out, so it is re-read
+  const pull = await io.github.pullRequest(pr);
+  const { workflow } = io.writers(LIMITS);
+
+  // On every merge, labelled or not (#544): the label is the opt-out of
+  // filing, not of being reminded, and a brief can name a post-merge check on
+  // a pull request whose review found nothing out of scope. So it comes first,
+  // and the label below gates the filing alone.
+  await postChecklist(io.github, workflow, pr, pull.body, accounts);
+
+  // The only branch in the filing. The label is the opt-out, so it is re-read
   // here rather than taken from the event payload, which is assembled when the
   // event fires and does not reflect a label removed a second before the merge
   // button. A pull request that cannot be read throws rather than reading as
   // unmarked: that would drop its findings in silence, with the marker that
   // makes the retry possible still on.
-  if (!(await io.github.pullRequest(pr)).labels.includes(FOLLOW_UPS_LABEL)) {
-    // A silent exit 0: no comment, no refusal, no label. A job condition cannot
-    // make an API call, so this job starts on every merge and mostly ends
-    // here — most merges have no findings, and a comment on each of those is
-    // how a channel teaches people to stop reading it.
+  if (!pull.labels.includes(FOLLOW_UPS_LABEL)) {
+    // No comment, no refusal, no label. A job condition cannot make an API
+    // call, so this job starts on every merge and mostly ends here: most
+    // merges have no findings, and a comment on each of those is how a
+    // channel teaches people to stop reading it.
     console.log(`#${pr} does not carry \`${FOLLOW_UPS_LABEL}\`. Nothing to file.`);
     return;
   }
@@ -80,7 +95,6 @@ export const file = async (inputs: Inputs, io: Io): Promise<void> => {
     { prNumber: pr, reviews: await io.github.reviewHistory(pr), stubs: await io.github.labelledIssues(FOLLOW_UP_STUB_LABEL) },
     accounts,
   );
-  const { workflow } = io.writers(LIMITS);
   const available = new Set(plan.issues.length === 0 ? [] : await io.github.repoLabels());
 
   const created: number[] = [];
@@ -110,12 +124,66 @@ export const file = async (inputs: Inputs, io: Io): Promise<void> => {
 /**
  * What it may write, and how many of each, on the workflow's writer: stubs up
  * to the most a review's hand-over may carry, a guard against a runaway plan
- * rather than a quota; the one report; and the marker's removal. Every other
+ * rather than a quota; the post-merge checklist and the one report; and the
+ * marker's removal. Every other
  * type is limited to none, and the loop's writer is never used: a stub made
  * with the workflow token starts no workflow, and a repository without
  * `AGENT_PAT` still files.
  */
-const LIMITS: Limits = { createIssue: FOLLOW_UPS_LIST_LIMIT, comment: 1, removeLabel: 1 };
+const LIMITS: Limits = { createIssue: FOLLOW_UPS_LIST_LIMIT, comment: 2, removeLabel: 1 };
+
+/**
+ * The post-merge checklist (#544), gathered, planned by `planChecklist` and
+ * posted. The linked issue is the first a closing keyword in the body names;
+ * where it has sub-issues it is a PRD's parent, read first, then each
+ * sub-issue in the list's order, open or closed: the list, not the `Closes`
+ * block, which names only those open when it was last written.
+ *
+ * An issue that cannot be read fails the run rather than leaving its items out
+ * of a checklist that would then look whole.
+ */
+const postChecklist = async (github: GitHubReader, workflow: Writer, pr: number, body: string, accounts: LoopAccounts): Promise<void> => {
+  const linked = LINKED_ISSUE.exec(body)?.[1];
+  if (linked === undefined) {
+    console.log(`#${pr} links no issue, so there is no post-merge checklist.`);
+    return;
+  }
+  const parent = Number(linked);
+  const numbers = await reading(`#${parent}`, async () =>
+    (await github.issueShape(parent)).subIssues > 0 ? [parent, ...(await github.subIssues(parent)).map((sub) => sub.number)] : [parent],
+  );
+  const issues: ChecklistIssue[] = [];
+  for (const number of numbers) {
+    issues.push(await reading(`#${number}`, async () => ({ number, body: await github.issueBody(number), comments: await github.authoredComments(number) })));
+  }
+  const existing = await reading(`the comments on #${pr}`, () => github.authoredComments(pr));
+
+  const plan = planChecklist({ issues, existing }, accounts);
+  if (plan.kind === "none") {
+    console.log("No linked brief names a check for after the merge, so there is no post-merge checklist.");
+    return;
+  }
+  if (plan.kind === "posted") {
+    console.log(`#${pr} already carries the post-merge checklist, so it is not posted again.`);
+    return;
+  }
+  try {
+    await workflow.comment(pr, plan.body);
+  } catch (error) {
+    if (!(error instanceof WriteFailed)) throw error;
+    throw new Error(`Couldn't post the post-merge checklist on #${pr}: ${describe(error.cause)}`, { cause: error });
+  }
+  console.log(`Posted the post-merge checklist on #${pr}.`);
+};
+
+/** `read`, or a sentence naming what could not be read for the checklist. */
+const reading = async <T>(what: string, read: () => Promise<T>): Promise<T> => {
+  try {
+    return await read();
+  } catch (error) {
+    throw new Error(`Couldn't read ${what} for the post-merge checklist: ${describe(error)}`, { cause: error });
+  }
+};
 
 /**
  * One planned stub, filed with the labels of its own the repository has, and

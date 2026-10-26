@@ -12,6 +12,7 @@ import {
 } from "../shared/pr-feedback.js";
 import { keyedByChangedFiles, parseDiffLines } from "../shared/diff-lines.js";
 import type { LoopAccounts } from "../shared/loop-accounts.js";
+import { LINKED_ISSUE } from "../shared/record.js";
 import type { PostedNote } from "../shared/fix-notes.js";
 import type { LinkedIssue } from "../shared/review-output.js";
 import {
@@ -111,7 +112,7 @@ export const fetchPullRequestContext = (
     body?: string | null;
   };
 
-  const issueMatch = (prView.body ?? "").match(/(?:closes|fixes|resolves)\s+#(\d+)/i);
+  const issueMatch = (prView.body ?? "").match(LINKED_ISSUE);
   // `issue` is the one issue this review is about, where the body cannot say:
   // a PRD PR's slice round, whose body closes the parent and every sub-issue,
   // and which reviews one of them (PRD #222). It wins over the body's first

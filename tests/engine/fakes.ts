@@ -12,6 +12,7 @@ import { GitError, type BundleHead, type GitReader } from "../../engine/git.js";
 import { GitHubError, isServerError } from "../../engine/github.js";
 import {
   LABELLED_ISSUES_LIMIT,
+  type AuthoredText,
   type CheckRun,
   type CommitStatus,
   type ConversationComment,
@@ -103,6 +104,14 @@ export interface FakeGitHub {
   /** Per workflow run, the log of each of its jobs that failed. A run not here has none. */
   readonly jobLogs: Map<number, string[]>;
   readonly comments: { readonly token: string; readonly issue: number; readonly body: string }[];
+  /** Issue bodies with their authors, by number: what `issueBody` reads. One not here is not found. */
+  readonly bodies: Map<number, AuthoredText>;
+  /**
+   * Per issue or pull request, the comments a test put on it, with their
+   * authors, oldest first. `authoredComments` reads these, then every comment
+   * a writer posted there, as the workflow's account.
+   */
+  readonly discussion: Map<number, AuthoredText[]>;
   /** Every review posted, in order, with the pull request's node id and the commit it was posted on. */
   readonly reviews: FakeReview[];
   /** Per issue or pull request, each label added to it and when, oldest first. */
@@ -175,6 +184,8 @@ export const fakeGitHub = (pullRequests: readonly Partial<FakePullRequest>[] = [
   workflowRuns: new Map(),
   jobLogs: new Map(),
   comments: [],
+  bodies: new Map(),
+  discussion: new Map(),
   reviews: [],
   labelled: new Map(),
   filed: new Map(),
@@ -182,6 +193,9 @@ export const fakeGitHub = (pullRequests: readonly Partial<FakePullRequest>[] = [
   repoLabels: [],
   fails: () => false,
 });
+
+/** The login a comment a writer posted reads back as: the workflow's account, whichever token posted it. */
+const POSTED_AS = "github-actions[bot]";
 
 const pullRequestOf = (github: FakeGitHub, number: number): FakePullRequest => {
   const pr = github.pullRequests.get(number);
@@ -258,6 +272,24 @@ export const fakeReader = (github: FakeGitHub): { readonly reader: GitHubReader;
     issueComments: async (number) => {
       reads.push({ method: "issueComments", args: [number] });
       return github.comments.filter((comment) => comment.issue === number).map((comment) => comment.body);
+    },
+    issueBody: async (number) => {
+      reads.push({ method: "issueBody", args: [number] });
+      const body = github.bodies.get(number);
+      if (body === undefined) throw new GitHubError(`issue #${number}: 404 Not Found`, 404);
+      return body;
+    },
+    authoredComments: async (number) => {
+      reads.push({ method: "authoredComments", args: [number] });
+      const seeded = github.discussion.get(number);
+      const posted = github.comments.filter((comment) => comment.issue === number);
+      if (seeded === undefined && !github.bodies.has(number) && !github.pullRequests.has(number)) {
+        throw new GitHubError(`issue #${number}: 404 Not Found`, 404);
+      }
+      return [
+        ...(seeded ?? []),
+        ...posted.map((comment) => ({ body: comment.body, author: POSTED_AS, association: "NONE" })),
+      ];
     },
     branchesStarting: async (prefix) => {
       reads.push({ method: "branchesStarting", args: [prefix] });

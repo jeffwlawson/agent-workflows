@@ -850,6 +850,31 @@ describe("githubReader", () => {
     expect(paths(sent)).toEqual(["/repos/o/r/issues/9/comments?per_page=100&page=1", "/repos/o/r/issues/9/comments?per_page=100&page=2"]);
   });
 
+  it("reads an issue's body with its author's login and association", async () => {
+    const { transport, sent } = recording(() => ({ body: "A brief.", user: { login: "maintainer" }, author_association: "OWNER" }));
+
+    expect(await githubReader(REPO, transport).issueBody(9)).toEqual({ body: "A brief.", author: "maintainer", association: "OWNER" });
+    expect(paths(sent)).toEqual(["/repos/o/r/issues/9"]);
+  });
+
+  it("reads every comment on an issue with its author, every page, a deleted account and a null body included", async () => {
+    const { transport, sent } = recording((s) =>
+      "rest" in s && s.rest.path.endsWith("page=1")
+        ? Array.from({ length: 100 }, () => ({ body: "x", user: { login: "a" }, author_association: "MEMBER" }))
+        : [{ body: null, user: null, author_association: "NONE" }, { body: "last", user: { login: "b" } }],
+    );
+
+    const comments = await githubReader(REPO, transport).authoredComments(9);
+
+    expect(comments).toHaveLength(102);
+    expect(comments[0]).toEqual({ body: "x", author: "a", association: "MEMBER" });
+    expect(comments.slice(100)).toEqual([
+      { body: "", author: "", association: "NONE" },
+      { body: "last", author: "b", association: "NONE" },
+    ]);
+    expect(paths(sent)).toEqual(["/repos/o/r/issues/9/comments?per_page=100&page=1", "/repos/o/r/issues/9/comments?per_page=100&page=2"]);
+  });
+
   it("reads the branches whose name starts with a prefix, with their tips", async () => {
     const { transport, sent } = recording(() => [{ ref: "refs/heads/agent/prd-17-a", object: { sha: SHA } }]);
 

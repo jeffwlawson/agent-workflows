@@ -209,6 +209,15 @@ export const PRD_STARTED_MARK = "<!-- agent:prd-started -->";
 export const sliceApprovedMark = (sha: string): string => `<!-- agent:slice-approved ${sha} -->`;
 
 /**
+ * The end of the **post-merge checklist** (#544): the comment the follow-ups
+ * run posts on a merged pull request, listing each linked brief's *After
+ * merge, by a human* items. A re-run finds the checklist it posted by it, and
+ * posts no second. A selector, not a control: only a comment one of the loop's
+ * accounts posted counts, since anyone who can comment can type it.
+ */
+export const POST_MERGE_CHECKLIST_MARK = "<!-- agent:post-merge-checklist -->";
+
+/**
  * The **status line** (#298): one line at the top of the PRD PR's note, saying
  * where the chain is now, between its own markers. Workflow-owned like the
  * progress table, and rendered from the same state, so the two cannot
@@ -349,13 +358,16 @@ export const stubMarker = (location: string, prNumber: number, seq: number): str
  * for word as the shell step *Report the failure on the PR* said it before:
  * the reason it gives where nothing more is known, and the retry. The retry
  * is the marker's: it stays on a run that stopped, and re-adding a label
- * already there fires no event, so the gesture is remove, then add.
+ * already there fires no event, so the gesture is remove, then add. Since
+ * #544 the run posts the post-merge checklist first, on every merge, so the
+ * retry names it too: on a merge without the label, adding it is the retry,
+ * and a retry posts no second checklist.
  */
 export const FOLLOW_UPS_STOPPED = {
   timedOut: (minutes: string): string => `It timed out after ${minutes} minutes.`,
   cancelled: "It was cancelled before it finished, by hand or by GitHub.",
   noReason: "It stopped without giving a reason. The workflow run's log has the details.",
-  retry: `Some follow-up issues may not have been filed. To try again, remove \`${FOLLOW_UPS_LABEL}\` and add it back; nothing is filed twice.`,
+  retry: `The post-merge checklist may not have been posted, and some follow-up issues may not have been filed. To try again, add \`${FOLLOW_UPS_LABEL}\`, or remove it and add it back where it is on; nothing is posted or filed twice.`,
 } as const;
 
 /**
@@ -450,6 +462,14 @@ const slugOf = (title: string): string =>
  * and `implement` refuses to open a second.
  */
 export const closingReference = (issue: number): RegExp => new RegExp(String.raw`(closes|fixes|resolves)\s+#${issue}\b`, "i");
+
+/**
+ * A pull request's **linked issue**: the first issue a closing keyword in its
+ * body names, its number the first group. On a PRD PR that is the parent,
+ * which its `Closes` block names first. The review reads its criteria from it,
+ * and the follow-ups run its post-merge checklist (#544).
+ */
+export const LINKED_ISSUE = /(?:closes|fixes|resolves)\s+#(\d+)/i;
 
 // Commit trailers.
 

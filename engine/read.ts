@@ -96,6 +96,19 @@ export interface ConversationComment {
   readonly url: string;
 }
 
+/**
+ * An issue's body or one of its comments, with who wrote it as far as a trust
+ * gate needs it: the login, and its association with the repository in REST's
+ * spelling (`OWNER`, `MEMBER`, `NONE`, ...). The reader applies no trust; the
+ * caller does.
+ */
+export interface AuthoredText {
+  readonly body: string;
+  /** The login that wrote it, as REST spells it; `""` for a deleted account. */
+  readonly author: string;
+  readonly association: string;
+}
+
 /** An issue's place in the hierarchy, and its labels, as one query reads them together. */
 export interface IssueShape {
   /** The issue it is a sub-issue of, where it is one. */
@@ -159,6 +172,10 @@ export interface GitHubReader {
   blockedBy(number: number): Promise<readonly Blocker[]>;
   /** The body of every comment on the issue, oldest first. */
   issueComments(number: number): Promise<readonly string[]>;
+  /** The issue's body, or a pull request's, with its author. */
+  issueBody(number: number): Promise<AuthoredText>;
+  /** Every comment on the issue or pull request's conversation, oldest first, each with its author: every page. */
+  authoredComments(number: number): Promise<readonly AuthoredText[]>;
   /**
    * Every branch whose name starts with `prefix`, with its tip. The prefix is
    * the caller's, as a pattern is: a branch name is a record string.
@@ -409,6 +426,19 @@ const ISSUE_SHAPE = `query($owner:String!,$name:String!,$number:Int!){
   }}
 }`;
 
+/** An issue or a comment as REST gives it, as far as `AuthoredText` reads it. */
+interface RawAuthored {
+  readonly body?: string | null;
+  readonly user?: { readonly login?: string } | null;
+  readonly author_association?: string;
+}
+
+const authored = (raw: RawAuthored): AuthoredText => ({
+  body: raw.body ?? "",
+  author: raw.user?.login ?? "",
+  association: raw.author_association ?? "NONE",
+});
+
 /** The reader over `transport`, for `repo` (`owner/name`). */
 export const githubReader = (repo: string, transport: Transport): GitHubReader => {
   const [owner = "", name = ""] = repo.split("/");
@@ -457,6 +487,9 @@ export const githubReader = (repo: string, transport: Transport): GitHubReader =
       (await paged(`/repos/${repo}/issues/${number}/comments`, (page) => page as readonly { readonly body: string | null }[])).map(
         (comment) => comment.body ?? "",
       ),
+    issueBody: async (number) => authored((await transport.rest({ method: "GET", path: `/repos/${repo}/issues/${number}` })) as RawAuthored),
+    authoredComments: async (number) =>
+      (await paged(`/repos/${repo}/issues/${number}/comments`, (page) => page as readonly RawAuthored[])).map(authored),
     branchesStarting: async (prefix) => {
       const ref = prefix.split("/").map(encodeURIComponent).join("/");
       const raw = (await transport.rest({ method: "GET", path: `/repos/${repo}/git/matching-refs/heads/${ref}` })) as readonly {

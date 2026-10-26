@@ -151,6 +151,18 @@ export const briefSection = (brief: Brief, title: RegExp): string[] | undefined 
     .filter((lines) => lines.some((line) => line.trim() !== ""))
     .at(-1);
 
+/**
+ * The list items of the brief's last section `title` names, read as criteria
+ * are: a wrapped or nested line belongs to the item above it. Empty where the
+ * brief has no such section, or the section lists nothing.
+ */
+export const briefItems = (brief: Brief, title: RegExp): string[] =>
+  listItems(
+    sectionsTitled(brief.lines, title)
+      .filter((lines) => listItems(lines).length > 0)
+      .at(-1) ?? [],
+  );
+
 const NO_CRITERIA =
   "(The linked issue names no acceptance criteria this workflow could identify, or there is no linked issue, so there is nothing to rule on: leave `criteria` empty.)";
 

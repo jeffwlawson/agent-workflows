@@ -3487,8 +3487,9 @@ the job ended and whether it ran out of time, and works out the ending from them
   and a merge with nothing to file stays silent.
 - **A run that stopped** (`failure` or `cancelled`): one comment, `` **`agent:follow-ups`
   stopped:** `` and the reason as a sentence, starting with a capital and ending in a full stop
-  (#253), the run's link, and `` Some follow-up issues may not have been filed. To try again,
-  remove `agent:follow-ups` and add it back; nothing is filed twice. ``
+  (#253), the run's link, and `` The post-merge checklist may not have been posted, and some
+  follow-up issues may not have been filed. To try again, add `agent:follow-ups`, or remove it and
+  add it back where it is on; nothing is posted or filed twice. ``
 
 The reason is, in this order: `` It timed out after <TIMEOUT_MINUTES> minutes. `` where `TIMED_OUT`
 is `true`; `It was cancelled before it finished, by hand or by GitHub.` where the job was cancelled;

@@ -317,13 +317,12 @@ export const createDispatcher = (edges: DispatcherEdges) => {
 
   /**
    * **A merge's route** (#519), `follow-ups.yml`'s other entry point: a
-   * follow-ups job for a pull request merged carrying `agent:follow-ups`, by
-   * the payload's own labels, as they were at the merge. Actions starts a job
-   * on every merge, since a job condition cannot read a label; this reads the
-   * payload's, so a merge with nothing to file is ignored before anything of
-   * the repository is read, as a label nothing answers is. `follow-ups:file`
-   * still reads the marker again when it files. A close without a merge is
-   * ignored too, as Actions never starts its job for one.
+   * follow-ups job for every pull request merged, whatever its labels, as
+   * Actions starts its job on every merge. The run posts the post-merge
+   * checklist on every merge (#544), and `follow-ups:file` reads the
+   * `agent:follow-ups` marker itself, live, to decide whether to file; a merge
+   * with neither ends silently. A close without a merge is ignored, as Actions
+   * never starts its job for one.
    *
    * **No author gate.** Whoever merged could write, and a merge queue or
    * auto-merge can send the event as a bot the gate would refuse, which would
@@ -336,8 +335,6 @@ export const createDispatcher = (edges: DispatcherEdges) => {
     const where = `${repo}#${pr}`;
     // Literally `true`, as `follow-ups.yml`'s condition reads it.
     if (p.pull_request?.merged !== true) return `ignored on ${where}: closed without being merged`;
-    const labels = Array.isArray(p.pull_request.labels) ? p.pull_request.labels.map((label) => label?.name) : [];
-    if (!labels.includes(FOLLOW_UPS_LABEL)) return `ignored on ${where}: merged without \`${FOLLOW_UPS_LABEL}\` on it, so there is nothing to file`;
     const why = await unserved(repo);
     if (why !== undefined) return `refused on ${where}: ${why}`;
     if (p.pull_request.head?.repo?.full_name !== repo) return `refused on ${where}: the head is on a fork`;

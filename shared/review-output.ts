@@ -1967,7 +1967,9 @@ const parseTestSketch = (value: unknown): TestSketch[] => {
  * What the review's own test run left unrun (#543), read leniently: it is
  * display. An entry naming no test or no reason is dropped, and a field with
  * no `ranTests` to read is absent rather than a run of none, unless it lists
- * a skip, which only a run can have met.
+ * a skip, which only a run can have met. A list every entry of which was
+ * dropped, or a run with no list, is absent too, rather than a run that
+ * skipped nothing.
  */
 const parseNotChecked = (value: unknown): NotChecked | undefined => {
   if (typeof value !== "object" || value === null || Array.isArray(value)) return undefined;
@@ -1976,6 +1978,10 @@ const parseNotChecked = (value: unknown): NotChecked | undefined => {
   const skipped = (Array.isArray(listed) ? listed : []).flatMap(parseSkippedTest);
   const ran = record["ranTests"] ?? record["ran_tests"];
   if (skipped.length > 0) return { ranTests: true, skipped };
+  // A list whose every entry was dropped, or a run with no list, says nothing
+  // about what skipped: not that nothing did.
+  if (Array.isArray(listed) && listed.length > 0) return undefined;
+  if (ran === true && !Array.isArray(listed)) return undefined;
   return typeof ran === "boolean" ? { ranTests: ran, skipped } : undefined;
 };
 

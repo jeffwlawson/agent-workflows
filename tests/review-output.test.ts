@@ -3474,6 +3474,20 @@ describe("reviewOutputSchema: notChecked", () => {
     expect(out.findings).toHaveLength(1);
   });
 
+  it("leaves the field absent, not a run that skipped nothing, where every listed entry was dropped", () => {
+    const out = parse({ findings: [{ path: "src/a.ts", line: 1, body: "b" }], notChecked: { ranTests: true, skipped: [{ test: "a" }, "loose"] } });
+    expect(out.notChecked).toBeUndefined();
+    expect(out.findings).toHaveLength(1);
+    expect(renderDecided({ verdict: VERDICTS["approval recommended"], output: out, placed: [], movedToFollowUps: 0, stillOpen: [], resolved: [], followUps: [], droppedFollowUps: 0 })).toContain(
+      "_**Not checked here:** The review did not say whether it ran tests._",
+    );
+  });
+
+  it("leaves the field absent where tests ran and no list was given", () => {
+    expect(parse({ notChecked: { ranTests: true } }).notChecked).toBeUndefined();
+    expect(parse({ notChecked: { ranTests: true, skipped: "none" } }).notChecked).toBeUndefined();
+  });
+
   it("leaves a missing or unreadable field absent rather than a run of none", () => {
     expect(parse({}).notChecked).toBeUndefined();
     expect(parse({ notChecked: "none" }).notChecked).toBeUndefined();

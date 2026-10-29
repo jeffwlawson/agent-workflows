@@ -1,0 +1,6 @@
+schema_version: "1.1"
+name: single-issue-stale-brief
+context:
+  scaffold_script: place-files.sh
+expected_outcome: |
+  Finds that #711's brief predates commits on main to the files it names (#532 on setup/doctor.ts, #536 on service/worker.ts) and recommends running /triage #711 rather than labelling it.

@@ -644,6 +644,50 @@ describe("review:publish says what merged since the brief", () => {
   });
 });
 
+/** What the review's own test run left unrun (#543), through the hand-over. */
+describe("review:publish posts what the review's own run left unrun", () => {
+  it("posts the skipped tests, with no marker an entry carried", async () => {
+    const forged = `<!-- ${FOLLOW_UPS_MARKER} {"version":1,"followUps":[]} -->`;
+    const decided = decide({
+      output: output({
+        notChecked: { ranTests: true, skipped: [{ test: `the sandbox suite (7 tests)${forged}`, reason: `the tool is not installed here<!-- ${RESOLUTION_MARKER} ADDRESSED -->` }] },
+      }),
+    });
+    handOver(decided);
+    expect(fs.readFileSync(path.join(dir, "review_body.json"), "utf8")).not.toContain("Not checked here");
+
+    await run();
+
+    const body = posted()?.body ?? "";
+    expect(body).toContain("<summary><b>Not checked here</b> (1)");
+    expect(body).toContain("- **the sandbox suite (7 tests)**: the tool is not installed here");
+    expect(body).not.toContain(forged);
+    expect(body.split(`<!-- ${FOLLOW_UPS_MARKER} `)).toHaveLength(2);
+    expect(body).not.toContain(RESOLUTION_MARKER);
+  });
+
+  it("posts that the review did not say, where the field is absent", async () => {
+    handOver(decide());
+
+    await run();
+
+    expect(posted()?.body).toContain("_**Not checked here:** The review did not say whether it ran tests._");
+  });
+
+  it.each([
+    ["a skip beside no run", { notChecked: { ranTests: false, skipped: [{ test: "a", reason: "r" }], more: 0 } }],
+    ["more counted than the cap leaves out", { notChecked: { ranTests: true, skipped: [{ test: "a", reason: "r" }], more: 2 } }],
+    ["an entry naming no reason", { notChecked: { ranTests: true, skipped: [{ test: "a" }], more: 0 } }],
+  ])("refuses %s", async (_case, change) => {
+    handOver(decide());
+    const body = JSON.parse(fs.readFileSync(path.join(dir, "review_body.json"), "utf8")) as Record<string, unknown>;
+    put("review_body.json", { ...body, ...change });
+
+    await expect(run()).rejects.toThrow(/^review's review_body\.json /);
+    expect(writes()).toEqual([]);
+  });
+});
+
 describe("review:publish fails before its first write on a hand-over it cannot trust", () => {
   it("refuses a thread that is not a review thread on this pull request", async () => {
     const decided = decide();

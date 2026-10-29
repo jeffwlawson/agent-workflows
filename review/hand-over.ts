@@ -7,7 +7,7 @@
  * | File | Holds |
  * |---|---|
  * | `findings.json` | One entry per finding to post: id, placement, severity, title, the agent's text, path, line, and whether it was previously missed |
- * | `review_body.json` | The verdict and its cause, the agent's assessment, the open, resolved and missed entries, criteria results and why there are none, what merged since the brief, follow-ups and their cap, red-test results, and the data behind the header and the round note |
+ * | `review_body.json` | The verdict and its cause, the agent's assessment, the open, resolved and missed entries, criteria results and why there are none, what merged since the brief, what the review's own test run skipped, follow-ups and their cap, red-test results, and the data behind the header and the round note |
  * | `thread_resolutions.json` | Per thread: id, reason, whether it was already replied to, and the agent's note or the maintainer's reply to quote |
  * | `pr_summary.json` | The title, the agent's summary, whether the round is final, and the data behind Evidence and merge danger. Written only where this review rewrites them |
  * | `verdict.json` | The verdict's key, whether it starts a fix round, how many findings it leaves open, and which stop kept it from starting one |
@@ -44,6 +44,7 @@ import {
   type CiResult,
   type CloserLookCause,
   type CriteriaCase,
+  MAX_NOT_CHECKED,
   MAX_SINCE_COMMITS,
   type ReviewBodyHandOver,
   type SinceBrief,
@@ -319,6 +320,24 @@ const sinceBrief = refine(
 );
 
 /**
+ * What the review's own test run left unrun (#543): each entry the agent's
+ * text, at most `MAX_NOT_CHECKED` of them and how many more, and a skip only
+ * where tests ran.
+ */
+const notChecked = refine(
+  object({
+    ranTests: YES_NO,
+    skipped: list(object({ test: text, reason: text }), { max: MAX_NOT_CHECKED }),
+    more: NUMBER,
+  }),
+  (n, wrong): NonNullable<ReviewBodyHandOver["notChecked"]> => {
+    if (!n.ranTests && n.skipped.length + n.more > 0) return wrong("ran no tests, and lists tests it skipped");
+    if (n.more > 0 && n.skipped.length < MAX_NOT_CHECKED) return wrong(`counts more skipped tests than it lists, under ${MAX_NOT_CHECKED}`);
+    return n;
+  },
+);
+
+/**
  * A round header's data, the scope and the number: read from `review_body.json`
  * by publish, and from publish's `published.json` by `review:conclude`, which
  * opens its stop comment with the same header the review opened with (#425).
@@ -524,8 +543,9 @@ export const handOverParsers = (known: Known) => {
           redTests: optional(redTestsRecord),
           criteriaCase: optional(criteriaCase),
           sinceBrief: optional(sinceBrief),
+          notChecked: optional(notChecked),
         }),
-        ({ criteriaCase, sinceBrief, ...body }, wrong): ReviewBody => {
+        ({ criteriaCase, sinceBrief, notChecked, ...body }, wrong): ReviewBody => {
           if ((criteriaCase?.kind === "criteria found") !== body.criteria.length > 0) {
             return wrong(
               body.criteria.length > 0
@@ -538,6 +558,7 @@ export const handOverParsers = (known: Known) => {
             ...body,
             ...(criteriaCase === undefined ? {} : { criteriaCase }),
             ...(sinceBrief === undefined ? {} : { sinceBrief }),
+            ...(notChecked === undefined ? {} : { notChecked }),
           };
         },
       ),

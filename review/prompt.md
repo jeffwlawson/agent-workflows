@@ -292,6 +292,16 @@ Read `CONTEXT.md` and `CLAUDE.md` first, then explore the changed files in conte
    inputs the checkout does not contain, build them in a scratch directory of your own outside it;
    that is what **BOUNDARIES** permits, and the checkout is left as you found it. Say in
    `howChecked` what you ran.
+
+   **Say what your own run left unrun, in `notChecked`.** Running tests is your choice; saying
+   whether you did is not. Record whether you ran any, and each test or suite exercising code the
+   diff changes that your run skipped for want of something in the environment (a tool, a kernel
+   feature, a service, a platform, a credential), with the reason the run gave or, where it gave
+   none, one line of your own. Several tests skipped in one suite for one reason are one entry
+   naming the suite and how many. A test the diff itself marks skipped with no condition is not one
+   of these: it is a finding under item 5 (a failure made quiet). Skips in CI you cannot see are not
+   yours to list. The body shows the list as it is and it changes no verdict, so list what skipped
+   rather than weighing it.
 5. **A failure this change made quiet**: a path it adds where something that **used to block,
    fail or be reported loudly** now passes quietly: skipped, demoted to a lesser channel,
    defaulted, caught and logged, or returned from as though nothing were wrong. Checking the one

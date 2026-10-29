@@ -904,6 +904,11 @@ empty:
   from it on purpose, *unmet*, or *not checked*. An unmet one is also a finding under *Open*, with
   a thread to answer it on; a changed one is not a finding. Expanded where anything is not met, and
   left out where the pull request has no linked issue or the issue names no criteria.
+- **Not checked here**: on every review. The tests exercising this change that the review's own
+  test run skipped because its environment lacks something (a tool, a service, a kernel feature),
+  each with the reason; or one line saying the run skipped none of them, that the review ran no
+  tests, or that it did not say. It does not change the verdict: it tells you what to run yourself
+  before merging. A test skipped only in your CI is not listed, since the review cannot see it.
 - **Follow-ups** — the out-of-scope findings this review recorded, filed as issues when the pull
   request merges. Folded, and **not** in `**Findings:** N`: that number is what blocks this pull
   request, and a follow-up is by definition what does not. Removing the `agent:follow-ups` label is

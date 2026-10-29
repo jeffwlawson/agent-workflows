@@ -17,8 +17,8 @@ repository opts in with the repository variable `AGENT_ORCHESTRATOR=service`
 ([ADOPTING §2e](./ADOPTING.md#2e-choosing-the-orchestrator)); the service refuses every other
 repository, and answers every trigger label the loop has: `agent:review`, `agent:fix`,
 `agent:update-branch` and `agent:follow-ups` on a pull request, `agent:implement` on an issue, a
-regular one or a PRD, and a merge carrying `agent:follow-ups`, which files the follow-ups its review
-recorded. A repository on the service loses nothing it had on Actions. A PRD labelled
+regular one or a PRD, and every merge, which posts the post-merge checklist and, where
+`agent:follow-ups` is on, files the follow-ups its review recorded. A repository on the service loses nothing it had on Actions. A PRD labelled
 `agent:implement` is built one slice at a time, as on Actions, with no Actions involved.
 
 ## What a host needs
@@ -134,9 +134,10 @@ when all of these hold:
   workflows on it). A label is answered on its own event only, and an `issues` delivery about a
   pull request is ignored. The dispatcher reads nothing of an issue's shape: each job's gate does,
   and the one whose shape it is not ends without a word. Or it is a merge: a `pull_request`
-  `closed` delivery with `merged` `true` whose payload's labels include `agent:follow-ups`, which
-  becomes a follow-ups job. A merge without that label, and a close without a merge, are ignored
-  before the repository is read, so most merges cost nothing;
+  `closed` delivery with `merged` `true`, whatever its labels, which becomes a follow-ups job, as
+  Actions starts its job on every merge: the run posts the post-merge checklist, and files only
+  where `agent:follow-ups` is on the pull request. A close without a merge is ignored before the
+  repository is read;
 - the App is installed on the repository;
 - the installation is on the App's owner's account, or on one `EXTRA_OWNERS` lists;
 - the repository's `AGENT_ORCHESTRATOR` is `service`;
@@ -299,8 +300,9 @@ to `agent/rescue/prd-<parent>` for the next run to resume from.
 
 A follow-ups job runs `follow-ups:file`, then `follow-ups:conclude` however it ended, told whether
 it failed or timed out, and nothing else: no checkout, no setup and no agent. `follow-ups:file`
-reads `agent:follow-ups` again, files the stubs the newest review recorded, posts its report and
-takes the label off, as on Actions; `follow-ups:conclude` posts the one failure comment on a run
+posts the post-merge checklist of the linked briefs' *After merge, by a human* items, then, only
+where `agent:follow-ups` is on the pull request, files the stubs the newest review recorded, posts
+its report and takes the label off, as on Actions; `follow-ups:conclude` posts the one failure comment on a run
 that stopped. A stub is filed as the App, carrying `needs-triage` and `pr-follow-up`, which no
 route answers, so it starts nothing. Actions holds this job in the pull request's concurrency group
 so that a label added while a merge's run files cannot file twice; the service relies on its one

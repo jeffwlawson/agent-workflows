@@ -458,3 +458,44 @@ describe("the review brief's acceptance criteria", () => {
     for (const status of ["`met`", "`changed`", "`unmet`"]) expect(text).toContain(status);
   });
 });
+
+/**
+ * What merged since the brief (#541) reaches the agent through one placeholder
+ * beside the criteria, and comes back through one field both briefs name. The
+ * runner checks only where it hands criteria: not on the final review, and not
+ * without a linked issue.
+ */
+describe("the review brief's commits since the brief", () => {
+  const PROMPT = fs.readFileSync("review/prompt.md", "utf8");
+  const EXTRACTION = fs.readFileSync("review/extraction.md", "utf8");
+  const RUNNER = fs.readFileSync("review/review.ts", "utf8");
+
+  it("is a placeholder the runner fills, in the criteria section", () => {
+    const criteria = PROMPT.indexOf("# ACCEPTANCE CRITERIA\n");
+    const next = PROMPT.indexOf("\n# ", criteria + 1);
+    const at = PROMPT.indexOf("{{SINCE_BRIEF}}");
+    expect(at).toBeGreaterThan(criteria);
+    expect(at).toBeLessThan(next);
+    expect(RUNNER).toContain("SINCE_BRIEF: renderSinceBriefForReview(sinceBrief)");
+  });
+
+  it("runs only where the review is handed criteria", () => {
+    expect(RUNNER).toContain("const criteria = round?.kind === \"final\" ? [] : context.criteria;");
+    expect(RUNNER).toContain("if (criteria.length > 0 && context.brief !== undefined) {");
+  });
+
+  it("says where git failed, rather than handing the agent no check", () => {
+    expect(RUNNER).toContain('sinceBrief = { kind: "not run", reason: "unreadable" };');
+  });
+
+  it("marks a slice round whose start could not be read, rather than dropping its earlier commits", () => {
+    expect(RUNNER).toContain("?.range?.base ?? null)");
+  });
+
+  it.each([
+    ["prompt.md", PROMPT],
+    ["extraction.md", EXTRACTION],
+  ])("%s asks for the ruling in `sinceBrief`", (_half, text) => {
+    expect(text).toContain("`sinceBrief`");
+  });
+});

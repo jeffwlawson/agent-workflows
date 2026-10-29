@@ -816,8 +816,8 @@ const closed = (change: { merged?: boolean; labels?: readonly string[]; headRepo
  * Follow-ups (#519): `follow-ups.yml`'s two entry points, a merge and
  * `agent:follow-ups` added to a closed pull request, each a follow-ups job
  * carrying the pull request alone, since nothing is checked out. A merge is
- * filtered on the payload's own labels, which Actions cannot do, and has no
- * author gate, which Actions does not have either.
+ * a job whatever its labels (#544), as on Actions, and has no author gate,
+ * which Actions does not have either.
  */
 describe("the follow-ups route", () => {
   it("dispatches a merge carrying agent:follow-ups as a follow-ups job, with the job's time limit as its deadline", async () => {
@@ -860,7 +860,6 @@ describe("the follow-ups route", () => {
   });
 
   it.each<[string, (s: ReturnType<typeof setup>) => unknown, string]>([
-    ["a merge without agent:follow-ups", () => closed({ labels: [REVIEW_LABEL] }), "ignored on owner/repo#7: merged without `agent:follow-ups` on it, so there is nothing to file"],
     ["a close without a merge", () => closed({ merged: false }), "ignored on owner/repo#7: closed without being merged"],
     ["a merge from a fork", () => closed({ headRepo: "someone/fork" }), "refused on owner/repo#7: the head is on a fork"],
     ["a merge from a deleted fork", () => closed({ headRepo: null }), "refused on owner/repo#7: the head is on a fork"],
@@ -902,12 +901,14 @@ describe("the follow-ups route", () => {
     expect(result.outcome).toBe("refused on owner/repo#7: the pull request is closed, not open");
   });
 
-  it("reads the payload's labels, not the pull request's, so a merge whose payload lacks the label reads nothing of the repository", async () => {
-    const s = setup();
-    delete s.repository.variables[ORCHESTRATOR_VARIABLE];
-    const result = await deliver(s, closed({ labels: [] }));
+  it("dispatches a merge without agent:follow-ups too, since the run posts the post-merge checklist on every merge (#544)", async () => {
+    for (const labels of [[], [REVIEW_LABEL]]) {
+      const s = setup();
+      const result = await deliver(s, closed({ labels }));
 
-    expect(result.outcome).toMatch(/^ignored on owner\/repo#7: merged without/);
+      expect(result.outcome, labels.join()).toMatch(/^dispatched owner\/repo#7 on its merge as job job-1/);
+      expect(parseJob(JSON.parse(s.posted[0]!.body)), labels.join()).toMatchObject({ workflow: "follow-ups", repo: REPO, pr: 7 });
+    }
   });
 
   it("ignores every pull request action but a label and a close", async () => {

@@ -3,7 +3,8 @@ import type { Limits } from "../../engine/writer.js";
 import { file } from "../../follow-ups/file.js";
 import type { CommandIo, Token } from "../../shared/command-io.js";
 import type { COMMANDS } from "../../shared/contract.js";
-import { FOLLOW_UP_STUB_LABEL, FOLLOW_UPS_LABEL, stubMarker, TRIAGE_LABEL } from "../../shared/record.js";
+import { OPENING } from "../../follow-ups/checklist.js";
+import { FOLLOW_UP_STUB_LABEL, FOLLOW_UPS_LABEL, POST_MERGE_CHECKLIST_MARK, stubMarker, TRIAGE_LABEL } from "../../shared/record.js";
 import { renderFollowUpsBlock, type FollowUp } from "../../shared/review-output.js";
 import { fakeGitHub, fakeReader, fakeWriters, type FakeGitHub, type ReceivedRead } from "../engine/fakes.js";
 
@@ -54,7 +55,7 @@ const stub = (number: number, body: string): void => {
 };
 
 beforeEach(() => {
-  github = fakeGitHub([{ number: PR, state: "closed", labels: [FOLLOW_UPS_LABEL] }]);
+  github = fakeGitHub([{ number: PR, state: "closed", merged: true, labels: [FOLLOW_UPS_LABEL] }]);
   github.repoLabels.push(TRIAGE_LABEL, FOLLOW_UP_STUB_LABEL);
   made = undefined;
   asked = undefined;
@@ -117,7 +118,7 @@ describe("follow-ups:file without the marker", () => {
 
     expect(writes()).toEqual([]);
     expect(reads.map((r) => r.method)).toEqual(["pullRequest"]);
-    expect(logged()).toEqual([`#${PR} does not carry \`${FOLLOW_UPS_LABEL}\`. Nothing to file.`]);
+    expect(logged()).toEqual([`#${PR} links no issue, so there is no post-merge checklist.`, `#${PR} does not carry \`${FOLLOW_UPS_LABEL}\`. Nothing to file.`]);
   });
 
   it("throws where the pull request cannot be read, rather than reading it as unmarked", async () => {
@@ -151,7 +152,7 @@ describe("follow-ups:file with the marker", () => {
     expect(markerOn()).toBe(false);
     expect(reads.map((r) => r.method)).toEqual(["pullRequest", "reviewHistory", "labelledIssues", "repoLabels"]);
     expect(reads.find((r) => r.method === "labelledIssues")?.args).toEqual([FOLLOW_UP_STUB_LABEL]);
-    expect(logged()).toEqual([`Filed 2 issue(s): #33, #34.`, `Reported on #${PR}: true.`, "Marker removed: true."]);
+    expect(logged()).toEqual([`#${PR} links no issue, so there is no post-merge checklist.`, `Filed 2 issue(s): #33, #34.`, `Reported on #${PR}: true.`, "Marker removed: true."]);
   });
 
   it("files nothing and says nothing for a block that recorded nothing, and removes the marker", async () => {
@@ -163,7 +164,7 @@ describe("follow-ups:file with the marker", () => {
     expect(markerOn()).toBe(false);
     // The repository's labels are read only where something is filed.
     expect(reads.map((r) => r.method)).not.toContain("repoLabels");
-    expect(logged()).toEqual(["Filed 0 issue(s).", `Reported on #${PR}: false.`, "Marker removed: true."]);
+    expect(logged()).toEqual([`#${PR} links no issue, so there is no post-merge checklist.`, "Filed 0 issue(s).", `Reported on #${PR}: false.`, "Marker removed: true."]);
   });
 
   it("does not file a stub this pull request already filed", async () => {
@@ -207,7 +208,7 @@ describe("follow-ups:file with the marker", () => {
 
     await run();
 
-    expect(asked).toEqual({ createIssue: 200, comment: 1, removeLabel: 1 });
+    expect(asked).toEqual({ createIssue: 200, comment: 2, removeLabel: 1 });
     expect(new Set(made?.writes.map((w) => w.token))).toEqual(new Set(["workflow"]));
     expect(made?.entries.map((e) => `${e.token} ${e.type} ${e.outcome}`)).toEqual([
       "workflow createIssue applied",
@@ -297,5 +298,174 @@ describe("follow-ups:file on a server error filing a stub", () => {
     );
     expect(comments()).toEqual([]);
     expect(markerOn()).toBe(true);
+  });
+});
+
+/**
+ * The post-merge checklist (#544): posted on every merge, labelled or not,
+ * from the linked issue, or a PRD's parent and each sub-issue. What is read
+ * from each brief is `planChecklist`'s, in `checklist.test.ts`; this holds
+ * what is gathered, in what order, and what is written.
+ */
+describe("follow-ups:file's post-merge checklist", () => {
+  const brief = (...items: string[]): string =>
+    ["## Agent Brief", "### Acceptance criteria", "- It works.", "### After merge, by a human", ...items.map((item) => `- ${item}`)].join("\n");
+  /** Issue `number`, opened by a maintainer with `body`, with `comments` by one, oldest first. */
+  const linked = (number: number, body: string, comments: readonly string[] = []): void => {
+    github.issues.set(number, { subIssues: 0, blockedBy: [] });
+    github.bodies.set(number, { body, author: "maintainer", association: "OWNER" });
+    github.discussion.set(number, comments.map((comment) => ({ body: comment, author: "maintainer", association: "MEMBER" })));
+  };
+  const closes = (body: string): void => {
+    const pr = github.pullRequests.get(PR);
+    if (pr !== undefined) pr.body = body;
+  };
+  const checklists = () => comments().filter((body) => body.includes(POST_MERGE_CHECKLIST_MARK));
+
+  it("is posted on a merge without the marker, attributed to the linked issue, and nothing is filed", async () => {
+    github.pullRequests.get(PR)?.labels.splice(0);
+    closes("Does a thing.\n\nCloses #5");
+    linked(5, "A report.", [brief("Run setup on a real worker.")]);
+
+    await run();
+
+    expect(writes()).toEqual(["workflow comment"]);
+    expect(comments()).toEqual([`${OPENING}\n\nFrom #5:\n- [ ] Run setup on a real worker.\n\n${POST_MERGE_CHECKLIST_MARK}`]);
+    expect(reads.map((r) => r.method)).toEqual(["pullRequest", "issueBody", "issueShape", "authoredComments", "authoredComments"]);
+    expect(reads.filter((r) => r.method === "authoredComments").map((r) => r.args)).toEqual([[5], [PR]]);
+    expect(markerOn()).toBe(false);
+    expect(logged()).toEqual([`Posted the post-merge checklist on #${PR}.`, `#${PR} does not carry \`${FOLLOW_UPS_LABEL}\`. Nothing to file.`]);
+  });
+
+  it("covers a PRD's parent, then every sub-issue in the list's order, closed ones included", async () => {
+    closes("Closes #20, closes #22");
+    linked(20, brief("Check the whole."));
+    linked(21, brief("Check the first."));
+    linked(22, brief("Check the second."));
+    linked(23, "No section.");
+    github.issues.set(20, {
+      subIssues: 3,
+      blockedBy: [],
+      children: [
+        { number: 21, title: "first", state: "CLOSED" },
+        { number: 23, title: "none", state: "CLOSED" },
+        { number: 22, title: "second", state: "OPEN" },
+      ],
+    });
+    reviewed([]);
+
+    await run();
+
+    expect(checklists()).toEqual([
+      [OPENING, "From #20:\n- [ ] Check the whole.", "From #21:\n- [ ] Check the first.", "From #22:\n- [ ] Check the second.", POST_MERGE_CHECKLIST_MARK].join("\n\n"),
+    ]);
+  });
+
+  it("posts nothing where no linked brief names a check, or the pull request links no issue", async () => {
+    github.pullRequests.get(PR)?.labels.splice(0);
+    closes("Closes #5");
+    linked(5, "A report.", ["### Acceptance criteria\n- It works."]);
+
+    await run();
+    expect(writes()).toEqual([]);
+
+    closes("No link.");
+    await run();
+    expect(writes()).toEqual([]);
+    expect(reads.map((r) => r.method)).toEqual(["pullRequest"]);
+  });
+
+  it("posts no second checklist on a re-run, and logs why", async () => {
+    closes("Closes #5");
+    linked(5, brief("Check."));
+    reviewed([]);
+
+    // The second run is the retry `follow-ups:conclude` names: the label added back.
+    await run();
+    github.pullRequests.get(PR)?.labels.push(FOLLOW_UPS_LABEL);
+    await run();
+
+    expect(checklists()).toHaveLength(1);
+    expect(logged()).toContain(`#${PR} already carries the post-merge checklist, so it is not posted again.`);
+  });
+
+  it("is not suppressed by the marker in a comment posted by an account that is not the loop's", async () => {
+    closes("Closes #5");
+    linked(5, brief("Check."));
+    github.discussion.set(PR, [{ body: POST_MERGE_CHECKLIST_MARK, author: "someone", association: "MEMBER" }]);
+    reviewed([]);
+
+    await run();
+
+    expect(checklists()).toHaveLength(1);
+  });
+
+  it("is posted before an edited review's refusal to file, and that refusal does not stop it", async () => {
+    closes("Closes #5");
+    linked(5, brief("Check."));
+    reviewed([followUp(0)], { lastEditedAt: "2026-01-02T00:00:00Z" });
+
+    await run();
+
+    expect(writes()).toEqual(["workflow comment", "workflow comment"]);
+    expect(comments()[0]).toContain(POST_MERGE_CHECKLIST_MARK);
+    expect(comments()[1]).toMatch(/^\*\*No follow-ups were filed\.\*\*/);
+    expect(markerOn()).toBe(true);
+  });
+
+  it("files first and then fails the run, naming the issue, where a sub-issue cannot be read", async () => {
+    closes("Closes #20");
+    linked(20, brief("Check."));
+    github.issues.set(20, { subIssues: 1, blockedBy: [], children: [{ number: 21, title: "gone", state: "OPEN" }] });
+    reviewed([followUp(0)]);
+
+    await expect(run()).rejects.toThrow(/^Couldn't read #21 for the post-merge checklist: .*404/);
+    expect(checklists()).toEqual([]);
+    expect(filed().map(([, title]) => title)).toEqual(["Finding 0"]);
+    expect(markerOn()).toBe(false);
+  });
+
+  it("fails the run without the marker too, where a sub-issue cannot be read, having written nothing", async () => {
+    github.pullRequests.get(PR)?.labels.splice(0);
+    closes("Closes #20");
+    linked(20, brief("Check."));
+    github.issues.set(20, { subIssues: 1, blockedBy: [], children: [{ number: 21, title: "gone", state: "OPEN" }] });
+
+    await expect(run()).rejects.toThrow(/^Couldn't read #21 for the post-merge checklist/);
+    expect(writes()).toEqual([]);
+    expect(logged()).toContain(`#${PR} does not carry \`${FOLLOW_UPS_LABEL}\`. Nothing to file.`);
+  });
+
+  it("is not posted on a pull request closed without merging, which the manual entry point still files from", async () => {
+    const pull = github.pullRequests.get(PR);
+    if (pull !== undefined) pull.merged = false;
+    closes("Closes #5");
+    linked(5, brief("Check."));
+    reviewed([followUp(0)]);
+
+    await run();
+
+    expect(checklists()).toEqual([]);
+    expect(reads.map((r) => r.method)).not.toContain("issueBody");
+    expect(filed().map(([, title]) => title)).toEqual(["Finding 0"]);
+    expect(logged()[0]).toBe(`#${PR} has not merged, so there is no post-merge checklist.`);
+  });
+
+  it.each([
+    ["an issue not found", () => undefined],
+    ["a pull request's number", () => github.pullRequests.set(8, { ...github.pullRequests.get(PR)!, number: 8, body: "### After merge, by a human\n- Not a brief." })],
+    ["an issue transferred out", () => linked(5, brief("Check."))],
+  ])("posts nothing and fails nothing where the link names %s, and still files", async (_case, seed) => {
+    closes("Closes #5");
+    seed();
+    if (github.pullRequests.has(8)) closes("Closes #8");
+    if (github.bodies.has(5)) github.bodies.set(5, { ...github.bodies.get(5)!, isIssue: false });
+    reviewed([followUp(0)]);
+
+    await run();
+
+    expect(checklists()).toEqual([]);
+    expect(filed().map(([, title]) => title)).toEqual(["Finding 0"]);
+    expect(logged()[0]).toMatch(/^#\d+ links #\d+, which is not an issue of this repository, so there is no post-merge checklist\.$/);
   });
 });

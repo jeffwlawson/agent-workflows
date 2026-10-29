@@ -309,6 +309,14 @@ export interface ReviewOutput {
    * criteria to identify.
    */
   readonly criteria?: CriterionRuling[];
+  /**
+   * The review's one-line ruling on the commits that touched the brief's files
+   * since it was read (#541): whether any of them changes what a criterion
+   * means, naming the criterion and the commit where one does. Wanted only
+   * where it was handed any; absent, the body says it gave none. It derives
+   * no verdict: a criterion it moves is ruled in `criteria`.
+   */
+  readonly sinceBrief?: string;
 }
 
 /**
@@ -1182,7 +1190,77 @@ export interface ReviewBodyHandOver {
    * purpose and says nothing.
    */
   readonly criteriaCase?: CriteriaCase | undefined;
+  /**
+   * What merged since the brief was read, and the review's ruling on it
+   * (#541), from `checkSinceBrief`. Absent where the review was handed no
+   * criteria, which is where the check does not run and the body says nothing.
+   */
+  readonly sinceBrief?: SinceBrief | undefined;
 }
+
+/** One commit the since-the-brief check lists (#541). */
+export interface SinceCommit {
+  readonly sha: string;
+  readonly subject: string;
+}
+
+/** The commits of one group, newest first, at most `MAX_SINCE_COMMITS`, and how many more there were. */
+export interface SinceCommits {
+  readonly commits: readonly SinceCommit[];
+  readonly more: number;
+}
+
+/** The most commits the since-the-brief check lists in all, so a brief read long ago cannot crowd the body. */
+export const MAX_SINCE_COMMITS = 20;
+
+/**
+ * Why the since-the-brief check could not run (#541): the brief has no *Where
+ * things are* section, or no read-at commit in it; the commit it names does
+ * not resolve, or is not an ancestor of the base; no file it names exists
+ * at that commit; or git failed reading it, which costs the check and never
+ * the review.
+ */
+export type SinceBriefSkip = "no section" | "no read-at commit" | "unresolved" | "not an ancestor" | "no file found" | "unreadable";
+
+/**
+ * The since-the-brief check (#541): the commits that touched the files a
+ * brief's *Where things are* names since the commit it says it was read at,
+ * on the base branch, and on a PRD PR's slice round on the PRD branch before
+ * this slice. Never the commits under review. Read by the workflow, before
+ * the agent starts; the review only rules on it, in `ruling`.
+ *
+ * `commit` is the read-at word as the brief writes it. `notFound` are the
+ * backticked words with a `/` that name no path at it, and `gone` the files
+ * that existed there and do not at the base.
+ */
+export type SinceBrief =
+  | {
+      readonly kind: "not run";
+      readonly reason: SinceBriefSkip;
+      readonly commit?: string | undefined;
+      readonly notFound?: readonly string[] | undefined;
+    }
+  | {
+      readonly kind: "ran";
+      readonly commit: string;
+      readonly files: readonly string[];
+      readonly gone: readonly string[];
+      readonly notFound: readonly string[];
+      readonly onBase: SinceCommits;
+      /** On a slice round, the PRD branch's commits before this slice: earlier slices and catch-up merges. */
+      readonly onBranch?: SinceCommits | undefined;
+      /**
+       * On a slice round, set where this slice starts on the PRD branch
+       * could not be read, so its earlier commits are not listed and the body
+       * says so rather than showing the base's alone.
+       */
+      readonly branchUnread?: true | undefined;
+      readonly ruling?: string | undefined;
+    };
+
+/** Whether the check listed any commit, which is where the review is asked to rule. */
+export const sinceBriefListed = (since: SinceBrief | undefined): boolean =>
+  since?.kind === "ran" && since.onBase.commits.length + (since.onBranch?.commits.length ?? 0) > 0;
 
 /**
  * The linked issue as the runner read it (#435): none, its text read, or its
@@ -1260,6 +1338,8 @@ export interface ReviewDecisions {
    * handed no criteria on purpose.
    */
   readonly linkedIssue?: LinkedIssue | undefined;
+  /** What the since-the-brief check found (#541), where it was asked; the ruling is `output.sinceBrief`. */
+  readonly sinceBrief?: SinceBrief | undefined;
 }
 
 /**
@@ -1297,6 +1377,15 @@ export const reviewBodyHandOver = (decisions: ReviewDecisions): ReviewBodyHandOv
     ...(decisions.linkedIssue === undefined
       ? {}
       : { criteriaCase: criteriaCase(decisions.linkedIssue, decisions.criteria?.length ?? 0) }),
+    // The ruling is kept only where there was anything to rule on.
+    ...(decisions.sinceBrief === undefined
+      ? {}
+      : {
+          sinceBrief:
+            sinceBriefListed(decisions.sinceBrief) && output.sinceBrief !== undefined && decisions.sinceBrief.kind === "ran"
+              ? { ...decisions.sinceBrief, ruling: output.sinceBrief }
+              : decisions.sinceBrief,
+        }),
   };
 };
 
@@ -1407,6 +1496,7 @@ const renderBody = (
       renderGroup(UNCLOSED_GROUP.title, cut(resolved.unclosed), UNCLOSED_GROUP.open, UNCLOSED_GROUP.subtitle),
       renderGroup(RESOLVED_GROUP.title, cut(resolved.closed), RESOLVED_GROUP.open),
       renderCriteriaGroup(parts.criteria, shed.titles) ?? criteriaNote(parts.criteriaCase),
+      renderSinceBrief(parts.sinceBrief, shed.titles),
       renderFollowUpsGroup(followUps, parts.droppedFollowUps, !shed.followUpTitles, parts.followUpsCap, parts.followUpsCarried),
       renderDroppedNotesGroup(parts.droppedNotes),
       renderHowChecked(parts.howChecked),
@@ -1754,6 +1844,7 @@ export const reviewOutputSchema = standardSchema<ReviewOutput>((raw) => {
     "noteRulings",
   ).map(parseNoteRuling);
   const criteria = asArray(record["criteria"] ?? [], "criteria").map(parseCriterionRuling);
+  const sinceBrief = optionalReason(record["sinceBrief"] ?? record["since_brief"], "sinceBrief");
   const door = parseDoor(record["door"]);
   const doorNote = parseNote(record["doorNote"] ?? record["door_note"]);
   const blastRadius = parseBlastRadius(record["blastRadius"] ?? record["blast_radius"]);
@@ -1794,6 +1885,8 @@ export const reviewOutputSchema = standardSchema<ReviewOutput>((raw) => {
     ...(noteRulings.length === 0 ? {} : { noteRulings }),
     // Absent where the review was handed no criteria, for the same reason.
     ...(criteria.length === 0 ? {} : { criteria }),
+    // Absent where the review was handed no commits since the brief, or ruled none.
+    ...(sinceBrief === undefined ? {} : { sinceBrief: oneLine(sinceBrief) }),
     // Merge Danger (#356), each part absent where the model gave none.
     ...(door === undefined ? {} : { door }),
     ...(doorNote === undefined ? {} : { doorNote }),
@@ -2345,6 +2438,82 @@ const criteriaNote = (found: CriteriaCase | undefined): string | undefined => {
     default:
       return undefined;
   }
+};
+
+/** Why the since-the-brief check could not run, as the body says it. */
+const SINCE_SKIPPED: Readonly<Record<SinceBriefSkip, (commit: string) => string>> = {
+  "no section": () => "the brief has no *Where things are* section",
+  "no read-at commit": () => "the brief's *Where things are* section names no commit it was read at",
+  unresolved: (commit) => `the commit the brief says it was read at, \`${commit}\`, could not be found`,
+  "not an ancestor": (commit) => `the commit the brief says it was read at, \`${commit}\`, is not on the base branch`,
+  "no file found": (commit) => `no file the brief's *Where things are* names exists at \`${commit}\``,
+  unreadable: () => "git could not read the commits since the commit the brief says it was read at",
+};
+
+/** The body's note where a slice round's earlier commits could not be listed. */
+const BRANCH_UNREAD =
+  "**Not listed:** this branch's commits before this slice, since where this slice starts on the PRD branch could not be read.";
+
+const codeList = (words: readonly string[]): string => words.map((word) => `\`${word}\``).join(", ");
+
+/**
+ * What merged since the linked issue's brief was read (#541), beside the
+ * *Acceptance criteria* group: the commits that touched the files its *Where
+ * things are* names since the commit it was read at, and the review's ruling
+ * on whether any changes what a criterion means. One line where the check
+ * could not run, saying why, or where no commit touched them; `undefined`
+ * where it was not asked, which is where the review was handed no criteria.
+ *
+ * The workflow's to lay out, so a commit the review ruled nothing on is still
+ * listed, and a ruling it did not give is said. Not a record: nothing reads it
+ * back.
+ */
+export const renderSinceBrief = (since: SinceBrief | undefined, shorten = false): string | undefined => {
+  if (since === undefined) return undefined;
+  if (since.kind === "not run") {
+    const notFound =
+      since.notFound === undefined || since.notFound.length === 0
+        ? ""
+        : ` (not found there: ${codeList(since.notFound)})`;
+    return `_**Since the brief:** not checked, because ${SINCE_SKIPPED[since.reason](since.commit ?? "")}${notFound}._`;
+  }
+  const notes = [
+    since.gone.length === 0 ? undefined : `**No longer at the base:** ${codeList(since.gone)}.`,
+    since.notFound.length === 0 ? undefined : `**Not found at \`${since.commit}\`:** ${codeList(since.notFound)}.`,
+    since.branchUnread === true ? BRANCH_UNREAD : undefined,
+  ].filter((note) => note !== undefined);
+  const files = `${since.files.length} ${since.files.length === 1 ? "file" : "files"}`;
+  if (!sinceBriefListed(since)) {
+    return [`_**Since the brief:** no commit since \`${since.commit}\` touched the ${files} its *Where things are* names._`, ...notes].join(
+      "\n\n",
+    );
+  }
+  const subject = (value: string): string => (shorten ? shortened(oneLine(value), SHED_TITLE_LENGTH) : oneLine(value));
+  const group = (title: string, group: SinceCommits | undefined): string[] =>
+    group === undefined || group.commits.length + group.more === 0
+      ? []
+      : [
+          title,
+          "",
+          ...group.commits.map((c) => `- \`${c.sha.slice(0, 7)}\` ${subject(c.subject)}`),
+          ...(group.more === 0 ? [] : [`- …and ${group.more} more.`]),
+          "",
+        ];
+  const listed = since.onBase.commits.length + since.onBase.more + (since.onBranch === undefined ? 0 : since.onBranch.commits.length + since.onBranch.more);
+  const ruling = since.ruling === undefined ? "_The review gave no ruling on these._" : `**Ruling:** ${oneLine(since.ruling)}`;
+  return [
+    "<details open>",
+    `<summary><b>Since the brief</b> (${listed}) · commits since <code>${since.commit}</code> that touched the files it names</summary>`,
+    "",
+    `Files checked: ${codeList(since.files)}.`,
+    "",
+    ...group("On the base branch, newest first:", since.onBase),
+    ...group("On this branch before this slice, newest first:", since.onBranch),
+    ruling,
+    ...notes.flatMap((note) => ["", note]),
+    "",
+    "</details>",
+  ].join("\n");
 };
 
 /** A criterion a round's record says was not met as written: changed on purpose, or unmet. */

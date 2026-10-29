@@ -15,8 +15,8 @@ type Io = CommandIo<Declared["outputs"]>;
  * It runs `always()`, after `follow-ups:file`, in the same job, and replaces
  * the shell step *Report the failure on the PR*, word for word.
  *
- * - **A run that finished**: nothing. A filing run's report is
- *   `follow-ups:file`'s, and a merge with nothing to file is a silent exit.
+ * - **A run that finished**: nothing. The checklist and the filing's report
+ *   are `follow-ups:file`'s, and a merge with neither is a silent exit.
  * - **A run that stopped**, failed, cancelled or timed out: one comment, the
  *   reason as a sentence, the run's link and the retry.
  *

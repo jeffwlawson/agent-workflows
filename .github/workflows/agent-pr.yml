@@ -195,17 +195,20 @@ jobs:
       AGENT_APP_ID: ${{ secrets.AGENT_APP_ID }}
       AGENT_APP_PRIVATE_KEY: ${{ secrets.AGENT_APP_PRIVATE_KEY }}
 
-  # **This job is the off switch** for filing a merged pull request's recorded
-  # findings as issues (#50). The reusable ships inert: nothing invokes it
+  # **This job is the off switch** for both of its jobs: filing a merged pull
+  # request's recorded findings as issues (#50), and, on every merge, posting
+  # the linked briefs' *After merge, by a human* checklist (#544). The label
+  # gates the filing alone. The reusable ships inert: nothing invokes it
   # except a caller's reference, so a repo that deletes this job never files
-  # anything. The review keeps recording its out-of-scope findings in the
-  # review body and keeps marking the pull request either way: unfiled rather
-  # than invisible, and a search for merged pull requests carrying
-  # `agent:follow-ups` is then the exact list of the ones nobody filed.
+  # anything and gets no checklist. The review keeps recording its
+  # out-of-scope findings in the review body and keeps marking the pull
+  # request either way: unfiled rather than invisible, and a search for merged
+  # pull requests carrying `agent:follow-ups` is then the exact list of the
+  # ones nobody filed.
   #
   # `labeled` is its manual entry point: re-add `agent:follow-ups` to a closed
   # pull request to drive a missed close event, a reconsidered opt-out or a
-  # partial failure. Both types are narrowed in the called job's condition,
+  # partial failure, which also posts a checklist that is missing. Both types are narrowed in the called job's condition,
   # which an adopter cannot loosen.
   follow-ups:
     uses: jeffwlawson/agent-workflows/.github/workflows/follow-ups.yml@v0.8.11

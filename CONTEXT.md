@@ -16,7 +16,7 @@ the middle. One workflow per label transition, near enough:
 | `agent:review` on a **PR** | `review` | wait for CI, review the diff, verify what earlier rounds found and resolve what landed, mark ready |
 | `agent:fix` on a **PR** | `fix` | act on review feedback, reply to every thread it is asked about and close none, record what it did with the conversation comments, ask for a re-review if it pushed or left an out-of-scope note |
 | `agent:update-branch` on a **PR** | `update-branch` | merge the base branch in, resolve conflicts, carry the verdict over or ask for a re-review |
-| `agent:follow-ups` on a **merged PR** | `follow-ups` | file the out-of-scope findings its review recorded, as `needs-triage` stubs |
+| `agent:follow-ups` on a **merged PR** | `follow-ups` | file the out-of-scope findings its review recorded, as `needs-triage` stubs; on **every** merge, labelled or not, post the linked briefs' *After merge, by a human* checklist |
 
 `implement` and `implement-prd` share one label and partition on **issue shape**: a parent with
 sub-issues goes to the PRD chain, everything else to the single-issue run. The chain works one
@@ -331,6 +331,19 @@ PR a slice round is handed its own sub-issue's criteria, and the final review is
 says nothing: each slice was held to its own in its round, and the final review reads what each
 round recorded.
 
+Wherever a review is handed criteria, it is also **handed what changed since the brief** (#541).
+The brief is the text the criteria came from; the workflow reads the commit its *Where things are*
+section says it was read at, and lists the commits since then that touched the files that section
+names: on the base branch, and on a slice round also the PRD branch's commits before that slice,
+never the commits under review. The review rules in one line on whether any of them changes what a
+criterion means, and moves a criterion through the rulings it already has (*changed*, *unmet*, or
+`needsYou`), so the list adds no verdict of its own. `review:publish` shows the list and the ruling
+in a *Since the brief* group beside *Acceptance criteria*, naming any named file gone from the base
+or path not found at the read-at commit, and on a slice round where the PRD branch's commits
+before it could not be listed; where the check could not run (no such section, no read-at commit,
+one that does not resolve or is not on the base, no named file at it, or git failing to read it) it
+says why in one line there instead.
+
 **What the change is lives in the pull request's body, not the review** (#218). The run that opens
 a pull request writes its **frame** once and never again, in the order #298 settled: a note saying
 what the loop does with it and how to steer it (linking the opening run), opening with a one-line
@@ -390,7 +403,12 @@ draft.
 `follow-ups` is the row that is not quite a label transition. The **merge** is what fires it and
 the label is a marker it reads — re-adding that label to a closed PR is a manual entry point rather
 than the normal path — and it is the one workflow an adopter can decline by not copying its caller
-(`docs/ADOPTING.md` §4). It is also the only one that runs **no model**: the review agent records
+(`docs/ADOPTING.md` §4). It has **two jobs** (#544). On every merge, labelled or not, it posts one
+**post-merge checklist**: the *After merge, by a human* items of the linked issue's latest brief,
+the one the review reads its criteria from, or on a PRD PR of the parent's and every sub-issue's,
+each under its issue, read from trusted text only and cleaned, and posted once. Then, only where
+the label is on, it **files**: the label gates the filing and nothing else, since removing it is
+the opt-out of filing, not of being reminded. It is also the only one that runs **no model**: the review agent records
 the findings and cannot file them, and the workflow holding `issues: write` decides what to file
 with a pure function (`docs/parity.md` §10). On a PRD chain it fires once, at the PRD PR's merge, since nothing
 merges into the PRD branch through a pull request any more (#247). That PR's newest review carries
@@ -606,8 +624,9 @@ request's delivery, and `implement` (`ImplementJob`, #517) and `implement-prd` (
 #518), both from `agent:implement` on an issue's: that label starts two jobs, as it starts two
 workflows on Actions, and each gate defers the other's issue shape without a word, so the
 dispatcher never reads the shape. The last kind, `follow-ups` (`FollowUpsJob`, #519), is the one
-not started by a label alone: a merge whose payload carries `agent:follow-ups` starts it, with no
-author gate, as does that label added to a closed pull request, with one. Every trigger label the
+not started by a label alone: every merge of a same-repository pull request starts it, whatever its
+labels (#544), with no author gate, as does `agent:follow-ups` added to a closed pull request, with
+one. Every trigger label the
 loop has is served.
 The map is keyed by event, so a label is answered on the event type it belongs to and on no other,
 and each event has a route of its own reading its own payload: an implement or implement-prd job carries an issue,

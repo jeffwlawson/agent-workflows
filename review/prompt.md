@@ -55,6 +55,23 @@ old place against the new one, but **only once the code confirms it**: the thing
 place, and the old one is gone. A note the code does not confirm is not evidence, and the criterion
 is ruled as written.
 
+**A criterion can also mean something else since the brief was written.** Work merged after the
+brief can change what a file it names does while leaving every name in place. The workflow read the
+commit the brief says it was read at, and lists here the commits since then that touched the files
+it names: on the base branch, and on a slice round also the commits on this pull request's branch
+before this slice. The commits under review are never among them.
+
+{{SINCE_BRIEF}}
+
+Where any commits are listed, read the ones that could bear on a criterion, and **rule on them in
+`sinceBrief`**, in one line: whether any of them changes what a criterion means, naming the
+criterion and the commit where one does, or saying none does. The list adds nothing to the verdict
+of its own, so rule on the criteria as you would otherwise: a criterion a listed commit made moot
+or wrong is `changed`, with that commit as the reason; one the change fails at the code as it now
+stands is `unmet`, or a finding, as always; and where which reading the issue meant is a human's
+call, say so in `needsYou`. Never raise a finding that the brief is out of date: nothing a fix
+round can edit would answer it. Where nothing is listed, leave `sinceBrief` out.
+
 # EXISTING FEEDBACK
 
 Feedback already on this PR: earlier review summaries, unresolved inline threads (replies

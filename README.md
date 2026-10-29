@@ -20,10 +20,11 @@ or PR number, branch, `CLAUDE_CODE_OAUTH_TOKEN`, model overrides, `OUTPUT_DIR`. 
 an argument, and passing one is refused rather than ignored.
 
 `follow-ups:file` is a command rather than a runner, and runs **no model**: it files the
-out-of-scope findings a review recorded, once the pull request has closed, and needs no
-`CLAUDE_CODE_OAUTH_TOKEN` because nothing in it is an agent. Its caller is the one file in the
-loop that is optional — copy it and merged pull requests file their findings, leave it out and they
-stay in the review body, unfiled.
+out-of-scope findings a review recorded, once the pull request has closed, and on a merge posts
+the post-merge checklist, and needs no `CLAUDE_CODE_OAUTH_TOKEN` because nothing in it is an agent.
+Its caller is the one file in the loop that is optional — copy it and merged pull requests file
+their findings and get the post-merge checklist, leave it out and the findings stay in the review
+body, unfiled, and no checklist is posted.
 
 Two more subcommands are the **install path**, run by a human rather than by a workflow:
 

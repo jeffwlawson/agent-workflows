@@ -7,7 +7,7 @@
  * | File | Holds |
  * |---|---|
  * | `findings.json` | One entry per finding to post: id, placement, severity, title, the agent's text, path, line, and whether it was previously missed |
- * | `review_body.json` | The verdict and its cause, the agent's assessment, the open, resolved and missed entries, criteria results and why there are none, follow-ups and their cap, red-test results, and the data behind the header and the round note |
+ * | `review_body.json` | The verdict and its cause, the agent's assessment, the open, resolved and missed entries, criteria results and why there are none, what merged since the brief, follow-ups and their cap, red-test results, and the data behind the header and the round note |
  * | `thread_resolutions.json` | Per thread: id, reason, whether it was already replied to, and the agent's note or the maintainer's reply to quote |
  * | `pr_summary.json` | The title, the agent's summary, whether the round is final, and the data behind Evidence and merge danger. Written only where this review rewrites them |
  * | `verdict.json` | The verdict's key, whether it starts a fix round, how many findings it leaves open, and which stop kept it from starting one |
@@ -44,7 +44,9 @@ import {
   type CiResult,
   type CloserLookCause,
   type CriteriaCase,
+  MAX_SINCE_COMMITS,
   type ReviewBodyHandOver,
+  type SinceBrief,
   type TestSketch,
   type Verdict,
 } from "../shared/review-output.js";
@@ -254,6 +256,69 @@ const criteriaCase = refine(
 );
 
 /**
+ * What merged since the brief (#541): why the check could not run, or what it
+ * listed. The commits are git's, their subjects text like the agent's, and a
+ * word the brief backticked that names no path is text too, since it is the
+ * issue's.
+ */
+const sinceCommits = object({
+  commits: list(object({ sha: SHA, subject: text }), { max: MAX_SINCE_COMMITS }),
+  more: NUMBER,
+});
+const sinceBrief = refine(
+  object({
+    kind: choice(["not run", "ran"]),
+    reason: optional(choice(["no section", "no read-at commit", "unresolved", "not an ancestor", "no file found", "unreadable"])),
+    commit: optional(SHA),
+    files: optional(list(filePath, { max: MAX_ENTRIES })),
+    gone: optional(list(filePath, { max: MAX_ENTRIES })),
+    notFound: optional(list(text, { max: MAX_ENTRIES })),
+    onBase: optional(sinceCommits),
+    onBranch: optional(sinceCommits),
+    branchUnread: optional(choice([true])),
+    ruling: optional(text),
+  }),
+  ({ kind, reason, commit, files, gone, notFound, onBase, onBranch, branchUnread, ruling }, wrong): SinceBrief => {
+    if (kind === "not run") {
+      if (reason === undefined) return wrong("did not run, and says no reason");
+      if (
+        files !== undefined ||
+        gone !== undefined ||
+        onBase !== undefined ||
+        onBranch !== undefined ||
+        branchUnread !== undefined ||
+        ruling !== undefined
+      ) {
+        return wrong("did not run, and lists what it found");
+      }
+      if ((reason === "no section" || reason === "no read-at commit" || reason === "unreadable") !== (commit === undefined)) {
+        return wrong(`did not run because of ${reason}, and ${commit === undefined ? "names no commit" : "names a commit"}`);
+      }
+      return { kind, reason, ...(commit === undefined ? {} : { commit }), ...(notFound === undefined ? {} : { notFound }) };
+    }
+    if (reason !== undefined) return wrong("ran, and says why it did not");
+    if (commit === undefined || files === undefined || files.length === 0 || onBase === undefined) {
+      return wrong("ran, and does not name its commit, its files and what it listed");
+    }
+    if (onBranch !== undefined && branchUnread !== undefined) return wrong("lists this branch's earlier commits, and says they could not be read");
+    if (onBase.commits.length + (onBranch?.commits.length ?? 0) > MAX_SINCE_COMMITS) {
+      return wrong(`lists more than ${MAX_SINCE_COMMITS} commits`);
+    }
+    return {
+      kind,
+      commit,
+      files,
+      gone: gone ?? [],
+      notFound: notFound ?? [],
+      onBase,
+      ...(onBranch === undefined ? {} : { onBranch }),
+      ...(branchUnread === undefined ? {} : { branchUnread }),
+      ...(ruling === undefined ? {} : { ruling }),
+    };
+  },
+);
+
+/**
  * A round header's data, the scope and the number: read from `review_body.json`
  * by publish, and from publish's `published.json` by `review:conclude`, which
  * opens its stop comment with the same header the review opened with (#425).
@@ -458,8 +523,9 @@ export const handOverParsers = (known: Known) => {
           historyUnreadable: optional(text),
           redTests: optional(redTestsRecord),
           criteriaCase: optional(criteriaCase),
+          sinceBrief: optional(sinceBrief),
         }),
-        ({ criteriaCase, ...body }, wrong): ReviewBody => {
+        ({ criteriaCase, sinceBrief, ...body }, wrong): ReviewBody => {
           if ((criteriaCase?.kind === "criteria found") !== body.criteria.length > 0) {
             return wrong(
               body.criteria.length > 0
@@ -467,7 +533,12 @@ export const handOverParsers = (known: Known) => {
                 : "says criteria were found, and lists none",
             );
           }
-          return { ...body, ...(criteriaCase === undefined ? {} : { criteriaCase }) };
+          if (sinceBrief !== undefined && body.criteria.length === 0) return wrong("says what merged since the brief, and lists no criteria");
+          return {
+            ...body,
+            ...(criteriaCase === undefined ? {} : { criteriaCase }),
+            ...(sinceBrief === undefined ? {} : { sinceBrief }),
+          };
         },
       ),
     ),

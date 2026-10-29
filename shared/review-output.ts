@@ -1105,7 +1105,8 @@ const shedSentence = (shed: Shed): string | undefined => {
  * the review's own sentence naming what is unresolved, the step in italics, the
  * count and — on the rounds that have one — the line saying a finding was moved
  * to the follow-ups, then *Open*, *Previously missed*, *Resolved since last
- * review*, *Acceptance criteria* (#214), *Follow-ups* and *How this was checked*, then a rule and the run
+ * review*, *Acceptance criteria* (#214), *Since the brief* (#541), *Not checked
+ * here* (#543), *Follow-ups* and *How this was checked*, then a rule and the run
  * that produced it. What the change *is* is not here: it is the summary block
  * in the pull request's body (#218), so it is said in one place. The order is Copilot code review's
  * own overview, which is the point — a maintainer who has read one of those
@@ -1113,10 +1114,15 @@ const shedSentence = (shed: Shed): string | undefined => {
  *
  * Three rules about the groups are worth stating because breaking one of them
  * is invisible. **A group with nothing in it is omitted**, so a disclosure
- * widget never opens on nothing. **What is owed is expanded and what is done is
- * folded**: *Open* and *Previously missed* are what the verdict has just told a
- * reader to act on — and *Previously missed* counts toward that verdict, which
- * is why it is not collapsed the way Copilot collapses its equivalent — while
+ * widget never opens on nothing. The one exception is *Not checked here*, on
+ * every body: with nothing to list it is one italic line saying the run skipped
+ * none, ran none, or did not say, so its content and never its absence says
+ * what went unchecked; it is a widget only where it lists something. **What is
+ * owed is expanded and what is done is folded**: *Open* and *Previously missed*
+ * are what the verdict has just told a reader to act on — and *Previously
+ * missed* counts toward that verdict, which is why it is not collapsed the way
+ * Copilot collapses its equivalent — and *Since the brief* and *Not checked
+ * here* are what to read before merging, while
  * *Resolved*, *Follow-ups* and *How this was checked* start closed. And **the
  * only horizontal rule in the body is the one above the run link**: a divider
  * between groups reads as a section break in a list that is one record.

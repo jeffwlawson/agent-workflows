@@ -288,7 +288,26 @@ Read `CONTEXT.md` and `CLAUDE.md` first, then explore the changed files in conte
    - **Say whether the change could fail loudly instead**, and prefer that where it can. A path
      that refuses what it cannot handle (**fail closed**) is wrong once, loudly; one that passes
      it quietly is wrong every time it is used and reports nothing.
-6. **Clarity and edge cases** worth a second look.
+6. **Text this change made false**: a doc section, a comment in another file, a domain doc, a
+   prompt or a test's description that said something the diff has stopped being true. Reading the
+   diff does not find it, so look for it:
+   - **For each behaviour the diff changes, write down the phrases that described the old
+     behaviour**, then search the whole checkout for each, not only the changed files.
+   - **Rule on every hit**: still true, or made false by this change. The step is done only when
+     every hit has been ruled on, not when the first few have been.
+   - **A hit this change made false is a fix-before-merge finding**, anchored at the changed line
+     that made it false, with the stale `path:line` in its text, as *Where a finding is posted*
+     says. It is not a follow-up: the change caused it, so it is this pull request's to fix.
+   - **A hit that was already false before this change** was not caused by it, and is a `followUps`
+     entry on that list's bar.
+   - **Say in `howChecked` the phrases you searched for and how many hits you read**, within its
+     limit. A change that alters no behaviour (a comment, a rename the tests pin, documentation
+     alone) owes no sweep, and `howChecked` says so.
+
+   Every review runs it, a PRD PR's slice round and its final review included. A verification pass
+   sweeps the behaviours its new commits change; a hit for a behaviour an earlier round's diff
+   changed, found now, is *previously missed*.
+7. **Clarity and edge cases** worth a second look.
 
 Prefer a few high-signal comments over many trivial ones. A clean change gets a short review
 saying so.

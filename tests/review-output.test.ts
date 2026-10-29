@@ -3035,6 +3035,60 @@ describe("the review brief asks for the class rather than the member", () => {
 });
 
 /**
+ * The sweep for text the change made false (#540). A review reads the diff,
+ * and a doc, a comment or a prompt elsewhere that the change made untrue was
+ * caught only when the reviewer happened to notice it. *Where a finding is
+ * posted* already says how to anchor one; this item is what asks the review
+ * to look, with a criterion for when the looking is done.
+ *
+ * Held to item 6 exactly, from its number to item 7's, so a clause deleted
+ * from it cannot be satisfied by a neighbour that happens to use the word.
+ */
+describe("the review brief sweeps the checkout for text the change made false", () => {
+  const PROMPT = fs.readFileSync(path.join("review", "prompt.md"), "utf8");
+  const plain = (text: string): string => text.replace(/[*_]/g, "").replace(/\s+/g, " ");
+  const item6 = (): string => plain(PROMPT).match(/ 6\. Text this change made false.*?(?= 7\. )/s)?.[0] ?? "";
+
+  it("asks for the phrases that described the old behaviour, searched over the whole checkout", () => {
+    expect(item6()).toMatch(/phrases that described/i);
+    expect(item6()).toMatch(/whole checkout/i);
+  });
+
+  it("is done only when every hit has been ruled on", () => {
+    expect(item6()).toMatch(/rule on every hit/i);
+    expect(item6()).toMatch(/done only when every hit/i);
+  });
+
+  it("asks howChecked for the phrases searched for and how many hits were read", () => {
+    expect(item6()).toContain("howChecked");
+    expect(item6()).toMatch(/phrases you searched for/i);
+    expect(item6()).toMatch(/how many hits you read/i);
+  });
+
+  it("makes a hit the change made false a fix-before-merge finding at the change, not a follow-up", () => {
+    expect(item6()).toMatch(/fix-before-merge finding/i);
+    expect(item6()).toMatch(/anchored at the changed line that made it false/i);
+    expect(item6()).toMatch(/not a follow-up/i);
+    expect(item6()).toMatch(/Where a finding is posted/i);
+  });
+
+  it("sends a hit that was already false before the change to followUps", () => {
+    expect(item6()).toMatch(/already false before this change/i);
+    expect(item6()).toContain("followUps");
+  });
+
+  it("runs on every review, and a verification pass sweeps what its new commits change", () => {
+    expect(item6()).toMatch(/every review runs it/i);
+    expect(item6()).toMatch(/PRD PR.s slice round and its final review/i);
+    expect(item6()).toMatch(/verification pass sweeps the behaviours its new commits change/i);
+  });
+
+  it("keeps clarity and edge cases as the item after it", () => {
+    expect(plain(PROMPT)).toMatch(/ 7\. Clarity and edge cases/);
+  });
+});
+
+/**
  * GitHub's ceiling on a review body (#140). Over it the post is a 422 that
  * loses the threads along with the body, so the body is measured and shed in a
  * stated order — and refused by name where shedding is not enough.

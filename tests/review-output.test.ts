@@ -3084,8 +3084,63 @@ describe("the review brief sweeps the checkout for text the change made false", 
     expect(item6()).toMatch(/verification pass sweeps the behaviours its new commits change/i);
   });
 
-  it("keeps clarity and edge cases as the item after it", () => {
-    expect(plain(PROMPT)).toMatch(/ 7\. Clarity and edge cases/);
+  it("keeps clarity and edge cases last, after the item on what text can carry", () => {
+    expect(plain(PROMPT)).toMatch(/ 7\. What text sent somewhere new can carry/);
+    expect(plain(PROMPT)).toMatch(/ 8\. Clarity and edge cases/);
+  });
+});
+
+/**
+ * A change that sends text somewhere more widely read than before changes what
+ * that text may safely contain (#542): a refusal echoing a URL is harmless in a
+ * run log and leaks the password in it once quoted in a comment. Nothing asked.
+ *
+ * Held to item 7 exactly, from its number to item 8's, the way item 6 is held.
+ */
+describe("the review brief asks what text sent somewhere new can carry", () => {
+  const PROMPT = fs.readFileSync(path.join("review", "prompt.md"), "utf8");
+  const plain = (text: string): string => text.replace(/[*_]/g, "").replace(/\s+/g, " ");
+  const item7 = (): string =>
+    plain(PROMPT).match(/ 7\. What text sent somewhere new can carry.*?(?= 8\. )/s)?.[0] ?? "";
+
+  it("covers a new destination for existing text and a value added to an existing one", () => {
+    expect(item7()).toMatch(/new destination for text that already existed/i);
+    expect(item7()).toMatch(/value added to a destination that already exists/i);
+  });
+
+  it("asks what the text can carry: a secret, a credential in a URL, a private path, untrusted input", () => {
+    expect(item7()).toMatch(/what can it carry/i);
+    expect(item7()).toMatch(/a secret/i);
+    expect(item7()).toMatch(/credential inside a URL/i);
+    expect(item7()).toMatch(/private path/i);
+    expect(item7()).toMatch(/untrusted input/i);
+  });
+
+  it("asks whether the new place is read more widely than where the text came from", () => {
+    expect(item7()).toMatch(/read more widely than where the text came from/i);
+  });
+
+  it("asks whether it is cleaned of that thing, and a cleanup removing something else does not count", () => {
+    expect(item7()).toMatch(/cleaned of what it can carry/i);
+    expect(item7()).toMatch(/removed or masked/i);
+    expect(item7()).toMatch(/cleanup that removes something else does not count/i);
+  });
+
+  it("makes a secret reaching a more widely read place a fix-before-merge finding at the change", () => {
+    expect(item7()).toMatch(/can carry a secret to a more widely read place.*?fix-before-merge finding/i);
+    expect(item7()).toMatch(/anchored at the change that sends it there/i);
+    expect(item7()).toMatch(/Where a finding is posted/i);
+  });
+
+  it("rules a private path or untrusted input the same way, and one the change did not cause is a follow-up", () => {
+    expect(item7()).toMatch(/private path or untrusted input.*?ruled the same way/i);
+    expect(item7()).toMatch(/did not cause.*?followUps/i);
+  });
+
+  it("asks howChecked to name the new destinations, or say there were none, within its limit", () => {
+    expect(item7()).toContain("howChecked");
+    expect(item7()).toMatch(/name the new destinations you found, or say there were none/i);
+    expect(item7()).toMatch(/within its limit/i);
   });
 });
 

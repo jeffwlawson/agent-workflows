@@ -324,7 +324,26 @@ Read `CONTEXT.md` and `CLAUDE.md` first, then explore the changed files in conte
    Every review runs it, a PRD PR's slice round and its final review included. A verification pass
    sweeps the behaviours its new commits change; a hit for a behaviour an earlier round's diff
    changed, found now, is *previously missed*.
-7. **Clarity and edge cases** worth a second look.
+7. **What text sent somewhere new can carry**: a place the change sends text or a value that it
+   did not reach before. That is a new destination for text that already existed (a log line now
+   quoted in a comment, an error now posted where people read it), and a value added to a
+   destination that already exists (a variable newly interpolated into a message, a summary or a
+   body). For each one:
+   - **What can it carry?** A secret, a credential inside a URL, a private path, untrusted input.
+   - **Is the new place read more widely than where the text came from?**
+   - **Is it cleaned of what it can carry before it gets there?** Cleaned means that specific
+     thing is removed or masked: the credential stripped from the URL, the token replaced. Passing
+     through some cleanup step is not enough, and a cleanup that removes something else does not
+     count.
+   - **Text that can carry a secret to a more widely read place, uncleaned, is a fix-before-merge
+     finding**, anchored at the change that sends it there, as *Where a finding is posted* says.
+   - **A private path or untrusted input reaching a more widely read place, uncleaned, is ruled
+     the same way**: a finding where this change causes it. An exposure this change did not cause
+     is a `followUps` entry on that list's bar.
+   - **In `howChecked`, name the new destinations you found, or say there were none**, in one
+     clause within its limit. A change that sends no text anywhere new (a comment, a rename,
+     documentation alone) owes nothing more than that clause.
+8. **Clarity and edge cases** worth a second look.
 
 Prefer a few high-signal comments over many trivial ones. A clean change gets a short review
 saying so.

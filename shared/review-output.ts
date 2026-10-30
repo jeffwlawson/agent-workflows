@@ -317,7 +317,30 @@ export interface ReviewOutput {
    * no verdict: a criterion it moves is ruled in `criteria`.
    */
   readonly sinceBrief?: string;
+  /**
+   * What the review's own test run left unrun (#543): whether it ran tests,
+   * and each test or suite exercising changed code that skipped for want of
+   * something in the environment, with the reason. Absent where the review
+   * did not say, which the body says rather than reading it as no run. It
+   * derives nothing: not the verdict, not `needsYou`, not the follow-ups.
+   */
+  readonly notChecked?: NotChecked;
 }
+
+/** A test or suite the review's own run skipped, and why, as the run reported it (#543). */
+export interface SkippedTest {
+  readonly test: string;
+  readonly reason: string;
+}
+
+/** Whether the review ran tests, and what its run skipped of the ones exercising the change (#543). */
+export interface NotChecked {
+  readonly ranTests: boolean;
+  readonly skipped: readonly SkippedTest[];
+}
+
+/** The most skipped tests the body lists; the rest are counted in one line. */
+export const MAX_NOT_CHECKED = 20;
 
 /**
  * What the pull request's other checks said when the review ran, collected by
@@ -1082,7 +1105,8 @@ const shedSentence = (shed: Shed): string | undefined => {
  * the review's own sentence naming what is unresolved, the step in italics, the
  * count and — on the rounds that have one — the line saying a finding was moved
  * to the follow-ups, then *Open*, *Previously missed*, *Resolved since last
- * review*, *Acceptance criteria* (#214), *Follow-ups* and *How this was checked*, then a rule and the run
+ * review*, *Acceptance criteria* (#214), *Since the brief* (#541), *Not checked
+ * here* (#543), *Follow-ups* and *How this was checked*, then a rule and the run
  * that produced it. What the change *is* is not here: it is the summary block
  * in the pull request's body (#218), so it is said in one place. The order is Copilot code review's
  * own overview, which is the point — a maintainer who has read one of those
@@ -1090,10 +1114,15 @@ const shedSentence = (shed: Shed): string | undefined => {
  *
  * Three rules about the groups are worth stating because breaking one of them
  * is invisible. **A group with nothing in it is omitted**, so a disclosure
- * widget never opens on nothing. **What is owed is expanded and what is done is
- * folded**: *Open* and *Previously missed* are what the verdict has just told a
- * reader to act on — and *Previously missed* counts toward that verdict, which
- * is why it is not collapsed the way Copilot collapses its equivalent — while
+ * widget never opens on nothing. The one exception is *Not checked here*, on
+ * every body: with nothing to list it is one italic line saying the run skipped
+ * none, ran none, or did not say, so its content and never its absence says
+ * what went unchecked; it is a widget only where it lists something. **What is
+ * owed is expanded and what is done is folded**: *Open* and *Previously missed*
+ * are what the verdict has just told a reader to act on — and *Previously
+ * missed* counts toward that verdict, which is why it is not collapsed the way
+ * Copilot collapses its equivalent — and *Since the brief* and *Not checked
+ * here* are what to read before merging, while
  * *Resolved*, *Follow-ups* and *How this was checked* start closed. And **the
  * only horizontal rule in the body is the one above the run link**: a divider
  * between groups reads as a section break in a list that is one record.
@@ -1196,6 +1225,12 @@ export interface ReviewBodyHandOver {
    * criteria, which is where the check does not run and the body says nothing.
    */
   readonly sinceBrief?: SinceBrief | undefined;
+  /**
+   * What the review's own test run left unrun (#543), at most
+   * `MAX_NOT_CHECKED` entries and how many more there were. Absent where the
+   * review did not say, and the body says so.
+   */
+  readonly notChecked?: (NotChecked & { readonly more: number }) | undefined;
 }
 
 /** One commit the since-the-brief check lists (#541). */
@@ -1386,6 +1421,15 @@ export const reviewBodyHandOver = (decisions: ReviewDecisions): ReviewBodyHandOv
               ? { ...decisions.sinceBrief, ruling: output.sinceBrief }
               : decisions.sinceBrief,
         }),
+    ...(output.notChecked === undefined
+      ? {}
+      : {
+          notChecked: {
+            ranTests: output.notChecked.ranTests,
+            skipped: output.notChecked.skipped.slice(0, MAX_NOT_CHECKED),
+            more: Math.max(0, output.notChecked.skipped.length - MAX_NOT_CHECKED),
+          },
+        }),
   };
 };
 
@@ -1497,6 +1541,7 @@ const renderBody = (
       renderGroup(RESOLVED_GROUP.title, cut(resolved.closed), RESOLVED_GROUP.open),
       renderCriteriaGroup(parts.criteria, shed.titles) ?? criteriaNote(parts.criteriaCase),
       renderSinceBrief(parts.sinceBrief, shed.titles),
+      renderNotChecked(parts.notChecked, shed.titles),
       renderFollowUpsGroup(followUps, parts.droppedFollowUps, !shed.followUpTitles, parts.followUpsCap, parts.followUpsCarried),
       renderDroppedNotesGroup(parts.droppedNotes),
       renderHowChecked(parts.howChecked),
@@ -1845,6 +1890,7 @@ export const reviewOutputSchema = standardSchema<ReviewOutput>((raw) => {
   ).map(parseNoteRuling);
   const criteria = asArray(record["criteria"] ?? [], "criteria").map(parseCriterionRuling);
   const sinceBrief = optionalReason(record["sinceBrief"] ?? record["since_brief"], "sinceBrief");
+  const notChecked = parseNotChecked(record["notChecked"] ?? record["not_checked"]);
   const door = parseDoor(record["door"]);
   const doorNote = parseNote(record["doorNote"] ?? record["door_note"]);
   const blastRadius = parseBlastRadius(record["blastRadius"] ?? record["blast_radius"]);
@@ -1887,6 +1933,9 @@ export const reviewOutputSchema = standardSchema<ReviewOutput>((raw) => {
     ...(criteria.length === 0 ? {} : { criteria }),
     // Absent where the review was handed no commits since the brief, or ruled none.
     ...(sinceBrief === undefined ? {} : { sinceBrief: oneLine(sinceBrief) }),
+    // Absent where the review did not say whether it ran tests, which is not
+    // the same as saying it ran none.
+    ...(notChecked === undefined ? {} : { notChecked }),
     // Merge Danger (#356), each part absent where the model gave none.
     ...(door === undefined ? {} : { door }),
     ...(doorNote === undefined ? {} : { doorNote }),
@@ -1912,6 +1961,36 @@ const parseTestSketch = (value: unknown): TestSketch[] => {
   const raw = typeof record["sketch"] === "string" ? record["sketch"].trim() : "";
   const sketch = (SKETCH_FENCE.exec(raw)?.[2] ?? raw).replace(/\s+$/, "");
   return test === "" || sketch.trim() === "" ? [] : [{ test, sketch }];
+};
+
+/**
+ * What the review's own test run left unrun (#543), read leniently: it is
+ * display. An entry naming no test or no reason is dropped, and a field with
+ * no `ranTests` to read is absent rather than a run of none, unless it lists
+ * a skip, which only a run can have met. A list every entry of which was
+ * dropped, or a run with no list, is absent too, rather than a run that
+ * skipped nothing.
+ */
+const parseNotChecked = (value: unknown): NotChecked | undefined => {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) return undefined;
+  const record = value as Record<string, unknown>;
+  const listed = record["skipped"];
+  const skipped = (Array.isArray(listed) ? listed : []).flatMap(parseSkippedTest);
+  const ran = record["ranTests"] ?? record["ran_tests"];
+  if (skipped.length > 0) return { ranTests: true, skipped };
+  // A list whose every entry was dropped, or a run with no list, says nothing
+  // about what skipped: not that nothing did.
+  if (Array.isArray(listed) && listed.length > 0) return undefined;
+  if (ran === true && !Array.isArray(listed)) return undefined;
+  return typeof ran === "boolean" ? { ranTests: ran, skipped } : undefined;
+};
+
+const parseSkippedTest = (value: unknown): SkippedTest[] => {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) return [];
+  const record = value as Record<string, unknown>;
+  const test = typeof record["test"] === "string" ? oneLine(withoutComments(record["test"])) : "";
+  const reason = typeof record["reason"] === "string" ? oneLine(withoutComments(record["reason"])) : "";
+  return test === "" || reason === "" ? [] : [{ test, reason }];
 };
 
 /**
@@ -2511,6 +2590,33 @@ export const renderSinceBrief = (since: SinceBrief | undefined, shorten = false)
     ...group("On this branch before this slice, newest first:", since.onBranch),
     ruling,
     ...notes.flatMap((note) => ["", note]),
+    "",
+    "</details>",
+  ].join("\n");
+};
+
+/**
+ * What the review's own test run left unrun (#543), after *Since the brief*
+ * and before *Follow-ups*, on every review: the tests or suites exercising
+ * the change that skipped for want of something in the environment, each
+ * with its reason, or one line saying the run skipped none, that the review
+ * ran no tests, or that it did not say. Its content, never its absence, says
+ * whether anything went unchecked. Never shed; under `shorten` each entry is
+ * cut as a commit subject is. Not a record: nothing reads it back.
+ */
+export const renderNotChecked = (notChecked: ReviewBodyHandOver["notChecked"], shorten = false): string => {
+  const line = (text: string): string => `_**Not checked here:** ${text}_`;
+  if (notChecked === undefined) return line("The review did not say whether it ran tests.");
+  if (!notChecked.ranTests) return line("The review ran no tests.");
+  const listed = notChecked.skipped.length + notChecked.more;
+  if (listed === 0) return line("The review's own test run skipped nothing that exercises this change.");
+  const cut = (value: string): string => (shorten ? shortened(oneLine(value), SHED_TITLE_LENGTH) : oneLine(value));
+  return [
+    "<details open>",
+    `<summary><b>Not checked here</b> (${listed}) · tests exercising this change that the review's own run skipped</summary>`,
+    "",
+    ...notChecked.skipped.map((entry) => `- **${cut(entry.test)}**: ${cut(entry.reason)}`),
+    ...(notChecked.more === 0 ? [] : [`- …and ${notChecked.more} more.`]),
     "",
     "</details>",
   ].join("\n");

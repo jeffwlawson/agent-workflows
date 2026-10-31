@@ -280,12 +280,13 @@ writers of it would break "the newest record wins".
 **And the review body is where the rounds are kept** (#109, decisions 8 and 9). It is a findings
 record, not a rendering of the latest pass: the round header, `## Agent review`, the assessment, one sentence the
 review wrote naming what is unresolved, the step, a count, then *Open*, *Previously missed*,
-*Resolved since last review*, *Acceptance criteria*, *Since the brief*, *Not checked here* and
-*Follow-ups*, then *How this was checked*, then a rule and the run. A group with nothing in it is
+*Still open* (closures GitHub refused, #257), *Resolved since last review*, *Acceptance criteria*,
+*Since the brief*, *Not checked here*, *Follow-ups* and *Notes from `agent:fix` not filed*, then
+*How this was checked*, then a rule and the run. A group with nothing in it is
 omitted, except *Not checked here*, which is on every review (#543): what the review's own test run
 skipped of the tests exercising the change, for want of something in the environment, with the
 reason; or that it skipped none, ran none, or did not say. Its content, never its absence, says
-what went unchecked, and it derives nothing. That rule is the only divider in the body. Every entry carries a **severity** — `high` / `medium` / `low`, which orders the list
+what went unchecked, and it derives nothing. The horizontal rule before the run is the only divider in the body. Every entry carries a **severity** — `high` / `medium` / `low`, which orders the list
 and decides nothing else; a test permutes it across a review and holds the verdict identical. It is
 rendered as a **chip this repository hosts**, pinned to the release that posted it, and the thread
 the entry points at opens with the same one (#135) — one badge, so the two surfaces cannot label one

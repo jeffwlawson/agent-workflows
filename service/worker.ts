@@ -1484,8 +1484,8 @@ const runUpdateBranch = async (job: UpdateBranchJob, edges: JobEdges): Promise<r
  *    included: a `push` token, or where that is refused a `write` token, and
  *    where the gate claimed the run a checkout of the base, by name, of its
  *    own, which the bundle is checked in. Then, where the agent's job and the
- *    mint succeeded, `implement:publish` in it, which pushes, deletes the
- *    rescue branch, opens the pull request, links it on the issue and adds
+ *    mint succeeded, `implement:publish` in it, which pushes, opens the
+ *    pull request, deletes the rescue branch, links it on the issue and adds
  *    `agent:review`.
  * 4. `implement:conclude`, however the run ended, in the same checkout, with
  *    the `push` token, which it rescues a stopped run's commits with, or a

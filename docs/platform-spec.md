@@ -640,8 +640,8 @@ build, and an orchestrator other than Actions sets its environment in its own co
 > artifact, and its last step measures whether it ran out of time, as its `timed-out` output, beside
 > the bundle step's outcome, as its `bundled` output. `RESCUE_BRANCH` is `agent/rescue/issue-<n>`, set on the agent's job and the publish job. A publish
 > job mints the loop's token, checks the default branch out and runs, where the agent's job
-> succeeded, `implement:publish`, which checks the bundle, pushes `BRANCH`, deletes the rescue
-> branch, opens a draft pull request into the default branch, links it on the issue, and adds
+> succeeded, `implement:publish`, which checks the bundle, pushes `BRANCH`, opens a draft pull
+> request into the default branch, deletes the rescue branch, links it on the issue, and adds
 > `agent:review` to it; then, `always()`, `implement:conclude`, which ends every run: the set-aside
 > note, a stopped run's commits rescued to the rescue branch where nothing was pushed, the failure
 > comment and `agent:blocked` where the run stopped, and `agent:implement` off wherever the gate
@@ -683,8 +683,8 @@ build, and an orchestrator other than Actions sets its environment in its own co
 >   run, a checkout of the base branch, by name, of its own, made with it, which the bundle is
 >   checked in. `implement:publish` runs only where the agent's job succeeded and the steps before
 >   it in the publish job did, the mint and the checkout among them: pointed at
->   `implement:bundle`'s directory, it pushes `BRANCH`, deletes the rescue branch, opens the draft
->   pull request as the App, links it on the issue and adds `agent:review` with the App's token.
+>   `implement:bundle`'s directory, it pushes `BRANCH`, opens the draft pull request as the App,
+>   deletes the rescue branch, links it on the issue and adds `agent:review` with the App's token.
 >   Then `implement:conclude`, however the run ended, in the same checkout, pointed at publish's,
 >   prepare's, the runner's and bundle's directories. Publish holds `push` as both `GH_TOKEN` and
 >   `LOOP_TOKEN`, with `LOOP_TOKEN_SOURCE` `app`; conclude holds it as both too, or the `write`
@@ -926,10 +926,12 @@ A check that fails fails the command, and nothing is written.
 
 The order: the push of the bundle's tip to `refs/heads/<BRANCH>` with the loop's token, leased on
 `BRANCH_TIP`, or on the branch not existing where it is empty, so a retry replaces a branch an
-earlier run left and a branch someone pushed to during the run is refused; `RESCUE_BRANCH`
-deleted, with the loop's token, leased on its tip as read, where it exists (#270): what the run
-resumed from is in what it pushed, and a deletion that fails, or a tip that cannot be read, is a
-warning; the draft pull request from `BRANCH` into `BASE_REF`, with the loop's token; `` **`agent:implement` opened PR #<pr>:** ``
+earlier run left and a branch someone pushed to during the run is refused; the draft pull request
+from `BRANCH` into `BASE_REF`, with the loop's token; `RESCUE_BRANCH` deleted, with the loop's
+token, leased on its tip as read, where it exists (#270): what the run resumed from is in what it
+pushed, and the pull request now holds it, whereas an open that failed sends the retry back to the
+base, whose push replaces `BRANCH`, leaving the rescue the one copy; a deletion that fails, or a tip
+that cannot be read, is a warning; `` **`agent:implement` opened PR #<pr>:** ``
 and a link to `RUN_URL` on the issue, with `GH_TOKEN`, tolerated; a bounded wait for the pull
 request to show the pushed head; `agent:implement` off the issue, tolerated; and `agent:review` off
 the pull request, tolerated, and on, with the loop's token, warning where `LOOP_TOKEN_SOURCE` is

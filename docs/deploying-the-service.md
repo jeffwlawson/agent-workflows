@@ -284,7 +284,7 @@ to implement-prd. Where it claimed the run, the agent's job checks out the commi
 default branch at, and runs `implement:prepare`, which creates the agent's branch there and fetches
 a stopped run's rescue branch, the setup, the runner, and `implement:bundle`, however those ended.
 Where they succeeded, `implement:publish`, in a checkout of the base of its own, pushes the branch,
-deletes the rescue branch, opens the draft pull request as the App, links it on the issue and adds
+opens the draft pull request as the App, deletes the rescue branch, links it on the issue and adds
 `agent:review` as the App, which the dispatcher answers as the App's own label: the pull request
 then flows into review. `implement:conclude` ends every run, in the same checkout, pushing a stopped
 run's commits to `agent/rescue/issue-<n>` for the next run to resume from. The service

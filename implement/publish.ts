@@ -46,10 +46,12 @@ interface Published {
  * earlier failed run left, and a push someone else made during the run is
  * refused rather than overwritten.
  *
- * **The rescue branch is deleted after the push** (#270), leased on its tip
- * as read: the commits a run resumed from are in what it pushed, and a
- * rescue left behind is one the next run would set aside. A deletion that
- * fails is a warning, never a stop.
+ * **The rescue branch is deleted once the pull request is open** (#270),
+ * leased on its tip as read: the commits a run resumed from are in what it
+ * pushed, and a rescue left behind is one the next run would set aside. Not
+ * between the push and the open: an open that fails sends the retry back to
+ * the base, whose push replaces `BRANCH`, so the rescue is all that is left
+ * of those commits. A deletion that fails is a warning, never a stop.
  *
  * **A server error opening the pull request is read back** (#329): the open
  * pull request from exactly this head into exactly this base is this run's,
@@ -101,14 +103,18 @@ export const publish = async (inputs: Inputs, io: Io): Promise<void> => {
   record();
   console.log(`Pushed ${tip} to ${branch}.`);
 
-  await deleteRescue(io, loop, inputs.RESCUE_BRANCH);
-
   // Step 2: the draft pull request, with the loop's token: the Actions bot is
   // forbidden from opening one. The title is the issue's until the first
   // review writes one true of the change, cut at GitHub's 256 characters.
   const pr = await openPullRequest(inputs, issue, loop);
   state.pr = pr;
   record();
+
+  // The rescue, only once the pull request holds what it resumed from: a
+  // failed open leaves `published.json` with no `pr`, the retry cuts `BRANCH`
+  // afresh at the base and pushes over it, and the rescue is then the one
+  // copy of those commits (#270).
+  await deleteRescue(io, loop, inputs.RESCUE_BRANCH);
 
   // Step 3: the success outcome, said on the issue with the run link (#205),
   // before the review is asked for. A warning where it cannot be posted: the

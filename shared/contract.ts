@@ -1019,8 +1019,8 @@ const REVIEW_RED_CHECK_PLACE = {
  *   error; links it on the issue; waits, bounded by `HEAD_WAIT_SECONDS` and
  *   polled every `HEAD_POLL_SECONDS`, for it to show the pushed head; and
  *   takes `agent:implement` off and puts `agent:review` on, removed first,
- *   with the loop's token. After the push it deletes `RESCUE_BRANCH`, leased
- *   on its tip as read (#270). `published.json` is whether it pushed, the
+ *   with the loop's token. Once the pull request is open it deletes
+ *   `RESCUE_BRANCH`, leased on its tip as read (#270). `published.json` is whether it pushed, the
  *   pushed head, the pull request's number and whether the review was
  *   requested, written as each becomes true.
  * - `review:advance` moves a PRD PR's chain on after a review, or parks it:

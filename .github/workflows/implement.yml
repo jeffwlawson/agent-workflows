@@ -708,9 +708,10 @@ jobs:
           name: agent-implement
           path: ${{ runner.temp }}/agent-implement
 
-      # The success path (#492): the bundle checked, the push, the rescue
-      # branch deleted under a lease on its tip (#270), the draft PR with its
-      # frame, the link on the issue, and the review request, in that order.
+      # The success path (#492): the bundle checked, the push, the draft PR
+      # with its frame, the rescue branch deleted under a lease on its tip
+      # once the PR holds its commits (#270), the link on the issue, and the
+      # review request, in that order.
       # `implement/publish.ts` says why each is as it is.
       #
       # **The bundle is checked before anything is pushed from it**, against

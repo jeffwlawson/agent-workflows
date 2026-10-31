@@ -471,6 +471,9 @@ The job door also answers `GET /health` with `200`.
 One deployment, recorded so it can be rebuilt; nothing in it is in the package's code. The
 dispatcher runs on an Unraid server; the worker runs in a VM on it, the *agent box*, which is the
 wall between the agents and the NAS (#364). GitHub reaches the dispatcher through Tailscale Funnel.
+The scripts that build, upgrade and check it are in [`deploy/unraid/`](../deploy/unraid/README.md),
+with this deployment's own values in an `agent-service.conf` beside them; they are not part of the
+package.
 
 ```text
 GitHub ─► Funnel :10000 ─► Unraid 127.0.0.1:8790/github   dispatcher (container, host network)

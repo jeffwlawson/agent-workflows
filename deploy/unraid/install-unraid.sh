@@ -254,7 +254,8 @@ else
   secret=$(openssl rand -hex 32)
   echo "  made       WORKER_SECRET (install-box.sh asks for it)"
 fi
-env_changed=
+# put returns 1 for "unchanged", which set -e would otherwise stop on; the
+# container step below compares the settings itself.
 put "$ENV_FILE" 600 "$(cat <<EOF
 GITHUB_APP_ID=$app_id
 GITHUB_WEBHOOK_SECRET=$webhook
@@ -266,7 +267,7 @@ TOKEN_HOST=$HOST_IP
 TOKEN_PORT=$TOKEN_PORT
 WORKER_SECRET=$secret
 EOF
-)" && env_changed=1
+)" || true
 unset webhook secret
 chmod 600 "$ENV_FILE".bak.* 2>/dev/null || true
 

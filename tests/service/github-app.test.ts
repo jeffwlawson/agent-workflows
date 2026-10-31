@@ -20,6 +20,8 @@ interface World {
   organization: Record<string, string> | undefined;
   /** A path answered with this status instead, as an outage or a refusal is. */
   failing?: { path: RegExp; status: number };
+  /** The App's own record, where it is not the loop's App's. */
+  app?: unknown;
 }
 
 /**
@@ -64,7 +66,7 @@ const answer = (url: string, init?: RequestInit): Response => {
   asked.push(pathname);
   if (world.failing?.path.test(pathname)) return reply(world.failing.status, { message: "no" });
   if (pathname === `/repos/${REPO}/installation`) return reply(200, { id: 1, account: { login: "owner", type: "User" } });
-  if (pathname === "/app") return reply(200, { id: 1, slug: "loop-app", owner: { login: "Owner", type: "User" } });
+  if (pathname === "/app") return reply(200, world.app ?? { id: 1, slug: "loop-app", owner: { login: "Owner", type: "User" }, permissions: GRANTED, events: ["issues", "pull_request"] });
   if (pathname === "/app/installations/1/access_tokens") return mintAnswer(typeof init?.body === "string" ? init.body : undefined);
   if (pathname === `/repos/${REPO}`) return reply(200, { owner: { type: world.organization === undefined ? "User" : "Organization" } });
   const own = /^\/repos\/owner\/repo\/actions\/variables\/(.+)$/.exec(pathname);
@@ -143,8 +145,16 @@ describe("liveAppGitHub: a variable, as `vars` resolves it", () => {
 });
 
 describe("liveAppGitHub: the App and its installation, as GitHub records them", () => {
-  it("reads the App's slug and its owner's login off the App's own record", async () => {
-    expect(await liveAppGitHub("1", KEY).app()).toEqual({ slug: "loop-app", owner: "Owner" });
+  it("reads the App's slug, its owner's login, its permissions and its events off the App's own record, in one request", async () => {
+    expect(await liveAppGitHub("1", KEY).app()).toEqual({ slug: "loop-app", owner: "Owner", permissions: GRANTED, events: ["issues", "pull_request"] });
+    expect(asked).toEqual(["/app"]);
+  });
+
+  // #560: a record GitHub sends without them grants nothing, so every need is a gap rather than a pass.
+  it("reads a record without permissions or events as granting none and subscribing to none", async () => {
+    world.app = { id: 1, slug: "loop-app", owner: { login: "Owner", type: "User" } };
+
+    expect(await liveAppGitHub("1", KEY).app()).toEqual({ slug: "loop-app", owner: "Owner", permissions: {}, events: [] });
   });
 
   it("reads the account the App's installation on a repository is on", async () => {

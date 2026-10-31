@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { CI_WAIT_SECONDS } from "../../review/collect-checks.js";
-import { createDispatcher, LABEL_KINDS, parseOwners, SERVICE_LABELS, TOKEN_PERMISSIONS, type AppGitHub } from "../../service/dispatcher.js";
+import { appGaps, createDispatcher, LABEL_KINDS, SERVICE_APP_EVENTS, SERVICE_APP_PERMISSIONS, parseOwners, SERVICE_LABELS, TOKEN_PERMISSIONS, type AppGitHub } from "../../service/dispatcher.js";
 import { DEFAULT_FIX_MINUTES, DEFAULT_REVIEW_MINUTES, FOLLOW_UPS_MINUTES, IMPLEMENT_PRD_OTHER_MINUTES, JOB_KINDS, parseJob, sign, SIGNATURE_HEADER, verifySignature, type Job } from "../../service/job.js";
 import { STUB_LABELS } from "../../shared/follow-up-plan.js";
 import {
@@ -57,7 +57,7 @@ const setup = (options: { workerStatus?: number; owners?: readonly string[] } = 
   let clock = START;
   let ids = 0;
   const github: AppGitHub = {
-    app: async () => ({ slug: "loop-app", owner: APP_OWNER }),
+    app: async () => ({ slug: "loop-app", owner: APP_OWNER, permissions: {}, events: [] }),
     installation: async (repo) => (repo === REPO && repository.installed ? repository.account : undefined),
     variable: async (repo, name) => {
       if (repository.unreadable === true) throw new Error("GitHub answered 503");
@@ -927,5 +927,49 @@ describe("the follow-ups route", () => {
       expect(s.posted, label).toEqual([]);
       expect(SERVICE_LABELS, label).not.toContain(label);
     }
+  });
+});
+
+describe("the App's permissions and events, checked at start (#560)", () => {
+  const FULL = {
+    permissions: { metadata: "read", actions_variables: "read", contents: "write", pull_requests: "write", issues: "write", checks: "read", statuses: "write", workflows: "write" },
+    events: ["issues", "pull_request"],
+  };
+
+  it("needs each permission at the highest access a token it mints asks for", () => {
+    expect(SERVICE_APP_PERMISSIONS).toEqual(FULL.permissions);
+    expect(SERVICE_APP_EVENTS).toEqual(["pull_request", "issues"]);
+  });
+
+  it("finds no gap in a record that meets the whole set", () => {
+    expect(appGaps(FULL)).toEqual([]);
+  });
+
+  it("finds no gap in a permission granted above the access needed", () => {
+    expect(appGaps({ ...FULL, permissions: { ...FULL.permissions, checks: "write", metadata: "admin" } })).toEqual([]);
+  });
+
+  it("names a permission not granted, and the tokens it fails", () => {
+    const { actions_variables: _, ...rest } = FULL.permissions;
+
+    expect(appGaps({ ...FULL, permissions: rest })).toEqual([
+      "the App's `actions_variables` permission needs read, not granted: the dispatcher's reads will be refused, 422",
+    ]);
+  });
+
+  it("names a permission granted below the access needed, and only the tokens that ask for more", () => {
+    expect(appGaps({ ...FULL, permissions: { ...FULL.permissions, statuses: "read" } })).toEqual([
+      "the App's `statuses` permission needs write, holds read: `write` tokens, `push` tokens will be refused, 422",
+    ]);
+  });
+
+  it("names an event the App is not subscribed to", () => {
+    expect(appGaps({ ...FULL, events: ["pull_request"] })).toEqual([
+      "the App is not subscribed to the `issues` event: no delivery of it reaches the dispatcher",
+    ]);
+  });
+
+  it("reads a record granting nothing as every permission and every event missing", () => {
+    expect(appGaps({ permissions: {}, events: [] })).toHaveLength(Object.keys(SERVICE_APP_PERMISSIONS).length + SERVICE_APP_EVENTS.length);
   });
 });

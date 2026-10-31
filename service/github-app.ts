@@ -1,5 +1,5 @@
 import { createSign } from "node:crypto";
-import type { AppGitHub, AppRecord } from "./dispatcher.js";
+import { READER_PERMISSIONS, type AppGitHub, type AppRecord } from "./dispatcher.js";
 import type { TokenGrant } from "./job.js";
 
 /**
@@ -90,9 +90,7 @@ export const liveAppGitHub = (appId: string, privateKey: string): AppGitHub => {
   const reader = async (repo: string): Promise<string> => {
     const held = readers.get(repo);
     if (held !== undefined && Date.parse(held.expiresAt) - Date.now() > REUSE_MARGIN_MS) return held.token;
-    // `actions_variables` is GitHub's name for the App's "Variables" permission;
-    // a token asking for `variables` is refused, 422.
-    const grant = await mint(repo, { metadata: "read", actions_variables: "read" });
+    const grant = await mint(repo, READER_PERMISSIONS);
     readers.set(repo, grant);
     return grant.token;
   };
@@ -139,7 +137,18 @@ export const liveAppGitHub = (appId: string, privateKey: string): AppGitHub => {
       if (reply.status !== 200 || typeof slug !== "string" || typeof login !== "string") {
         throw new Error(`reading the App's own record answered ${reply.status}`);
       }
-      app = { slug, owner: login };
+      // A record without either field grants nothing, so every need reads as a gap.
+      const permissions = field(reply, "permissions");
+      const events = field(reply, "events");
+      app = {
+        slug,
+        owner: login,
+        permissions:
+          typeof permissions === "object" && permissions !== null
+            ? Object.fromEntries(Object.entries(permissions).filter((entry): entry is [string, string] => typeof entry[1] === "string"))
+            : {},
+        events: Array.isArray(events) ? events.filter((event): event is string => typeof event === "string") : [],
+      };
       return app;
     },
     installation: async (repo) => (await installation(repo))?.account,

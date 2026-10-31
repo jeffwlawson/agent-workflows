@@ -44,9 +44,35 @@ Whatever the machine, the service needs:
   Where the host's firewall lets the worker out only through a proxy, the worker's own traffic
   needs it too: its install of the agent's CLI, its token requests, and every step it runs, which
   `WORKER_PROXY` sends through it.
-- **Node 24.14 or later** for both processes, with `git` and `npm` beside the worker, and read access
-  to the registry the package is published to.
+- **Node 24.14 or later** for both processes, with `git` and `npm` beside the worker, and the
+  package, installed one of the two ways below. Read access to the registry the package is
+  published to is needed only for the registry route, or for `npm exec`.
 - **The GitHub App**, below.
+
+### Installing the package
+
+Each release's GitHub Release carries the packed tarball, the same file the registry serves, with
+its dependency tree bundled inside it, and a `<tarball>.sha256` beside it. On a public repository a
+Release asset needs no token, so this is the **tokenless install**: download the tarball, check it,
+and install that file:
+
+```bash
+url=https://github.com/<owner>/<repo>/releases/download/v<version>/<tarball>
+curl -fsSLO "$url" && curl -fsSLO "$url.sha256"
+sha256sum -c <tarball>.sha256
+npm install --prefix /opt/agent-workflows ./<tarball>
+```
+
+`<owner>/<repo>` is the repository the package is released from, and `<tarball>` the asset's name
+on its Release, `<scope>-<name>-<version>.tgz` (the package name with its `@` dropped and `/` made
+`-`). `npm install --prefix /opt/agent-workflows "$url"` installs the same file in one step, without
+the check. An **upgrade** is the same commands at the new version, then a restart. This route
+works only where the repository is public: a private repository's Release assets need a token too.
+
+**The registry route** is the other one: `npm install --prefix /opt/agent-workflows
+@<scope>/agent-workflows@<version>`, or `npm exec` of the same spec. GitHub Packages' npm registry
+needs a token with `read:packages` for it, even for a public package, set up in an `.npmrc` the
+install reads.
 
 The two processes may share a machine. Keeping the App's key off the machine that runs agents is
 the point of the split, so put the worker on a machine, or a VM, of its own where you can.
@@ -62,16 +88,16 @@ the first.
 
 Repository permissions:
 
-| Permission | Access | Why |
-|---|---|---|
-| Metadata | read | every API call, and a label's sender's permission |
-| Variables (`actions_variables` in the API) | read | `AGENT_ORCHESTRATOR`, re-read at every token, and the variables the service reads, `AGENT_SETUP` among them: the repository's own, else its organization's shared with it, as `vars` resolves them |
-| Contents | write | the checkout and the pull request's history, read by every phase; a push, by a `push` token only |
-| Pull requests | write | the review, its threads, the title and summary, and the ready mark |
-| Issues | write | comments and labels, the issue an implement job builds, and a PRD's parent |
-| Checks | read | CI's result, which the review's verdict reads |
-| Commit statuses | write | the verdict and the fix-round statuses |
-| Workflows | write | a push touching `.github/workflows/**` is refused without it, *after* the agent has done all its work |
+| Permission | In the API | Access | Why |
+|---|---|---|---|
+| Metadata | `metadata` | read | every API call, and a label's sender's permission |
+| Variables | `actions_variables` | read | `AGENT_ORCHESTRATOR`, re-read at every token, and the variables the service reads, `AGENT_SETUP` among them: the repository's own, else its organization's shared with it, as `vars` resolves them |
+| Contents | `contents` | write | the checkout and the pull request's history, read by every phase; a push, by a `push` token only |
+| Pull requests | `pull_requests` | write | the review, its threads, the title and summary, and the ready mark |
+| Issues | `issues` | write | comments and labels, the issue an implement job builds, and a PRD's parent |
+| Checks | `checks` | read | CI's result, which the review's verdict reads |
+| Commit statuses | `statuses` | write | the verdict and the fix-round statuses |
+| Workflows | `workflows` | write | a push touching `.github/workflows/**` is refused without it, *after* the agent has done all its work |
 
 The worker asks for one of three kinds of token at each phase: `read`, which every phase reads
 with and the only one the runner is ever handed; `write`, which adds the pull request, issue and
@@ -82,8 +108,12 @@ why it is a kind of its own rather than a wider `write`, and why it is acceptabl
 Actions (ADOPTING §2), neither the App's key nor a `push` token is ever where the agent runs. The
 key stays with the dispatcher, and a token reaches a subcommand only where its phase was handed it.
 
-A permission the App lacks fails the mint of the token that asks for it, so it is named in the
-dispatcher's log as the job's phase starts, rather than surfacing as a failed write mid-run.
+The dispatcher reads what the App is granted and subscribed to off the App's own record at start,
+and logs a `warning:` line for each gap: a permission not granted, or granted below the access
+this table needs, naming the access it holds and the tokens whose mint it fails, and an event
+under *The webhook* the App is not subscribed to. A gap warns and the dispatcher starts regardless,
+since review alone needs less than the whole table; a token the gap fails is refused when a phase
+asks for it, `422`, with `the App lacks a permission it asks for` in the log.
 
 Under *Where can this GitHub App be installed?*, choose **Only on this account**. A public App
 can be installed by anyone, on their own repositories, and every one of those would otherwise be a
@@ -102,8 +132,9 @@ In the App's settings, under *Webhook*:
 - **Active**, with the **Webhook URL** the address your dispatcher's webhook door is reached at
   from the internet, ending `/github`;
 - a **Webhook secret**, which is the dispatcher's `GITHUB_WEBHOOK_SECRET`;
-- under *Subscribe to events*, **Pull request** and **Issues**. An issue's label reaches the
-  dispatcher only on an `issues` delivery, so without **Issues** nothing answers `agent:implement`.
+- under *Subscribe to events*, **Pull request** (`pull_request`) and **Issues** (`issues`). An
+  issue's label reaches the dispatcher only on an `issues` delivery, so without **Issues** nothing
+  answers `agent:implement`.
 
 GitHub's *Recent Deliveries* page shows each delivery and the dispatcher's answer: `202` for every
 delivery whose signature verified, whatever became of it, and `401` for one that did not. What
@@ -487,9 +518,11 @@ Inside it:
   box's services on `lo`, the job door among them, are out of the agent's reach whatever this rule
   says. The repository's setup has the same network (#537), so for setup too it is defence in
   depth. What it still limits on its own is the worker's own traffic;
-- the package installed once, as root, into `/opt/agent-workflows` (`npm install --prefix`), so
-  the worker never reaches the registry itself and the box holds no registry token: an upgrade is
-  the same install at a new version, then a restart;
+- the package installed once, as root, into `/opt/agent-workflows`, by the registry route
+  (*Installing the package*, above), so the worker never reaches the registry itself and the box
+  keeps no registry token: the install asks for one, uses it and deletes it. An upgrade is the
+  same install at a new version, then a restart. The tokenless install would do without the
+  token, but this box does not use it yet;
 - the worker as a systemd unit running that install (`node
   /opt/agent-workflows/node_modules/@jeffwlawson/agent-workflows/dist/cli.js worker`) as the
   worker's user, after tinyproxy, its settings in an `EnvironmentFile` only root can read,

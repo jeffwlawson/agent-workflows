@@ -192,6 +192,9 @@ describe("concludingMerge: the merge in progress, through the agent's sandbox", 
       const dir = path.join(scratch, "copy");
       git(scratch, "clone", "--quiet", path.join(scratch, "repo.bundle"), dir);
       git(dir, "checkout", "--quiet", branch);
+      // Sandcastle copies the host's identity in before the hooks run, and the squash needs one.
+      git(dir, "config", "user.name", "loop");
+      git(dir, "config", "user.email", "loop@example.com");
       git(repo, "worktree", "remove", worktree);
       const carry = path.join(scratch, "carry");
       fs.mkdirSync(path.join(carry, "node_modules"), { recursive: true });

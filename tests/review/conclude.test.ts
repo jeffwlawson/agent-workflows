@@ -225,11 +225,6 @@ describe("review:conclude ends a review that did not finish", () => {
   const PATTERN =
     /^\*\*`agent:review` stopped:\*\* [A-Z][^\n]*[.!?]\n\n\[Workflow run\]\(https:\/\/github\.com\/o\/r\/actions\/runs\/42\) · To try again, add `agent:review`\.\n$/;
 
-  /**
-   * The error verdict, then the comment, then the label off, then the block
-   * (#220, #236, #257): a status is per commit and per context, so a review
-   * that died half way reads like an approval until something replaces it.
-   */
   // The service has no run page, so no run id, and an empty link links nowhere.
   it("links no run where it has none, as on the service", async () => {
     await run(INPUTS(reviewEnded("failure", { FAILURE_REASON: "The agent stopped.", GITHUB_RUN_ID: "" })));
@@ -237,6 +232,11 @@ describe("review:conclude ends a review that did not finish", () => {
     expect(comments()).toEqual(["**`agent:review` stopped:** The agent stopped.\n\nTo try again, add `agent:review`.\n"]);
   });
 
+  /**
+   * The error verdict, then the comment, then the label off, then the block
+   * (#220, #236, #257): a status is per commit and per context, so a review
+   * that died half way reads like an approval until something replaces it.
+   */
   it("posts the error verdict, then comments, then takes its label off, then blocks", async () => {
     await run(INPUTS(reviewEnded("failure", { FAILURE_REASON: "The agent stopped." })));
 

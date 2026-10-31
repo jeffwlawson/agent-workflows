@@ -895,6 +895,8 @@ empty:
   They count toward the verdict exactly like the rest, and they say the record was wrong about this
   pull request rather than that the pull request got worse. Expanded, and rendered exactly like an
   *Open* entry, because that is what it is with one more thing said about it.
+- **Still open**: findings this review closed whose threads GitHub would not resolve, so they stay
+  open until the next review retries. Expanded, and only in a round where a closure failed.
 - **Resolved since last review** — findings an earlier review raised that this one checked against
   the current code and closed. Folded on arrival: it is the record's memory rather than your list.
   Nothing else keeps it, because a resolved thread drops out of the next round's view entirely.
@@ -904,6 +906,10 @@ empty:
   from it on purpose, *unmet*, or *not checked*. An unmet one is also a finding under *Open*, with
   a thread to answer it on; a changed one is not a finding. Expanded where anything is not met, and
   left out where the pull request has no linked issue or the issue names no criteria.
+- **Since the brief**: where the review was handed criteria, the commits that touched the files the
+  brief's *Where things are* names since the commit it was read at, and the review's ruling on
+  whether any of them changes what a criterion means. Expanded. One line instead where no commit
+  touched them, or where the check could not run, saying why.
 - **Not checked here**: on every review. The tests exercising this change that the review's own
   test run skipped because its environment lacks something (a tool, a service, a kernel feature),
   each with the reason; or one line saying the run skipped none of them, that the review ran no
@@ -917,6 +923,8 @@ empty:
   A finding the review meant to block on can land here too, and the body says so in a line under
   the count: *"1 finding was moved to follow-ups"*. That is a finding whose anchor was in no file
   the pull request changes — see below.
+- **Notes from `agent:fix` not filed**: the notes a fix run left that this review judged out of
+  scope and not worth an issue, each with the reason. Folded, and only where there are any.
 
 One collapsed section follows the groups, and it is not a place a finding is ever restated:
 

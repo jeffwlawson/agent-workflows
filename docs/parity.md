@@ -1084,9 +1084,12 @@ expensive to rediscover.
 - **The review body is a record, and its newest copy is the current statement.** Since #113 (#109,
   decision 8) it is Copilot's overview in order — `## Agent review`, the assessment, one sentence
   naming what is unresolved, the step in italics, `**Findings:** N` with its severities, then
-  collapsible *Open* (this round's entries marked *new*), *Previously missed*, *Resolved since last
-  review* and *Follow-ups*, then *How this was checked*, then a rule and the run. *What changed in
-  this PR* was the last section until #218 moved the description into the pull request's body. `shared/review-output.ts` is the one place that order is written down.
+  the collapsible groups, *Open* (this round's entries marked *new*) first, then *How this was
+  checked*, then a rule and the run. *What changed in this PR* was the last section until #218
+  moved the description into the pull request's body. The groups and their order are listed in
+  `CONTEXT.md` (the review body paragraph) and in `docs/ADOPTING.md` (*Reading the review body*);
+  `renderBody` in `shared/review-output.ts` is what renders them, and where the prose disagrees
+  with it, the code is right.
 
   The heading is there because **every agent in the loop posts as `github-actions[bot]`**, so in a
   timeline the overview and a fix run's thread replies are one author saying more things. The rule

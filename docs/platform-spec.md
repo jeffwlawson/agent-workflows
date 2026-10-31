@@ -1766,7 +1766,9 @@ the fix round this review follows closed at least one of its findings, or it fol
 a PRD PR when the earlier rounds could not be read (#442): the review then carries no round header,
 and `review:budget` counts a status there by the header of the review it links, so a round started
 from it would make every later count on the PR unreadable. That review asks for none, says under
-*How this was checked* that none was started and why, and warns in the log; the way on is
+*How this was checked* that none was started and why, warns in the log, and hands `review:advance`
+the park reason `unnumbered`, so the park comment gives that reason rather than the budget or the
+token; the way on is
 `agent:fix` by hand. The line is the same either way. Off a PRD PR the budget counts every status,
 so a review asks with or without a header.
 

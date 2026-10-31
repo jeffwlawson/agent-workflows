@@ -590,7 +590,7 @@ const parkReview = refine(
   object({
     verdict: VERDICT,
     cause: optional(choice(["needs you", "red", "unknown"])),
-    reason: optional(choice(["changes recommended", "budget spent", "no progress", "needs a closer look"])),
+    reason: optional(choice(["changes recommended", "budget spent", "no progress", "unnumbered", "needs a closer look"])),
     stillOpen: list(parkFinding, { max: MAX_ENTRIES }),
     raised: list(object({ title: text, anchor: optional(text) }), { max: MAX_FINDINGS }),
   }),

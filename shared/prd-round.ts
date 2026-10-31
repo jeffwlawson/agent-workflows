@@ -359,6 +359,9 @@ export const renderPrdSummary = (inputs: PrdSummaryInputs): string => {
  *   (#331).
  * - `no progress`: the fix round before this review closed none of the
  *   findings it was given.
+ * - `unnumbered`: changes were recommended and a round would have started,
+ *   but the review carries no round header the budget could count it by, so
+ *   it started none (#442).
  * - `needs a closer look`: the review asks for a human.
  * - `failed`: the review did not finish, or its verdict was never posted.
  * - `post failed`: the review finished and its verdict was posted, but a later
@@ -368,6 +371,7 @@ export type ParkReason =
   | "changes recommended"
   | "budget spent"
   | "no progress"
+  | "unnumbered"
   | "needs a closer look"
   | "failed"
   | "post failed";
@@ -405,11 +409,12 @@ export interface ParkInputs {
 export const parkReasonOf = (verdict: {
   readonly verdict: string;
   readonly stop?: "budget spent" | "no progress";
+  readonly withheld?: "unnumbered";
   readonly startsFixRound?: true;
 }): Exclude<ParkReason, "failed" | "post failed"> | undefined => {
   if (verdict.verdict === "needs a closer look") return "needs a closer look";
   if (verdict.startsFixRound === true) return undefined;
-  if (verdict.verdict === "changes recommended") return verdict.stop ?? "changes recommended";
+  if (verdict.verdict === "changes recommended") return verdict.stop ?? verdict.withheld ?? "changes recommended";
   return undefined;
 };
 
@@ -417,6 +422,8 @@ const REASONS: Readonly<Record<Exclude<ParkReason, "budget spent">, string>> = {
   "changes recommended":
     "the review recommended changes, and no automatic fix round starts (the fix-round budget is 0, or `AGENT_PAT` is not set)",
   "no progress": "no progress: the last fix round closed none of the findings it was given",
+  unnumbered:
+    "the review recommended changes, and no automatic fix round started: the PRD PR's earlier rounds could not be read, so the review carries no round number, and the fix-round budget could not have counted a round it started",
   "needs a closer look": "the review needs a closer look",
   failed: "the review didn't finish, or its verdict was never posted, so there is no verdict",
   "post failed":

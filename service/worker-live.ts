@@ -207,9 +207,11 @@ export const liveGit = (host: HostEnvironment): Git => ({
     // fetch into its own local branch never meets the one checked out.
     await run("git", ["init", "--quiet", "--initial-branch=agent-workflows-unborn", dir], { env, signal });
     await run("git", ["-C", dir, "remote", "add", "origin", `https://github.com/${repo}.git`], { env, signal });
+    // Every tag, as Actions' `fetch-depth: 0` brings, so a verify command
+    // that reads a release by its tag passes here as it does there (#567).
     await run(
       "git",
-      ["-C", dir, "fetch", "--quiet", "--no-tags", "origin", `+${sha}:refs/remotes/origin/${branch}`, `+refs/heads/${baseRef}:refs/heads/${baseRef}`],
+      ["-C", dir, "fetch", "--quiet", "--tags", "origin", `+${sha}:refs/remotes/origin/${branch}`, `+refs/heads/${baseRef}:refs/heads/${baseRef}`],
       { env: withToken, signal },
     );
     await run("git", ["-C", dir, "checkout", "--quiet", "-B", branch, sha], { env, signal });

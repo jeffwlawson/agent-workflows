@@ -65,7 +65,8 @@ export interface Git {
   /**
    * Check `sha` out in `dir`, a directory that does not exist yet, as the
    * local branch `branch`, with `baseRef` fetched as a local branch of the
-   * same name beside it, and `committer` the name commits made there are
+   * same name beside it, every tag of `repo` fetched too, as `fetch-depth: 0`
+   * fetches them on Actions, and `committer` the name commits made there are
    * made under. `sha` is a commit, or a branch of `repo` by its name, where
    * a run checks a branch out at whatever commit it is at, as
    * `actions/checkout` checks out a `ref:`. `token` reads `repo`, and is passed with each command that
@@ -1832,7 +1833,8 @@ const runImplementPrd = async (job: ImplementPrdJob, edges: JobEdges): Promise<r
    * branch less that tip, and `implement-prd:publish` and
    * `implement-prd:conclude` each check it before fetching anything, so the
    * checkout must already hold it. On Actions `fetch-depth: 0` fetches every
-   * branch, the PRD branch among them; this checkout fetches the base alone.
+   * branch, the PRD branch among them; this checkout fetches the base alone,
+   * with every tag, as `fetch-depth: 0` brings them.
    */
   const checkOut = (dir: string, token: string, signal: AbortSignal, head = ""): Promise<void> =>
     edges.git.checkout({

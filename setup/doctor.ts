@@ -1424,7 +1424,9 @@ const diagnoseService = (
     });
   }
 
-  const skipped = callers.filter((caller) => !unguarded.includes(caller));
+  // Only a caller ordered at or past the guard is known to skip; one that
+  // could not be ordered has its note above and is not said to skip here.
+  const skipped = callers.filter((caller) => TAG.test(caller.ref) && !unguarded.includes(caller));
   if (skipped.length > 0) {
     add({
       severity: "warning",

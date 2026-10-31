@@ -4274,11 +4274,16 @@ describe("doctor names the failures that otherwise look like something else", ()
       });
 
       it("notes a pin it cannot order, rather than passing or failing it", async () => {
-        for (const ref of ["0123456789abcdef0123456789abcdef01234567", "main"]) {
-          const found = guardFindings(rule(await pinned(ref), service()));
+        for (const ref of ["0123456789abcdef0123456789abcdef01234567", "main", "v0.9"]) {
+          const findings = rule(await pinned(ref), service());
+          const found = guardFindings(findings);
 
           expect(found.map((finding) => finding.severity), ref).toEqual(["note"]);
           expect(found[0]?.problem, ref).toContain("could not be ordered");
+          // Not known to skip, so not among the callers left installed and skipped.
+          const [skipped] = findings.filter((finding) => finding.check === "callers");
+          expect(skipped?.problem, ref).not.toContain("`fix` job");
+          expect(skipped?.problem, ref).toContain("`review` job");
         }
       });
 

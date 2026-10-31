@@ -78,9 +78,9 @@ jobs:
           fi
           echo "Tarball carries no test files and no deploy scripts."
 
-      # The scripts in deploy/ are run as root on someone's server and have no
-      # tests of their own: shellcheck is the least they get. The runner image
-      # carries it.
+      # The scripts in deploy/ are run as root on someone's server, and most have
+      # no tests of their own (tests/deploy/ covers the upgrade scripts):
+      # shellcheck is the least they all get. The runner image carries it.
       - name: The deploy scripts pass shellcheck
         run: shellcheck -S warning deploy/*/*.sh
 

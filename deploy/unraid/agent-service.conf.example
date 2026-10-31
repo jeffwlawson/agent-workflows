@@ -34,11 +34,35 @@
 #VM=agent-box
 #HOST_IP=192.168.250.1
 #BOX_IP=192.168.250.11
+# upgrade.sh reaches the box at BOX_IP over ssh and has no default for it: set
+# it here, uncommented, even where it is the address above.
 
 # The doors: the dispatcher's webhook and token doors, the worker's job door.
 #WEBHOOK_PORT=8790
 #TOKEN_PORT=8791
 #JOBS_PORT=8787
+
+# --- Upgrades, run from Unraid -----------------------------------------------
+
+# Where upgrade.sh downloads each release from: the repository the package is
+# released from, as <owner>/<repo>. Unset, it reads the installed package's
+# repository field, and refuses where that names no github.com repository.
+#PACKAGE_SOURCE=<owner>/<repo>
+
+# The package's name, which names the release's tarball. Unset, upgrade.sh takes
+# the package the dispatcher's install (APPDATA/pkg) depends on.
+#PACKAGE_NAME=@<scope>/agent-workflows
+
+# The box's admin account, which upgrade.sh logs in as over ssh and which may
+# sudo. No default: upgrade.sh refuses without it.
+#BOX_SSH_USER=
+
+# The private key for that login, where ssh's default one is not it. Host keys
+# are kept in known_hosts beside this file, never under ~/.ssh.
+#BOX_SSH_KEY=/boot/config/agent-service/box_key
+
+# Where upgrade.sh stages the tarball on Unraid (/root is in memory there).
+#STAGE_DIR=/root
 
 # --- The box ------------------------------------------------------------------
 

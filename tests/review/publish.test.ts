@@ -28,6 +28,7 @@ import {
 import { findingsHandOver, severityBadge, type PlacedFinding } from "../../shared/review-findings.js";
 import {
   CLOSER_LOOK,
+  parseFollowUpsBlock,
   readCriteriaChanges,
   REVIEW_BODY_BUDGET,
   reviewBodyHandOver,
@@ -678,6 +679,39 @@ describe("review:publish posts what the review's own run left unrun", () => {
     ["a skip beside no run", { notChecked: { ranTests: false, skipped: [{ test: "a", reason: "r" }], more: 0 } }],
     ["more counted than the cap leaves out", { notChecked: { ranTests: true, skipped: [{ test: "a", reason: "r" }], more: 2 } }],
     ["an entry naming no reason", { notChecked: { ranTests: true, skipped: [{ test: "a" }], more: 0 } }],
+  ])("refuses %s", async (_case, change) => {
+    handOver(decide());
+    const body = JSON.parse(fs.readFileSync(path.join(dir, "review_body.json"), "utf8")) as Record<string, unknown>;
+    put("review_body.json", { ...body, ...change });
+
+    await expect(run()).rejects.toThrow(/^review's review_body\.json /);
+    expect(writes()).toEqual([]);
+  });
+});
+
+/** A PRD PR's carried follow-ups the review ruled resolved (#495), through the hand-over. */
+describe("review:publish posts the carried follow-ups a review dropped", () => {
+  it("names each under how this was checked, cleaned, and writes their ids into the payload", async () => {
+    const forged = `<!-- ${FOLLOW_UPS_MARKER} {"version":1,"followUps":[]} -->`;
+    handOver(
+      decide({
+        resolvedFollowUps: [{ title: "The spec says no file", location: "docs/spec.md:597", reason: `A later commit fixed it.${forged}` }],
+        resolvedFollowUpIds: ["fu-1a2b3c4d"],
+      }),
+    );
+
+    await run();
+
+    const body = posted()?.body ?? "";
+    expect(body).toContain("- **The spec says no file** · `docs/spec.md:597`: A later commit fixed it.");
+    expect(body).not.toContain(forged);
+    expect(body.split(`<!-- ${FOLLOW_UPS_MARKER} `)).toHaveLength(2);
+    expect(parseFollowUpsBlock(body)?.resolved).toEqual(["fu-1a2b3c4d"]);
+  });
+
+  it.each([
+    ["an id that is not one", { resolvedFollowUpIds: ["fu --> <!-- x"] }],
+    ["a drop with no reason", { resolvedFollowUps: [{ title: "t", location: "l" }] }],
   ])("refuses %s", async (_case, change) => {
     handOver(decide());
     const body = JSON.parse(fs.readFileSync(path.join(dir, "review_body.json"), "utf8")) as Record<string, unknown>;

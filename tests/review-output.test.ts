@@ -1,6 +1,6 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { parseDiffLines } from "../shared/diff-lines.js";
 import {
   findingMarker,
@@ -494,6 +494,8 @@ describe("recordFollowUps", () => {
       dropped: 0,
       cap: 3,
       carried: false,
+      resolved: [],
+      resolvedNow: [],
     });
   });
 
@@ -620,6 +622,139 @@ describe("recordFollowUps on a PRD PR", () => {
   });
 });
 
+/**
+ * **A carried follow-up the head resolves leaves the record** (#495). The
+ * review rules on each one it was shown, by id; one ruled resolved is dropped
+ * and named, and every other stays, ruled or not, so losing a real follow-up
+ * is never the cost of a ruling the review did not make.
+ */
+describe("recordFollowUps with rulings on what was carried", () => {
+  const entry = (id: string, over: Partial<FollowUp> = {}): FollowUp =>
+    followUp({ id, title: `title ${id}`, location: `src/${id}.ts`, ...over });
+  const earlier = { moved: [entry("fu-moved001")], rest: [entry("fu-rest0001"), entry("fu-rest0002"), entry("fu-rest0003")] };
+
+  it("drops the one ruled resolved, and keeps the ones ruled open and not ruled on, unchanged", () => {
+    const recorded = recordFollowUps([], [], [], {
+      carried: [earlier],
+      rulings: [
+        { id: "fu-rest0002", status: "resolved", reason: "2669b9a now writes no file." },
+        { id: "fu-rest0001", status: "open" },
+      ],
+    });
+
+    expect(recorded.followUps).toEqual([earlier.moved[0], earlier.rest[0], earlier.rest[2]]);
+    expect(recorded.moved).toBe(1);
+    expect(recorded.resolved).toEqual(["fu-rest0002"]);
+    expect(recorded.resolvedNow).toEqual([
+      { title: "title fu-rest0002", location: "src/fu-rest0002.ts", reason: "2669b9a now writes no file." },
+    ]);
+  });
+
+  it("drops a moved one ruled resolved from the exempt prefix", () => {
+    const recorded = recordFollowUps([], [], [], {
+      carried: [earlier],
+      rulings: [{ id: "fu-moved001", status: "resolved", reason: "Fixed." }],
+    });
+
+    expect(recorded.moved).toBe(0);
+    expect(recorded.followUps.map((f) => f.id)).toEqual(["fu-rest0001", "fu-rest0002", "fu-rest0003"]);
+  });
+
+  it("keeps an entry from before ids, which no ruling can name", () => {
+    const old = followUp({ title: "no id" });
+    const recorded = recordFollowUps([], [], [], { carried: [{ moved: [], rest: [old] }], rulings: [] });
+
+    expect(recorded.followUps).toEqual([old]);
+    expect(recorded.resolvedNow).toEqual([]);
+  });
+
+  it("ignores a ruling on an id that was not carried, and a second ruling on one, with a warning", () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      const recorded = recordFollowUps([], [followUp({ title: "new" })], [], {
+        carried: [earlier],
+        rulings: [
+          { id: "fu-made0up0", status: "resolved", reason: "Invented." },
+          { id: "fu-rest0001", status: "open" },
+          { id: "fu-rest0001", status: "resolved", reason: "Second thoughts." },
+        ],
+        cap: followUpsCap(2),
+        nextId: () => "fu-new00001",
+      });
+
+      expect(recorded.followUps.map((f) => f.id)).toEqual(["fu-moved001", "fu-rest0001", "fu-rest0002", "fu-rest0003", "fu-new00001"]);
+      expect(recorded.resolved).toEqual([]);
+      expect(warn.mock.calls.map((call) => String(call[0]))).toEqual([
+        expect.stringContaining("fu-made0up0"),
+        expect.stringContaining("second ruling on follow-up fu-rest0001"),
+      ]);
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it("carries the earlier rounds' resolved ids on, with this round's after them, once each", () => {
+    const recorded = recordFollowUps([], [], [], {
+      carried: [earlier],
+      resolved: ["fu-gone0001", "fu-gone0002"],
+      rulings: [{ id: "fu-rest0003", status: "resolved", reason: "Fixed." }],
+    });
+
+    expect(recorded.resolved).toEqual(["fu-gone0001", "fu-gone0002", "fu-rest0003"]);
+  });
+
+  /**
+   * Additive, with the version still `1`: a reader that has never heard of
+   * `resolved` reads `followUps`, which already leaves the dropped one out.
+   */
+  it("writes the resolved ids into a version 1 payload, and only where there are any", () => {
+    const recorded = recordFollowUps([], [], [], {
+      carried: [earlier],
+      rulings: [{ id: "fu-rest0002", status: "resolved", reason: "Fixed." }],
+    });
+    const block = renderFollowUpsBlock(recorded.followUps, recorded.dropped, recorded.moved, recorded.cap, recorded.carried, recorded.resolved);
+    const payload = JSON.parse(block.match(/<!-- agent-follow-ups (.*) -->/)?.[1] ?? "{}") as Record<string, unknown>;
+
+    expect(payload["version"]).toBe(1);
+    expect(payload["resolved"]).toEqual(["fu-rest0002"]);
+    expect(parseFollowUpsBlock(block)?.resolved).toEqual(["fu-rest0002"]);
+    expect(parseFollowUpsBlock(block)?.followUps.map((f) => f.id)).toEqual(["fu-moved001", "fu-rest0001", "fu-rest0003"]);
+    expect(renderFollowUpsBlock(recorded.followUps, 0, 1)).not.toContain('"resolved"');
+  });
+
+  it("reads anything in the payload's list that is not an id as not one", () => {
+    const body = `<!-- ${FOLLOW_UPS_MARKER} {"version":1,"dropped":0,"resolved":["fu-1",3,"",null],"followUps":[]} -->`;
+
+    expect(parseFollowUpsBlock(body)?.resolved).toEqual(["fu-1"]);
+  });
+});
+
+describe("reviewOutputSchema followUpRulings", () => {
+  it("reads an open and a resolved ruling", () => {
+    const out = parse({
+      findings: [],
+      followUpRulings: [
+        { id: "fu-00000001", status: "open" },
+        { id: "fu-00000002", status: "resolved", reason: " Fixed by the later commit. " },
+      ],
+    });
+
+    expect(out.followUpRulings).toEqual([
+      { id: "fu-00000001", status: "open" },
+      { id: "fu-00000002", status: "resolved", reason: "Fixed by the later commit." },
+    ]);
+  });
+
+  it("refuses a resolution with no reason, and a status it does not know", () => {
+    expect(() => parse({ followUpRulings: [{ id: "fu-00000002", status: "resolved" }] })).toThrow(/resolved follow-up reason/);
+    expect(() => parse({ followUpRulings: [{ id: "fu-00000002", status: "fixed" }] })).toThrow(/"open" or "resolved"/);
+  });
+
+  it("leaves the field out where the review gave none", () => {
+    expect(parse({ findings: [] })).not.toHaveProperty("followUpRulings");
+  });
+});
+
 describe("followUpsCap", () => {
   it("is three per landed slice", () => {
     expect(followUpsCap(1)).toBe(3);
@@ -724,7 +859,7 @@ describe("renderFollowUpsBlock", () => {
     );
     expect(block).not.toContain("<details>");
     expect(hasFollowUpsBlock(block)).toBe(true);
-    expect(parseFollowUpsBlock(block)).toEqual({ followUps: [], dropped: 0, moved: 0, cut: 0, cap: 3 });
+    expect(parseFollowUpsBlock(block)).toEqual({ followUps: [], dropped: 0, moved: 0, cut: 0, cap: 3, resolved: [] });
   });
 });
 
@@ -749,6 +884,7 @@ describe("parseFollowUpsBlock", () => {
       moved: 0,
       cut: 0,
       cap: 3,
+      resolved: [],
     });
   });
 
@@ -821,7 +957,7 @@ describe("parseFollowUpsBlock", () => {
   it("reads a block with no exempt prefix as exempting nothing", () => {
     const body = `<!-- ${FOLLOW_UPS_MARKER} {"version":1,"dropped":0,"followUps":[]} -->`;
 
-    expect(parseFollowUpsBlock(body)).toEqual({ followUps: [], dropped: 0, moved: 0, cut: 0, cap: 3 });
+    expect(parseFollowUpsBlock(body)).toEqual({ followUps: [], dropped: 0, moved: 0, cut: 0, cap: 3, resolved: [] });
   });
 
   /**
@@ -2083,12 +2219,13 @@ describe("the posted review body", () => {
       moved: 0,
       cut: 0,
       cap: 3,
+      resolved: [],
     });
 
     const empty = render();
     expect(empty).not.toContain("<summary><b>Follow-ups</b>");
     expect(hasFollowUpsBlock(empty)).toBe(true);
-    expect(parseFollowUpsBlock(empty)).toEqual({ followUps: [], dropped: 0, moved: 0, cut: 0, cap: 3 });
+    expect(parseFollowUpsBlock(empty)).toEqual({ followUps: [], dropped: 0, moved: 0, cut: 0, cap: 3, resolved: [] });
   });
 
   /**
@@ -2103,6 +2240,37 @@ describe("the posted review body", () => {
       "<details>\n<summary><b>How this was checked</b></summary>\n\nRan the suite; traced `apply()`.",
     );
     expect(body.indexOf("**Findings:**")).toBeLessThan(body.indexOf("How this was checked"));
+  });
+
+  /**
+   * A carried follow-up the review ruled resolved leaves the record (#495),
+   * and *How this was checked* is the one place that says so, with why. Its
+   * id goes into the payload, so the next round leaves it out too.
+   */
+  it("names the carried follow-ups it dropped, and why, under how this was checked", () => {
+    const post = postDecided({
+      ...parts,
+      followUps: [followUp({ title: "Kept one", location: "src/kept.ts", id: "fu-kept0001" })],
+      resolvedFollowUps: [{ title: "Spec says no gate.json", location: "docs/spec.md:597", reason: "2669b9a corrected the spec." }],
+      resolvedFollowUpIds: ["fu-gone0001"],
+    });
+    const checked = post.body.slice(post.body.indexOf("How this was checked"));
+
+    expect(checked).toContain(
+      "_One follow-up an earlier round recorded is resolved at this head, so it is no longer carried and will not be filed:_\n\n- **Spec says no gate.json** · `docs/spec.md:597`: 2669b9a corrected the spec.",
+    );
+    expect(parseFollowUpsBlock(post.body)?.resolved).toEqual(["fu-gone0001"]);
+    expect(post.followUps.map((f) => f.id)).toEqual(["fu-kept0001"]);
+  });
+
+  /** A regular pull request's review drops nothing, and its hand-over and payload carry nothing new. */
+  it("adds nothing where nothing carried was dropped", () => {
+    const handOver = reviewBodyHandOver({ ...parts, resolvedFollowUps: [], resolvedFollowUpIds: [] });
+
+    expect(handOver).not.toHaveProperty("resolvedFollowUps");
+    expect(handOver).not.toHaveProperty("resolvedFollowUpIds");
+    expect(render()).not.toContain("resolved at this head");
+    expect(render()).not.toContain('"resolved"');
   });
 
   /**
@@ -2936,6 +3104,36 @@ describe("the review brief's summary sketch", () => {
 });
 
 /**
+ * **The review rules on each follow-up it is shown as carried** (#495), on a
+ * PRD PR, the way it rules on earlier findings: the runner's carried section
+ * asks for the ruling by id, and the extraction brief names the field. Off a
+ * PRD PR nothing is carried and nothing is asked.
+ */
+describe("the review brief's carried follow-ups", () => {
+  const EXTRACTION = fs.readFileSync(path.join("review", "extraction.md"), "utf8");
+  const RUNNER = fs.readFileSync(path.join("review", "review.ts"), "utf8");
+  const plain = (text: string): string => text.replace(/[*_]/g, "").replace(/\s+/g, " ");
+  const carried = (): string => plain(RUNNER.match(/function renderCarriedFollowUps\(.*?\n}\n/s)?.[0] ?? "");
+
+  it("asks for a ruling on each, open or resolved with a reason, and keeps one not ruled on", () => {
+    expect(carried()).toContain("in `followUpRulings`");
+    expect(carried()).toMatch(/open: it still holds/);
+    expect(carried()).toMatch(/resolved, with a `reason`/);
+    expect(carried()).toMatch(/A follow-up you say nothing about is kept/);
+  });
+
+  it("names the field and both rulings in the extraction brief", () => {
+    expect(EXTRACTION).toContain("## Follow-ups earlier rounds recorded: `followUpRulings`");
+    expect(EXTRACTION).toMatch(/"followUpRulings": \[/);
+    expect(plain(EXTRACTION)).toMatch(/`resolved`: .*Carries a `reason`/);
+  });
+
+  it("names no domain, and leaves the gate unnamed", () => {
+    expect(carried()).not.toMatch(/winget|ManifestType|npm run verify/i);
+  });
+});
+
+/**
  * **Merge Danger** (#356): the review writes its parts beside `summary`, and
  * the workflow lays them out. The door is whether a revert undoes the change,
  * held apart from when the change takes effect, which is blast radius: #330
@@ -3299,7 +3497,7 @@ describe("the review body against GitHub's size limit", () => {
   it("reads a cut past the dropped count as no more than it", () => {
     const body = `<!-- ${FOLLOW_UPS_MARKER} {"version":1,"dropped":1,"cut":4,"followUps":[]} -->`;
 
-    expect(parseFollowUpsBlock(body)).toEqual({ followUps: [], dropped: 1, moved: 0, cut: 1, cap: 3 });
+    expect(parseFollowUpsBlock(body)).toEqual({ followUps: [], dropped: 1, moved: 0, cut: 1, cap: 3, resolved: [] });
   });
 
   it("refuses a body that cannot be made to fit, naming its size and the limit", () => {

@@ -194,6 +194,20 @@ given none, which is nearly every review.
 
 A note you omit is filed as a follow-up at `medium`, so omitting one is not a way to drop it.
 
+## Follow-ups earlier rounds recorded: `followUpRulings`
+
+One entry per follow-up you were given under **FOLLOW-UPS EARLIER ROUNDS RECORDED** with an id,
+using the `id` exactly as given (`` `fu-...` ``). An id you were not given is dropped. Empty where
+you were given none, which is every review but a PRD pull request's.
+
+- `open`: it still holds at the head you reviewed. The workflow keeps carrying it, unchanged.
+- `resolved`: a commit since it was recorded fixed it, so it no longer holds. Carries a `reason`,
+  one line saying what fixed it, which the review body shows beside the follow-up's title. A
+  resolution with no reason is refused. The workflow drops it, and it is not filed.
+
+A follow-up you omit is kept, and so is one listed with no id, so omitting one is not a way to
+drop it.
+
 ## The linked issue's acceptance criteria: `criteria`
 
 One entry per criterion you were given under **ACCEPTANCE CRITERIA**, using the `id` exactly as
@@ -262,6 +276,10 @@ so, and never reads it as no run. It changes no verdict.
     { "noteId": "IC_kwDO...", "status": "promoted", "severity": "medium", "location": "src/client.ts:41" },
     { "noteId": "IC_kwDO...", "status": "dropped", "reason": "Already tracked in the issue this pull request links." }
   ],
+  "followUpRulings": [
+    { "id": "fu-1a2b3c4d", "status": "open" },
+    { "id": "fu-5e6f7a8b", "status": "resolved", "reason": "A later commit corrected the description this follow-up said was wrong." }
+  ],
   "criteria": [
     { "id": "C1", "status": "met" },
     { "id": "C2", "status": "changed", "reason": "The service answers before the work exists, so the change returns its tracking id instead." },
@@ -279,9 +297,10 @@ so, and never reads it as no run. It changes no verdict.
 ```
 
 `doorNote` is not in the example: it is for a one-way door or a two-way door with a catch. Use an
-empty array for any of the eight lists with no entries (`verified` is empty when you were
-given no open findings to rule on, `noteRulings` when you were given no notes, and `criteria` when
-you were given no criteria). Leave
+empty array for any of the nine lists with no entries (`verified` is empty when you were
+given no open findings to rule on, `noteRulings` when you were given no notes, `followUpRulings`
+when you were given no earlier rounds' follow-ups, and `criteria` when you were given no
+criteria). Leave
 `needsYou` out entirely unless it applies, `sinceBrief` out where no commits were listed, `notChecked`
 out only where the review does not say whether it ran tests, and `title`, `summary` and the Merge Danger fields out
 where the brief said this review leaves them as they are.

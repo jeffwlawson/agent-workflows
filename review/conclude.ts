@@ -135,7 +135,7 @@ type Inputs = InputValues<(typeof COMMANDS)["review:conclude"]["inputs"]>;
 
 const endingOf = (inputs: Inputs, publishReason: string | undefined): Ending => {
   if (inputs.PROCEED === "false") return { kind: "refused" };
-  const runUrl = workflowRunUrl(inputs) ?? "";
+  const runUrl = workflowRunUrl(inputs);
   const stoppedWith = (reason: string): Ending => ({ kind: "stopped", comment: stoppedComment(reason, runUrl) });
   // A gate that failed before it decided (#420), as a package that would not
   // install does, is a run that stopped, said with what reason it gave and
@@ -190,11 +190,13 @@ const DOWNLOAD_FAILED =
  * starting with a capital and ending in a full stop, then the run and what to
  * do.
  */
-const stoppedComment = (reason: string, runUrl: string): string => {
+const stoppedComment = (reason: string, runUrl: string | undefined): string => {
   const trimmed = reason.trim();
   const capital = trimmed.charAt(0).toUpperCase() + trimmed.slice(1);
   const sentence = /[.!?]$/.test(capital) ? capital : `${capital}.`;
-  return `**\`${REVIEW_LABEL}\` stopped:** ${sentence}\n\n[Workflow run](${runUrl}) · To try again, add \`${REVIEW_LABEL}\`.\n`;
+  // No run, no link: the service has no run page, and `[Workflow run]()` links nowhere.
+  const link = runUrl === undefined ? "" : `[Workflow run](${runUrl}) · `;
+  return `**\`${REVIEW_LABEL}\` stopped:** ${sentence}\n\n${link}To try again, add \`${REVIEW_LABEL}\`.\n`;
 };
 
 interface Say {

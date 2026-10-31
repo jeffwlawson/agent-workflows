@@ -453,7 +453,7 @@ export const createDispatcher = (edges: DispatcherEdges) => {
     if (event === "ping") return "ping: answered";
     if (event === "pull_request") return pullRequest(payload);
     if (event === "issues") return issue(payload);
-    return `ignored: a \`${event ?? "unnamed"}\` event, not a pull request's or an issue's`;
+    return `ignored: \`${event ?? "unnamed"}\` is neither a pull request's nor an issue's event`;
   };
 
   /**

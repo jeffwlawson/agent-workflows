@@ -231,6 +231,15 @@ describe("fix:conclude says how a stopped run ended, in the one pattern", () => 
     expect(labels()).toEqual([BLOCKED_LABEL]);
   });
 
+  // The service has no run page, so no run id, and an empty link links nowhere.
+  it("links no run where it has none, as on the service", async () => {
+    put("fix", "failure_reason.txt", "The runner wrote this.\n");
+
+    await run(INPUTS(AGENT_FAILED({ GITHUB_RUN_ID: "" })));
+
+    expect(comment()).toBe("**`agent:fix` stopped:** The runner wrote this.\n\nTo try again, add `agent:fix`.\n");
+  });
+
   /** Whatever the clock says: a reason is the runner's own word that it failed. */
   it("reads the agent's reason, not the clock, where there is one", async () => {
     put("fix", "failure_reason.txt", "The runner wrote this.\n");

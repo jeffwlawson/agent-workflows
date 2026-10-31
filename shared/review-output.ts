@@ -145,6 +145,26 @@ export type NoteRuling =
   | { readonly noteId: string; readonly status: "dropped"; readonly reason: string };
 
 /**
+ * What the review decided about one follow-up **an earlier round on a PRD PR
+ * recorded** (#495), named by the id the workflow gave it: still open at the
+ * reviewed head, or resolved since, with a reason the body states. See
+ * `recordFollowUps`, which drops a resolved one and keeps every other.
+ *
+ * A resolution carries its reason by type, as a dropped note does: a carried
+ * follow-up that disappears with nothing saying why is a loss nobody can check.
+ */
+export type FollowUpRuling =
+  | { readonly id: string; readonly status: "open" }
+  | { readonly id: string; readonly status: "resolved"; readonly reason: string };
+
+/** A carried follow-up the review ruled resolved, as the body lists it (#495). */
+export interface ResolvedFollowUp {
+  readonly title: string;
+  readonly location: string;
+  readonly reason: string;
+}
+
+/**
  * What the review decided about one of the linked issue's **acceptance
  * criteria** (#214), named by the id it was handed it under (`C1`, `C2`, …).
  *
@@ -303,6 +323,12 @@ export interface ReviewOutput {
    * review.
    */
   readonly noteRulings?: NoteRuling[];
+  /**
+   * One ruling per follow-up an earlier round on a PRD PR recorded (#495).
+   * Absent where the review was handed none, which is every regular pull
+   * request's review.
+   */
+  readonly followUpRulings?: FollowUpRuling[];
   /**
    * One ruling per acceptance criterion of the linked issue (#214). Absent
    * where the review was handed none: no linked issue, or one with no
@@ -1038,11 +1064,29 @@ const unresolvedSentence = (record: ReviewRecord): string => {
  * Rendered from fields the schema caps rather than from prose the brief asked
  * to be short, which is the whole of the change: the cap is the part a review
  * cannot talk its way past.
+ *
+ * On a PRD PR it also names each carried follow-up the review ruled resolved
+ * (#495), with the reason: it leaves the record here, and this is the one place
+ * that says so.
  */
-const renderHowChecked = (howChecked: string | undefined, withheld?: "unnumbered"): string | undefined => {
-  const lines = [howChecked, withheld === undefined ? undefined : WITHHELD_SENTENCE[withheld]].filter(
-    (line) => line !== undefined,
-  );
+const renderHowChecked = (
+  howChecked: string | undefined,
+  withheld?: "unnumbered",
+  resolvedFollowUps: readonly ResolvedFollowUp[] = [],
+): string | undefined => {
+  const lines = [
+    howChecked,
+    withheld === undefined ? undefined : WITHHELD_SENTENCE[withheld],
+    resolvedFollowUps.length === 0
+      ? undefined
+      : [
+          `_${resolvedFollowUps.length === 1 ? "One follow-up" : `${resolvedFollowUps.length} follow-ups`} an earlier round recorded ${resolvedFollowUps.length === 1 ? "is" : "are"} resolved at this head, so ${resolvedFollowUps.length === 1 ? "it is" : "they are"} no longer carried and will not be filed:_`,
+          "",
+          ...resolvedFollowUps.map(
+            (entry) => `- **${oneLine(entry.title)}** · \`${oneLine(entry.location)}\`: ${oneLine(entry.reason)}`,
+          ),
+        ].join("\n"),
+  ].filter((line) => line !== undefined);
   return lines.length === 0
     ? undefined
     : ["<details>", "<summary><b>How this was checked</b></summary>", "", lines.join("\n\n"), "", "</details>"].join("\n");
@@ -1239,6 +1283,17 @@ export interface ReviewBodyHandOver {
    */
   readonly followUpsCarried: boolean;
   /**
+   * The carried follow-ups this review ruled resolved, each with its reason
+   * (#495), from `recordFollowUps`: said under *How this was checked*. Absent
+   * where it dropped none, which is every regular pull request's review.
+   */
+  readonly resolvedFollowUps?: readonly ResolvedFollowUp[] | undefined;
+  /**
+   * Every carried follow-up ruled resolved on this pull request so far, by id
+   * (#495), for the payload. Absent where there are none.
+   */
+  readonly resolvedFollowUpIds?: readonly string[] | undefined;
+  /**
    * The fix run's out-of-scope notes this review chose not to file, each with
    * its reason (#213), from `applyNoteRulings`. The promoted ones are in
    * `followUps` above and are not repeated here.
@@ -1399,6 +1454,8 @@ export interface ReviewDecisions {
   /** `MAX_FOLLOW_UPS` where absent, which is every regular pull request's. */
   readonly followUpsCap?: number | undefined;
   readonly followUpsCarried?: boolean | undefined;
+  readonly resolvedFollowUps?: readonly ResolvedFollowUp[] | undefined;
+  readonly resolvedFollowUpIds?: readonly string[] | undefined;
   readonly droppedNotes?: readonly DroppedNote[] | undefined;
   readonly criteria?: readonly CriterionResult[] | undefined;
   /**
@@ -1442,6 +1499,14 @@ export const reviewBodyHandOver = (decisions: ReviewDecisions): ReviewBodyHandOv
     droppedFollowUps: decisions.droppedFollowUps,
     followUpsCap: decisions.followUpsCap ?? MAX_FOLLOW_UPS,
     followUpsCarried: decisions.followUpsCarried ?? false,
+    // Only where there are any, so a regular pull request's hand-over, and
+    // the payload written from it, is the one it always was.
+    ...(decisions.resolvedFollowUps === undefined || decisions.resolvedFollowUps.length === 0
+      ? {}
+      : { resolvedFollowUps: decisions.resolvedFollowUps }),
+    ...(decisions.resolvedFollowUpIds === undefined || decisions.resolvedFollowUpIds.length === 0
+      ? {}
+      : { resolvedFollowUpIds: decisions.resolvedFollowUpIds }),
     droppedNotes: decisions.droppedNotes ?? [],
     criteria: decisions.criteria ?? [],
     ...(decisions.linkedIssue === undefined
@@ -1579,7 +1644,7 @@ const renderBody = (
       renderNotChecked(parts.notChecked, shed.titles),
       renderFollowUpsGroup(followUps, parts.droppedFollowUps, !shed.followUpTitles, parts.followUpsCap, parts.followUpsCarried),
       renderDroppedNotesGroup(parts.droppedNotes),
-      renderHowChecked(parts.howChecked, parts.fixRoundWithheld),
+      renderHowChecked(parts.howChecked, parts.fixRoundWithheld, parts.resolvedFollowUps),
       // The only rule in the body, and it is here rather than between the groups
       // because this is the only place the subject changes: everything above is
       // the review, and this is the run that posted it.
@@ -1591,7 +1656,7 @@ const renderBody = (
       // Last, and invisible. The filing half reads the latest one off the body
       // (#47), so it goes out on every review including the one that recorded
       // nothing — which is how a round retracts an earlier round's list.
-      followUpsPayload(followUps, dropped, parts.movedToFollowUps, shed.cutFollowUps, parts.followUpsCap),
+      followUpsPayload(followUps, dropped, parts.movedToFollowUps, shed.cutFollowUps, parts.followUpsCap, parts.resolvedFollowUpIds),
     ]
       .filter((part) => part !== undefined && part !== "")
       .join("\n\n");
@@ -1771,6 +1836,24 @@ const parseNoteRuling = (value: unknown): NoteRuling => {
   };
 };
 
+/**
+ * One ruling on a carried follow-up, thrown on where it is malformed as a note
+ * ruling is: a resolution with no reason is the extraction retry's to get
+ * written, not this file's to keep or drop on a guess.
+ */
+const parseFollowUpRuling = (value: unknown): FollowUpRuling => {
+  const record = asRecord(value, "follow-up ruling");
+  const id = asString(record["id"] ?? record["followUpId"] ?? record["follow_up_id"], "follow-up ruling id").trim();
+  const status = asString(record["status"], "follow-up ruling status");
+  if (status === "resolved") {
+    return { id, status, reason: asString(record["reason"], "resolved follow-up reason").trim() };
+  }
+  if (status !== "open") {
+    throw new Error(`follow-up ruling status must be "open" or "resolved", got "${status}"`);
+  }
+  return { id, status };
+};
+
 const parseFollowUp = (value: unknown): FollowUp => {
   const record = asRecord(value, "follow-up");
   return {
@@ -1927,6 +2010,10 @@ export const reviewOutputSchema = standardSchema<ReviewOutput>((raw) => {
     record["noteRulings"] ?? record["note_rulings"] ?? [],
     "noteRulings",
   ).map(parseNoteRuling);
+  const followUpRulings = asArray(
+    record["followUpRulings"] ?? record["follow_up_rulings"] ?? [],
+    "followUpRulings",
+  ).map(parseFollowUpRuling);
   const criteria = asArray(record["criteria"] ?? [], "criteria").map(parseCriterionRuling);
   const sinceBrief = optionalReason(record["sinceBrief"] ?? record["since_brief"], "sinceBrief");
   const notChecked = parseNotChecked(record["notChecked"] ?? record["not_checked"]);
@@ -1968,6 +2055,10 @@ export const reviewOutputSchema = standardSchema<ReviewOutput>((raw) => {
     // id this review was not handed is dropped by `applyNoteRulings`, for the
     // reason `verified` defers the same check.
     ...(noteRulings.length === 0 ? {} : { noteRulings }),
+    // Absent off a PRD PR, where nothing is carried. An id this review was not
+    // handed is dropped by `recordFollowUps`, for the reason `verified` defers
+    // the same check.
+    ...(followUpRulings.length === 0 ? {} : { followUpRulings }),
     // Absent where the review was handed no criteria, for the same reason.
     ...(criteria.length === 0 ? {} : { criteria }),
     // Absent where the review was handed no commits since the brief, or ruled none.
@@ -2166,6 +2257,15 @@ export interface RecordedFollowUps {
    * so the cap drops the newest rather than the least serious.
    */
   readonly carried: boolean;
+  /**
+   * Every carried follow-up ruled resolved on this pull request so far, by id
+   * (#495): the earlier rounds' and this one's. Written into the payload, so a
+   * later round leaves them out although the older reviews still list them.
+   * Empty off a PRD PR, and the payload then carries no such field.
+   */
+  readonly resolved: string[];
+  /** The ones this round ruled resolved, with the review's reason, for the body. */
+  readonly resolvedNow: ResolvedFollowUp[];
 }
 
 /**
@@ -2187,6 +2287,13 @@ export interface RecordOptions {
    * newest review body is the one `follow-ups` files from.
    */
   readonly carried?: readonly EarlierFollowUps[];
+  /**
+   * The ids earlier rounds ruled resolved (#495), which `earlierFollowUps`
+   * has already left out of `carried`, carried on into this round's payload.
+   */
+  readonly resolved?: readonly string[];
+  /** This round's rulings on the carried entries (#495). */
+  readonly rulings?: readonly FollowUpRuling[];
   /** The id each new entry is given. A parameter so a test can name them. */
   readonly nextId?: () => string;
 }
@@ -2228,6 +2335,14 @@ export const dedupeFollowUps = (entries: readonly FollowUp[], seen: Set<string>)
  * slices landed, three per slice. Everything this round records gets a fresh
  * id, whatever the model wrote.
  *
+ * **A carried entry the review ruled resolved is left out** (#495), and its id
+ * joins `resolved`, which the payload carries so no later round brings it back
+ * from an older review. Every other carried entry stays: one ruled open, one
+ * the review said nothing about, and one from before ids, which no ruling can
+ * name. Losing a real follow-up is worse than filing a stale one. A ruling on
+ * an id that was not carried is dropped with a warning, and so is a second
+ * ruling on one.
+ *
  * `pathErrors` is the subset of `unanchored` whose path names no file — by
  * identity, as `pathErrors` returns them — and those carry `PATH_ERROR_NOTE`
  * instead of `MOVED_NOTE`.
@@ -2238,16 +2353,48 @@ export const recordFollowUps = (
   pathErrors: readonly Finding[] = [],
   options: RecordOptions = {},
 ): RecordedFollowUps => {
-  const { cap = MAX_FOLLOW_UPS, carried = [], nextId = newFollowUpId } = options;
+  const { cap = MAX_FOLLOW_UPS, carried = [], resolved = [], rulings = [], nextId = newFollowUpId } = options;
   const seen = new Set<string>();
+  const earlierMoved = dedupeFollowUps(carried.flatMap((earlier) => earlier.moved), seen);
+  const earlierRestAll = dedupeFollowUps(carried.flatMap((earlier) => earlier.rest), seen);
+
+  const known = new Map([...earlierMoved, ...earlierRestAll].flatMap((entry) => (entry.id === undefined ? [] : [[entry.id, entry] as const])));
+  const ruled = new Map<string, FollowUpRuling>();
+  for (const ruling of rulings) {
+    if (!known.has(ruling.id)) {
+      console.warn(`Dropping a ruling on follow-up ${ruling.id}, which this review was not handed.`);
+      continue;
+    }
+    if (ruled.has(ruling.id)) {
+      console.warn(`Dropping a second ruling on follow-up ${ruling.id}.`);
+      continue;
+    }
+    ruled.set(ruling.id, ruling);
+  }
+  const resolvedNow: ResolvedFollowUp[] = [];
+  const isOpen = (entry: FollowUp): boolean => {
+    const ruling = entry.id === undefined ? undefined : ruled.get(entry.id);
+    if (ruling?.status !== "resolved") return true;
+    resolvedNow.push({ title: entry.title, location: entry.location, reason: ruling.reason });
+    return false;
+  };
+
   const moved = [
-    ...dedupeFollowUps(carried.flatMap((earlier) => earlier.moved), seen),
+    ...earlierMoved.filter(isOpen),
     ...unanchored.map((finding) => ({ ...movedFollowUp(finding, pathErrors.includes(finding)), id: nextId() })),
   ];
-  const earlierRest = dedupeFollowUps(carried.flatMap((earlier) => earlier.rest), seen);
+  const earlierRest = earlierRestAll.filter(isOpen);
   const rest = [...earlierRest, ...followUps.map((followUp) => ({ ...followUp, id: nextId() }))];
   const { kept, dropped } = capFollowUps(rest, cap);
-  return { followUps: [...moved, ...kept], moved: moved.length, dropped, cap, carried: earlierRest.length > 0 };
+  return {
+    followUps: [...moved, ...kept],
+    moved: moved.length,
+    dropped,
+    cap,
+    carried: earlierRest.length > 0,
+    resolved: [...new Set([...resolved, ...[...ruled.values()].filter((r) => r.status === "resolved").map((r) => r.id)])],
+    resolvedNow,
+  };
 };
 
 /**
@@ -2300,7 +2447,7 @@ export const hasFollowUpsBlock = (body: string): boolean =>
  */
 export const parseFollowUpsBlock = (
   body: string,
-): { followUps: FollowUp[]; dropped: number; moved: number; cut: number; cap: number } | undefined => {
+): { followUps: FollowUp[]; dropped: number; moved: number; cut: number; cap: number; resolved: string[] } | undefined => {
   const matches = [...body.matchAll(BLOCK)];
   const raw = matches[matches.length - 1]?.[1];
   if (raw === undefined) return undefined;
@@ -2338,8 +2485,16 @@ export const parseFollowUpsBlock = (
   // was recorded, which is one capped at `MAX_FOLLOW_UPS`, and anything that is
   // not a whole number of at least that reads the same.
   const cap = record["cap"];
+  // The ids of the carried entries a PRD PR's review ruled resolved (#495),
+  // every round's so far. Absent where none was, which is every payload
+  // before it existed and every regular pull request's. Anything that is not
+  // an id is not one.
+  const resolved = asArray(record["resolved"] ?? [], "resolved").filter(
+    (id): id is string => typeof id === "string" && id !== "",
+  );
   return {
     followUps,
+    resolved,
     cap: typeof cap === "number" && Number.isInteger(cap) && cap >= MAX_FOLLOW_UPS ? cap : MAX_FOLLOW_UPS,
     dropped: count,
     moved:
@@ -2384,6 +2539,13 @@ export const parseFollowUpsBlock = (
  * the filing end re-applies the one this end applied rather than its own.
  * Additive on the same terms: a reader that has never heard of it caps at
  * three, which is every regular pull request's cap anyway.
+ *
+ * `resolved` is the ids of the carried entries a PRD PR's review ruled
+ * resolved (#495), every round's so far, so the next round leaves them out
+ * although the older reviews it reads still list them. Additive on the same
+ * terms, and written only where it is not empty: a reader that has never heard
+ * of it reads `followUps`, which already leaves them out, so the filing end
+ * files the same list either way.
  */
 export const followUpsPayload = (
   kept: readonly FollowUp[],
@@ -2391,6 +2553,7 @@ export const followUpsPayload = (
   moved: number,
   cut = 0,
   cap: number = MAX_FOLLOW_UPS,
+  resolved: readonly string[] = [],
 ): string =>
   `<!-- ${FOLLOW_UPS_MARKER} ${embeddableJson({
     version: FOLLOW_UPS_VERSION,
@@ -2398,6 +2561,7 @@ export const followUpsPayload = (
     moved,
     cap,
     ...(cut > 0 ? { cut } : {}),
+    ...(resolved.length > 0 ? { resolved } : {}),
     followUps: kept,
   })} -->`;
 
@@ -2731,8 +2895,9 @@ export const renderFollowUpsBlock = (
   moved: number,
   cap: number = MAX_FOLLOW_UPS,
   carried = false,
+  resolved: readonly string[] = [],
 ): string => {
   const group = renderFollowUpsGroup(kept, dropped, true, cap, carried);
-  const payload = followUpsPayload(kept, dropped, moved, 0, cap);
+  const payload = followUpsPayload(kept, dropped, moved, 0, cap, resolved);
   return group === undefined ? payload : `${group}\n\n${payload}`;
 };

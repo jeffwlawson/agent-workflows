@@ -417,6 +417,7 @@ try {
   // stays three. The final review also reads each slice round's criteria
   // record off the same reviews, by the commit each one reviewed.
   let carried: EarlierFollowUps[] = [];
+  let resolvedEarlier: string[] = [];
   let cap = MAX_FOLLOW_UPS;
   let slicesCriteria: SliceCriteria[] | undefined;
   let slicesRedTests: SliceRedTests[] | undefined;
@@ -424,6 +425,7 @@ try {
     const reviews = fetchReviews(INPUTS.GH_REPO, PR_NUMBER);
     const earlier = earlierFollowUps(reviews, LOOP_ACCOUNTS);
     carried = earlier.carried;
+    resolvedEarlier = earlier.resolved;
     for (const skipped of earlier.skipped) {
       console.log(`::warning::Follow-ups not carried forward from ${skipped}.`);
     }
@@ -438,7 +440,7 @@ try {
       }
     }
     console.log(
-      `Follow-ups: ${carried.reduce((n, e) => n + e.moved.length + e.rest.length, 0)} recorded by earlier rounds, carried forward under a cap of ${cap}.`,
+      `Follow-ups: ${carried.reduce((n, e) => n + e.moved.length + e.rest.length, 0)} recorded by earlier rounds, carried forward under a cap of ${cap}; ${resolvedEarlier.length} ruled resolved by an earlier round and left out.`,
     );
   }
 
@@ -574,6 +576,11 @@ try {
   // (#213), ahead of them and inside the cap: the review chose to promote each
   // one over dropping it. A note it dropped is listed in the body with its
   // reason instead, so every note ends one way or the other.
+  //
+  // On a PRD PR the review also rules on each follow-up it was shown as
+  // carried (#495): one ruled resolved at this head leaves the record, and
+  // its id goes into the payload so no later round carries it back from an
+  // older review. One ruled open, or not ruled on, stays.
   const notes = applyNoteRulings(context.fixNotes, output.noteRulings ?? []);
   const {
     followUps,
@@ -581,7 +588,14 @@ try {
     moved: movedFollowUps,
     cap: followUpsCapUsed,
     carried: followUpsCarried,
-  } = recordFollowUps(unanchored, [...notes.promoted, ...output.followUps], unplaceable, { cap, carried });
+    resolved: resolvedFollowUpIds,
+    resolvedNow: resolvedFollowUps,
+  } = recordFollowUps(unanchored, [...notes.promoted, ...output.followUps], unplaceable, {
+    cap,
+    carried,
+    resolved: resolvedEarlier,
+    rulings: output.followUpRulings ?? [],
+  });
 
   // The verdict, derived from the review and the checks rather than written by
   // the agent (#96). Its heading and next-step line open the body, so the
@@ -647,6 +661,8 @@ try {
       droppedFollowUps,
       followUpsCap: followUpsCapUsed,
       followUpsCarried,
+      resolvedFollowUps,
+      resolvedFollowUpIds,
       droppedNotes: notes.dropped,
       criteria: criteriaRulings.results,
       // The final review skips criteria on purpose, and says nothing about it.
@@ -781,7 +797,9 @@ try {
     `Earlier findings: ${context.carriedFindings.length} open before this review: ${closedAs("ADDRESSED")} verified fixed, ${closedAs("WONT_FIX")} closed on a maintainer's decline, ${stillOpen.length} still open.`,
   );
   console.log(`Settled by a maintainer and not raised again: ${context.settledFindings.length}.`);
-  console.log(`Follow-ups: ${followUps.length} recorded, ${droppedFollowUps} dropped by the cap of ${followUpsCapUsed}.`);
+  console.log(
+    `Follow-ups: ${followUps.length} recorded, ${droppedFollowUps} dropped by the cap of ${followUpsCapUsed}, ${resolvedFollowUps.length} carried ones ruled resolved and left out.`,
+  );
   const ruledAs = (status: string): number =>
     criteriaRulings.results.filter((r) => r.status === status).length;
   console.log(
@@ -798,16 +816,33 @@ try {
  * The follow-ups the earlier rounds on a PRD PR recorded (#247), which the
  * workflow carries into this review's record itself: so the review records
  * only what is new, and a second copy of one of these would be filed twice.
+ * Each with the id the review rules on it by (#495); one from before ids has
+ * none to name, and is kept.
  */
 function renderCarriedFollowUps(carried: readonly EarlierFollowUps[]): string {
-  const lines = dedupeFollowUps(
+  const entries = dedupeFollowUps(
     carried.flatMap((earlier) => [...earlier.moved, ...earlier.rest]),
     new Set(),
-  ).map((entry) => `- **${entry.title.replace(/\s+/g, " ").trim()}** · \`${entry.location}\``);
+  );
+  const lines = entries.map(
+    (entry) =>
+      `- ${entry.id === undefined ? "(no id: kept)" : `\`${entry.id}\``} **${entry.title.replace(/\s+/g, " ").trim()}** · \`${entry.location}\``,
+  );
   return [
     lines.length === 0 ? "(None yet.)" : lines.join("\n"),
     "",
     "**These are carried forward by the workflow**, into this review's record, and filed when this pull request merges. Do not record any of them again in `followUps`: record only what is new in this round.",
+    ...(entries.some((entry) => entry.id !== undefined)
+      ? [
+          "",
+          "**Rule on every one with an id, by that id, in `followUpRulings`.** Read the code it points at, at the head you are reviewing, then either:",
+          "",
+          "- **open**: it still holds. The workflow keeps carrying it, unchanged.",
+          "- **resolved**, with a `reason` the body shows: a commit since it was recorded fixed it, so it no longer holds. The workflow drops it from the record for good, and it is not filed. Say what fixed it.",
+          "",
+          "A follow-up you say nothing about is kept. That is the safe direction: losing a real follow-up costs more than filing one already done. Rule one resolved only where the code shows it fixed, not where it merely seems less important.",
+        ]
+      : []),
   ].join("\n");
 }
 

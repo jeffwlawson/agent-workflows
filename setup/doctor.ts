@@ -235,6 +235,15 @@ export const APP_SECRETS = ["AGENT_APP_ID", "AGENT_APP_PRIVATE_KEY"] as const;
 const TAG = /^v?\d+\.\d+\.\d+$/;
 const SHA = /^[0-9a-f]{40}$/;
 
+/**
+ * The first release whose reusables skip every job where `AGENT_ORCHESTRATOR`
+ * is `service` (#459). A caller pinned before it calls a reusable with no such
+ * guard, so it runs on Actions beside the service. Held to the repository's
+ * own history by `tests/agent-cli.test.ts`: every reusable carries the guard
+ * at this release, and some reusable lacks it at the one before.
+ */
+export const SERVICE_GUARD_RELEASE = "v0.8.3";
+
 const semver = (tag: string): readonly number[] =>
   (/^v?(\d+)\.(\d+)\.(\d+)$/.exec(tag)?.slice(1) ?? ["0", "0", "0"]).map(Number);
 
@@ -1381,13 +1390,50 @@ const diagnoseService = (
     fix: `Check by hand that the service's App lists this repository under Settings → Integrations → GitHub Apps.`,
   });
 
-  if (callers.length > 0) {
+  // A caller pinned before the guard shipped runs beside the service rather
+  // than skipping, which is the one thing a caller can still do wrong here.
+  // An exact tag is ordered by itself, so no fact is read for it; a SHA or any
+  // other ref cannot be ordered and is said to be, rather than passed.
+  const unguarded = callers.filter(
+    (caller) => TAG.test(caller.ref) && compareVersions(caller.ref, SERVICE_GUARD_RELEASE) > 0,
+  );
+  for (const caller of unguarded) {
+    add({
+      severity: "error",
+      check: "service guard",
+      problem:
+        `${caller.file} is pinned to \`@${caller.ref}\`, older than \`${SERVICE_GUARD_RELEASE}\`, the first ` +
+        `release whose reusables skip where \`${ORCHESTRATOR_VARIABLE}\` is \`${SERVICE_ORCHESTRATOR}\`. ` +
+        `Its \`${caller.jobId}\` job therefore runs on GitHub Actions beside the service orchestrator, ` +
+        `and both answer the same label.`,
+      fix:
+        `Run \`init\` to move the pin to this release (it changes the pin in your own text and ` +
+        `nothing else), or move it by hand to \`${SERVICE_GUARD_RELEASE}\` or later.`,
+    });
+  }
+  for (const caller of callers.filter((caller) => !TAG.test(caller.ref))) {
+    add({
+      severity: "note",
+      check: "service guard",
+      problem:
+        `${caller.file} is pinned to \`@${caller.ref}\`, which is not an exact tag, so it could not be ` +
+        `ordered against \`${SERVICE_GUARD_RELEASE}\`, the first release whose reusables skip where ` +
+        `\`${ORCHESTRATOR_VARIABLE}\` is \`${SERVICE_ORCHESTRATOR}\`. Before it, the \`${caller.jobId}\` ` +
+        `job runs on GitHub Actions beside the service orchestrator.`,
+      fix: `Check that the ref is \`${SERVICE_GUARD_RELEASE}\` or later, or pin an exact tag that is.`,
+    });
+  }
+
+  // Only a caller ordered at or past the guard is known to skip; one that
+  // could not be ordered has its note above and is not said to skip here.
+  const skipped = callers.filter((caller) => TAG.test(caller.ref) && !unguarded.includes(caller));
+  if (skipped.length > 0) {
     add({
       severity: "warning",
       check: "callers",
       problem:
-        `${callers.map((caller) => `${caller.file}'s \`${caller.jobId}\` job`).join(", ")} ` +
-        `${callers.length === 1 ? "calls" : "call"} ${repoSlug(packageName)}: installed, and ` +
+        `${skipped.map((caller) => `${caller.file}'s \`${caller.jobId}\` job`).join(", ")} ` +
+        `${skipped.length === 1 ? "calls" : "call"} ${repoSlug(packageName)}: installed, and ` +
         `skipped. Every job of the reusables they call skips while the variable says ` +
         `\`${SERVICE_ORCHESTRATOR}\`, so each event they listen for starts a run that does nothing, ` +
         `and their own checks are not run here.`,

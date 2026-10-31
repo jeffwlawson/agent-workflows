@@ -599,8 +599,16 @@ try {
     stillOpen: stillOpen.length,
     movedToFollowUps: unanchored.length,
     autoFix: willAutoFix(),
+    // A review with no header (#442): on a PRD PR it asks for no round,
+    // which the budget there could not count.
+    ...(header === undefined ? { unnumbered: round === undefined ? "regular pr" : "prd pr" } : {}),
     ...(rounds === undefined ? {} : { fixRounds: rounds }),
   });
+  if (verdict.withheld === "unnumbered") {
+    console.log(
+      "::warning::This review is not numbered, so it starts no automatic fix round: on a PRD PR the fix-round budget could not count one. The body says so. Add `agent:fix` by hand to start one.",
+    );
+  }
   // What `review:publish` posts the review from (ADR 0007): the decisions
   // and the agent's raw text, and nothing rendered. Publish writes the body,
   // each thread, the closing replies and every marker in them, from what it

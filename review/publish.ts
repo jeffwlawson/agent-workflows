@@ -202,8 +202,19 @@ export const publish = async (
   // how the round ended.
   if (!inputs.BRANCH.startsWith(PRD_BRANCH_PREFIX)) await writeStatusLine(workflow, pr, verdict, url);
 
-  // Step 4: the verdict, on the commit it is about.
-  await postVerdict(workflow, reviewed, verdict, verdictRow(verdict.verdict, body.cause), url);
+  // Step 4: the verdict, on the commit it is about. On a PRD PR, no fix
+  // round's status for a review with no header (#442): the budget there
+  // counts a status by the header of the review it links, and one it cannot
+  // attribute leaves every later round on the PR unable to start. The runner
+  // asks for none from such a review; this holds where it did anyway.
+  let fixRound = verdict.fixRound;
+  if (fixRound && header === undefined && inputs.BRANCH.startsWith(PRD_BRANCH_PREFIX)) {
+    console.log(
+      `::warning::Posted no \`${FIX_ROUND_STATUS.context}\` status for ${reviewed}: the review carries no round header, so the fix-round budget could not count the round, and no automatic fix round will start. Add \`agent:fix\` by hand to start one.`,
+    );
+    fixRound = false;
+  }
+  await postVerdict(workflow, reviewed, { ...verdict, fixRound }, verdictRow(verdict.verdict, body.cause), url);
 };
 
 /**

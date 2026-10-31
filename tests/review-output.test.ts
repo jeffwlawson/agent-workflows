@@ -1140,6 +1140,46 @@ describe("deriveVerdict", () => {
   });
 
   /**
+   * **A review on a PRD PR that carries no round header starts no round**
+   * (#442). The budget there counts a fix-round status by the header of the
+   * review it links, so a round started from a review it cannot attribute
+   * makes every later count unreadable and stops every later round on the PR.
+   * The line is the same (#297); the row says why none started, for the body.
+   * A regular PR's budget counts every status, so its review asks with or
+   * without a header.
+   */
+  it.each([
+    ["a numbered review on a PRD PR", {}, { startsFixRound: true }],
+    ["an unnumbered review on a PRD PR", { unnumbered: "prd pr" }, { withheld: "unnumbered" }],
+    ["an unnumbered review on a regular PR", { unnumbered: "regular pr" }, { startsFixRound: true }],
+  ] as const)("asks for a round from %s only where the budget can count it", (_case, over, fields) => {
+    const row = deriveVerdict(output({ findings: [finding({ body: "**Fix before merge.** the guard runs after the return" })] }), {
+      ci: "green",
+      fixRoundProgress: undefined,
+      stillOpen: 0,
+      movedToFollowUps: 0,
+      autoFix: true,
+      ...over,
+    });
+
+    expect(row).toEqual({ ...VERDICTS["changes recommended"], ...fields });
+  });
+
+  /** Where no round would have started anyway, there is nothing withheld to say. */
+  it("withholds nothing from an unnumbered PRD review where no round would start", () => {
+    const row = deriveVerdict(output({ findings: [finding({ body: "**Fix before merge.** the guard runs after the return" })] }), {
+      ci: "green",
+      fixRoundProgress: undefined,
+      stillOpen: 0,
+      movedToFollowUps: 0,
+      autoFix: false,
+      unnumbered: "prd pr",
+    });
+
+    expect(row).toEqual(VERDICTS["changes recommended"]);
+  });
+
+  /**
    * A pull request with one review round so far never early-stops: it follows
    * no fix round, so there is nothing to judge. Nor does a fix round that was
    * given nothing, which cannot have failed to close any of it.

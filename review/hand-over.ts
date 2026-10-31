@@ -525,6 +525,7 @@ export const handOverParsers = (known: Known) => {
           assessment: optional(text),
           needsYou: optional(text),
           howChecked: optional(text),
+          fixRoundWithheld: optional(choice(["unnumbered"])),
           open: list(object(entry), { max: MAX_ENTRIES }),
           missed: list(object(entry), { max: MAX_ENTRIES }),
           resolved: list(object({ ...entry, threadId: thread }), { max: MAX_ENTRIES }),
@@ -552,6 +553,9 @@ export const handOverParsers = (known: Known) => {
                 ? `lists criteria, and says ${criteriaCase === undefined ? "nothing" : JSON.stringify(criteriaCase.kind)} about them`
                 : "says criteria were found, and lists none",
             );
+          }
+          if (body.fixRoundWithheld !== undefined && body.verdict !== "changes recommended") {
+            return wrong(`says a fix round was withheld on ${body.verdict}`);
           }
           if (sinceBrief !== undefined && body.criteria.length === 0) return wrong("says what merged since the brief, and lists no criteria");
           return {

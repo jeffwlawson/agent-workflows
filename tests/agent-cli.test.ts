@@ -40,6 +40,7 @@ import {
   parseList,
   REQUIRED_PERMISSIONS,
   runDoctor,
+  SERVICE_GUARD_RELEASE,
   type Finding,
   type RepoFacts,
 } from "../setup/doctor.js";
@@ -4234,6 +4235,105 @@ describe("doctor names the failures that otherwise look like something else", ()
       const [callers] = findings.filter((finding) => finding.check === "callers");
       expect(callers?.problem).toContain("installed, and skipped");
       expect(callers?.problem).toContain("`review` job");
+    });
+
+    /**
+     * **The service guard** (#563). The reusables skip on `service` only from
+     * `SERVICE_GUARD_RELEASE`, so a caller pinned before it runs on Actions
+     * beside the service.
+     */
+    describe("the service guard", () => {
+      const guardFindings = (findings: readonly Finding[]): readonly Finding[] =>
+        findings.filter((finding) => finding.check === "service guard");
+      const pinned = async (ref: string): Promise<string> => {
+        const root = await installed();
+        edit(root, "fix", (text) => text.replace(`@v${manifest.version}`, `@${ref}`));
+        return root;
+      };
+
+      it("fails a caller pinned below the minimum, naming the file, its pin, the minimum and init", async () => {
+        const root = await pinned("v0.8.2");
+        const findings = rule(root, service());
+        const found = guardFindings(findings);
+
+        expect(found.map((finding) => finding.severity)).toEqual(["error"]);
+        expect(found[0]?.problem).toContain(callerFileOf(root, "fix"));
+        expect(found[0]?.problem).toContain("`@v0.8.2`");
+        expect(found[0]?.problem).toContain(`\`${SERVICE_GUARD_RELEASE}\``);
+        expect(found[0]?.fix).toContain("`init`");
+        // It runs, so it is not among the callers left installed and skipped.
+        const [skipped] = findings.filter((finding) => finding.check === "callers");
+        expect(skipped?.problem).not.toContain("`fix` job");
+        expect(skipped?.problem).toContain("`review` job");
+      });
+
+      it("says nothing of a caller at or above the minimum", async () => {
+        expect(guardFindings(rule(await pinned(SERVICE_GUARD_RELEASE), service()))).toEqual([]);
+        expect(guardFindings(rule(await pinned("v99.0.0"), service()))).toEqual([]);
+        expect(guardFindings(rule(await installed(), service({ releases: undefined })))).toEqual([]);
+      });
+
+      it("notes a pin it cannot order, rather than passing or failing it", async () => {
+        for (const ref of ["0123456789abcdef0123456789abcdef01234567", "main"]) {
+          const found = guardFindings(rule(await pinned(ref), service()));
+
+          expect(found.map((finding) => finding.severity), ref).toEqual(["note"]);
+          expect(found[0]?.problem, ref).toContain("could not be ordered");
+        }
+      });
+
+      it("changes nothing on the Actions orchestrator", async () => {
+        const root = await pinned("v0.8.2");
+        expect(guardFindings(rule(root, healthy()))).toEqual([]);
+        expect(checks(rule(root, healthy()))).not.toContain("error service guard");
+      });
+
+      /**
+       * Held to this repository's own history: a release is the commit
+       * `npm version` made for it, whose subject is `v<version>` (`.npmrc`),
+       * which a clone has whether or not it fetched the tags. Every reusable carries the
+       * guard at the minimum, and some reusable lacks it at the release before,
+       * so the constant can name neither a release too early nor one too late.
+       */
+      it("names the first release whose every reusable skips on the service", () => {
+        const git = (...args: string[]): string =>
+          execFileSync("git", args, { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"], timeout: SUBPROCESS_TIMEOUT });
+        const releases = new Map<string, string>();
+        for (const line of git("log", "--format=%H %s").split("\n")) {
+          const [sha, subject] = line.split(" ");
+          if (sha !== undefined && subject !== undefined && /^v\d+\.\d+\.\d+$/.test(subject) && !releases.has(subject)) {
+            releases.set(subject, sha);
+          }
+        }
+        const semver = (tag: string): readonly number[] => tag.slice(1).split(".").map(Number);
+        const older = (a: string, b: string): boolean => {
+          const [left, right] = [semver(a), semver(b)];
+          for (let i = 0; i < 3; i += 1) {
+            if ((left[i] ?? 0) !== (right[i] ?? 0)) return (left[i] ?? 0) < (right[i] ?? 0);
+          }
+          return false;
+        };
+        const commitOf = (tag: string): string | undefined => releases.get(tag);
+        const reusables = (commit: string): readonly string[] =>
+          git("ls-tree", "--name-only", `${commit}:.github/workflows`)
+            .split("\n")
+            .filter((file) => file.endsWith(".yml"))
+            .map((file) => git("show", `${commit}:.github/workflows/${file}`))
+            .filter((text) => /^\s+workflow_call:/m.test(text));
+        const guarded = (text: string): boolean => text.includes("vars.AGENT_ORCHESTRATOR != 'service'");
+
+        const minimum = commitOf(SERVICE_GUARD_RELEASE);
+        expect(minimum, `no release commit \`${SERVICE_GUARD_RELEASE}\` in this checkout's history`).toBeDefined();
+        const atMinimum = reusables(minimum ?? "");
+        expect(atMinimum.length).toBeGreaterThan(0);
+        expect(atMinimum.every(guarded)).toBe(true);
+
+        const previous = [...releases.keys()]
+          .filter((tag) => older(tag, SERVICE_GUARD_RELEASE))
+          .sort((a, b) => (older(a, b) ? 1 : -1))[0];
+        expect(previous, `no release before \`${SERVICE_GUARD_RELEASE}\` in this checkout's history`).toBeDefined();
+        expect(reusables(commitOf(previous ?? "") ?? "").every(guarded)).toBe(false);
+      });
     });
 
     it("checks the labels the service needs exist, and no others", () => {

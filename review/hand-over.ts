@@ -7,7 +7,7 @@
  * | File | Holds |
  * |---|---|
  * | `findings.json` | One entry per finding to post: id, placement, severity, title, the agent's text, path, line, and whether it was previously missed |
- * | `review_body.json` | The verdict and its cause, the agent's assessment, the open, resolved and missed entries, criteria results and why there are none, follow-ups and their cap, red-test results, and the data behind the header and the round note |
+ * | `review_body.json` | The verdict and its cause, the agent's assessment, the open, resolved and missed entries, criteria results and why there are none, what merged since the brief, what the review's own test run skipped, follow-ups and their cap, red-test results, and the data behind the header and the round note |
  * | `thread_resolutions.json` | Per thread: id, reason, whether it was already replied to, and the agent's note or the maintainer's reply to quote |
  * | `pr_summary.json` | The title, the agent's summary, whether the round is final, and the data behind Evidence and merge danger. Written only where this review rewrites them |
  * | `verdict.json` | The verdict's key, whether it starts a fix round, how many findings it leaves open, and which stop kept it from starting one |
@@ -39,7 +39,18 @@ import type { ProgressInputs } from "../shared/progress-list.js";
 import type { SliceRanges } from "../shared/slice-ranges.js";
 import type { EvidenceCheck, RedTestsRecord, SliceRedTests } from "../shared/red-check.js";
 import type { HandedFinding } from "../shared/review-findings.js";
-import type { CiResult, CloserLookCause, CriteriaCase, ReviewBodyHandOver, TestSketch, Verdict } from "../shared/review-output.js";
+import {
+  FOLLOW_UPS_LIST_LIMIT,
+  type CiResult,
+  type CloserLookCause,
+  type CriteriaCase,
+  MAX_NOT_CHECKED,
+  MAX_SINCE_COMMITS,
+  type ReviewBodyHandOver,
+  type SinceBrief,
+  type TestSketch,
+  type Verdict,
+} from "../shared/review-output.js";
 import type { ThreadResolution } from "../shared/review-verification.js";
 import type { RoundCount, RoundCounts, RoundScope } from "../shared/round-header.js";
 
@@ -173,7 +184,6 @@ export interface ProgressHandOver extends Pick<ProgressInputs, "subIssues" | "ra
 export const MAX_FINDINGS = 200;
 export const MAX_RESOLUTIONS = 200;
 const MAX_ENTRIES = 500;
-const MAX_FOLLOW_UPS = 200;
 /** The red check's tests: the ones a pull request adds or changes, which a run lists in full. */
 const MAX_TESTS = 10_000;
 const MAX_SLICES = 1_000;
@@ -243,6 +253,87 @@ const criteriaCase = refine(
       return issue === undefined ? wrong(`is ${kind}, and names no issue`) : { kind, issue };
     }
     return issue === undefined ? { kind } : wrong(`is ${kind}, and names an issue`);
+  },
+);
+
+/**
+ * What merged since the brief (#541): why the check could not run, or what it
+ * listed. The commits are git's, their subjects text like the agent's, and a
+ * word the brief backticked that names no path is text too, since it is the
+ * issue's.
+ */
+const sinceCommits = object({
+  commits: list(object({ sha: SHA, subject: text }), { max: MAX_SINCE_COMMITS }),
+  more: NUMBER,
+});
+const sinceBrief = refine(
+  object({
+    kind: choice(["not run", "ran"]),
+    reason: optional(choice(["no section", "no read-at commit", "unresolved", "not an ancestor", "no file found", "unreadable"])),
+    commit: optional(SHA),
+    files: optional(list(filePath, { max: MAX_ENTRIES })),
+    gone: optional(list(filePath, { max: MAX_ENTRIES })),
+    notFound: optional(list(text, { max: MAX_ENTRIES })),
+    onBase: optional(sinceCommits),
+    onBranch: optional(sinceCommits),
+    branchUnread: optional(choice([true])),
+    ruling: optional(text),
+  }),
+  ({ kind, reason, commit, files, gone, notFound, onBase, onBranch, branchUnread, ruling }, wrong): SinceBrief => {
+    if (kind === "not run") {
+      if (reason === undefined) return wrong("did not run, and says no reason");
+      if (
+        files !== undefined ||
+        gone !== undefined ||
+        onBase !== undefined ||
+        onBranch !== undefined ||
+        branchUnread !== undefined ||
+        ruling !== undefined
+      ) {
+        return wrong("did not run, and lists what it found");
+      }
+      if ((reason === "no section" || reason === "no read-at commit" || reason === "unreadable") !== (commit === undefined)) {
+        return wrong(`did not run because of ${reason}, and ${commit === undefined ? "names no commit" : "names a commit"}`);
+      }
+      return { kind, reason, ...(commit === undefined ? {} : { commit }), ...(notFound === undefined ? {} : { notFound }) };
+    }
+    if (reason !== undefined) return wrong("ran, and says why it did not");
+    if (commit === undefined || files === undefined || files.length === 0 || onBase === undefined) {
+      return wrong("ran, and does not name its commit, its files and what it listed");
+    }
+    if (onBranch !== undefined && branchUnread !== undefined) return wrong("lists this branch's earlier commits, and says they could not be read");
+    if (onBase.commits.length + (onBranch?.commits.length ?? 0) > MAX_SINCE_COMMITS) {
+      return wrong(`lists more than ${MAX_SINCE_COMMITS} commits`);
+    }
+    return {
+      kind,
+      commit,
+      files,
+      gone: gone ?? [],
+      notFound: notFound ?? [],
+      onBase,
+      ...(onBranch === undefined ? {} : { onBranch }),
+      ...(branchUnread === undefined ? {} : { branchUnread }),
+      ...(ruling === undefined ? {} : { ruling }),
+    };
+  },
+);
+
+/**
+ * What the review's own test run left unrun (#543): each entry the agent's
+ * text, at most `MAX_NOT_CHECKED` of them and how many more, and a skip only
+ * where tests ran.
+ */
+const notChecked = refine(
+  object({
+    ranTests: YES_NO,
+    skipped: list(object({ test: text, reason: text }), { max: MAX_NOT_CHECKED }),
+    more: NUMBER,
+  }),
+  (n, wrong): NonNullable<ReviewBodyHandOver["notChecked"]> => {
+    if (!n.ranTests && n.skipped.length + n.more > 0) return wrong("ran no tests, and lists tests it skipped");
+    if (n.more > 0 && n.skipped.length < MAX_NOT_CHECKED) return wrong(`counts more skipped tests than it lists, under ${MAX_NOT_CHECKED}`);
+    return n;
   },
 );
 
@@ -434,11 +525,12 @@ export const handOverParsers = (known: Known) => {
           assessment: optional(text),
           needsYou: optional(text),
           howChecked: optional(text),
+          fixRoundWithheld: optional(choice(["unnumbered"])),
           open: list(object(entry), { max: MAX_ENTRIES }),
           missed: list(object(entry), { max: MAX_ENTRIES }),
           resolved: list(object({ ...entry, threadId: thread }), { max: MAX_ENTRIES }),
           movedToFollowUps: NUMBER,
-          followUps: list(followUp, { max: MAX_FOLLOW_UPS }),
+          followUps: list(followUp, { max: FOLLOW_UPS_LIST_LIMIT }),
           droppedFollowUps: NUMBER,
           followUpsCap: NUMBER,
           followUpsCarried: YES_NO,
@@ -451,8 +543,10 @@ export const handOverParsers = (known: Known) => {
           historyUnreadable: optional(text),
           redTests: optional(redTestsRecord),
           criteriaCase: optional(criteriaCase),
+          sinceBrief: optional(sinceBrief),
+          notChecked: optional(notChecked),
         }),
-        ({ criteriaCase, ...body }, wrong): ReviewBody => {
+        ({ criteriaCase, sinceBrief, notChecked, ...body }, wrong): ReviewBody => {
           if ((criteriaCase?.kind === "criteria found") !== body.criteria.length > 0) {
             return wrong(
               body.criteria.length > 0
@@ -460,7 +554,16 @@ export const handOverParsers = (known: Known) => {
                 : "says criteria were found, and lists none",
             );
           }
-          return { ...body, ...(criteriaCase === undefined ? {} : { criteriaCase }) };
+          if (body.fixRoundWithheld !== undefined && body.verdict !== "changes recommended") {
+            return wrong(`says a fix round was withheld on ${body.verdict}`);
+          }
+          if (sinceBrief !== undefined && body.criteria.length === 0) return wrong("says what merged since the brief, and lists no criteria");
+          return {
+            ...body,
+            ...(criteriaCase === undefined ? {} : { criteriaCase }),
+            ...(sinceBrief === undefined ? {} : { sinceBrief }),
+            ...(notChecked === undefined ? {} : { notChecked }),
+          };
         },
       ),
     ),
@@ -487,7 +590,7 @@ const parkReview = refine(
   object({
     verdict: VERDICT,
     cause: optional(choice(["needs you", "red", "unknown"])),
-    reason: optional(choice(["changes recommended", "budget spent", "no progress", "needs a closer look"])),
+    reason: optional(choice(["changes recommended", "budget spent", "no progress", "unnumbered", "needs a closer look"])),
     stillOpen: list(parkFinding, { max: MAX_ENTRIES }),
     raised: list(object({ title: text, anchor: optional(text) }), { max: MAX_FINDINGS }),
   }),

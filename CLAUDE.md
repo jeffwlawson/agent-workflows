@@ -157,16 +157,32 @@ commit, and no-ops if the version is already on the registry.
 
 **That first command is the whole release.** The version appears in twelve files and `npm
 version` bumps two of them; `scripts/sync-version.ts` writes the other ten — the `npm exec`
-pin of each step that runs the package (fourteen: one in each of the six reusable workflows, and
+pin of each step that runs the package (thirty-one: the runner's or the filing command's in each of
+six reusable workflows but `fix.yml`, `update-branch.yml`, `implement.yml` and `implement-prd.yml`,
+`implement-prd:gate`, `implement-prd:catch-up`, `implement-prd:publish` and `implement-prd:conclude`
+in `implement-prd.yml`, `implement:gate`,
+`implement:prepare`, `implement:bundle`, `implement:publish` and `implement:conclude` in
+`implement.yml`, and
 `review:gate`, `review:budget`, `review:collect-checks`, `review:red-check-place`, `review:red-check-classify`,
-`review:publish`, `review:conclude` and `review:advance` beside the runner in `review.yml`), the
-`npm install` pin of
-the step that installs it ahead of the red check's two (one, in `review.yml`), the `uses:` ref of
+`review:publish`, `review:conclude` and `review:advance` beside the runner in `review.yml`,
+`fix:gate`, `fix:prepare`, `fix:bundle`, `fix:publish` and `fix:conclude` in `fix.yml`, and
+`update-branch:gate`, `update-branch:merge`, `update-branch:prepare`, `update-branch:bundle`,
+`update-branch:publish` and `update-branch:conclude` in `update-branch.yml`, and
+`follow-ups:conclude` beside the filing command in `follow-ups.yml`), the
+`npm install` pin of each step that installs it early, ahead of the steps that run from that
+install (six: one ahead of the red check's two in `review.yml`, one ahead of `fix:prepare`, the
+runner and `fix:bundle` in `fix.yml`, in `update-branch.yml` one ahead of `update-branch:gate`
+and `update-branch:merge` in the gate job and one ahead of `update-branch:prepare`, the runner and
+`update-branch:bundle` in the agent's job, one ahead of `implement:prepare`, the runner and
+`implement:bundle` in `implement.yml`, and one ahead of `implement-prd:prepare`, the runner and
+`implement-prd:bundle` in `implement-prd.yml`, which all three run by its path), the `uses:` ref of
 each caller in the two caller files
 of each of the two caller sets, and the `uses:` ref a reusable's step names a composite action in
 `.github/actions/` with (eight of those: `loop-token` once in each of `implement.yml`, `fix.yml`
 and `update-branch.yml`, twice in `implement-prd.yml` and three times in `review.yml`, so
-thirty-five pins in the ten files). It
+fifty-seven pins in the ten files). Fix's runner, update-branch's, implement's and implement-prd's carry no pin of their own: each
+runs its job's early install's binary by its path, from the checkout, because `npm exec` finds an install under its `--prefix`
+only from that directory (#486's fix round). It
 runs from the `version` lifecycle script, which npm fires *after* the manifest is bumped and
 *before* the commit is made, so everything it stages lands in the same `v<version>` commit. It
 stages **by path** — the ten it wrote, never `-A`: npm's dirty-tree check passes untracked
@@ -353,6 +369,11 @@ directly, and do not re-run the skill to change one: it rewrites each file with 
 and `triage-labels.md` would lose everything below its mapping table (`docs/ADOPTING.md` §4).
 [`ticket-shape.md`](./docs/agents/ticket-shape.md) is the exception: loop doctrine, hand-written,
 never regenerated.
+
+The loop's own skills, `issues-to-prd` and `merge-check`, live in [`skills/`](./skills/README.md),
+outside the package. They read `CONTEXT.md` and `docs/agents/` from the release a repository pins,
+so a change to how those files describe the PRD shape, briefs or blocking is a change to what the
+skills do once it is released.
 
 ### Issue tracker
 

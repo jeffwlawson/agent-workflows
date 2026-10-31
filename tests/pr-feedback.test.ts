@@ -22,11 +22,10 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import {
-  CONVERSATION_OUTCOME_MARKER,
   filterConversationOutcomes,
   filterOutcomes,
-  TOP_LEVEL_COMMENT_MARKER,
 } from "../shared/fix-output.js";
+import { CONVERSATION_OUTCOME_MARKER, TOP_LEVEL_COMMENT_MARKER } from "../shared/record.js";
 import { renderOutOfScopeNote } from "../shared/fix-notes.js";
 import {
   DIFF_READ_LIMIT_BYTES,

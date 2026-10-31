@@ -8,11 +8,26 @@
  * GitHub. A write past its limit is recorded as received, and refused before
  * it reaches the fake.
  */
-import { GitHubError } from "../../engine/github.js";
-import type { CheckRun, CommitStatus, GitHubReader, PullRequest, WorkflowRun } from "../../engine/read.js";
+import { GitError, type BundleHead, type GitReader } from "../../engine/git.js";
+import { GitHubError, isServerError } from "../../engine/github.js";
+import {
+  LABELLED_ISSUES_LIMIT,
+  type AuthoredText,
+  type CheckRun,
+  type CommitStatus,
+  type ConversationComment,
+  type GitHubReader,
+  type LabelledIssue,
+  type PullRequest,
+  type ReviewHistoryEntry,
+  type SubIssue,
+  type WorkflowRun,
+} from "../../engine/read.js";
 import {
   createWriters,
+  ReadBackFailed,
   type Backend,
+  type Lease,
   type Limits,
   type LogEntry,
   type ReviewThread,
@@ -26,11 +41,37 @@ export interface FakePullRequest {
   number: number;
   nodeId: string;
   state: "open" | "closed";
+  /** Whether it merged; not where a test does not say. */
+  merged?: boolean;
   draft: boolean;
   headSha: string;
   title: string;
   body: string;
   labels: string[];
+  /** The branch it is from, and the branch it is into, where a test names them. */
+  headRef?: string;
+  baseRef?: string;
+}
+
+/**
+ * An issue's place in the hierarchy and its blockers. Its labels are
+ * `issueLabels`', which its writes move.
+ */
+export interface FakeIssue {
+  parent?: number;
+  /** How many sub-issues it has: the length of `children` where a test lists them. */
+  subIssues: number;
+  /** Its sub-issues, in the list's order, where a test lists them. */
+  children?: SubIssue[];
+  blockedBy: { readonly number: number; readonly state: "open" | "closed" }[];
+}
+
+/** An issue as a listing by label reads it, and as `createIssue` makes it. Its labels are `issueLabels`'. */
+export interface FakeFiledIssue {
+  title: string;
+  body: string;
+  state: "OPEN" | "CLOSED";
+  stateReason: string | null;
 }
 
 /** The live state both fakes share. */
@@ -40,14 +81,24 @@ export interface FakeGitHub {
   readonly statuses: Map<string, CommitStatus[]>;
   /** Per pull request, each thread by id, with its replies and how it was resolved. */
   readonly threads: Map<number, Map<string, { replies: string[]; resolved?: string }>>;
+  /** Per pull request, the comments on its conversation, oldest first. */
+  readonly conversation: Map<number, ConversationComment[]>;
   /** Labels on issues that are not pull requests. */
   readonly issueLabels: Map<number, string[]>;
-  /** Each branch's tip, by name: what a push moves. A branch not here is not found. */
+  /** Issues that are not pull requests, by number. One not here is not found. */
+  readonly issues: Map<number, FakeIssue>;
+  /**
+   * Each branch's tip, by name: what a push moves, and what `pushRef` and
+   * `deleteRef` lease against, a `refs/heads/` ref by its branch name and any
+   * other by its full name. A branch not here is not found.
+   */
   readonly branches: Map<string, string>;
   /** Per pull request, its commits, oldest first. */
   readonly commits: Map<number, string[]>;
   /** The compare API's `status`, by `<base>...<head>`. A pair not here is not found. */
   readonly comparisons: Map<string, string>;
+  /** The messages of the commits `<head>` has and `<base>` lacks, by `<base>...<head>`. A pair not here is not found. */
+  readonly ranges: Map<string, string[]>;
   /** Per commit, its check runs. A commit not here has none. */
   readonly checkRuns: Map<string, CheckRun[]>;
   /** Per commit, the workflow runs whose head it is. A commit not here has none. */
@@ -55,8 +106,28 @@ export interface FakeGitHub {
   /** Per workflow run, the log of each of its jobs that failed. A run not here has none. */
   readonly jobLogs: Map<number, string[]>;
   readonly comments: { readonly token: string; readonly issue: number; readonly body: string }[];
+  /**
+   * Issue bodies with their authors, by number: what `issueBody` reads, as an
+   * issue of this repository unless `isIssue` says not. A pull request not here
+   * is read as one; anything else is not found.
+   */
+  readonly bodies: Map<number, AuthoredText & { readonly isIssue?: boolean }>;
+  /**
+   * Per issue or pull request, the comments a test put on it, with their
+   * authors, oldest first. `authoredComments` reads these, then every comment
+   * a writer posted there, as the workflow's account.
+   */
+  readonly discussion: Map<number, AuthoredText[]>;
   /** Every review posted, in order, with the pull request's node id and the commit it was posted on. */
   readonly reviews: FakeReview[];
+  /** Per issue or pull request, each label added to it and when, oldest first. */
+  readonly labelled: Map<number, { readonly label: string; readonly at: string }[]>;
+  /** Issues by number with a title, a body and a state: what a listing by label reads, and what `createIssue` adds to. */
+  readonly filed: Map<number, FakeFiledIssue>;
+  /** Per pull request, its review history, oldest first. A pull request not here has none. */
+  readonly reviewHistory: Map<number, ReviewHistoryEntry[]>;
+  /** The labels the repository has. */
+  readonly repoLabels: string[];
   /**
    * Whether the GitHub call `call` (such as `resolve`, `POST labels`) made by
    * the write `write` fails, and how. `true` refuses it with a 422 and changes
@@ -75,6 +146,8 @@ export interface FakeReview {
   readonly body: string;
   readonly threads: readonly ReviewThread[];
   readonly url: string;
+  /** When it was submitted, where a test says. */
+  readonly submittedAt?: string;
 }
 
 /** GitHub failing on a call: a 500, or GraphQL's internal error where `status` is absent. */
@@ -106,22 +179,40 @@ export const fakeGitHub = (pullRequests: readonly Partial<FakePullRequest>[] = [
   ),
   statuses: new Map(),
   threads: new Map(),
+  conversation: new Map(),
   issueLabels: new Map(),
+  issues: new Map(),
   branches: new Map(),
   commits: new Map(),
   comparisons: new Map(),
+  ranges: new Map(),
   checkRuns: new Map(),
   workflowRuns: new Map(),
   jobLogs: new Map(),
   comments: [],
+  bodies: new Map(),
+  discussion: new Map(),
   reviews: [],
+  labelled: new Map(),
+  filed: new Map(),
+  reviewHistory: new Map(),
+  repoLabels: [],
   fails: () => false,
 });
+
+/** The login a comment a writer posted reads back as: the workflow's account, whichever token posted it. */
+const POSTED_AS = "github-actions[bot]";
 
 const pullRequestOf = (github: FakeGitHub, number: number): FakePullRequest => {
   const pr = github.pullRequests.get(number);
   if (pr === undefined) throw new GitHubError(`pull request #${number}: 404 Not Found`, 404);
   return pr;
+};
+
+const issueOf = (github: FakeGitHub, number: number): FakeIssue => {
+  const issue = github.issues.get(number);
+  if (issue === undefined) throw new GitHubError(`issue #${number}: 404 Not Found`, 404);
+  return issue;
 };
 
 const labelsOf = (github: FakeGitHub, issue: number): string[] => {
@@ -131,6 +222,26 @@ const labelsOf = (github: FakeGitHub, issue: number): string[] => {
   github.issueLabels.set(issue, labels);
   return labels;
 };
+
+/** The open pull request from exactly `head` into exactly `base`, as the reader and the open's read-back find it. */
+const openFrom = (github: FakeGitHub, head: string, base: string) => {
+  const pr = [...github.pullRequests.values()].find((p) => p.state === "open" && p.headRef === head && p.baseRef === base);
+  return pr === undefined ? undefined : { number: pr.number, url: `https://github.com/o/r/pull/${pr.number}` };
+};
+
+/** The filed issues carrying `label`, newest first, as the reader and the create's read-back list them. */
+const labelledIn = (github: FakeGitHub, label: string): LabelledIssue[] =>
+  [...github.filed]
+    .filter(([number]) => (github.issueLabels.get(number) ?? []).includes(label))
+    .sort(([a], [b]) => b - a)
+    .slice(0, LABELLED_ISSUES_LIMIT)
+    .map(([number, issue]) => ({
+      number,
+      url: `https://github.com/o/r/issues/${number}`,
+      state: issue.state,
+      stateReason: issue.stateReason,
+      body: issue.body,
+    }));
 
 /** A read the fake reader received: the method and its arguments. */
 export interface ReceivedRead {
@@ -145,7 +256,82 @@ export const fakeReader = (github: FakeGitHub): { readonly reader: GitHubReader;
     pullRequest: async (number) => {
       reads.push({ method: "pullRequest", args: [number] });
       const pr = pullRequestOf(github, number);
-      return { ...pr, labels: [...pr.labels] } satisfies PullRequest;
+      return { ...pr, merged: pr.merged ?? false, labels: [...pr.labels] } satisfies PullRequest;
+    },
+    issueShape: async (number) => {
+      reads.push({ method: "issueShape", args: [number] });
+      const issue = issueOf(github, number);
+      return {
+        parent: issue.parent,
+        subIssues: issue.children?.length ?? issue.subIssues,
+        labels: [...(github.issueLabels.get(number) ?? [])],
+      };
+    },
+    subIssues: async (number) => {
+      reads.push({ method: "subIssues", args: [number] });
+      return [...(issueOf(github, number).children ?? [])];
+    },
+    blockedBy: async (number) => {
+      reads.push({ method: "blockedBy", args: [number] });
+      return issueOf(github, number).blockedBy.map((blocker) => ({ number: blocker.number, open: blocker.state === "open" }));
+    },
+    issueComments: async (number) => {
+      reads.push({ method: "issueComments", args: [number] });
+      return github.comments.filter((comment) => comment.issue === number).map((comment) => comment.body);
+    },
+    issueBody: async (number) => {
+      reads.push({ method: "issueBody", args: [number] });
+      const body = github.bodies.get(number);
+      if (body !== undefined) return { ...body, isIssue: body.isIssue ?? true };
+      const pr = github.pullRequests.get(number);
+      if (pr !== undefined) return { body: pr.body, author: "", association: "NONE", isIssue: false };
+      throw new GitHubError(`issue #${number}: 404 Not Found`, 404);
+    },
+    authoredComments: async (number) => {
+      reads.push({ method: "authoredComments", args: [number] });
+      const seeded = github.discussion.get(number);
+      const posted = github.comments.filter((comment) => comment.issue === number);
+      if (seeded === undefined && !github.bodies.has(number) && !github.pullRequests.has(number)) {
+        throw new GitHubError(`issue #${number}: 404 Not Found`, 404);
+      }
+      return [
+        ...(seeded ?? []),
+        ...posted.map((comment) => ({ body: comment.body, author: POSTED_AS, association: "NONE" })),
+      ];
+    },
+    branchesStarting: async (prefix) => {
+      reads.push({ method: "branchesStarting", args: [prefix] });
+      return [...github.branches].filter(([name]) => name.startsWith(prefix)).map(([name, tip]) => ({ name, tip }));
+    },
+    openPullRequests: async (filter) => {
+      reads.push({ method: "openPullRequests", args: [filter] });
+      return [...github.pullRequests.values()]
+        .filter((pr) => pr.state === "open" && (filter.head === undefined || pr.headRef === filter.head) && (filter.base === undefined || pr.baseRef === filter.base))
+        .map((pr) => ({ number: pr.number, head: pr.headRef ?? "", base: pr.baseRef ?? "" }));
+    },
+    commitMessages: async (base, head) => {
+      reads.push({ method: "commitMessages", args: [base, head] });
+      const messages = github.ranges.get(`${base}...${head}`);
+      if (messages === undefined) throw new GitHubError(`compare ${base}...${head}: 404 Not Found`, 404);
+      return [...messages];
+    },
+    openBlockers: async (number) => {
+      reads.push({ method: "openBlockers", args: [number] });
+      return issueOf(github, number)
+        .blockedBy.filter((blocker) => blocker.state === "open")
+        .map((blocker) => blocker.number);
+    },
+    openPullRequestsClosing: async (pattern) => {
+      reads.push({ method: "openPullRequestsClosing", args: [pattern] });
+      // Newest first, as the endpoint lists them.
+      return [...github.pullRequests.values()]
+        .filter((pr) => pr.state === "open" && pattern.test(pr.body))
+        .map((pr) => pr.number)
+        .sort((a, b) => b - a);
+    },
+    openPullRequest: async (head, base) => {
+      reads.push({ method: "openPullRequest", args: [head, base] });
+      return openFrom(github, head, base);
     },
     commitStatuses: async (sha) => {
       reads.push({ method: "commitStatuses", args: [sha] });
@@ -160,7 +346,35 @@ export const fakeReader = (github: FakeGitHub): { readonly reader: GitHubReader;
       const nodeId = pullRequestOf(github, number).nodeId;
       return github.reviews
         .filter((review) => review.pullRequestId === nodeId)
-        .map((review) => ({ url: review.url, commit: review.commit, body: review.body, author: review.token }));
+        .map((review) => ({
+          url: review.url,
+          commit: review.commit,
+          body: review.body,
+          author: review.token,
+          ...(review.submittedAt === undefined ? {} : { submittedAt: review.submittedAt }),
+        }));
+    },
+    reviewHistory: async (number) => {
+      reads.push({ method: "reviewHistory", args: [number] });
+      pullRequestOf(github, number);
+      return [...(github.reviewHistory.get(number) ?? [])];
+    },
+    labelledIssues: async (label) => {
+      reads.push({ method: "labelledIssues", args: [label] });
+      return labelledIn(github, label);
+    },
+    repoLabels: async () => {
+      reads.push({ method: "repoLabels", args: [] });
+      return [...github.repoLabels];
+    },
+    labelledAt: async (number, label) => {
+      reads.push({ method: "labelledAt", args: [number, label] });
+      return (github.labelled.get(number) ?? []).filter((event) => event.label === label).map((event) => event.at);
+    },
+    conversationComments: async (number) => {
+      reads.push({ method: "conversationComments", args: [number] });
+      pullRequestOf(github, number);
+      return [...(github.conversation.get(number) ?? [])];
     },
     pullRequestCommits: async (number) => {
       reads.push({ method: "pullRequestCommits", args: [number] });
@@ -226,6 +440,15 @@ const fakeBackend = (github: FakeGitHub, token: string): Backend => {
       if (thread !== undefined) return thread;
     }
     throw new GitHubError(`thread ${threadId}: not found`);
+  };
+  /** `ref` as `branches` keys it: a `refs/heads/` ref by its branch name, any other by its full name. */
+  const branchOf = (ref: string): string => ref.replace(/^refs\/heads\//, "");
+  /** `ref`'s lease checked against it, as git's `--force-with-lease` would. */
+  const leased = (ref: string, lease: Lease): string => {
+    const name = branchOf(ref);
+    const tip = github.branches.get(name);
+    if ("tip" in lease ? tip !== lease.tip : tip !== undefined) throw new GitError("rejected: [rejected] (stale info)", true);
+    return name;
   };
   return {
     addLabel: async (call, issue, label) => {
@@ -309,6 +532,93 @@ const fakeBackend = (github: FakeGitHub, token: string): Backend => {
       });
       return { outcome: "applied" };
     },
+    reply: async (call, reply) => {
+      const thread = threadOf(reply.threadId);
+      await call("reply", async () => {
+        check("reply", "reply");
+        thread.replies.push(reply.body);
+      });
+      return { outcome: "applied" };
+    },
+    pushRef: async (call, push) =>
+      call("git push", async () => {
+        // Git reports a ref already at the commit as up to date whatever the
+        // lease says, so the lease is checked only where there is a push to make.
+        const name = branchOf(push.ref);
+        if (github.branches.get(name) === push.commit) return { outcome: "unchanged" as const };
+        leased(push.ref, push.lease);
+        check("pushRef", "git push");
+        github.branches.set(name, push.commit);
+        return { outcome: "applied" as const };
+      }),
+    deleteRef: async (call, remove) => {
+      await call("git push", async () => {
+        const name = leased(remove.ref, remove.lease);
+        check("deleteRef", "git push");
+        github.branches.delete(name);
+      });
+      return { outcome: "applied" };
+    },
+    openPullRequest: async (call, open) => {
+      try {
+        return await call("POST pulls", async () =>
+          attempt("openPullRequest", "POST pulls", () => {
+            const number = Math.max(0, ...github.pullRequests.keys()) + 1;
+            github.pullRequests.set(number, {
+              number,
+              nodeId: `PR_${number}`,
+              state: "open",
+              draft: open.draft,
+              headSha: github.branches.get(open.head) ?? "",
+              title: open.title,
+              body: open.body,
+              labels: [],
+              headRef: open.head,
+              baseRef: open.base,
+            });
+            return { outcome: "applied" as const, number, url: `https://github.com/o/r/pull/${number}` };
+          }),
+        );
+      } catch (error) {
+        // The read-back the engine's own makes, on a server error alone, by head and base alone.
+        if (!isServerError(error)) throw error;
+        let found;
+        try {
+          found = await call("GET pulls", async () => attempt("openPullRequest", "GET pulls", () => openFrom(github, open.head, open.base)), "read");
+        } catch (readError) {
+          throw new ReadBackFailed(error, readError);
+        }
+        if (found === undefined) throw error;
+        return { outcome: "applied", ...found, readBack: (error as Error).message };
+      }
+    },
+    createIssue: async (call, create) => {
+      try {
+        return await call("POST issues", async () =>
+          attempt("createIssue", "POST issues", () => {
+            const number = Math.max(0, ...github.pullRequests.keys(), ...github.issues.keys(), ...github.issueLabels.keys(), ...github.filed.keys()) + 1;
+            github.filed.set(number, { title: create.title, body: create.body, state: "OPEN", stateReason: null });
+            github.issueLabels.set(number, [...create.labels]);
+            return { outcome: "applied" as const, number, url: `https://github.com/o/r/issues/${number}` };
+          }),
+        );
+      } catch (error) {
+        // The read-back the engine's own makes, on a server error alone, by the caller's label and match alone.
+        if (!isServerError(error)) throw error;
+        let found;
+        try {
+          found = await call(
+            "GET issues",
+            async () => attempt("createIssue", "GET issues", () => labelledIn(github, create.readBack.label).find((issue) => create.readBack.matches(issue.body))),
+            "read",
+          );
+        } catch (readError) {
+          throw new ReadBackFailed(error, readError);
+        }
+        if (found === undefined) throw error;
+        return { outcome: "applied", number: found.number, url: found.url, readBack: (error as Error).message };
+      }
+    },
     editPullRequest: async (call, number, edit) => {
       const pr = await call("GET pull", async () => pullRequestOf(github, number), "read");
       const body = edit.body?.(pr.body);
@@ -336,12 +646,15 @@ export interface ReceivedWrite {
 /**
  * One fake writer per token in `tokens`, over `github`, sharing `limits` and a
  * log: every write each received, in order across them, and the log's lines
- * as a command's declared file would hold them.
+ * as a command's declared file would hold them. `real` puts a token's real
+ * backend in for the types it names, `gitWrites` against a temporary
+ * repository for a push a test makes for real.
  */
 export const fakeWriters = <T extends string>(
   github: FakeGitHub,
   tokens: readonly T[],
   limits: Limits,
+  real: Partial<Record<T, Partial<Backend>>> = {},
 ): {
   readonly writers: Readonly<Record<T, Writer>>;
   readonly log: WriteLog;
@@ -352,7 +665,7 @@ export const fakeWriters = <T extends string>(
   const lines: string[] = [];
   const writes: ReceivedWrite[] = [];
   const { writers, log } = createWriters({
-    backends: Object.fromEntries(tokens.map((token) => [token, fakeBackend(github, token)])) as Record<T, Backend>,
+    backends: Object.fromEntries(tokens.map((token) => [token, { ...fakeBackend(github, token), ...real[token] }])) as Record<T, Backend>,
     limits,
     appendLine: (line) => lines.push(line),
   });
@@ -372,5 +685,45 @@ export const fakeWriters = <T extends string>(
     writes,
     lines,
     entries: log.entries,
+  };
+};
+
+/**
+ * A git reader over what a test says a checkout holds: the heads each bundle
+ * carries, by path, where `verifyBundle` throws for a path not there, as git
+ * does for a bundle that does not verify; and the commits each commit builds
+ * on, by commit, each including itself, where `isAncestor` throws for a
+ * commit not there, as git does for one the repository lacks. Every call is
+ * recorded, in order.
+ */
+export const fakeGit = (holds: {
+  readonly bundles?: Readonly<Record<string, readonly BundleHead[]>>;
+  readonly history?: Readonly<Record<string, readonly string[]>>;
+}): { readonly git: GitReader; readonly calls: readonly string[] } => {
+  const calls: string[] = [];
+  return {
+    calls,
+    git: {
+      verifyBundle: async (path) => {
+        calls.push(`verifyBundle ${path}`);
+        const heads = holds.bundles?.[path];
+        if (heads === undefined) throw new GitError("error: could not verify the bundle, by the fake");
+        return heads;
+      },
+      isAncestor: async (ancestor, commit) => {
+        calls.push(`isAncestor ${ancestor} ${commit}`);
+        const history = holds.history?.[commit];
+        if (history === undefined) throw new GitError(`fatal: Not a valid commit name ${commit}, by the fake`);
+        return history.includes(ancestor);
+      },
+      changedPaths: async (from, to, under) => {
+        calls.push(`changedPaths ${from} ${to} ${under}`);
+        return [];
+      },
+      firstParentLog: async (base, head) => {
+        calls.push(`firstParentLog ${base} ${head}`);
+        return [];
+      },
+    },
   };
 };

@@ -6,9 +6,10 @@ import { afterEach, beforeEach, describe, expect, it, vi, type MockInstance } fr
 import ts from "typescript";
 import { parse } from "yaml";
 import { SUBCOMMANDS, type CliIo } from "../cli.js";
-import { file as fileFollowUps } from "../follow-ups/file.js";
+import { place as placeRedCheck } from "../review/red-check-place.js";
 import { gate } from "../review/gate.js";
 import { publish } from "../review/publish.js";
+import { SERVICE_LABELS } from "../service/dispatcher.js";
 import { serveDispatcher, serveWorker } from "../service/serve.js";
 import { SERVICE } from "../service/settings.js";
 import { COMMANDS, RUNNERS } from "../shared/contract.js";
@@ -62,10 +63,10 @@ vi.mock("node:fs", async (importOriginal) => {
   return { ...actual, writeFileSync: vi.fn(actual.writeFileSync) };
 });
 
-// The one command there is, stood in for: a test of the CLI's half of a
-// command (read its inputs, call it, turn a throw into `fail()`) must not reach
-// GitHub through the real one.
-vi.mock("../follow-ups/file.js", () => ({ file: vi.fn() }));
+// A command that neither reads nor writes GitHub, stood in for: a test of the
+// CLI's half of a command (read its inputs, call it, turn a throw into
+// `fail()`) must not touch a checkout through the real one.
+vi.mock("../review/red-check-place.js", () => ({ place: vi.fn() }));
 // And the one that writes through the engine, for the same reason.
 vi.mock("../review/publish.js", () => ({ publish: vi.fn() }));
 vi.mock("../review/gate.js", () => ({ gate: vi.fn() }));
@@ -452,8 +453,8 @@ describe("every subcommand is declared in the contract, as its kind", () => {
  */
 describe("the CLI runs a command", () => {
   class Exited extends Error {}
-  const INPUTS = { GH_REPO: "o/r", GH_TOKEN: "a-token", PR_NUMBER: "7" } as const;
-  const command = vi.mocked(fileFollowUps);
+  const INPUTS = { CHECKOUT: "/checkout", BRANCH: "agent/issue-12-do-the-thing", BASE_REF: "main" } as const;
+  const command = vi.mocked(placeRedCheck);
   let exitCode: number | undefined;
   let exit: MockInstance<typeof process.exit>;
   let logged: MockInstance<typeof console.error>;
@@ -474,13 +475,13 @@ describe("the CLI runs a command", () => {
   });
 
   it("hands the function exactly its declared inputs, and its declared outputs, and exits 0", async () => {
-    const { code } = await invoke(["follow-ups:file"], { OUTPUT_DIR: scratch, ...INPUTS });
+    const { code } = await invoke(["review:red-check-place"], { OUTPUT_DIR: scratch, ...INPUTS });
 
     expect(code).toBe(0);
     expect(command).toHaveBeenCalledTimes(1);
     // An optional input it was not given arrives as its default.
     expect(command).toHaveBeenCalledWith(
-      { OUTPUT_DIR: scratch, ...INPUTS, AGENT_LOOP_LOGINS: "" },
+      { OUTPUT_DIR: scratch, ...INPUTS, PR_BODY: "", REPORT_PATH: "", TEST_GLOBS: "" },
       expect.objectContaining({ writeJson: expect.any(Function) }),
     );
   });
@@ -490,20 +491,20 @@ describe("the CLI runs a command", () => {
       throw new Error("The pull request could not be read.");
     });
 
-    await expect(invoke(["follow-ups:file"], { OUTPUT_DIR: scratch, ...INPUTS })).rejects.toThrow(Exited);
+    await expect(invoke(["review:red-check-place"], { OUTPUT_DIR: scratch, ...INPUTS })).rejects.toThrow(Exited);
 
     expect(exitCode).toBe(1);
     expect(fs.readFileSync(path.join(scratch, "failure_reason.txt"), "utf8")).toBe("The pull request could not be read.");
   });
 
   it("stops at a missing input, naming it, before the function is called", async () => {
-    const { PR_NUMBER: _, ...given } = INPUTS;
+    const { BRANCH: _, ...given } = INPUTS;
 
-    await expect(invoke(["follow-ups:file"], { OUTPUT_DIR: scratch, ...given })).rejects.toThrow(Exited);
+    await expect(invoke(["review:red-check-place"], { OUTPUT_DIR: scratch, ...given })).rejects.toThrow(Exited);
 
     expect(exitCode).toBe(1);
     expect(command).not.toHaveBeenCalled();
-    expect(fs.readFileSync(path.join(scratch, "failure_reason.txt"), "utf8")).toBe("Missing required env var: PR_NUMBER");
+    expect(fs.readFileSync(path.join(scratch, "failure_reason.txt"), "utf8")).toBe("Missing required env var: BRANCH");
   });
 });
 
@@ -1366,6 +1367,24 @@ describe("the build ships every prompt beside its runner", () => {
           fs.readFileSync(path.join(PACKAGE_DIR, "examples", "callers", file), "utf8"),
         );
       }
+    } finally {
+      fs.rmSync(out, { recursive: true, force: true });
+    }
+  });
+
+  /**
+   * `bwrapArgs` binds the inside relay into the sandbox from beside its own
+   * module (#461), and it is plain JavaScript, which `tsc` would leave behind:
+   * a `bwrap` sandbox from the tarball would then fail every `exec`.
+   */
+  it("ships the bwrap sandbox's inside relay beside the module that binds it", () => {
+    const out = fs.mkdtempSync(path.join(os.tmpdir(), "agent-assets-"));
+    try {
+      copyAssets(PACKAGE_DIR, out);
+
+      expect(fs.readFileSync(path.join(out, "engine", "relay.mjs"), "utf8")).toBe(
+        fs.readFileSync(path.join(PACKAGE_DIR, "engine", "relay.mjs"), "utf8"),
+      );
     } finally {
       fs.rmSync(out, { recursive: true, force: true });
     }
@@ -2838,6 +2857,8 @@ describe("doctor names the failures that otherwise look like something else", ()
     timeoutMinutes: Object.fromEntries(TIMEOUT_VARIABLES.map((variable) => [variable.name, null])),
     // Unset, which is the Actions orchestrator.
     orchestrator: null,
+    // Unset, which is no setup on the service.
+    agentSetup: null,
   });
 
   /** The installed caller file holding a job, repo-relative as `doctor` names it. */
@@ -4159,7 +4180,13 @@ describe("doctor names the failures that otherwise look like something else", ()
 
     it("is spelt once, in the record", () => {
       expect(record.ORCHESTRATOR_VARIABLE).toBe("AGENT_ORCHESTRATOR");
-      expect(record.SERVICE_LABELS).toEqual([record.REVIEW_LABEL]);
+      expect(SERVICE_LABELS).toEqual([
+        record.REVIEW_LABEL,
+        record.FIX_LABEL,
+        record.UPDATE_BRANCH_LABEL,
+        record.FOLLOW_UPS_LABEL,
+        record.IMPLEMENT_LABEL,
+      ]);
     });
 
     it("rules on an unset variable as Actions, as before", async () => {
@@ -4173,9 +4200,9 @@ describe("doctor names the failures that otherwise look like something else", ()
     });
 
     it("passes a service-served repository with no callers and its labels", () => {
-      const findings = rule(empty(), service({ labels: ["agent:review", "agent:blocked"] }));
+      const findings = rule(empty(), service({ labels: ["agent:implement", "agent:review", "agent:fix", "agent:update-branch", "agent:blocked"] }));
 
-      expect(checks(findings)).toEqual(["note orchestrator", "note service App", "warning unanswered labels"]);
+      expect(checks(findings)).toEqual(["note orchestrator", "note service App"]);
     });
 
     it("says it cannot check whether the service's App is installed", () => {
@@ -4184,13 +4211,10 @@ describe("doctor names the failures that otherwise look like something else", ()
       expect(app?.problem).toContain("`doctor` cannot check this.");
     });
 
-    it("names every agent:* label the service does not answer, from the one list", () => {
-      const [warning] = rule(empty(), service()).filter((finding) => finding.check === "unanswered labels");
-
-      for (const name of ["agent:implement", "agent:fix", "agent:update-branch", "agent:follow-ups"]) {
-        expect(warning?.problem).toContain(`\`${name}\``);
-      }
-      expect(warning?.problem).toMatch(/answers `agent:review` and no other label, so `agent:implement`/);
+    // #519 served the last one: the check still reads the one list, and finds
+    // nothing it does not answer.
+    it("names no label as unanswered, since the service answers every trigger label and the follow-ups marker", () => {
+      expect(rule(empty(), service()).filter((finding) => finding.check === "unanswered labels")).toEqual([]);
     });
 
     it("warns that callers left installed are skipped, and skips every Actions check", async () => {
@@ -4206,7 +4230,6 @@ describe("doctor names the failures that otherwise look like something else", ()
         "note orchestrator",
         "note service App",
         "warning callers",
-        "warning unanswered labels",
       ]);
       const [callers] = findings.filter((finding) => finding.check === "callers");
       expect(callers?.problem).toContain("installed, and skipped");
@@ -4216,21 +4239,61 @@ describe("doctor names the failures that otherwise look like something else", ()
     it("checks the labels the service needs exist, and no others", () => {
       const missing = rule(empty(), service({ labels: ["agent:blocked"] })).find((finding) => finding.check === "labels");
       expect(missing?.severity).toBe("error");
-      expect(missing?.problem).toMatch(/^agent:review does not exist/);
+      expect(missing?.problem).toMatch(/^agent:implement, agent:review, agent:fix, agent:update-branch do not exist/);
 
       const unread = rule(empty(), service({ labels: undefined })).find((finding) => finding.check === "labels");
       expect(unread?.severity).toBe("warning");
     });
 
-    it("warns where a fix-round budget above 0 is set, which the service runs as 0", () => {
-      const budget = (value: string | null | undefined): readonly Finding[] =>
-        rule(empty(), service({ maxFixRounds: value })).filter((finding) => finding.check === "fix-round budget");
+    /**
+     * **The repository's setup** (#525). The service runs no caller's
+     * `setup:` input and reads `AGENT_SETUP` instead, so a caller passing one
+     * on a repository that has not set the variable gets runs with nothing
+     * installed.
+     */
+    describe("the repository's setup", () => {
+      const withSetup = async (value: string): Promise<string> => {
+        const root = await installed();
+        edit(root, "fix", (text) => text.replace(/^    secrets:$/m, `    with:\n      setup: ${value}\n    secrets:`));
+        return root;
+      };
+      const setupFindings = (findings: readonly Finding[]): readonly Finding[] =>
+        findings.filter((finding) => finding.check === "repository setup");
 
-      const [two] = budget("2");
-      expect(two?.severity).toBe("warning");
-      expect(two?.problem).toContain(`\`${FIX_ROUNDS_VARIABLE}\` is \`2\``);
-      expect(two?.problem).toContain("budget of 0");
-      for (const value of ["0", null, undefined, "three"]) expect(budget(value), String(value)).toEqual([]);
+      it("warns on a caller passing setup while AGENT_SETUP is unset or empty, naming the caller and its value", async () => {
+        const root = await withSetup("npm ci");
+        for (const agentSetup of [null, ""]) {
+          const found = setupFindings(rule(root, service({ agentSetup })));
+
+          expect(found.map((finding) => finding.severity), String(agentSetup)).toEqual(["warning"]);
+          expect(found[0]?.problem).toContain(`${callerFileOf(root, "fix")}'s \`fix\` job`);
+          expect(found[0]?.problem).toContain("`setup: npm ci`");
+          expect(found[0]?.problem).toContain("does not run a caller's `setup:` input");
+          expect(found[0]?.fix).toContain("`AGENT_SETUP`");
+          expect(found[0]?.fix).toContain("docs/deploying-the-service.md#the-repositorys-setup");
+        }
+      });
+
+      it("says nothing where AGENT_SETUP is set, no caller passes setup, or none is installed", async () => {
+        expect(setupFindings(rule(await withSetup("npm ci"), service({ agentSetup: "npm ci" })))).toEqual([]);
+        expect(setupFindings(rule(await withSetup("''"), service()))).toEqual([]);
+        expect(setupFindings(rule(await installed(), service()))).toEqual([]);
+        expect(setupFindings(rule(empty(), service()))).toEqual([]);
+      });
+
+      it("does not pass a variable it could not read", async () => {
+        const found = setupFindings(rule(await withSetup("npm ci"), service({ agentSetup: undefined })));
+
+        expect(found.map((finding) => finding.severity)).toEqual(["warning"]);
+        expect(found[0]?.problem).toMatch(/^Could not read the repository variable `AGENT_SETUP`/);
+        expect(found[0]?.problem).toContain("`setup: npm ci`");
+      });
+
+      it("changes nothing on the Actions orchestrator", async () => {
+        const root = await withSetup("npm ci");
+        expect(rule(root, healthy())).toEqual(rule(root, { ...healthy(), agentSetup: undefined }));
+        expect(setupFindings(rule(root, healthy()))).toEqual([]);
+      });
     });
 
     it("errors on any other value, and checks the repository as an Actions one", async () => {
@@ -4808,6 +4871,7 @@ describe("doctor names the failures that otherwise look like something else", ()
       maxFixRounds: undefined,
       timeoutMinutes: undefined,
       orchestrator: undefined,
+      agentSetup: undefined,
     });
 
     expect(code).toBe(0);
@@ -4834,6 +4898,7 @@ describe("doctor names the failures that otherwise look like something else", ()
       maxFixRounds: undefined,
       timeoutMinutes: undefined,
       orchestrator: undefined,
+      agentSetup: undefined,
     });
 
     expect(code).toBe(0);

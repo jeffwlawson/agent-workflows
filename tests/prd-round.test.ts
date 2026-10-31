@@ -468,6 +468,7 @@ describe("the park comment", () => {
     ["changes recommended", "the review recommended changes, and no automatic fix round starts"],
     ["budget spent", "this slice's automatic fix rounds are spent"],
     ["no progress", "no progress: the last fix round closed none of the findings it was given"],
+    ["unnumbered", "the review recommended changes, and no automatic fix round started: the PRD PR's earlier rounds could not be read"],
     ["needs a closer look", "the review needs a closer look"],
     ["failed", "the review didn't finish"],
     ["post failed", "the review finished and its verdict was posted, but a later step of posting it failed"],
@@ -569,6 +570,10 @@ describe("parkReasonOf", () => {
     expect(parkReasonOf(deriveVerdict(output([]), { ...inputs, ci: "unknown" }))).toBe("needs a closer look");
     expect(parkReasonOf(deriveVerdict(output([]), inputs))).toBeUndefined();
     expect(parkReasonOf(deriveVerdict(open, { ...inputs, autoFix: true }))).toBeUndefined();
+    // #442: a round withheld from a review with no header is neither the
+    // budget nor the token, and the comment must not send anyone to check them.
+    expect(parkReasonOf(deriveVerdict(open, { ...inputs, autoFix: true, unnumbered: "prd pr" }))).toBe("unnumbered");
+    expect(parkReasonOf(deriveVerdict(open, { ...inputs, autoFix: true, unnumbered: "regular pr" }))).toBeUndefined();
     expect(parkReasonOf({ ...VERDICTS["changes recommended"], startsFixRound: true })).toBeUndefined();
   });
 });

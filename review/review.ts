@@ -44,6 +44,7 @@ import {
   type SliceRedTests,
 } from "../shared/red-check.js";
 import { fetchPullRequestContext } from "./review-context.js";
+import { checkSinceBrief, renderSinceBriefForReview } from "./since-brief.js";
 import {
   findingsHandOver,
   isPreviouslyMissed,
@@ -64,6 +65,7 @@ import {
   reviewOutputSchema,
   type CiResult,
   type FixRounds,
+  type SinceBrief,
 } from "../shared/review-output.js";
 import {
   describeHistory,
@@ -96,6 +98,8 @@ import type {
 } from "./hand-over.js";
 
 const INPUTS = readInputs(RUNNERS["review"].inputs);
+/** Chosen at start, so a sandbox that cannot run the agent stops the run before any of its work. */
+const SANDBOX = agentSandbox(INPUTS);
 const LOOP_ACCOUNTS = readLoopAccounts(INPUTS.AGENT_LOOP_LOGINS);
 const { writeJson, writeText } = writers(RUNNERS["review"].outputs);
 
@@ -314,6 +318,45 @@ try {
     }
   }
 
+  // What merged since the linked issue's brief was read (#541): the commits
+  // since the commit its *Where things are* names that touched the files it
+  // names, read from git before the agent starts, so the review only rules on
+  // them. Only where the review is handed criteria: not on the final review,
+  // not without a linked issue, and not where its brief yields none. On a
+  // slice round, also the PRD branch's commits before this slice, which the
+  // slice range's base marks; never the slice's own. Null on a slice round
+  // where that base could not be read, which the body says.
+  const sliceBase =
+    round?.kind === "slice"
+      ? (prdBranch?.ranges.slices.find((s) => s.subIssue === round.slice?.subIssue)?.range?.base ?? null)
+      : undefined;
+  // A git failure the check does not expect costs the check, never the review,
+  // and is said in the body like any other reason it could not run.
+  let sinceBrief: SinceBrief | undefined;
+  if (criteria.length > 0 && context.brief !== undefined) {
+    try {
+      sinceBrief = checkSinceBrief(context.brief, BASE_REF, sliceBase);
+    } catch (error) {
+      console.log(`::warning::What merged since the brief could not be read: ${firstLine(error)}`);
+      sinceBrief = { kind: "not run", reason: "unreadable" };
+    }
+  }
+  console.log(
+    `Since the brief: ${
+      sinceBrief === undefined
+        ? "not checked, since there are no criteria"
+        : sinceBrief.kind === "not run"
+          ? `could not run (${sinceBrief.reason}${sinceBrief.commit === undefined ? "" : `, ${sinceBrief.commit}`})`
+          : `${sinceBrief.onBase.commits.length + sinceBrief.onBase.more} commits on the base${
+              sinceBrief.onBranch === undefined
+                ? ""
+                : ` and ${sinceBrief.onBranch.commits.length + sinceBrief.onBranch.more} on the branch before this slice`
+            }${
+              sinceBrief.branchUnread === true ? " (the branch before this slice could not be read)" : ""
+            } since ${sinceBrief.commit} touched ${sinceBrief.files.length} named files`
+    }.`,
+  );
+
   // Every review and fix round on this pull request so far, by slice on a PRD
   // PR (#298): what this review's header is numbered from, and what the
   // progress table counts. Undefined where they could not be read, and the
@@ -407,7 +450,7 @@ try {
   const result = await runWithExtraction({
     name: `review-pr-${PR_NUMBER}`,
     agent: claudeAgent("review", INPUTS),
-    sandbox: agentSandbox(INPUTS),
+    ...SANDBOX,
     logging: { type: "stdout" },
     promptFile: path.join(import.meta.dirname, "prompt.md"),
     promptArgs: {
@@ -419,6 +462,7 @@ try {
       ISSUE_TITLE: context.issueTitle || "(no linked issue)",
       LINKED_ISSUE: context.linkedIssue,
       ACCEPTANCE_CRITERIA: renderCriteriaForReview(criteria, context.prBody),
+      SINCE_BRIEF: renderSinceBriefForReview(sinceBrief),
       DISCUSSION: context.discussion || "(no collaborator comments)",
       CI_STATUS: readCiStatus(),
       // The final review's red evidence is each slice round's record (#235),
@@ -555,8 +599,16 @@ try {
     stillOpen: stillOpen.length,
     movedToFollowUps: unanchored.length,
     autoFix: willAutoFix(),
+    // A review with no header (#442): on a PRD PR it asks for no round,
+    // which the budget there could not count.
+    ...(header === undefined ? { unnumbered: round === undefined ? "regular pr" : "prd pr" } : {}),
     ...(rounds === undefined ? {} : { fixRounds: rounds }),
   });
+  if (verdict.withheld === "unnumbered") {
+    console.log(
+      "::warning::This review is not numbered, so it starts no automatic fix round: on a PRD PR the fix-round budget could not count one. The body says so. Add `agent:fix` by hand to start one.",
+    );
+  }
   // What `review:publish` posts the review from (ADR 0007): the decisions
   // and the agent's raw text, and nothing rendered. Publish writes the body,
   // each thread, the closing replies and every marker in them, from what it
@@ -599,6 +651,7 @@ try {
       criteria: criteriaRulings.results,
       // The final review skips criteria on purpose, and says nothing about it.
       ...(round?.kind === "final" ? {} : { linkedIssue: context.issueRead }),
+      ...(sinceBrief === undefined ? {} : { sinceBrief }),
     }),
     ...(header === undefined ? {} : { header }),
     ...(history.unreadable === undefined ? {} : { historyUnreadable: history.unreadable }),

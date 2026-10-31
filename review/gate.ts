@@ -1,4 +1,5 @@
 import type { GitHubReader } from "../engine/read.js";
+import { pullRequestNumber, seconds } from "../shared/command-helpers.js";
 import type { ReadingIo } from "../shared/command-io.js";
 import type { COMMANDS } from "../shared/contract.js";
 import type { InputValues } from "../shared/env.js";
@@ -265,12 +266,3 @@ const refuse = (io: Io, reason: string): never => {
   throw new Error(reason);
 };
 
-const seconds = (value: string, name: string): number => {
-  if (!/^[0-9]{1,6}$/.test(value)) throw new Error(`${name} is ${JSON.stringify(value)}, which is not a number of seconds.`);
-  return Number(value);
-};
-
-const pullRequestNumber = (value: string): number => {
-  if (!/^[1-9][0-9]{0,9}$/.test(value)) throw new Error(`PR_NUMBER is ${JSON.stringify(value)}, which is not a pull request number.`);
-  return Number(value);
-};

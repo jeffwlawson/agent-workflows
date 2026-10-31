@@ -130,6 +130,7 @@ const run = async (inputs: Inputs = INPUTS()): Promise<void> => {
     outputs: {
       writeJson: (name, value) => files.set(name, value),
       writeText: (name, value) => files.set(name, value),
+      writeBytes: () => {},
       appendLine: () => {},
     },
   };
@@ -223,6 +224,13 @@ describe("review:conclude ends a review that did not finish", () => {
   /** One pattern for every run that stopped (#253): the reason as a sentence, the run, and what to do. */
   const PATTERN =
     /^\*\*`agent:review` stopped:\*\* [A-Z][^\n]*[.!?]\n\n\[Workflow run\]\(https:\/\/github\.com\/o\/r\/actions\/runs\/42\) · To try again, add `agent:review`\.\n$/;
+
+  // The service has no run page, so no run id, and an empty link links nowhere.
+  it("links no run where it has none, as on the service", async () => {
+    await run(INPUTS(reviewEnded("failure", { FAILURE_REASON: "The agent stopped.", GITHUB_RUN_ID: "" })));
+
+    expect(comments()).toEqual(["**`agent:review` stopped:** The agent stopped.\n\nTo try again, add `agent:review`.\n"]);
+  });
 
   /**
    * The error verdict, then the comment, then the label off, then the block
@@ -465,7 +473,7 @@ describe("review:conclude asks for the review again where the head moved", () =>
         return made.writers;
       },
       github: { ...reader, pullRequest: async (n) => ({ ...(await reader.pullRequest(n)), labels: [other] }) },
-      outputs: { writeJson: (name, value) => files.set(name, value), writeText: () => {}, appendLine: () => {} },
+      outputs: { writeJson: (name, value) => files.set(name, value), writeText: () => {}, writeBytes: () => {}, appendLine: () => {} },
     };
 
     await conclude(INPUTS(), io);
@@ -651,7 +659,7 @@ describe("review:conclude starts the automatic fix round", () => {
         return made.writers;
       },
       github: { ...reader, commitStatuses: () => Promise.reject(new Error("403")) },
-      outputs: { writeJson: (name, value) => files.set(name, value), writeText: () => {}, appendLine: () => {} },
+      outputs: { writeJson: (name, value) => files.set(name, value), writeText: () => {}, writeBytes: () => {}, appendLine: () => {} },
     };
 
     await expect(conclude(INPUTS(FIX_ROUND), io)).rejects.toThrow(
@@ -668,7 +676,7 @@ describe("review:conclude starts the automatic fix round", () => {
         return made.writers;
       },
       github: { ...reader, pullRequest: () => Promise.reject(new Error("502")) },
-      outputs: { writeJson: (name, value) => files.set(name, value), writeText: () => {}, appendLine: () => {} },
+      outputs: { writeJson: (name, value) => files.set(name, value), writeText: () => {}, writeBytes: () => {}, appendLine: () => {} },
     };
 
     await expect(conclude(INPUTS(FIX_ROUND), io)).rejects.toThrow(
@@ -838,7 +846,7 @@ describe("review:conclude's writes are its own", () => {
         return made.writers;
       },
       github: fakeReader(github).reader,
-      outputs: { writeJson: () => {}, writeText: () => {}, appendLine: () => {} },
+      outputs: { writeJson: () => {}, writeText: () => {}, writeBytes: () => {}, appendLine: () => {} },
     };
 
     await conclude(INPUTS(), io);

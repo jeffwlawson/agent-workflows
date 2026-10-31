@@ -1,6 +1,7 @@
 import { isServerError } from "../engine/github.js";
 import { dropBlock, spliceBlock } from "../engine/splice.js";
 import { LimitReached, WriteFailed, type Limits, type ReviewThread, type Writer } from "../engine/writer.js";
+import { describe, pullRequestNumber } from "../shared/command-helpers.js";
 import type { CommandIo } from "../shared/command-io.js";
 import { workflowRunUrl } from "../shared/common.js";
 import { COMMANDS } from "../shared/contract.js";
@@ -201,8 +202,19 @@ export const publish = async (
   // how the round ended.
   if (!inputs.BRANCH.startsWith(PRD_BRANCH_PREFIX)) await writeStatusLine(workflow, pr, verdict, url);
 
-  // Step 4: the verdict, on the commit it is about.
-  await postVerdict(workflow, reviewed, verdict, verdictRow(verdict.verdict, body.cause), url);
+  // Step 4: the verdict, on the commit it is about. On a PRD PR, no fix
+  // round's status for a review with no header (#442): the budget there
+  // counts a status by the header of the review it links, and one it cannot
+  // attribute leaves every later round on the PR unable to start. The runner
+  // asks for none from such a review; this holds where it did anyway.
+  let fixRound = verdict.fixRound;
+  if (fixRound && header === undefined && inputs.BRANCH.startsWith(PRD_BRANCH_PREFIX)) {
+    console.log(
+      `::warning::Posted no \`${FIX_ROUND_STATUS.context}\` status for ${reviewed}: the review carries no round header, so the fix-round budget could not count the round, and no automatic fix round will start. Add \`agent:fix\` by hand to start one.`,
+    );
+    fixRound = false;
+  }
+  await postVerdict(workflow, reviewed, { ...verdict, fixRound }, verdictRow(verdict.verdict, body.cause), url);
 };
 
 /**
@@ -411,8 +423,6 @@ const postReview = async (
 /** A body as GitHub may store it: line endings and the ends trimmed, and nothing else. */
 const normalised = (body: string): string => body.replace(/\r\n/g, "\n").trim();
 
-const describe = (error: unknown): string => (error instanceof Error ? error.message : String(error));
-
 /** A read publish cannot go on without, its failure said as a sentence: nothing has been written yet. */
 const read = async <T>(what: string, request: () => Promise<T>): Promise<T> => {
   try {
@@ -420,11 +430,6 @@ const read = async <T>(what: string, request: () => Promise<T>): Promise<T> => {
   } catch (error) {
     throw new Error(`Could not read ${what} from GitHub, so nothing was posted: ${describe(error)}`, { cause: error });
   }
-};
-
-const pullRequestNumber = (value: string): number => {
-  if (!/^[1-9][0-9]{0,9}$/.test(value)) throw new Error(`PR_NUMBER is ${JSON.stringify(value)}, which is not a pull request number.`);
-  return Number(value);
 };
 
 const commit = (value: string): string => {

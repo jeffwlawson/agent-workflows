@@ -1,10 +1,14 @@
+import { execFileSync } from "node:child_process";
+import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
+import * as path from "node:path";
 import * as sandcastle from "@ai-hero/sandcastle";
 import type { OutputObjectDefinition, RunOptions, RunResult } from "@ai-hero/sandcastle";
 import { noSandbox } from "@ai-hero/sandcastle/sandboxes/no-sandbox";
-import { bwrap } from "../engine/bwrap.js";
+import { bwrap, CARRY_HOOKS } from "../engine/bwrap.js";
 import type { SANDBOX } from "./contract.js";
-import type { InputValues } from "./env.js";
+import { fail, type InputValues } from "./env.js";
+import { sandboxRefusal } from "./sandbox.js";
 
 /**
  * The agent driver: everything that loads the agent SDK, and the one module
@@ -128,34 +132,133 @@ export const claudeAgent = (
 export type SandboxInputs = InputValues<typeof SANDBOX>;
 
 /**
- * The sandbox every runner starts the agent in, chosen here and nowhere else:
- * a runner names no provider, and this is the one module that loads Sandcastle,
- * so no command can reach the choice.
+ * The sandbox every runner starts the agent in, chosen here and nowhere else,
+ * as the run options that select it: a runner names no provider, and this is
+ * the one module that loads Sandcastle, so no command can reach the choice.
  *
  * - `none`: the agent runs on the runner's own machine. On Actions the
  *   ephemeral runner IS the isolation, and running the agent directly on it
  *   means the agent's environment and CI's are identical by construction: no
  *   image drift, no "works in the sandbox, fails in CI".
  * - `bwrap`: the agent runs in bubblewrap on the host (`engine/bwrap.ts`),
- *   with the toolchain, `PATH` and proxy its inputs name. The run starts in
- *   the checkout, which is where Sandcastle writes its patches.
+ *   with the toolchain, `PATH` and proxy its inputs name, and a network of
+ *   its own whose only way out is that proxy. Without a proxy it is refused,
+ *   through `fail()`, naming `AGENT_SANDBOX_PROXY` (`shared/sandbox.ts`), so
+ *   call it at start, before any of the runner's own work. The run starts in
+ *   the checkout, which is where Sandcastle writes its patches. Its hooks
+ *   carry what the checkout holds outside git, the setup's install, into the
+ *   agent's copy of it, so the agent sees what it would with no sandbox.
  *
- * Call it once per runner and hand both of `runWithExtraction`'s passes the
- * one provider: `bwrap` carries the session between them itself.
+ * Spread it into the run's options, once per runner, and hand both of
+ * `runWithExtraction`'s passes the one provider: `bwrap` carries the session
+ * between them itself.
  */
 export const agentSandbox = (inputs: SandboxInputs) => {
+  const refusal = sandboxRefusal(inputs.AGENT_SANDBOX, inputs.AGENT_SANDBOX_PROXY);
+  if (refusal !== undefined) return fail(refusal);
   switch (inputs.AGENT_SANDBOX) {
     case "none":
-      return noSandbox();
+      return { sandbox: noSandbox() };
     case "bwrap":
-      return bwrap({
-        roBinds: inputs.AGENT_SANDBOX_RO_BINDS.split(":").filter((dir) => dir !== ""),
-        path: inputs.AGENT_SANDBOX_PATH,
-        ...(inputs.AGENT_SANDBOX_PROXY === "" ? {} : { proxy: inputs.AGENT_SANDBOX_PROXY }),
-        repoDir: process.cwd(),
-        homeDir: homedir(),
-      });
+      return {
+        sandbox: bwrap({
+          roBinds: inputs.AGENT_SANDBOX_RO_BINDS.split(":").filter((dir) => dir !== ""),
+          path: inputs.AGENT_SANDBOX_PATH,
+          proxy: inputs.AGENT_SANDBOX_PROXY,
+          repoDir: process.cwd(),
+          homeDir: homedir(),
+        }),
+        hooks: CARRY_HOOKS,
+      };
   }
+};
+
+/** What `agentSandbox` selects: the run options a runner spreads. */
+export type AgentSandbox = ReturnType<typeof agentSandbox>;
+
+/**
+ * A run whose agent concludes the merge in progress in the checkout: the run
+ * options to spread in place of the sandbox's, into every pass, and
+ * `conclude`, to call once the last pass has ended.
+ */
+export interface ConcludingMerge {
+  readonly options: Pick<RunOptions, "sandbox" | "hooks" | "branchStrategy">;
+  /**
+   * Leaves the checkout as the agent leaves it with no sandbox: on a merge
+   * of the base into the head, committed, holding the agent's resolution.
+   * Throws a sentence where the agent's work did not come back as one.
+   */
+  conclude(): void;
+}
+
+const SHA = /^[0-9a-f]{40}(?:[0-9a-f]{24})?$/;
+
+/**
+ * The sandbox for a run whose agent resolves the conflicts of the merge in
+ * progress in the checkout at `repoDir` and commits it (#463's run).
+ *
+ * With no sandbox the agent works in the checkout, mid-merge, and its commit
+ * is the merge: the options are the sandbox's, and `conclude` does nothing.
+ *
+ * An isolated sandbox cannot carry that merge either way. Sandcastle clones
+ * the agent's copy from the checkout's history, so the copy starts on the
+ * head, clean: `MERGE_HEAD` and the conflicted index are not history. It
+ * hands the agent's commits back as `git format-patch` output, which leaves a
+ * merge commit out. And under its default strategy it ends with a `git merge`
+ * of its temporary branch in the checkout, which git refuses mid-merge. So:
+ *
+ * - The agent works on a branch of its own, made at the head, and Sandcastle
+ *   leaves its commits there rather than merging them into the checkout.
+ * - The copy is put mid-merge as a squash, by the hook that carries the
+ *   checkout's untracked paths, after them, in one command, since Sandcastle
+ *   starts a run's hooks together: the same conflicts, staged as git leaves
+ *   them, with no `MERGE_HEAD`, so the agent's commit is an ordinary one the
+ *   patches carry whole. Only a copy at the head is: the extraction pass's,
+ *   at the agent's commit, is left as it is.
+ * - `conclude` makes the merge in the checkout, from the head and the base
+ *   commit being merged, with the tree of the agent's last commit, git's
+ *   subject for the merge and the agent's message body, and moves the
+ *   checkout's branch onto it. A branch still checked out in a worktree of
+ *   Sandcastle's is a copy-out that did not finish, and is refused.
+ */
+export const concludingMerge = (chosen: AgentSandbox, repoDir: string, name: string): ConcludingMerge => {
+  // The isolated choice is the one with the carry hooks: `bwrap`'s.
+  if (!("hooks" in chosen)) return { options: chosen, conclude: () => {} };
+  const git = (args: readonly string[], input?: string): string =>
+    execFileSync("git", args, { cwd: repoDir, encoding: "utf8", ...(input === undefined ? {} : { input }) }).trim();
+  const head = git(["rev-parse", "--verify", "HEAD^{commit}"]);
+  const base = git(["rev-parse", "--verify", "MERGE_HEAD^{commit}"]);
+  if (!SHA.test(head) || !SHA.test(base)) throw new Error(`Couldn't read the merge in progress: \`${head}\` into \`${base}\`.`);
+  const mergeMessage = path.resolve(repoDir, git(["rev-parse", "--git-path", "MERGE_MSG"]));
+  const subject = existsSync(mergeMessage) ? (readFileSync(mergeMessage, "utf8").split("\n")[0] ?? "").trim() : "";
+  const branch = `sandcastle/${name}/merge`;
+  git(["branch", "--force", branch, head]);
+
+  const [carry] = chosen.hooks.sandbox.onSandboxReady;
+  const squash = `if [ "$(git rev-parse HEAD)" = ${head} ]; then git merge --squash ${base} >/dev/null || [ -n "$(git ls-files --unmerged)" ]; fi`;
+  const options = {
+    sandbox: chosen.sandbox,
+    hooks: { sandbox: { onSandboxReady: [{ command: `${carry.command} && ${squash}`, timeoutMs: carry.timeoutMs }] } },
+    branchStrategy: { type: "branch", branch },
+  } as const;
+
+  const conclude = (): void => {
+    const held = git(["worktree", "list", "--porcelain"])
+      .split("\n\n")
+      .find((entry) => entry.split("\n").includes(`branch refs/heads/${branch}`));
+    if (held !== undefined) {
+      const at = held.split("\n")[0]?.replace(/^worktree /, "") ?? "";
+      throw new Error(`The agent's work didn't come out of its sandbox whole (its copy is kept at \`${at}\`), so nothing was pushed.`);
+    }
+    const tip = git(["rev-parse", "--verify", `refs/heads/${branch}^{commit}`]);
+    if (tip === head) throw new Error("The agent finished without committing its resolution, so nothing was pushed.");
+    const [own = "", ...body] = git(["log", "-1", "--format=%B", tip]).split("\n");
+    const message = [subject === "" ? own : subject, ...body].join("\n").trim();
+    const merge = git(["commit-tree", `${tip}^{tree}`, "-p", head, "-p", base, "-F", "-"], `${message}\n`);
+    git(["reset", "--quiet", "--hard", merge]);
+    git(["branch", "--delete", "--force", branch]);
+  };
+  return { options, conclude };
 };
 
 export interface RunWithExtractionOptions<T> extends Omit<RunOptions, "output"> {

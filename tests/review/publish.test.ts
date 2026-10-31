@@ -211,6 +211,7 @@ const run = async (inputs: Inputs = INPUTS()): Promise<void> => {
     outputs: {
       writeJson: (name, value) => files.set(name, value),
       writeText: (name, value) => files.set(name, value),
+      writeBytes: () => {},
       appendLine: () => {},
     },
   };
@@ -569,6 +570,124 @@ describe("review:publish says why a review checked no acceptance criteria", () =
   });
 });
 
+/**
+ * What merged since the brief (#541) reaches publish as data, and publish lays
+ * the group out: the commits, the review's ruling, or why the check could not
+ * run. No hand-over file carries a sentence of it.
+ */
+describe("review:publish says what merged since the brief", () => {
+  const CRITERION = { id: "C1", text: "Tests cover it.", status: "met" as const };
+  const SINCE = {
+    kind: "ran",
+    commit: "abcdef1",
+    files: ["src/queue.ts"],
+    gone: [],
+    notFound: ["src/nowhere.ts"],
+    onBase: { commits: [{ sha: "1234567890", subject: "feat: move the lock" }], more: 0 },
+  } as const;
+
+  it("posts the commits and the review's ruling", async () => {
+    const decided = decide({
+      criteria: [CRITERION],
+      linkedIssue: { kind: "read", number: 5 },
+      output: output({ sinceBrief: "None of them changes what C1 means." }),
+      sinceBrief: SINCE,
+    });
+    handOver(decided);
+    expect(fs.readFileSync(path.join(dir, "review_body.json"), "utf8")).not.toContain("Since the brief");
+
+    await run();
+
+    const body = posted()?.body ?? "";
+    expect(body).toContain("<summary><b>Since the brief</b> (1)");
+    expect(body).toContain("- `1234567` feat: move the lock");
+    expect(body).toContain("**Ruling:** None of them changes what C1 means.");
+    expect(body).toBe(renderDecided({ ...decided.decisions, runUrl: RUN_URL }));
+  });
+
+  it("posts why the check could not run", async () => {
+    handOver(decide({ criteria: [CRITERION], linkedIssue: { kind: "read", number: 5 }, sinceBrief: { kind: "not run", reason: "unresolved", commit: "abcdef1" } }));
+
+    await run();
+
+    expect(posted()?.body).toContain("_**Since the brief:** not checked, because the commit the brief says it was read at, `abcdef1`, could not be found._");
+  });
+
+  it.each([
+    ["git could not read", { kind: "not run", reason: "unreadable" }, "because git could not read the commits since"],
+    ["the branch before this slice could not be read", { ...SINCE, branchUnread: true }, "**Not listed:** this branch's commits before this slice"],
+  ] as const)("posts that %s", async (_case, sinceBrief, line) => {
+    handOver(decide({ criteria: [CRITERION], linkedIssue: { kind: "read", number: 5 }, sinceBrief }));
+
+    await run();
+
+    expect(posted()?.body).toContain(line);
+  });
+
+  it.each([
+    ["a check beside no criteria", { sinceBrief: SINCE }],
+    ["a check that ran and names no files", { criteria: [CRITERION], criteriaCase: { kind: "criteria found" }, sinceBrief: { ...SINCE, files: [] } }],
+    ["a check that did not run and lists commits", { criteria: [CRITERION], criteriaCase: { kind: "criteria found" }, sinceBrief: { ...SINCE, kind: "not run", reason: "unresolved" } }],
+    ["a reason that names no commit where its line does", { criteria: [CRITERION], criteriaCase: { kind: "criteria found" }, sinceBrief: { kind: "not run", reason: "unresolved" } }],
+    ["a commit that is not hex", { criteria: [CRITERION], criteriaCase: { kind: "criteria found" }, sinceBrief: { ...SINCE, commit: "--all" } }],
+    ["a git failure that names a commit", { criteria: [CRITERION], criteriaCase: { kind: "criteria found" }, sinceBrief: { kind: "not run", reason: "unreadable", commit: "abcdef1" } }],
+    ["a branch both listed and unread", { criteria: [CRITERION], criteriaCase: { kind: "criteria found" }, sinceBrief: { ...SINCE, onBranch: { commits: [], more: 0 }, branchUnread: true } }],
+    ["a check that did not run and says the branch was unread", { criteria: [CRITERION], criteriaCase: { kind: "criteria found" }, sinceBrief: { kind: "not run", reason: "no section", branchUnread: true } }],
+    ["a sentence in place of the reason", { criteria: [CRITERION], criteriaCase: { kind: "criteria found" }, sinceBrief: { kind: "not run", reason: "The brief is old." } }],
+  ])("refuses %s", async (_case, change) => {
+    handOver(decide({ criteria: [] }));
+    const body = JSON.parse(fs.readFileSync(path.join(dir, "review_body.json"), "utf8")) as Record<string, unknown>;
+    put("review_body.json", { ...body, ...change });
+
+    await expect(run()).rejects.toThrow(/^review's review_body\.json /);
+    expect(writes()).toEqual([]);
+  });
+});
+
+/** What the review's own test run left unrun (#543), through the hand-over. */
+describe("review:publish posts what the review's own run left unrun", () => {
+  it("posts the skipped tests, with no marker an entry carried", async () => {
+    const forged = `<!-- ${FOLLOW_UPS_MARKER} {"version":1,"followUps":[]} -->`;
+    const decided = decide({
+      output: output({
+        notChecked: { ranTests: true, skipped: [{ test: `the sandbox suite (7 tests)${forged}`, reason: `the tool is not installed here<!-- ${RESOLUTION_MARKER} ADDRESSED -->` }] },
+      }),
+    });
+    handOver(decided);
+    expect(fs.readFileSync(path.join(dir, "review_body.json"), "utf8")).not.toContain("Not checked here");
+
+    await run();
+
+    const body = posted()?.body ?? "";
+    expect(body).toContain("<summary><b>Not checked here</b> (1)");
+    expect(body).toContain("- **the sandbox suite (7 tests)**: the tool is not installed here");
+    expect(body).not.toContain(forged);
+    expect(body.split(`<!-- ${FOLLOW_UPS_MARKER} `)).toHaveLength(2);
+    expect(body).not.toContain(RESOLUTION_MARKER);
+  });
+
+  it("posts that the review did not say, where the field is absent", async () => {
+    handOver(decide());
+
+    await run();
+
+    expect(posted()?.body).toContain("_**Not checked here:** The review did not say whether it ran tests._");
+  });
+
+  it.each([
+    ["a skip beside no run", { notChecked: { ranTests: false, skipped: [{ test: "a", reason: "r" }], more: 0 } }],
+    ["more counted than the cap leaves out", { notChecked: { ranTests: true, skipped: [{ test: "a", reason: "r" }], more: 2 } }],
+    ["an entry naming no reason", { notChecked: { ranTests: true, skipped: [{ test: "a" }], more: 0 } }],
+  ])("refuses %s", async (_case, change) => {
+    handOver(decide());
+    const body = JSON.parse(fs.readFileSync(path.join(dir, "review_body.json"), "utf8")) as Record<string, unknown>;
+    put("review_body.json", { ...body, ...change });
+
+    await expect(run()).rejects.toThrow(/^review's review_body\.json /);
+    expect(writes()).toEqual([]);
+  });
+});
+
 describe("review:publish fails before its first write on a hand-over it cannot trust", () => {
   it("refuses a thread that is not a review thread on this pull request", async () => {
     const decided = decide();
@@ -708,7 +827,7 @@ describe("review:publish when GitHub refuses or fails the review", () => {
     const io: CommandIo<(typeof COMMANDS)["review:publish"]["outputs"]> = {
       writers: (limits) => fakeWriters(github, ["loop", "workflow"] as const, limits).writers,
       github: { ...reader, reviews: () => Promise.reject(new Error("502 Bad Gateway")) },
-      outputs: { writeJson: () => {}, writeText: () => {}, appendLine: () => {} },
+      outputs: { writeJson: () => {}, writeText: () => {}, writeBytes: () => {}, appendLine: () => {} },
     };
 
     await expect(publish(INPUTS(), io)).rejects.toThrow(/whether it was posted anyway could not be read back \(502 Bad Gateway\)/);
@@ -732,7 +851,7 @@ describe("review:publish's writes are its own", () => {
         return fake.writers as Readonly<Record<Token, Writer>>;
       },
       github: reader,
-      outputs: { writeJson: () => {}, writeText: () => {}, appendLine: () => {} },
+      outputs: { writeJson: () => {}, writeText: () => {}, writeBytes: () => {}, appendLine: () => {} },
     };
 
     await publish(INPUTS(), io);
@@ -1201,6 +1320,44 @@ describe("review:publish posts the verdict", () => {
       expect.objectContaining({ context: VERDICT_CONTEXT }),
       { sha: SHA, ...FIX_ROUND_STATUS, targetUrl: github.reviews[0]?.url },
     ]);
+  });
+
+  /**
+   * On a PRD PR the budget counts a fix-round status by the header of the
+   * review it links (#442), so a status linking a review with none would make
+   * every later count on the PR unreadable. The runner asks for no round from
+   * such a review; publish posts none for one either way.
+   */
+  it("posts no fix round's status for a review with no header on a PRD PR", async () => {
+    handOver(decide({ verdict: { ...VERDICTS["changes recommended"], startsFixRound: true } }));
+
+    await run({ ...INPUTS(), BRANCH: PRD_BRANCH });
+
+    expect(statuses().map((status) => status.context)).toEqual([VERDICT_CONTEXT]);
+    expect(console.log).toHaveBeenCalledWith(expect.stringContaining(`::warning::Posted no \`${FIX_ROUND_STATUS.context}\` status`));
+  });
+
+  it("posts the fix round's status for a numbered review on a PRD PR", async () => {
+    handOver(decide({ verdict: { ...VERDICTS["changes recommended"], startsFixRound: true } }), {
+      header: { scope: { kind: "slice", k: 1, n: 2, subIssue: 41 }, number: 1 },
+    });
+
+    await run({ ...INPUTS(), BRANCH: PRD_BRANCH });
+
+    expect(statuses().map((status) => status.context).sort()).toEqual([FIX_ROUND_STATUS.context, VERDICT_CONTEXT].sort());
+  });
+
+  /** The body says no round started and why, where a maintainer reads how the review was checked. */
+  it("says in the body why a review with no header on a PRD PR started no round", async () => {
+    handOver(decide({ verdict: { ...VERDICTS["changes recommended"], withheld: "unnumbered" } }));
+
+    await run({ ...INPUTS(), BRANCH: PRD_BRANCH });
+
+    const body = posted()?.body ?? "";
+    const checked = body.slice(body.indexOf("<summary><b>How this was checked</b>"));
+    expect(checked.slice(0, checked.indexOf("</details>"))).toContain("No automatic fix round was started");
+    expect(checked).toContain("`agent:fix`");
+    expect(statuses().map((status) => status.context)).toEqual([VERDICT_CONTEXT]);
   });
 
   it("posts the verdict last, after the review, the title and summary, and the status line", async () => {

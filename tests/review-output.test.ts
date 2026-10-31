@@ -22,12 +22,14 @@ import {
   hasFollowUpsBlock,
   MAX_FOLLOW_UPS,
   MAX_HOW_CHECKED_WORDS,
+  MAX_NOT_CHECKED,
   MAX_SUMMARY_WORDS,
   MAX_TITLE_LENGTH,
   parseFollowUpsBlock,
   recordFollowUps,
   renderFollowUpsBlock,
   renderFollowUpsGroup,
+  renderNotChecked,
   RESOLVED_GROUP,
   reviewBodyHandOver,
   UNCLOSED_GROUP,
@@ -39,7 +41,9 @@ import {
   VERDICTS,
   type CiResult,
   type FollowUp,
+  type NotChecked,
   type ReviewOutput,
+  type SinceBrief,
   type VerdictRow,
 } from "../shared/review-output.js";
 import { FOLLOW_UPS_MARKER, VERDICT_CONTEXT } from "../shared/record.js";
@@ -1133,6 +1137,46 @@ describe("deriveVerdict", () => {
 
     expect(row).toEqual({ ...VERDICTS["changes recommended"], ...fields });
     expect(Object.keys(VERDICTS)).not.toContain("changes recommended, fix round started");
+  });
+
+  /**
+   * **A review on a PRD PR that carries no round header starts no round**
+   * (#442). The budget there counts a fix-round status by the header of the
+   * review it links, so a round started from a review it cannot attribute
+   * makes every later count unreadable and stops every later round on the PR.
+   * The line is the same (#297); the row says why none started, for the body.
+   * A regular PR's budget counts every status, so its review asks with or
+   * without a header.
+   */
+  it.each([
+    ["a numbered review on a PRD PR", {}, { startsFixRound: true }],
+    ["an unnumbered review on a PRD PR", { unnumbered: "prd pr" }, { withheld: "unnumbered" }],
+    ["an unnumbered review on a regular PR", { unnumbered: "regular pr" }, { startsFixRound: true }],
+  ] as const)("asks for a round from %s only where the budget can count it", (_case, over, fields) => {
+    const row = deriveVerdict(output({ findings: [finding({ body: "**Fix before merge.** the guard runs after the return" })] }), {
+      ci: "green",
+      fixRoundProgress: undefined,
+      stillOpen: 0,
+      movedToFollowUps: 0,
+      autoFix: true,
+      ...over,
+    });
+
+    expect(row).toEqual({ ...VERDICTS["changes recommended"], ...fields });
+  });
+
+  /** Where no round would have started anyway, there is nothing withheld to say. */
+  it("withholds nothing from an unnumbered PRD review where no round would start", () => {
+    const row = deriveVerdict(output({ findings: [finding({ body: "**Fix before merge.** the guard runs after the return" })] }), {
+      ci: "green",
+      fixRoundProgress: undefined,
+      stillOpen: 0,
+      movedToFollowUps: 0,
+      autoFix: false,
+      unnumbered: "prd pr",
+    });
+
+    expect(row).toEqual(VERDICTS["changes recommended"]);
   });
 
   /**
@@ -3035,6 +3079,115 @@ describe("the review brief asks for the class rather than the member", () => {
 });
 
 /**
+ * The sweep for text the change made false (#540). A review reads the diff,
+ * and a doc, a comment or a prompt elsewhere that the change made untrue was
+ * caught only when the reviewer happened to notice it. *Where a finding is
+ * posted* already says how to anchor one; this item is what asks the review
+ * to look, with a criterion for when the looking is done.
+ *
+ * Held to item 6 exactly, from its number to item 7's, so a clause deleted
+ * from it cannot be satisfied by a neighbour that happens to use the word.
+ */
+describe("the review brief sweeps the checkout for text the change made false", () => {
+  const PROMPT = fs.readFileSync(path.join("review", "prompt.md"), "utf8");
+  const plain = (text: string): string => text.replace(/[*_]/g, "").replace(/\s+/g, " ");
+  const item6 = (): string => plain(PROMPT).match(/ 6\. Text this change made false.*?(?= 7\. )/s)?.[0] ?? "";
+
+  it("asks for the phrases that described the old behaviour, searched over the whole checkout", () => {
+    expect(item6()).toMatch(/phrases that described/i);
+    expect(item6()).toMatch(/whole checkout/i);
+  });
+
+  it("is done only when every hit has been ruled on", () => {
+    expect(item6()).toMatch(/rule on every hit/i);
+    expect(item6()).toMatch(/done only when every hit/i);
+  });
+
+  it("asks howChecked for the phrases searched for and how many hits were read", () => {
+    expect(item6()).toContain("howChecked");
+    expect(item6()).toMatch(/phrases you searched for/i);
+    expect(item6()).toMatch(/how many hits you read/i);
+  });
+
+  it("makes a hit the change made false a fix-before-merge finding at the change, not a follow-up", () => {
+    expect(item6()).toMatch(/fix-before-merge finding/i);
+    expect(item6()).toMatch(/anchored at the changed line that made it false/i);
+    expect(item6()).toMatch(/not a follow-up/i);
+    expect(item6()).toMatch(/Where a finding is posted/i);
+  });
+
+  it("sends a hit that was already false before the change to followUps", () => {
+    expect(item6()).toMatch(/already false before this change/i);
+    expect(item6()).toContain("followUps");
+  });
+
+  it("runs on every review, and a verification pass sweeps what its new commits change", () => {
+    expect(item6()).toMatch(/every review runs it/i);
+    expect(item6()).toMatch(/PRD PR.s slice round and its final review/i);
+    expect(item6()).toMatch(/verification pass sweeps the behaviours its new commits change/i);
+  });
+
+  it("keeps clarity and edge cases last, after the item on what text can carry", () => {
+    expect(plain(PROMPT)).toMatch(/ 7\. What text sent somewhere new can carry/);
+    expect(plain(PROMPT)).toMatch(/ 8\. Clarity and edge cases/);
+  });
+});
+
+/**
+ * A change that sends text somewhere more widely read than before changes what
+ * that text may safely contain (#542): a refusal echoing a URL is harmless in a
+ * run log and leaks the password in it once quoted in a comment. Nothing asked.
+ *
+ * Held to item 7 exactly, from its number to item 8's, the way item 6 is held.
+ */
+describe("the review brief asks what text sent somewhere new can carry", () => {
+  const PROMPT = fs.readFileSync(path.join("review", "prompt.md"), "utf8");
+  const plain = (text: string): string => text.replace(/[*_]/g, "").replace(/\s+/g, " ");
+  const item7 = (): string =>
+    plain(PROMPT).match(/ 7\. What text sent somewhere new can carry.*?(?= 8\. )/s)?.[0] ?? "";
+
+  it("covers a new destination for existing text and a value added to an existing one", () => {
+    expect(item7()).toMatch(/new destination for text that already existed/i);
+    expect(item7()).toMatch(/value added to a destination that already exists/i);
+  });
+
+  it("asks what the text can carry: a secret, a credential in a URL, a private path, untrusted input", () => {
+    expect(item7()).toMatch(/what can it carry/i);
+    expect(item7()).toMatch(/a secret/i);
+    expect(item7()).toMatch(/credential inside a URL/i);
+    expect(item7()).toMatch(/private path/i);
+    expect(item7()).toMatch(/untrusted input/i);
+  });
+
+  it("asks whether the new place is read more widely than where the text came from", () => {
+    expect(item7()).toMatch(/read more widely than where the text came from/i);
+  });
+
+  it("asks whether it is cleaned of that thing, and a cleanup removing something else does not count", () => {
+    expect(item7()).toMatch(/cleaned of what it can carry/i);
+    expect(item7()).toMatch(/removed or masked/i);
+    expect(item7()).toMatch(/cleanup that removes something else does not count/i);
+  });
+
+  it("makes a secret reaching a more widely read place a fix-before-merge finding at the change", () => {
+    expect(item7()).toMatch(/can carry a secret to a more widely read place.*?fix-before-merge finding/i);
+    expect(item7()).toMatch(/anchored at the change that sends it there/i);
+    expect(item7()).toMatch(/Where a finding is posted/i);
+  });
+
+  it("rules a private path or untrusted input the same way, and one the change did not cause is a follow-up", () => {
+    expect(item7()).toMatch(/private path or untrusted input.*?ruled the same way/i);
+    expect(item7()).toMatch(/did not cause.*?followUps/i);
+  });
+
+  it("asks howChecked to name the new destinations, or say there were none, within its limit", () => {
+    expect(item7()).toContain("howChecked");
+    expect(item7()).toMatch(/name the new destinations you found, or say there were none/i);
+    expect(item7()).toMatch(/within its limit/i);
+  });
+});
+
+/**
  * GitHub's ceiling on a review body (#140). Over it the post is a 422 that
  * loses the threads along with the body, so the body is measured and shed in a
  * stated order — and refused by name where shedding is not enough.
@@ -3157,5 +3310,332 @@ describe("the review body against GitHub's size limit", () => {
     expect(() =>
       renderDecided({ ...parts, movedToFollowUps: 70, followUps: moved }),
     ).toThrow(new RegExp(`is \\d+ bytes .*${REVIEW_BODY_LIMIT}-character limit`));
+  });
+});
+
+/**
+ * What merged since the brief (#541): the group beside *Acceptance criteria*,
+ * laid out by the workflow from what the check found and the review's one-line
+ * ruling, and nothing the verdict is derived from.
+ */
+describe("the body's *Since the brief* group", () => {
+  const output = (over: Partial<ReviewOutput> = {}): ReviewOutput => ({ findings: [], followUps: [], verified: [], ...over });
+  const CRITERION = { id: "C1", text: "It works.", status: "met" as const };
+  const parts: Decided = {
+    verdict: VERDICTS["approval recommended"],
+    output: output(),
+    placed: [],
+    movedToFollowUps: 0,
+    stillOpen: [],
+    resolved: [],
+    followUps: [],
+    droppedFollowUps: 0,
+    criteria: [CRITERION],
+    linkedIssue: { kind: "read", number: 541 },
+  };
+  const ran = (over: Partial<Extract<SinceBrief, { kind: "ran" }>> = {}): SinceBrief => ({
+    kind: "ran",
+    commit: "abcdef1",
+    files: ["src/a.ts", "src/b.ts"],
+    gone: [],
+    notFound: [],
+    onBase: { commits: [{ sha: "1234567890abcdef", subject: "feat: change a" }], more: 0 },
+    ...over,
+  });
+  const RULING = "C1 means something else since 1234567, which moved the guard it names.";
+
+  it("names the commits, and carries the review's ruling", () => {
+    const body = renderDecided({ ...parts, output: output({ sinceBrief: RULING }), sinceBrief: ran() });
+    expect(body).toContain(
+      [
+        "<details open>",
+        "<summary><b>Since the brief</b> (1) · commits since <code>abcdef1</code> that touched the files it names</summary>",
+        "",
+        "Files checked: `src/a.ts`, `src/b.ts`.",
+        "",
+        "On the base branch, newest first:",
+        "",
+        "- `1234567` feat: change a",
+        "",
+        `**Ruling:** ${RULING}`,
+        "",
+        "</details>",
+      ].join("\n"),
+    );
+    // Beside the criteria, after them.
+    expect(body.indexOf("<b>Since the brief</b>")).toBeGreaterThan(body.indexOf("<b>Acceptance criteria</b>"));
+  });
+
+  it("says where the review gave no ruling", () => {
+    expect(renderDecided({ ...parts, sinceBrief: ran() })).toContain("_The review gave no ruling on these._");
+  });
+
+  it("lists a slice round's earlier commits apart, and how many more there were", () => {
+    const body = renderDecided({
+      ...parts,
+      sinceBrief: ran({
+        onBase: { commits: [{ sha: "1234567890", subject: "feat: change a" }], more: 4 },
+        onBranch: { commits: [{ sha: "0987654321", subject: "feat: slice one" }], more: 0 },
+      }),
+    });
+    expect(body).toContain("(6) · commits since");
+    expect(body).toContain("- `1234567` feat: change a\n- …and 4 more.");
+    expect(body).toContain("On this branch before this slice, newest first:\n\n- `0987654` feat: slice one");
+  });
+
+  it("says no commit touched the files, and drops a ruling there was nothing for", () => {
+    const body = renderDecided({ ...parts, output: output({ sinceBrief: RULING }), sinceBrief: ran({ onBase: { commits: [], more: 0 } }) });
+    expect(body).toContain("_**Since the brief:** no commit since `abcdef1` touched the 2 files its *Where things are* names._");
+    expect(body).not.toContain(RULING);
+  });
+
+  it("names a file gone from the base, and a path not found at the read-at commit", () => {
+    const body = renderDecided({ ...parts, sinceBrief: ran({ gone: ["src/b.ts"], notFound: ["src/nowhere.ts"] }) });
+    expect(body).toContain("**No longer at the base:** `src/b.ts`.");
+    expect(body).toContain("**Not found at `abcdef1`:** `src/nowhere.ts`.");
+  });
+
+  it("says where a slice round's earlier commits could not be listed, with commits or without", () => {
+    const NOTE =
+      "**Not listed:** this branch's commits before this slice, since where this slice starts on the PRD branch could not be read.";
+    expect(renderDecided({ ...parts, sinceBrief: ran({ branchUnread: true }) })).toContain(NOTE);
+    expect(renderDecided({ ...parts, sinceBrief: ran({ branchUnread: true, onBase: { commits: [], more: 0 } }) })).toContain(NOTE);
+    expect(renderDecided({ ...parts, sinceBrief: ran() })).not.toContain("**Not listed:**");
+  });
+
+  it.each([
+    ["no section", undefined, "because the brief has no *Where things are* section._"],
+    ["no read-at commit", undefined, "because the brief's *Where things are* section names no commit it was read at._"],
+    ["unresolved", "abcdef1", "because the commit the brief says it was read at, `abcdef1`, could not be found._"],
+    ["not an ancestor", "abcdef1", "because the commit the brief says it was read at, `abcdef1`, is not on the base branch._"],
+    ["no file found", "abcdef1", "because no file the brief's *Where things are* names exists at `abcdef1`._"],
+    ["unreadable", undefined, "because git could not read the commits since the commit the brief says it was read at._"],
+  ] as const)("says the check could not run on %s, and nothing else changes", (reason, commit, line) => {
+    const sinceBrief: SinceBrief = { kind: "not run", reason, ...(commit === undefined ? {} : { commit }) };
+    const body = renderDecided({ ...parts, sinceBrief });
+    expect(body).toContain(`_**Since the brief:** not checked, ${line}`);
+    expect(
+      body
+        .split("\n\n")
+        .filter((part) => !part.startsWith("_**Since the brief:**"))
+        .join("\n\n"),
+    ).toBe(renderDecided(parts));
+  });
+
+  it("shows nothing where the check was not asked: the final review, or no criteria", () => {
+    expect(renderDecided(parts)).not.toContain("Since the brief");
+    expect(renderDecided({ ...parts, criteria: [], linkedIssue: { kind: "none" } })).not.toContain("Since the brief");
+  });
+
+  it("derives no verdict from the list or the ruling", () => {
+    const inputs = { autoFix: false, ci: "green" as const, fixRoundProgress: undefined, stillOpen: 0, movedToFollowUps: 0 };
+    const listed = output({ sinceBrief: RULING, criteria: [{ id: "C1", status: "changed", reason: "1234567 made it moot." }] });
+    const empty = output({ criteria: [{ id: "C1", status: "met" }] });
+    expect(deriveVerdict(listed, inputs)).toEqual(deriveVerdict(empty, inputs));
+    expect(deriveVerdict(listed, inputs).verdict).toBe("approval recommended");
+  });
+
+  it("reads the ruling off the review's output as one line", () => {
+    expect(parse({ findings: [], followUps: [], verified: [], sinceBrief: "  None changes\n a criterion. " }).sinceBrief).toBe(
+      "None changes a criterion.",
+    );
+    expect(parse({ findings: [], followUps: [], verified: [], sinceBrief: "  " }).sinceBrief).toBeUndefined();
+  });
+});
+
+/**
+ * What the review's own test run left unrun (#543): a group on every body,
+ * after *Since the brief* and before *Follow-ups*, laid out by the workflow
+ * from a structured field, and nothing the verdict is derived from.
+ */
+describe("the body's *Not checked here* group", () => {
+  const output = (over: Partial<ReviewOutput> = {}): ReviewOutput => ({ findings: [], followUps: [], verified: [], ...over });
+  const parts: Decided = {
+    verdict: VERDICTS["approval recommended"],
+    output: output(),
+    placed: [],
+    movedToFollowUps: 0,
+    stillOpen: [],
+    resolved: [],
+    followUps: [],
+    droppedFollowUps: 0,
+  };
+  const SKIPS: NotChecked = {
+    ranTests: true,
+    skipped: [
+      { test: "the sandbox suite (7 tests)", reason: "the sandbox tool is not installed here" },
+      { test: "writes through the socket", reason: "skipped: no service on port 5432" },
+    ],
+  };
+  const withSkips = (over: Partial<Decided> = {}): Decided => ({ ...parts, ...over, output: output({ ...over.output, notChecked: SKIPS }) });
+
+  it("lists each skipped test or suite with its reason, open", () => {
+    expect(renderDecided(withSkips())).toContain(
+      [
+        "<details open>",
+        "<summary><b>Not checked here</b> (2) · tests exercising this change that the review's own run skipped</summary>",
+        "",
+        "- **the sandbox suite (7 tests)**: the sandbox tool is not installed here",
+        "- **writes through the socket**: skipped: no service on port 5432",
+        "",
+        "</details>",
+      ].join("\n"),
+    );
+  });
+
+  it("says the run skipped nothing, or that the review ran no tests", () => {
+    expect(renderDecided({ ...parts, output: output({ notChecked: { ranTests: true, skipped: [] } }) })).toContain(
+      "_**Not checked here:** The review's own test run skipped nothing that exercises this change._",
+    );
+    const none = renderDecided({ ...parts, output: output({ notChecked: { ranTests: false, skipped: [] } }) });
+    expect(none).toContain("_**Not checked here:** The review ran no tests._");
+    expect(none).not.toContain("<b>Not checked here</b>");
+  });
+
+  it("says the review did not say, never that it ran none, where the field is missing", () => {
+    const body = renderDecided(parts);
+    expect(body).toContain("_**Not checked here:** The review did not say whether it ran tests._");
+    expect(body).not.toContain("The review ran no tests.");
+  });
+
+  it("sits after *Since the brief*, or after *Acceptance criteria* without it, and before *Follow-ups*", () => {
+    const criteria = { criteria: [{ id: "C1", text: "It works.", status: "met" as const }], linkedIssue: { kind: "read", number: 543 } as const };
+    const since: SinceBrief = { kind: "ran", commit: "abcdef1", files: ["src/a.ts"], gone: [], notFound: [], onBase: { commits: [{ sha: "1234567890", subject: "feat: a" }], more: 0 } };
+    const followUps = { followUps: [followUp()] };
+
+    const withSince = renderDecided(withSkips({ ...criteria, ...followUps, sinceBrief: since }));
+    expect(withSince.indexOf("<b>Since the brief</b>")).toBeGreaterThan(withSince.indexOf("<b>Acceptance criteria</b>"));
+    expect(withSince.indexOf("<b>Not checked here</b>")).toBeGreaterThan(withSince.indexOf("<b>Since the brief</b>"));
+    expect(withSince.indexOf("<b>Not checked here</b>")).toBeLessThan(withSince.indexOf("<b>Follow-ups</b>"));
+
+    const withoutSince = renderDecided(withSkips({ ...criteria, ...followUps }));
+    expect(withoutSince.indexOf("<b>Not checked here</b>")).toBeGreaterThan(withoutSince.indexOf("<b>Acceptance criteria</b>"));
+    expect(withoutSince.indexOf("<b>Not checked here</b>")).toBeLessThan(withoutSince.indexOf("<b>Follow-ups</b>"));
+  });
+
+  it("lists at most the cap's number of entries, and counts the rest in one line", () => {
+    const skipped = Array.from({ length: MAX_NOT_CHECKED + 3 }, (_, i) => ({ test: `test ${i}`, reason: "no tool" }));
+    const body = renderDecided({ ...parts, output: output({ notChecked: { ranTests: true, skipped } }) });
+    expect(body).toContain(`<b>Not checked here</b> (${MAX_NOT_CHECKED + 3})`);
+    expect(body).toContain(`- **test ${MAX_NOT_CHECKED - 1}**: no tool\n- …and 3 more.`);
+    expect(body).not.toContain(`- **test ${MAX_NOT_CHECKED}**`);
+  });
+
+  it("shortens each entry where the body sheds, and keeps the group", () => {
+    const long = "x".repeat(400);
+    const group = renderNotChecked({ ranTests: true, skipped: [{ test: long, reason: long }], more: 0 }, true);
+    expect(group).toContain("<b>Not checked here</b> (1)");
+    expect(group).not.toContain(long);
+    expect(group).toContain("…");
+  });
+
+  /** Issue criterion 3: the group is visible text, and derives nothing. */
+  it("changes no verdict, findings count or follow-ups payload", () => {
+    const reviewed = output({
+      findings: [finding({ body: "**Fix before merge.** the guard runs after the return" })],
+      followUps: [followUp()],
+    });
+    const inputs = { autoFix: false, ci: "green", fixRoundProgress: undefined, stillOpen: 0, movedToFollowUps: 0 } as const;
+    const verdict = deriveVerdict(reviewed, inputs);
+    expect(deriveVerdict({ ...reviewed, notChecked: SKIPS }, inputs)).toEqual(verdict);
+    expect(countFixBeforeMerge({ ...reviewed, notChecked: SKIPS }, 0)).toBe(countFixBeforeMerge(reviewed, 0));
+
+    const decided: Decided = { ...parts, verdict, output: reviewed, followUps: reviewed.followUps };
+    const without = renderDecided(decided);
+    const withEntries = renderDecided({ ...decided, output: { ...reviewed, notChecked: SKIPS } });
+    expect(withEntries).toContain("<b>Not checked here</b>");
+    const line = (body: string): string | undefined => body.split("\n").find((l) => l.startsWith("**Findings:**"));
+    expect(line(withEntries)).toBe(line(without));
+    expect(withEntries.split("\n").slice(0, 4)).toEqual(without.split("\n").slice(0, 4));
+    expect(parseFollowUpsBlock(withEntries)).toEqual(parseFollowUpsBlock(without));
+  });
+});
+
+describe("reviewOutputSchema: notChecked", () => {
+  it("reads whether tests ran and what skipped", () => {
+    expect(parse({ notChecked: { ranTests: true, skipped: [{ test: "a suite", reason: "no tool" }] } }).notChecked).toEqual({
+      ranTests: true,
+      skipped: [{ test: "a suite", reason: "no tool" }],
+    });
+    expect(parse({ not_checked: { ran_tests: false } }).notChecked).toEqual({ ranTests: false, skipped: [] });
+  });
+
+  it("drops an entry naming no test or no reason, and keeps the review", () => {
+    const out = parse({
+      findings: [{ path: "src/a.ts", line: 1, body: "b" }],
+      notChecked: { ranTests: true, skipped: [{ test: "a" }, { reason: "r" }, { test: " ", reason: "r" }, "loose", { test: "b", reason: "r" }] },
+    });
+    expect(out.notChecked).toEqual({ ranTests: true, skipped: [{ test: "b", reason: "r" }] });
+    expect(out.findings).toHaveLength(1);
+  });
+
+  it("leaves the field absent, not a run that skipped nothing, where every listed entry was dropped", () => {
+    const out = parse({ findings: [{ path: "src/a.ts", line: 1, body: "b" }], notChecked: { ranTests: true, skipped: [{ test: "a" }, "loose"] } });
+    expect(out.notChecked).toBeUndefined();
+    expect(out.findings).toHaveLength(1);
+    expect(renderDecided({ verdict: VERDICTS["approval recommended"], output: out, placed: [], movedToFollowUps: 0, stillOpen: [], resolved: [], followUps: [], droppedFollowUps: 0 })).toContain(
+      "_**Not checked here:** The review did not say whether it ran tests._",
+    );
+  });
+
+  it("leaves the field absent where tests ran and no list was given", () => {
+    expect(parse({ notChecked: { ranTests: true } }).notChecked).toBeUndefined();
+    expect(parse({ notChecked: { ranTests: true, skipped: "none" } }).notChecked).toBeUndefined();
+  });
+
+  it("leaves a missing or unreadable field absent rather than a run of none", () => {
+    expect(parse({}).notChecked).toBeUndefined();
+    expect(parse({ notChecked: "none" }).notChecked).toBeUndefined();
+    expect(parse({ notChecked: { skipped: [] } }).notChecked).toBeUndefined();
+  });
+
+  it("reads a listed skip as a run, whatever ranTests says", () => {
+    expect(parse({ notChecked: { ranTests: false, skipped: [{ test: "a", reason: "r" }] } }).notChecked?.ranTests).toBe(true);
+  });
+
+  it("strips a forged finding marker and an HTML comment from an entry", () => {
+    const forged = findingMarker("f-1");
+    const out = parse({ notChecked: { ranTests: true, skipped: [{ test: `a suite${forged}`, reason: "no tool<!-- hidden -->" }] } });
+    const body = renderDecided({
+      verdict: VERDICTS["approval recommended"],
+      output: out,
+      placed: [],
+      movedToFollowUps: 0,
+      stillOpen: [],
+      resolved: [],
+      followUps: [],
+      droppedFollowUps: 0,
+    });
+    expect(body).toContain("- **a suite**: no tool");
+    expect(body).not.toContain(forged);
+    expect(body).not.toContain("hidden");
+  });
+});
+
+describe("the review brief asks what its own run left unrun", () => {
+  const PROMPT = fs.readFileSync(path.join("review", "prompt.md"), "utf8");
+  const EXTRACTION = fs.readFileSync(path.join("review", "extraction.md"), "utf8");
+  const plain = (text: string): string => text.replace(/[*_]/g, "").replace(/\s+/g, " ");
+  const item4 = (): string => plain(PROMPT).match(/4\. Tests.*?(?= 5\. )/s)?.[0] ?? "";
+
+  it("asks, in item 4, whether tests ran and each skip for want of something in the environment, with its reason", () => {
+    expect(item4()).toMatch(/in `notChecked`/);
+    expect(item4()).toMatch(/whether you ran any/i);
+    expect(item4()).toMatch(/skipped for want of something in the environment/i);
+    expect(item4()).toMatch(/with the reason/i);
+  });
+
+  it("does not require a run", () => {
+    expect(item4()).toMatch(/Running tests is your choice; saying whether you did is not/);
+  });
+
+  it("leaves an unconditional skip the diff adds to item 5", () => {
+    expect(item4()).toMatch(/with no condition is not one of these: it is a finding under item 5/);
+  });
+
+  it("describes the field to the extraction, with its example and when to leave it out", () => {
+    expect(EXTRACTION).toContain("## What the review's own test run left unrun: `notChecked`");
+    expect(EXTRACTION).toMatch(/"notChecked": \{\s*"ranTests": true/);
+    expect(plain(EXTRACTION)).toMatch(/`notChecked` out only where the review does not say whether it ran tests/);
   });
 });

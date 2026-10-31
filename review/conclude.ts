@@ -1,5 +1,6 @@
 import type { PullRequest } from "../engine/read.js";
 import { WriteFailed, type Limits, type Writer } from "../engine/writer.js";
+import { describe, pullRequestNumber, tolerated } from "../shared/command-helpers.js";
 import type { CommandIo } from "../shared/command-io.js";
 import { workflowRunUrl } from "../shared/common.js";
 import { COMMANDS } from "../shared/contract.js";
@@ -16,6 +17,7 @@ import {
   VERDICT_CONTEXT,
 } from "../shared/record.js";
 import { roundHeader, withHeader } from "../shared/round-header.js";
+import { newestVerdict } from "../shared/verdict-status.js";
 import { roundHeaderData } from "./hand-over.js";
 
 /**
@@ -133,7 +135,7 @@ type Inputs = InputValues<(typeof COMMANDS)["review:conclude"]["inputs"]>;
 
 const endingOf = (inputs: Inputs, publishReason: string | undefined): Ending => {
   if (inputs.PROCEED === "false") return { kind: "refused" };
-  const runUrl = workflowRunUrl(inputs) ?? "";
+  const runUrl = workflowRunUrl(inputs);
   const stoppedWith = (reason: string): Ending => ({ kind: "stopped", comment: stoppedComment(reason, runUrl) });
   // A gate that failed before it decided (#420), as a package that would not
   // install does, is a run that stopped, said with what reason it gave and
@@ -188,11 +190,13 @@ const DOWNLOAD_FAILED =
  * starting with a capital and ending in a full stop, then the run and what to
  * do.
  */
-const stoppedComment = (reason: string, runUrl: string): string => {
+const stoppedComment = (reason: string, runUrl: string | undefined): string => {
   const trimmed = reason.trim();
   const capital = trimmed.charAt(0).toUpperCase() + trimmed.slice(1);
   const sentence = /[.!?]$/.test(capital) ? capital : `${capital}.`;
-  return `**\`${REVIEW_LABEL}\` stopped:** ${sentence}\n\n[Workflow run](${runUrl}) · To try again, add \`${REVIEW_LABEL}\`.\n`;
+  // No run, no link: the service has no run page, and `[Workflow run]()` links nowhere.
+  const link = runUrl === undefined ? "" : `[Workflow run](${runUrl}) · `;
+  return `**\`${REVIEW_LABEL}\` stopped:** ${sentence}\n\n${link}To try again, add \`${REVIEW_LABEL}\`.\n`;
 };
 
 interface Say {
@@ -235,7 +239,7 @@ const stopped = async (inputs: Inputs, { pr, workflow }: Say, comment: string): 
  * and before every hand-off (#257): `fix` and `update-branch` wait while it is
  * on, so it coming off is what tells them the review is posted.
  */
-const removeTrigger = ({ pr, workflow }: Say): Promise<void> => tolerated(undefined, () => workflow.removeLabel(pr, REVIEW_LABEL));
+const removeTrigger = ({ pr, workflow }: Say): Promise<boolean> => tolerated(undefined, () => workflow.removeLabel(pr, REVIEW_LABEL));
 
 /**
  * Ready for review, on a posted review. Draft means "the automated pipeline
@@ -435,8 +439,7 @@ const startFixRound = async (
   } catch {
     return noRound("the verdicts on its head could not be read, so whether a newer one stands could not be told");
   }
-  // Newest first, which is the order the endpoint documents.
-  const newest = statuses.find((status) => status.context === VERDICT_CONTEXT);
+  const newest = newestVerdict(statuses, accounts);
   if (newest === undefined) return noRound(`the verdict that asked for it is not on ${where}`);
   if ((newest.targetUrl ?? "") !== reviewUrl) {
     console.log(`A newer verdict stands on ${head} than the review that asked for this round. Adding nothing.`);
@@ -461,20 +464,6 @@ const startFixRound = async (
 };
 
 /**
- * A write the loop can live without: a failure is said as `warning`, where
- * there is one, and stays in the write log as a failure its last line does not
- * name. Anything but a failed write, a limit reached included, still stops.
- */
-const tolerated = async (warning: string | undefined, write: () => Promise<unknown>): Promise<void> => {
-  try {
-    await write();
-  } catch (error) {
-    if (!(error instanceof WriteFailed)) throw error;
-    if (warning !== undefined) console.log(`::warning::${warning}`);
-  }
-};
-
-/**
  * What conclude may write, and how many of each (ADR 0005): three removals
  * (`agent:blocked`, `agent:review` and `agent:fix` before it is added), one
  * label added (`agent:blocked`, `agent:review` or `agent:fix`, never two),
@@ -486,9 +475,3 @@ const LIMITS: Limits = { removeLabel: 3, addLabel: 1, comment: 2, markReadyForRe
 
 const LINK = matching(/https?:\/\/[^\s<>()]+/, "a link");
 
-const describe = (error: unknown): string => (error instanceof Error ? error.message : String(error));
-
-const pullRequestNumber = (value: string): number => {
-  if (!/^[1-9][0-9]{0,9}$/.test(value)) throw new Error(`PR_NUMBER is ${JSON.stringify(value)}, which is not a pull request number.`);
-  return Number(value);
-};

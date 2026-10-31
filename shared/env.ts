@@ -11,12 +11,14 @@ import { EVERY_SUBCOMMAND, EVERY_SUBCOMMAND_OUTPUTS, type Input, type Inputs, ty
  * CLI, which reads them here. A read anywhere else would be an input the declaration does
  * not have, which is the quiet default the declarations exist to end.
  *
- * Four things here touch the environment besides the accessor, and each is
+ * Five things here touch the environment besides the accessor, and each is
  * here rather than exempted somewhere else: the writer, which finds
  * `OUTPUT_DIR` without the accessor so a missing one can still be reported;
  * `fail()`, which writes through it; `scrubGitHubTokens`, which deletes
- * rather than reads; and `hostEnvironment`, which the service's worker hands
- * on to its subcommands and reads nothing from itself.
+ * rather than reads; `hostEnvironment`, which the service's worker hands
+ * on to its subcommands and reads nothing from itself; and `gitEnvironment`,
+ * which a command hands the engine's git writes, and which reads only the
+ * variables `hostEnvironment` hands on.
  */
 
 /**
@@ -55,7 +57,7 @@ const present = (name: string): string | undefined => process.env[name] || undef
  * through `input` itself, which is what keeps a missing `OUTPUT_DIR` reportable
  * at all: `input` reports through `fail()`, and `fail()` writes through here.
  */
-const writeOutput = (filename: string, value: string): void => {
+const writeOutput = (filename: string, value: string | Uint8Array): void => {
   const dir = present("OUTPUT_DIR");
   if (dir === undefined) return;
   fs.mkdirSync(dir, { recursive: true });
@@ -71,6 +73,8 @@ const writeOutput = (filename: string, value: string): void => {
 export const writers = <D extends Outputs>(declared: D) => ({
   writeText: (filename: D[number], value: string): void => writeOutput(filename, value),
   writeJson: (filename: D[number], value: unknown): void => writeOutput(filename, JSON.stringify(value, null, 2)),
+  /** Bytes as they are, for a file that is not text: `fix:bundle`'s bundle. */
+  writeBytes: (filename: D[number], value: Uint8Array): void => writeOutput(filename, value),
   /**
    * One line added to the end of the file, for a log kept as it happens: the
    * engine's write log, so a command cancelled half way leaves every write it
@@ -204,6 +208,22 @@ export const hostEnvironment = (proxy: string): HostEnvironment => ({
     ? {}
     : { HTTP_PROXY: proxy, HTTPS_PROXY: proxy, http_proxy: proxy, https_proxy: proxy, NODE_USE_ENV_PROXY: "1" }),
 });
+
+/**
+ * The environment a command's git spawns start from: the host variables and
+ * the proxy variables, as this process was given them. Under the service's
+ * worker those are what `hostEnvironment` handed on, `WORKER_PROXY`'s proxy
+ * among them (#462), so git leaves through the proxy the command's API calls
+ * do; an environment stripped of them would silently bypass it. Nothing else
+ * is handed on: no token, and no input of the command's.
+ */
+export const gitEnvironment = (): Readonly<Record<string, string>> =>
+  Object.fromEntries(
+    [...HOST_VARIABLES, ...PROXY_VARIABLES].flatMap((name) => {
+      const value = present(name);
+      return value === undefined ? [] : [[name, value]];
+    }),
+  );
 
 /**
  * Remove the GitHub tokens from this process's environment. The agent runs

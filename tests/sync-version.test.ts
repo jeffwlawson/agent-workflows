@@ -192,9 +192,9 @@ const REF_COUNT = 2 * Object.values(CALLERS_PER_FILE).reduce((sum, n) => sum + n
  * resolves the loop's token names `loop-token` (#319, #320): implement's
  * publish job, implement-prd's catch-up and publish jobs, fix's and
  * update-branch's publish jobs, and review's `time-limit`, `post-review` and
- * `advance` jobs. Eight, beside the fourteen `npm exec` pins, the one `npm
- * install` and the twelve callers, so the release rewrites thirty-five pins in
- * ten files. Review's advance named `advance-prd` too, until it became
+ * `advance` jobs. Eight, beside the thirty-one `npm exec` pins, the six `npm
+ * install`s and the twelve callers, so the release rewrites fifty-seven pins
+ * in ten files. Review's advance named `advance-prd` too, until it became
  * `review:advance` (#423).
  */
 const ACTION_SITES: Readonly<Record<string, readonly string[]>> = {
@@ -208,29 +208,52 @@ const ACTION_COUNT = Object.values(ACTION_SITES).reduce((sum, actions) => sum + 
 
 /**
  * The steps that run the package, `npm exec … --package=…@<version>`, by
- * file: one per reusable workflow, the runner's or the filing command's,
- * and in `review.yml` `review:gate` (#420), `review:budget` (#331),
+ * file: one per reusable workflow but `fix.yml`, `update-branch.yml`,
+ * `implement.yml` and `implement-prd.yml`, the
+ * runner's or the filing command's, `implement-prd:gate` (#498),
+ * `implement-prd:catch-up` (#500), `implement-prd:publish` (#502) and
+ * `implement-prd:conclude` (#505) in `implement-prd.yml`, and in `review.yml` `review:gate` (#420), `review:budget` (#331),
  * `review:collect-checks` (#421), `review:red-check-place` and
  * `review:red-check-classify` (#422), `review:publish` (#417),
- * `review:conclude` (#419) and `review:advance` (#423) beside the runner.
+ * `review:conclude` (#419) and `review:advance` (#423) beside the runner,
+ * and in `fix.yml` `fix:gate` (#470), `fix:prepare` (#471), `fix:bundle`
+ * (#472), `fix:publish` (#468) and `fix:conclude` (#469), and in
+ * `update-branch.yml` `update-branch:gate` and `update-branch:merge` (#481),
+ * `update-branch:prepare` (#482), `update-branch:bundle` (#483),
+ * `update-branch:publish` (#484) and `update-branch:conclude` (#485), and in
+ * `implement.yml` `implement:gate` (#490), `implement:prepare` and
+ * `implement:bundle` (#491), `implement:publish` (#492) and
+ * `implement:conclude` (#493), and in `follow-ups.yml` `follow-ups:conclude`
+ * (#511) beside the filing command. Fix's runner, update-branch's, implement's and
+ * implement-prd's are not: each runs its job's early install by path, whose
+ * pin is below, and so do `implement-prd:prepare` and `implement-prd:bundle`
+ * (#501).
  */
 const PACKAGE_SITES: Readonly<Record<string, number>> = {
-  ".github/workflows/fix.yml": 1,
-  ".github/workflows/follow-ups.yml": 1,
-  ".github/workflows/implement-prd.yml": 1,
-  ".github/workflows/implement.yml": 1,
+  ".github/workflows/fix.yml": 5,
+  ".github/workflows/follow-ups.yml": 2,
+  ".github/workflows/implement-prd.yml": 4,
+  ".github/workflows/implement.yml": 5,
   ".github/workflows/review.yml": 9,
-  ".github/workflows/update-branch.yml": 1,
+  ".github/workflows/update-branch.yml": 6,
 };
 const PACKAGE_COUNT = Object.values(PACKAGE_SITES).reduce((sum, n) => sum + n, 0);
 
 /**
  * The steps that install the package ahead of the steps that run it,
  * `npm install … @jeffwlawson/agent-workflows@<version>`: the red check's
- * (#422), the one step of its job handed the registry token.
+ * (#422), fix's agent job's (#472), update-branch's gate job's (#481)
+ * and agent job's (#482), implement's agent job's (#491) and implement-prd's
+ * agent job's (#501), each the one step of its job handed the registry
+ * token, and in fix's, update-branch's, implement's and implement-prd's agent
+ * jobs the runner's version too.
  */
 const INSTALL_SITES: Readonly<Record<string, number>> = {
+  ".github/workflows/fix.yml": 1,
+  ".github/workflows/implement-prd.yml": 1,
+  ".github/workflows/implement.yml": 1,
   ".github/workflows/review.yml": 1,
+  ".github/workflows/update-branch.yml": 2,
 };
 const INSTALL_COUNT = Object.values(INSTALL_SITES).reduce((sum, n) => sum + n, 0);
 const PIN_COUNT = PACKAGE_COUNT + INSTALL_COUNT + REF_COUNT + ACTION_COUNT;
@@ -297,7 +320,7 @@ describe("the version propagator rewrites every pin", () => {
     );
 
     expect(() => syncVersion(TARGET, root)).toThrow(
-      /implement-prd\.yml: expected 3 version pins \[package, action, action\], found 2 \[package, action\]/,
+      /implement-prd\.yml: expected 7 version pins \[package, package, package, package, install, action, action\], found 6 \[package, package, package, package, install, action\]/,
     );
   });
 

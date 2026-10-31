@@ -211,7 +211,8 @@ The one failure here that has nothing to do with `GITHUB_TOKEN`, and the only on
 correct PAT does not fix.
 
 Every trigger in this loop listens on `types: [labeled]` and gates on `github.event.label.name`
-(one also listens on `closed`: `follow-ups`, which files on a merge).
+(one also listens on `closed`: `follow-ups`, which on a merge posts the post-merge checklist and
+files where `agent:follow-ups` is set).
 Labels passed in the **create** call produce only `issues.opened` — they ride along in that
 payload, but no `labeled` event is emitted and `github.event.label` does not exist on `opened`. The
 label is really on the issue, and the workflow correctly never saw an event.
@@ -515,14 +516,21 @@ orchestrator serves a repository, for every label (spec §4.2).
 **Switching to the service.** Set the variable to `service` once the service is running and its
 GitHub App is installed on the repository. The callers can stay: each label still starts a caller
 run, and every job in it skips. `doctor` then checks what the service needs instead of what Actions
-needs, and warns about what this release's service does not do:
+needs. What differs on the service:
 
-- it answers `agent:review` **only**. `agent:implement`, `agent:fix` and `agent:update-branch` do
-  nothing on a service-served repository, and the `agent:follow-ups` a review adds files nothing on
-  merge. `doctor` names them;
-- it runs every review with a fix-round budget of 0, since nothing would answer the `agent:fix` a
-  review added, so a verdict asking for changes leaves the round to you. `doctor` warns where
-  `AGENT_MAX_FIX_ROUNDS` is set above 0;
+- it answers every trigger label: `agent:review`, `agent:fix`, `agent:update-branch` and
+  `agent:follow-ups` on a pull request, `agent:implement` on an issue, a regular one or a PRD, and
+  every merge, which posts the post-merge checklist and, where `agent:follow-ups` is on, files the
+  review's follow-ups, as on Actions;
+- its App must be subscribed to **Issues** events as well as **Pull request**, or nothing answers
+  `agent:implement` ([deploying-the-service.md](./deploying-the-service.md#the-webhook));
+- it reads the repository's install and setup from the repository variable `AGENT_SETUP`, not a
+  caller's `setup:` input, and supports no `node-version-file`
+  ([deploying-the-service.md](./deploying-the-service.md#the-repositorys-setup)). `doctor` warns
+  where a caller still installed passes `setup:` and `AGENT_SETUP` is unset or empty, or could not
+  be read, since the service's runs there start with nothing installed. The service runs setup
+  with the proxy as its only way out, so a setup that reaches the network other than through the
+  proxy variables, which works on Actions, fails on the service;
 - whether the service's App is installed on the repository: **`doctor` cannot check this.** The App
   is the service's, not the loop's, and nothing in the repository names it.
 
@@ -887,6 +895,8 @@ empty:
   They count toward the verdict exactly like the rest, and they say the record was wrong about this
   pull request rather than that the pull request got worse. Expanded, and rendered exactly like an
   *Open* entry, because that is what it is with one more thing said about it.
+- **Still open**: findings this review closed whose threads GitHub would not resolve, so they stay
+  open until the next review retries. Expanded, and only in a round where a closure failed.
 - **Resolved since last review** — findings an earlier review raised that this one checked against
   the current code and closed. Folded on arrival: it is the record's memory rather than your list.
   Nothing else keeps it, because a resolved thread drops out of the next round's view entirely.
@@ -896,6 +906,15 @@ empty:
   from it on purpose, *unmet*, or *not checked*. An unmet one is also a finding under *Open*, with
   a thread to answer it on; a changed one is not a finding. Expanded where anything is not met, and
   left out where the pull request has no linked issue or the issue names no criteria.
+- **Since the brief**: where the review was handed criteria, the commits that touched the files the
+  brief's *Where things are* names since the commit it was read at, and the review's ruling on
+  whether any of them changes what a criterion means. Expanded. One line instead where no commit
+  touched them, or where the check could not run, saying why.
+- **Not checked here**: on every review. The tests exercising this change that the review's own
+  test run skipped because its environment lacks something (a tool, a service, a kernel feature),
+  each with the reason; or one line saying the run skipped none of them, that the review ran no
+  tests, or that it did not say. It does not change the verdict: it tells you what to run yourself
+  before merging. A test skipped only in your CI is not listed, since the review cannot see it.
 - **Follow-ups** — the out-of-scope findings this review recorded, filed as issues when the pull
   request merges. Folded, and **not** in `**Findings:** N`: that number is what blocks this pull
   request, and a follow-up is by definition what does not. Removing the `agent:follow-ups` label is
@@ -904,6 +923,8 @@ empty:
   A finding the review meant to block on can land here too, and the body says so in a line under
   the count: *"1 finding was moved to follow-ups"*. That is a finding whose anchor was in no file
   the pull request changes — see below.
+- **Notes from `agent:fix` not filed**: the notes a fix run left that this review judged out of
+  scope and not worth an issue, each with the reason. Folded, and only where there are any.
 
 One collapsed section follows the groups, and it is not a place a finding is ever restated:
 
@@ -1120,10 +1141,16 @@ duplicate as an error wherever it finds one, and the older layout itself only as
 by hand, move the jobs into one file per side as `examples/callers/` holds them, delete the files
 they came from, and re-run `init`, which moves the `pull_request_target` policy (§1) to the new file.
 
-**`follow-ups` is the first genuinely optional caller.** It files a merged pull request's recorded
-out-of-scope findings as triageable issues, and having its job is the whole of switching that on:
+**`follow-ups` is the first genuinely optional caller.** It has two jobs. On every merge, labelled
+or not, it posts one **post-merge checklist**: the *After merge, by a human* items of the linked
+issue's latest brief, or on a PRD PR of the parent's and every sub-issue's, each under its issue,
+read from trusted text only, and posted once (#544). And where `agent:follow-ups` is on, it files
+the pull request's recorded out-of-scope findings as triageable issues: the label gates the filing
+alone, so removing it opts out of filing and not of the checklist. Having its job is the whole of
+switching both on:
 the runner subcommand ships inside the package and the reusable lives here, but nothing invokes a
-reusable except a caller's reference, so a repository without that job files nothing. Not a
+reusable except a caller's reference, so a repository without that job files nothing and posts no
+checklist. Not a
 mechanism invented for this: it is the same per-caller granularity that already lets you skip
 `implement-prd`.
 

@@ -1,14 +1,15 @@
 import { randomUUID } from "node:crypto";
-import { ORCHESTRATOR_VARIABLE, SERVICE_LABELS, SERVICE_ORCHESTRATOR } from "../shared/record.js";
+import { FIX_LABEL, FOLLOW_UPS_LABEL, IMPLEMENT_LABEL, ORCHESTRATOR_VARIABLE, REVIEW_LABEL, SERVICE_ORCHESTRATOR, UPDATE_BRANCH_LABEL } from "../shared/record.js";
 import {
   parseTokenRequest,
-  REVIEW_VARIABLES,
-  reviewTimeLimit,
+  REPOSITORY_VARIABLES,
   SIGNATURE_HEADER,
   sign,
+  TIME_LIMITS,
   verifySignature,
-  type ReviewJob,
-  type ReviewVariable,
+  type Job,
+  type JobKind,
+  type RepositoryVariable,
   type TokenGrant,
   type TokenKind,
 } from "./job.js";
@@ -16,11 +17,11 @@ import {
 /**
  * The service orchestrator's dispatcher (#456): the only holder of the GitHub
  * App's key. It has two doors. GitHub's webhook deliveries come in at one, and
- * an `agent:review` delivery on a repository that opted in becomes a job,
- * posted to the worker with no token in it. The worker's token requests come
- * in at the other, and each is answered with a token scoped to the job's
- * repository, for the one phase it asks for, while the job is live and the
- * repository still opts in.
+ * a trigger label's delivery on a repository that opted in becomes a job of
+ * the kind its label maps to, posted to the worker with no token in it. The
+ * worker's token requests come in at the other, and each is answered with a
+ * token scoped to the job's repository, for the one phase it asks for, while
+ * the job is live and the repository still opts in.
  *
  * Its decisions are here, over edges it is handed: the App's view of GitHub,
  * the worker, the clock and the job ids. `serve.ts` puts them behind HTTP.
@@ -72,7 +73,7 @@ export interface DispatcherEdges {
    * there and the repository opts in.
    */
   readonly owners: readonly string[];
-  /** Added to review's time limit for a job's deadline. */
+  /** Added to a job's own time limit, its kind's, for its deadline. */
   readonly deadlineMarginMinutes: number;
   /** The release this dispatcher is, which each job carries. */
   readonly version: string;
@@ -104,14 +105,60 @@ export interface Delivery {
 
 /**
  * The token permissions of each kind. `read` is what every phase reads with:
- * the code, the pull request and its conversation, checks and statuses.
+ * the code, the pull request or the issue and its conversation, checks and
+ * statuses.
  * `write` adds what review's posting commands write: the review and the ready
- * mark, comments and labels, and the verdict's statuses.
+ * mark, comments and labels, and the verdict's statuses. `push` adds a push to
+ * `write`: the branch's contents, and `workflows`, without which GitHub refuses
+ * a push touching `.github/workflows/**`. It is for the phases that push and
+ * run no agent; the runner only ever gets `read`.
  */
 export const TOKEN_PERMISSIONS: Readonly<Record<TokenKind, Readonly<Record<string, string>>>> = {
   read: { contents: "read", pull_requests: "read", issues: "read", checks: "read", statuses: "read" },
   write: { contents: "read", pull_requests: "write", issues: "write", checks: "read", statuses: "write" },
+  push: { contents: "write", pull_requests: "write", issues: "write", checks: "read", statuses: "write", workflows: "write" },
 };
+
+/**
+ * The job kind each trigger label the service answers starts (ADR 0008), by
+ * the event it is answered on: a label is answered on the event type it
+ * belongs to, and on no other. `agent:implement` on a pull request starts
+ * nothing, and neither does `agent:review` on an issue. Every trigger label
+ * the loop has is here: `agent:follow-ups` is the last (#519), answered on a
+ * closed pull request, where every other pull request label is answered on an
+ * open one, and as the label a merge is filtered on.
+ *
+ * An issue's label starts a list of kinds: `agent:implement` starts both
+ * `implement` and `implement-prd`, as Actions starts both workflows on it.
+ * Each one's gate partitions on the issue's shape and defers the other's
+ * without a word, so the dispatcher reads nothing of the shape itself.
+ */
+export const LABEL_KINDS: {
+  readonly pull_request: Readonly<Record<string, Exclude<JobKind, "implement" | "implement-prd">>>;
+  readonly issues: Readonly<Record<string, readonly ("implement" | "implement-prd")[]>>;
+} = {
+  pull_request: {
+    [REVIEW_LABEL]: "review",
+    [FIX_LABEL]: "fix",
+    [UPDATE_BRANCH_LABEL]: "update-branch",
+    [FOLLOW_UPS_LABEL]: "follow-ups",
+  },
+  issues: {
+    [IMPLEMENT_LABEL]: ["implement", "implement-prd"],
+  },
+};
+
+/**
+ * The trigger labels the service orchestrator answers on a repository that
+ * opts in, and the one list of them: `LABEL_KINDS`' keys, on either event, so
+ * no label is answered that starts no job. `doctor` reads it to name the
+ * labels nothing answers there.
+ */
+export const SERVICE_LABELS: readonly string[] = Object.values(LABEL_KINDS).flatMap((kinds) => Object.keys(kinds));
+
+/** What `label` starts in one event's map, or `undefined` where it starts nothing there, an inherited property's name included. */
+const kindOf = <K>(kinds: Readonly<Record<string, K>>, label: string): K | undefined =>
+  Object.hasOwn(kinds, label) ? kinds[label] : undefined;
 
 /** The permissions a label's sender needs on the repository: the loop's author gate. */
 const WRITERS = ["admin", "maintain", "write"];
@@ -129,10 +176,30 @@ interface LabelEvent {
     readonly number?: unknown;
     readonly state?: unknown;
     readonly merged?: unknown;
+    readonly labels?: readonly ({ readonly name?: unknown } | null)[];
     readonly head?: { readonly ref?: unknown; readonly sha?: unknown; readonly repo?: { readonly full_name?: unknown } | null };
     readonly base?: { readonly ref?: unknown };
   };
 }
+
+/** The parts of an `issues` delivery the dispatcher reads. */
+interface IssueLabelEvent {
+  readonly action?: unknown;
+  readonly label?: { readonly name?: unknown };
+  readonly sender?: { readonly login?: unknown };
+  readonly repository?: { readonly full_name?: unknown; readonly default_branch?: unknown };
+  readonly issue?: {
+    readonly number?: unknown;
+    readonly title?: unknown;
+    readonly state?: unknown;
+    /** Present where the issue is a pull request's. */
+    readonly pull_request?: unknown;
+  };
+}
+
+/** A job's own fields, without those every job carries, which the dispatcher fills in. */
+type OwnFields<J> = J extends Job ? Omit<J, "id" | "version" | "deadline" | "appLogin" | "variables"> : never;
+type Dispatchable = OwnFields<Job>;
 
 const text = (headers: DoorRequest["headers"], name: string): string | undefined => headers[name];
 
@@ -188,16 +255,109 @@ export const createDispatcher = (edges: DispatcherEdges) => {
   };
 
   /**
-   * Whether a delivery is a job, and the job where it is; otherwise the
-   * reason it is not, which is logged. The cheap refusals, read off the
-   * payload, are left until after the opt-in, so a repository that has not
-   * opted in is always logged as that.
+   * Why the delivery's repository is not served, or `undefined` where it is:
+   * the App is installed, on an account it serves, and the repository opts in.
    */
-  const decide = async (event: string | undefined, payload: unknown): Promise<string> => {
-    if (event === "ping") return "ping: answered";
-    if (event !== "pull_request") return `ignored: \`${event ?? "unnamed"}\` is not a pull request's event`;
+  const unserved = async (repo: string): Promise<string | undefined> => {
+    const account = await edges.github.installation(repo);
+    if (account === undefined) return `the App is not installed on ${repo}`;
+    // Ahead of the opt-in, so a stranger's repository is never read further.
+    const stranger = foreign(account);
+    if (stranger !== undefined) return stranger;
+    const orchestrator = await edges.github.variable(repo, ORCHESTRATOR_VARIABLE);
+    if (orchestrator !== SERVICE_ORCHESTRATOR) {
+      return `${ORCHESTRATOR_VARIABLE} is ${orchestrator === undefined ? "unset" : `\`${orchestrator}\``}, not \`${SERVICE_ORCHESTRATOR}\``;
+    }
+    return undefined;
+  };
+
+  /**
+   * Why the label's sender is not answered, or `undefined` where it is. The
+   * App's own label is the loop's: it adds one only where a command decided
+   * to, under the repository's budget, so its login is trusted without a
+   * lookup (ADR 0008). Every other sender is a person's, who must be able to
+   * write.
+   */
+  const untrusted = async (repo: string, sender: string, login: string): Promise<string | undefined> => {
+    if (sender.toLowerCase() === login.toLowerCase()) return undefined;
+    const permission = await edges.github.permission(repo, sender);
+    return permission === undefined || !WRITERS.includes(permission) ? `${sender} cannot write to ${repo}` : undefined;
+  };
+
+  /**
+   * Posts a job of `fields`' kind to the worker: the repository's variables
+   * read, and its deadline from its kind's own time limit.
+   */
+  const dispatch = async (fields: Dispatchable, login: string, where: string, at: string): Promise<string> => {
+    const variables = Object.fromEntries(
+      await Promise.all(REPOSITORY_VARIABLES.map(async (name) => [name, (await edges.github.variable(fields.repo, name)) ?? ""] as const)),
+    ) as Record<RepositoryVariable, string>;
+    const minutes = TIME_LIMITS[fields.workflow](variables) + edges.deadlineMarginMinutes;
+    const deadline = new Date(now().getTime() + minutes * 60_000);
+    const job = { ...fields, id: newId(), version: edges.version, deadline: deadline.toISOString(), appLogin: login, variables } as Job;
+
+    prune();
+    // Known before the worker hears of it, so its first token request cannot
+    // arrive ahead of the job it names.
+    jobs.set(job.id, { repo: job.repo, deadline });
+    const body = JSON.stringify(job);
+    let status: number;
+    try {
+      status = await edges.postJob(body, { "content-type": "application/json", [SIGNATURE_HEADER]: sign(edges.workerSecret, body) });
+    } catch (error) {
+      jobs.delete(job.id);
+      return `failed on ${where}: the worker could not be reached: ${error instanceof Error ? error.message : String(error)}`;
+    }
+    if (status < 200 || status >= 300) {
+      jobs.delete(job.id);
+      return `failed on ${where}: the worker answered ${status}`;
+    }
+    return `dispatched ${where}${at} as job ${job.id}, deadline ${job.deadline}`;
+  };
+
+  /**
+   * **A merge's route** (#519), `follow-ups.yml`'s other entry point: a
+   * follow-ups job for every pull request merged, whatever its labels, as
+   * Actions starts its job on every merge. The run posts the post-merge
+   * checklist on every merge (#544), and `follow-ups:file` reads the
+   * `agent:follow-ups` marker itself, live, to decide whether to file; a merge
+   * with neither ends silently. A close without a merge is ignored, as Actions
+   * never starts its job for one.
+   *
+   * **No author gate.** Whoever merged could write, and a merge queue or
+   * auto-merge can send the event as a bot the gate would refuse, which would
+   * drop the follow-ups without a word. Actions' job checks no sender either.
+   */
+  const merge = async (p: LabelEvent): Promise<string> => {
+    const repo = p.repository?.full_name;
+    const pr = p.pull_request?.number;
+    if (typeof repo !== "string" || typeof pr !== "number") return "refused: the delivery is missing a field a job needs";
+    const where = `${repo}#${pr}`;
+    // Literally `true`, as `follow-ups.yml`'s condition reads it.
+    if (p.pull_request?.merged !== true) return `ignored on ${where}: closed without being merged`;
+    const why = await unserved(repo);
+    if (why !== undefined) return `refused on ${where}: ${why}`;
+    if (p.pull_request.head?.repo?.full_name !== repo) return `refused on ${where}: the head is on a fork`;
+    const login = appLogin((await edges.github.app()).slug);
+    return dispatch({ workflow: "follow-ups", repo, pr }, login, where, " on its merge");
+  };
+
+  /**
+   * **A pull request's route**: whether a `pull_request` delivery is a job,
+   * and the job where it is; otherwise the reason it is not, which is logged.
+   * What there is nothing to answer, a label no job starts on or a close
+   * without a merge, is ignored first, before anything of the
+   * repository is read. The cheap refusals, the fork and the state, are left
+   * until after the opt-in, so a repository that has not opted in is logged
+   * as that rather than as one of them.
+   * A label is answered on an open pull request, but for `agent:follow-ups`,
+   * which is answered on a closed one, merged or not, as `follow-ups.yml`'s
+   * condition answers it, author gate and all; a close is a merge's route.
+   */
+  const pullRequest = async (payload: unknown): Promise<string> => {
     const p = (payload ?? {}) as LabelEvent;
-    if (p.action !== "labeled") return `ignored: a pull request \`${String(p.action)}\`, not labelled`;
+    if (p.action === "closed") return merge(p);
+    if (p.action !== "labeled") return `ignored: a pull request \`${String(p.action)}\`, not labelled or closed`;
     const label = p.label?.name;
     const repo = p.repository?.full_name;
     const pr = p.pull_request?.number;
@@ -219,62 +379,81 @@ export const createDispatcher = (edges: DispatcherEdges) => {
       return "refused: the delivery is missing a field a job needs";
     }
     const where = `${repo}#${pr}`;
-    // `SERVICE_LABELS` is the one list of what the service answers, and
-    // review is the one job it runs at this release.
-    if (!SERVICE_LABELS.includes(label)) return `ignored on ${where}: \`${label}\` is not a label this release's service answers`;
-    const account = await edges.github.installation(repo);
-    if (account === undefined) return `refused on ${where}: the App is not installed on ${repo}`;
-    // Ahead of the opt-in, so a stranger's repository is never read further.
-    const stranger = foreign(account);
-    if (stranger !== undefined) return `refused on ${where}: ${stranger}`;
-    const orchestrator = await edges.github.variable(repo, ORCHESTRATOR_VARIABLE);
-    if (orchestrator !== SERVICE_ORCHESTRATOR) {
-      return `refused on ${where}: ${ORCHESTRATOR_VARIABLE} is ${orchestrator === undefined ? "unset" : `\`${orchestrator}\``}, not \`${SERVICE_ORCHESTRATOR}\``;
-    }
+    const kind = kindOf(LABEL_KINDS.pull_request, label);
+    if (kind === undefined) return `ignored on ${where}: \`${label}\` is not a label this release's service answers on a pull request`;
+    const why = await unserved(repo);
+    if (why !== undefined) return `refused on ${where}: ${why}`;
     if (p.pull_request?.head?.repo?.full_name !== repo) return `refused on ${where}: the head is on a fork`;
-    if (state !== "open") return `refused on ${where}: the pull request is ${state}, not open`;
-    const permission = await edges.github.permission(repo, sender);
-    if (permission === undefined || !WRITERS.includes(permission)) {
-      return `refused on ${where}: ${sender} cannot write to ${repo}`;
-    }
+    if (kind === "follow-ups") {
+      if (state !== "closed") return `refused on ${where}: the pull request is ${state}, and \`${FOLLOW_UPS_LABEL}\` is answered on a closed one`;
+    } else if (state !== "open") return `refused on ${where}: the pull request is ${state}, not open`;
+    const login = appLogin((await edges.github.app()).slug);
+    const distrust = await untrusted(repo, sender, login);
+    if (distrust !== undefined) return `refused on ${where}: ${distrust}`;
+    if (kind === "follow-ups") return dispatch({ workflow: kind, repo, pr }, login, where, " on its label");
+    return dispatch(
+      { workflow: kind, repo, pr, branch, headSha, baseRef, state, merged: p.pull_request?.merged === true },
+      login,
+      where,
+      ` at ${headSha}`,
+    );
+  };
 
-    const variables = Object.fromEntries(
-      await Promise.all(REVIEW_VARIABLES.map(async (name) => [name, (await edges.github.variable(repo, name)) ?? ""] as const)),
-    ) as Record<ReviewVariable, string>;
-    const minutes = reviewTimeLimit(variables.AGENT_REVIEW_TIMEOUT_MINUTES) + edges.deadlineMarginMinutes;
-    const deadline = new Date(now().getTime() + minutes * 60_000);
-    const job: ReviewJob = {
-      id: newId(),
-      version: edges.version,
-      deadline: deadline.toISOString(),
-      repo,
-      pr,
-      branch,
-      headSha,
-      baseRef,
-      state,
-      merged: p.pull_request?.merged === true,
-      appLogin: appLogin((await edges.github.app()).slug),
-      variables,
-    };
+  /**
+   * **An issue's route**, as a pull request's, in the same order, and with
+   * no head to check: an issue has none. Nor is its state checked: a closed
+   * issue goes to the gates carrying its state, and the one whose issue it is
+   * says so on the issue and takes the label off, as on Actions. Nor is its
+   * shape: a job of each kind the label starts is dispatched, in turn, and the
+   * gate of the one whose shape it is not defers without a word. Its base is
+   * the repository's default branch, the nearest the event has to the
+   * `default-branch` a caller hands `implement.yml` and `implement-prd.yml`.
+   * An `issues` delivery about a pull request is ignored: a pull request's
+   * labels are answered on its own route. The line logged is each dispatch's.
+   */
+  const issue = async (payload: unknown): Promise<string> => {
+    const p = (payload ?? {}) as IssueLabelEvent;
+    if (p.action !== "labeled") return `ignored: an issue \`${String(p.action)}\`, not labelled`;
+    const label = p.label?.name;
+    const repo = p.repository?.full_name;
+    const baseRef = p.repository?.default_branch;
+    const number = p.issue?.number;
+    const title = p.issue?.title;
+    const state = p.issue?.state;
+    const sender = p.sender?.login;
+    if (
+      typeof label !== "string" ||
+      typeof repo !== "string" ||
+      typeof baseRef !== "string" ||
+      typeof number !== "number" ||
+      typeof title !== "string" ||
+      typeof state !== "string" ||
+      typeof sender !== "string"
+    ) {
+      return "refused: the delivery is missing a field a job needs";
+    }
+    const where = `${repo}#${number}`;
+    if (p.issue?.pull_request !== undefined && p.issue.pull_request !== null) {
+      return `ignored on ${where}: the issue is a pull request, whose labels are answered on its \`pull_request\` event`;
+    }
+    const kinds = kindOf(LABEL_KINDS.issues, label);
+    if (kinds === undefined) return `ignored on ${where}: \`${label}\` is not a label this release's service answers on an issue`;
+    const why = await unserved(repo);
+    if (why !== undefined) return `refused on ${where}: ${why}`;
+    const login = appLogin((await edges.github.app()).slug);
+    const distrust = await untrusted(repo, sender, login);
+    if (distrust !== undefined) return `refused on ${where}: ${distrust}`;
+    const outcomes: string[] = [];
+    for (const kind of kinds) outcomes.push(await dispatch({ workflow: kind, repo, issue: number, title, state, baseRef }, login, where, ` to ${kind}`));
+    return outcomes.join("; ");
+  };
 
-    prune();
-    // Known before the worker hears of it, so its first token request cannot
-    // arrive ahead of the job it names.
-    jobs.set(job.id, { repo, deadline });
-    const body = JSON.stringify(job);
-    let status: number;
-    try {
-      status = await edges.postJob(body, { "content-type": "application/json", [SIGNATURE_HEADER]: sign(edges.workerSecret, body) });
-    } catch (error) {
-      jobs.delete(job.id);
-      return `failed on ${where}: the worker could not be reached: ${error instanceof Error ? error.message : String(error)}`;
-    }
-    if (status < 200 || status >= 300) {
-      jobs.delete(job.id);
-      return `failed on ${where}: the worker answered ${status}`;
-    }
-    return `dispatched ${where} at ${headSha} as job ${job.id}, deadline ${job.deadline}`;
+  /** Whether a delivery is a job, routed by its event type; otherwise the reason it is not, which is logged. */
+  const decide = async (event: string | undefined, payload: unknown): Promise<string> => {
+    if (event === "ping") return "ping: answered";
+    if (event === "pull_request") return pullRequest(payload);
+    if (event === "issues") return issue(payload);
+    return `ignored: \`${event ?? "unnamed"}\` is neither a pull request's nor an issue's event`;
   };
 
   /**

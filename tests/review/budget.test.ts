@@ -85,6 +85,7 @@ const run = async (inputs: Inputs = INPUTS(), reader?: (reader: GitHubReader) =>
     outputs: {
       writeJson: (name, value) => files.set(name, value),
       writeText: (name, value) => files.set(name, value),
+      writeBytes: () => {},
       appendLine: () => {},
     },
   };
@@ -275,6 +276,33 @@ describe("review:budget on a PRD PR counts this round's rounds alone", () => {
 
     expect(decided()).toEqual({ budget: "3", spent: "0", start: "true" });
     expect(logged).toContain("Fix-round budget 3, spent 0 in the final review; an automatic fix round starts on changes recommended: true.");
+  });
+
+  /**
+   * #442: a review that could not number itself starts no round on a PRD PR,
+   * so it leaves no status, and the rounds after it count as they always do.
+   * It is a status linking one that would make the count unreadable.
+   */
+  it("counts the rounds after a review that could not be numbered and posted no status", async () => {
+    github.reviews.push({
+      token: "workflow",
+      pullRequestId: github.pullRequests.get(PR)!.nodeId,
+      commit: C2,
+      body: "## Agent review\n\nChanges recommended.",
+      threads: [],
+      url: reviewUrl(1),
+    });
+    posted(2, SLICE(8, 322), C3);
+    github.statuses.set(C3, [round(reviewUrl(2))]);
+    posted(3, FINAL, C4);
+    github.statuses.set(C4, [round(reviewUrl(3))]);
+    current(8, 322);
+
+    await run(INPUTS({ BRANCH: PRD, ROUND: "slice" }));
+    expect(decided()).toEqual({ budget: "3", spent: "1", start: "true" });
+
+    await run(INPUTS({ BRANCH: PRD, ROUND: "final" }));
+    expect(decided()).toEqual({ budget: "3", spent: "1", start: "true" });
   });
 
   it("counts a round copied on to a merge commit once", async () => {

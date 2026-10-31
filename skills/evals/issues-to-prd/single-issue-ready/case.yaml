@@ -1,0 +1,6 @@
+schema_version: "1.1"
+name: single-issue-ready
+context:
+  scaffold_script: place-files.sh
+expected_outcome: |
+  Checks #710 and reports it ready, telling Jeff to add agent:implement himself; writes nothing to GitHub.

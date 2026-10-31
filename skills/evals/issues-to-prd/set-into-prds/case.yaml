@@ -1,0 +1,6 @@
+schema_version: "1.1"
+name: set-into-prds
+context:
+  scaffold_script: place-files.sh
+expected_outcome: |
+  Filters #726 (a PRD sub-issue) out, triages #725, clusters #720, #721 and #722 into one PRD ordered with #720 first, keeps #723 plain, raises #724's outside blocker #650 as a question, proposes all of it to Jeff and builds nothing before his yes; never adds agent:*.

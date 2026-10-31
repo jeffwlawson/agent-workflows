@@ -1,5 +1,6 @@
 import { generateKeyPairSync } from "node:crypto";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { TOKEN_PERMISSIONS } from "../../service/dispatcher.js";
 import { liveAppGitHub } from "../../service/github-app.js";
 
 /**
@@ -21,18 +22,50 @@ interface World {
   failing?: { path: RegExp; status: number };
 }
 
+/**
+ * The permissions an installation holds, by the names GitHub gives them: the
+ * loop's App's, as GitHub reported them in an `installation` webhook on
+ * 2026-10-12. GitHub refuses a token asking for any other, `422`, as it
+ * refused the dispatcher's first live mint, which asked for `variables`.
+ */
+const GRANTED: Readonly<Record<string, string>> = {
+  actions_variables: "read",
+  checks: "read",
+  contents: "write",
+  issues: "write",
+  metadata: "read",
+  pull_requests: "write",
+  statuses: "write",
+  workflows: "write",
+};
+
+const LEVEL: Readonly<Record<string, number>> = { read: 1, write: 2 };
+
 let world: World;
 const asked: string[] = [];
+/** The permissions each token was asked for, in order. */
+const minted: Record<string, string>[] = [];
 
 const reply = (status: number, body: unknown): Response => new Response(JSON.stringify(body), { status });
 
-const answer = (url: string): Response => {
+const mintAnswer = (body: string | undefined): Response => {
+  const permissions = (JSON.parse(body ?? "{}") as { permissions?: Record<string, string> }).permissions ?? {};
+  minted.push(permissions);
+  const refused = Object.entries(permissions).some(
+    ([name, level]) => GRANTED[name] === undefined || (LEVEL[level] ?? 3) > (LEVEL[GRANTED[name]] ?? 0),
+  );
+  return refused
+    ? reply(422, { message: "The permissions requested are not granted to this installation." })
+    : reply(201, { token: "ghs_reader", expires_at: "2099-01-01T00:00:00Z" });
+};
+
+const answer = (url: string, init?: RequestInit): Response => {
   const { pathname, searchParams } = new URL(url);
   asked.push(pathname);
   if (world.failing?.path.test(pathname)) return reply(world.failing.status, { message: "no" });
   if (pathname === `/repos/${REPO}/installation`) return reply(200, { id: 1, account: { login: "owner", type: "User" } });
   if (pathname === "/app") return reply(200, { id: 1, slug: "loop-app", owner: { login: "Owner", type: "User" } });
-  if (pathname === "/app/installations/1/access_tokens") return reply(201, { token: "ghs_reader", expires_at: "2099-01-01T00:00:00Z" });
+  if (pathname === "/app/installations/1/access_tokens") return mintAnswer(typeof init?.body === "string" ? init.body : undefined);
   if (pathname === `/repos/${REPO}`) return reply(200, { owner: { type: world.organization === undefined ? "User" : "Organization" } });
   const own = /^\/repos\/owner\/repo\/actions\/variables\/(.+)$/.exec(pathname);
   if (own !== null) {
@@ -51,7 +84,8 @@ const answer = (url: string): Response => {
 beforeEach(() => {
   world = { repository: {}, organization: {} };
   asked.length = 0;
-  vi.stubGlobal("fetch", async (url: string) => answer(url));
+  minted.length = 0;
+  vi.stubGlobal("fetch", async (url: string, init?: RequestInit) => answer(url, init));
 });
 afterEach(() => {
   vi.unstubAllGlobals();
@@ -127,5 +161,18 @@ describe("liveAppGitHub: the App and its installation, as GitHub records them", 
     world.failing = { path: /^\/app$/, status: 401 };
 
     await expect(liveAppGitHub("1", KEY).app()).rejects.toThrow(/answered 401/);
+  });
+});
+
+describe("liveAppGitHub: the tokens it mints, by the names GitHub gives permissions", () => {
+  it("reads a variable with a token asking for metadata and the repository's variables alone", async () => {
+    world.repository = { AGENT_ORCHESTRATOR: "service" };
+
+    expect(await liveAppGitHub("1", KEY).variable(REPO, "AGENT_ORCHESTRATOR")).toBe("service");
+    expect(minted).toEqual([{ metadata: "read", actions_variables: "read" }]);
+  });
+
+  it.each(Object.entries(TOKEN_PERMISSIONS))("mints a worker's `%s` token", async (_, permissions) => {
+    await expect(liveAppGitHub("1", KEY).mint(REPO, permissions)).resolves.toMatchObject({ token: "ghs_reader" });
   });
 });

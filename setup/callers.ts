@@ -86,6 +86,13 @@ export interface InstalledCaller {
    */
   readonly autoFix: string | undefined;
   /**
+   * What this caller passes as `setup` (#525), the install and setup the
+   * reusable runs before a runner, read the way `autoFix` is. Read because the
+   * service orchestrator runs no caller's `setup:` and reads `AGENT_SETUP`
+   * instead, so `diagnose` names one passed where that variable is unset.
+   */
+  readonly setup: string | undefined;
+  /**
    * What this caller passes as the red check's three inputs (#231, #233), each
    * read the way `autoFix` is: `undefined` where it passes nothing, the empty
    * string or YAML's null, which is the input's own default. The globs are
@@ -315,6 +322,7 @@ export const callersIn = (
         ...grantsFor(job, top, topDeclared),
         selfCheck,
         autoFix: inputOf(job.with, "auto-fix"),
+        setup: inputOf(job.with, "setup"),
         redCheck: {
           command: inputOf(job.with, "red-check-command"),
           report: inputOf(job.with, "red-check-report"),

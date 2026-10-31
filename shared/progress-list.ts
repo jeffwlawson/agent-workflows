@@ -174,13 +174,16 @@ const finalRow = (state: FinalReviewState, inputs: Pick<ProgressInputs, "prUrl" 
 /**
  * The lines the finishing run adds when it requests the final review: the
  * final review's row, in review with no round yet, and the mark. Exactly what
- * `renderProgressList` renders for that state below the slices, so the
- * finishing run, which runs no toolchain, writes them in front of the end
- * marker of the list the last slice's round left, and the result is the
- * render. A test holds the workflow's copy equal to this.
+ * `renderProgressList` renders for that state below the slices, so
+ * `implement-prd:publish`, which reads no rounds on that run, writes them in
+ * front of the end marker of the list the last slice's round left, and the
+ * result is the render. No `prUrl` links no diff, as the table does.
  */
-export const finalReviewRequestedLines = (prUrl: string): string =>
+export const finalReviewRequestedLines = (prUrl: string | undefined): string =>
   `${finalRow("in review", { prUrl, rounds: { slices: {}, final: { reviews: 0, fixes: 0 }, all: { reviews: 0, fixes: 0 } } })}\n${FINAL_REVIEW_MARK}\n`;
+
+/** A slice's row up to its status cell: its position from 1 and its sub-issue, which name the row. */
+const rowPrefix = (position: number, subIssue: number): string => `| ${position} · #${subIssue} |`;
 
 /**
  * The progress table, markers and all: the block a PRD PR's body carries
@@ -202,7 +205,7 @@ export const renderProgressList = (inputs: ProgressInputs): string => {
     const last = range?.commits.at(-1);
     const diff =
       inputs.prUrl !== undefined && isSha(range?.base) && isSha(last) ? `[diff](${inputs.prUrl}/files/${range?.base}..${last})` : UNKNOWN;
-    return `| ${i + 1} · #${subIssue} | ${statusCell(state, isCurrent ? inputs.open : undefined)} | ${reviews} | ${fixes} | ${diff} |`;
+    return `${rowPrefix(i + 1, subIssue)} ${statusCell(state, isCurrent ? inputs.open : undefined)} | ${reviews} | ${fixes} | ${diff} |`;
   });
   const final =
     inputs.finalReview === "requested" ? [finalRow(roundState(inputs), inputs), FINAL_REVIEW_MARK] : [];
@@ -236,8 +239,7 @@ export const renderPrdStatus = (inputs: ProgressInputs): string => {
   }
   const building = inputs.running?.kind === "build" ? inputs.running.subIssue : undefined;
   if (building !== undefined) {
-    const k = inputs.subIssues.findIndex((s) => s.number === building) + 1;
-    return `**🔨 Building slice ${k} of ${n}** · #${building}`;
+    return buildingStatus({ position: inputs.subIssues.findIndex((s) => s.number === building) + 1, subIssue: building, total: n });
   }
   const current = inputs.ranges.current;
   if (current === null) return `**${ICON["not started"]} Not started**`;
@@ -249,6 +251,60 @@ export const renderPrdStatus = (inputs: ProgressInputs): string => {
   if (state === "approved") return `**✅ ${capitalised(slice)} approved** · #${current.subIssue}`;
   const word = state === "fixing" ? `🔧 Fixing ${slice}` : `⏸️ ${capitalised(slice)} parked`;
   return `**${word}** · #${current.subIssue}${open === undefined ? "" : ` · ${open}`}.${link}`;
+};
+
+/** A slice a build run is building: where it sits in the list, its sub-issue, and how many the PRD has. */
+export interface BuildingSlice {
+  readonly position: number;
+  readonly subIssue: number;
+  readonly total: number;
+}
+
+/** The status line while `slice` is building, without its markers. */
+const buildingStatus = (slice: BuildingSlice): string =>
+  `**${ICON.building} Building slice ${slice.position} of ${slice.total}** · #${slice.subIssue}`;
+
+/**
+ * What showing `slice` building does to a PRD PR's body (#312): its row in the
+ * progress list, and the status line, rewritten to what `renderProgressList`
+ * and `renderPrdStatus` render with the slice building. Built from the slice
+ * alone, because a slice with no range has no counts and no diff, so its row
+ * is the same whatever the rest of the table says; that is what lets
+ * `implement-prd:gate`, which reads no branch, write it.
+ *
+ * `half` for half a list, or two, and `no row` for a list with no row, or two,
+ * for the slice: each is left alone, since which text is the loop's is not a
+ * guess to make. `none` for a body with no list. Otherwise `write`, with the
+ * new body, its status line rewritten only where it carries exactly one.
+ */
+export const showBuilding = (
+  body: string,
+  slice: BuildingSlice,
+): { readonly kind: "half" | "none" | "no row" } | { readonly kind: "write"; readonly body: string } => {
+  const list = blockIn(body, PROGRESS_START, PROGRESS_END);
+  if (list === undefined) return { kind: "half" };
+  if (list === null) return { kind: "none" };
+  const prefix = rowPrefix(slice.position, slice.subIssue);
+  const lines = list.split("\n");
+  if (lines.filter((line) => line.startsWith(prefix)).length !== 1) return { kind: "no row" };
+  const row = `${prefix} ${statusCell("building", undefined)} | ${UNKNOWN} | ${UNKNOWN} | ${UNKNOWN} |`;
+  const progressed = spliceProgressList(body, lines.map((line) => (line.startsWith(prefix) ? row : line)).join("\n")) ?? body;
+  if (typeof blockIn(progressed, STATUS_START, STATUS_END) !== "string") return { kind: "write", body: progressed };
+  return { kind: "write", body: spliceStatus(progressed, statusBlock(buildingStatus(slice))) ?? progressed };
+};
+
+/**
+ * The one block between `start` and `end` in `body`, markers and all: `null`
+ * where it has neither marker, and undefined for half a block, or two, by
+ * `spliceBlock`'s rule.
+ */
+const blockIn = (body: string, start: string, end: string): string | null | undefined => {
+  const starts = body.split(start);
+  const ends = body.split(end);
+  if (starts.length === 1 && ends.length === 1) return null;
+  const inside = (starts[1] ?? "").split(end);
+  if (starts.length !== 2 || ends.length !== 2 || inside.length !== 2) return undefined;
+  return `${start}${inside[0] ?? ""}${end}`;
 };
 
 /**

@@ -146,162 +146,110 @@ jobs:
     # trimming a job to fit, so a caller granting less than a block declares
     # fails before any job starts (probed, #146).
     permissions:
-      # The live head, read with `git ls-remote`.
+      # The live head, read from the branch ref.
       contents: read
       # The refusals and the label transitions.
       pull-requests: write
+      # Installing the package `fix:gate` runs from, by `npm exec`. GitHub
+      # Packages has no anonymous install, so this is needed even though the
+      # package is public, and, being a bound, it grants nothing without the
+      # caller's own `packages: read`, which both caller sets already grant.
+      packages: read
     outputs:
       # `false` where the run goes ahead, `true` where it refused, and empty
-      # where the pre-flight died before deciding: the three `refused` takes
-      # in `implement.yml`, so the jobs after it read one word the same way.
+      # where the gate died before deciding: the three `refused` takes in
+      # `implement.yml`, so the jobs after it read one word the same way.
       refused: ${{ steps.state.outputs.proceed == 'true' && 'false' || steps.state.outputs.proceed == 'false' && 'true' || '' }}
       started: ${{ steps.clock.outputs.started }}
+      # The sentence `fix:gate` failed with, where it failed after claiming
+      # the run (the probe), for `fix:conclude`'s failure comment: its reason
+      # file is in this job's `runner.temp`, which no later job can read.
+      failure-reason: ${{ steps.state.outputs.failure-reason }}
 
     env:
       PR_NUMBER: ${{ github.event.pull_request.number }}
       BRANCH: ${{ github.event.pull_request.head.ref }}
-      BRANCH_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
       PR_STATE: ${{ github.event.pull_request.state }}
       PR_MERGED: ${{ github.event.pull_request.merged }}
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       GH_REPO: ${{ github.repository }}
 
     steps:
-      # Refuse if the event's head SHA is not the branch's live head (#188).
-      # Everything after this is pinned to that SHA — the checkout, and the
-      # push's `--force-with-lease` — so a run started behind the branch
-      # fast-forwards onto work already done, finds nothing to do, and re-posts
-      # its replies to threads it has already answered. Each such run stacked
-      # another near-identical reply on every thread.
-      #
-      # The live head is the **branch ref**, read with `git ls-remote`, not the
-      # pull request's `headRefOid`: in the case that raised this, the pull
-      # request itself went on reporting the old SHA after the branch had moved,
-      # so asking the pull request would have agreed with the stale event.
-      # Review's guard reads the tip the same way since #229. There is no
-      # checkout yet, so the remote is named by URL
-      # and authenticated the way `actions/checkout` does it, with the header
-      # masked. A branch name reaches git as a quoted argument, never as syntax.
-      #
-      # **An unreadable head refuses, deliberately** — the opposite of review's
-      # guard, which proceeds on an API blip. Review only reads; this run pushes
-      # and replies, and replying twice is the harm the check exists to stop, so
-      # "could not tell" must not read as "not stale". A failed `ls-remote` and
-      # an empty answer (no such branch) both stop, each with its own sentence.
-      # The cost is a human re-adding the label after a blip, which is cheap.
-      #
-      # Every refusal removes `agent:fix`. The ones the maintainer has to act
-      # on also add `agent:blocked` (#253): an unreadable head and a stale
-      # one. A closed PR and a deleted branch leave nothing to act on, so they
-      # get the note alone. Re-adding `agent:fix` is the retry, and
-      # `Transition labels` clears `agent:blocked` on the way in.
-      - name: "Pre-flight: refuse if the PR is closed, merged, or its head is stale"
-        id: state
-        run: |
-          set -uo pipefail
-          # In the loop's one order (#236): the comment first, then this run's
-          # own label off, then `agent:blocked`, so the label that names the
-          # next step goes on last.
-          # The comment is tolerated: under `-e` a failed one would end the step
-          # before the removal, and leave the label on with nothing behind it.
-          # One pattern for every refusal (#253): the label that did not run,
-          # then a sentence saying why and what to do, starting with a capital.
-          refuse() {
-            gh pr comment "$PR_NUMBER" --body "**\`agent:fix\` didn't run:** $1" || echo "::warning::Could not post the refusal comment on PR #${PR_NUMBER}."
-            gh pr edit "$PR_NUMBER" --remove-label "agent:fix" || true
-            if [ "${2:-}" = "blocked" ]; then
-              gh pr edit "$PR_NUMBER" --add-label "agent:blocked" || true
-            fi
-            echo "proceed=false" >> "$GITHUB_OUTPUT"
-          }
+      # `fix:gate` runs before anything is checked out, so there is no Node
+      # here yet: Node and the registry the package installs from, set up for
+      # the gate alone, as `review.yml`'s gate job does. A version rather than
+      # a version file, since there is no checkout to read one from: the one
+      # the package's `engines.node` names, which `tests/workflows.test.ts`
+      # holds it to. No adopter step runs in this job, so the `.npmrc` it
+      # points npm at needs none of the `userconfig` handling review's gate
+      # job has (#429).
+      - name: Set up Node for the gate
+        uses: actions/setup-node@v7
+        with:
+          node-version: "24"
+          registry-url: https://npm.pkg.github.com
+          scope: "@jeffwlawson"
+          package-manager-cache: false
 
-          if [ "$PR_STATE" != "open" ] || [ "$PR_MERGED" = "true" ]; then
-            refuse "This PR is closed."
-            exit 0
-          fi
-
-          auth=$(printf 'x-access-token:%s' "$GH_TOKEN" | base64 | tr -d '\n')
-          echo "::add-mask::${auth}"
-          if ! remote=$(git -c "http.extraHeader=AUTHORIZATION: basic ${auth}" \
-              ls-remote "${GITHUB_SERVER_URL}/${GH_REPO}.git" "refs/heads/${BRANCH}"); then
-            echo "::warning::Could not read the live head of ${BRANCH}; refusing rather than risk working from a stale SHA."
-            refuse "Couldn't check whether the PR changed since \`agent:fix\` was added. Add \`agent:fix\` to try again." blocked
-            exit 0
-          fi
-          # `ls-remote` matches a pattern against the tail of each ref, so the
-          # exact name is picked out rather than taking the first line.
-          live=$(printf '%s\n' "$remote" | awk -v ref="refs/heads/${BRANCH}" '$2 == ref { print $1 }')
-          if [ -z "$live" ]; then
-            echo "::warning::Branch ${BRANCH} was not found on the remote."
-            refuse "This PR's branch no longer exists, so there's nothing to fix."
-            exit 0
-          fi
-          if [ "$live" != "$BRANCH_HEAD_SHA" ]; then
-            echo "::warning::Stale head: this run was started for ${BRANCH_HEAD_SHA}, but ${BRANCH} is at ${live}. Refusing rather than redo finished work."
-            refuse "The PR changed after \`agent:fix\` was added. Add \`agent:fix\` again to work on the latest version. If the PR still shows the old commit, close and reopen it so GitHub catches up." blocked
-            exit 0
-          fi
-
-          echo "proceed=true" >> "$GITHUB_OUTPUT"
-
-      # The trigger label stays on while this run works and comes off in the
-      # last step (#236), so the one label to take off here is a block an
-      # earlier run left. The line before it is the permission probe, the label write a short
-      # token feels first, ahead of the agent pass it would otherwise spend: it
-      # adds the label this run already holds, which changes nothing, and is not
-      # `|| true`, so a short token fails the run before the checkout.
-      - name: Transition labels
-        if: steps.state.outputs.proceed == 'true'
-        run: |
-          gh pr edit "$PR_NUMBER" --add-label "agent:fix"
-          gh pr edit "$PR_NUMBER" --remove-label "agent:blocked" || true
-
-      # A review's posting job runs outside this group (#257): the group is
-      # released when the review job ends, before the review, its threads and
-      # its verdict are posted, so a run that waited in the group behind a
-      # review starts while they are still being written. This run reads
-      # them: the threads and the review its feedback is made of. So it waits while `agent:review` is on the pull
-      # request, which the posting job takes off only after every result is
-      # posted (`review.yml`'s *No concurrency group* on `post-review`).
+      # Everything this job settles before the agent's job, as one command
+      # (#470): the pre-flight, which refuses a closed or merged pull request,
+      # a branch that is gone, and a live head it cannot read or that is not
+      # the event's (#188); the permission probe, the label write a short
+      # token feels first, which fails the run before the agent's job starts;
+      # `agent:blocked` off; and the bounded wait while a review is posting
+      # (#257). `fix/gate.ts` says why each is as it is, an unreadable head
+      # refusing where review's gate proceeds included. Each refusal is said
+      # on the pull request, `agent:fix` comes off, and the two a maintainer
+      # has to act on add `agent:blocked`.
       #
-      # Bounded by the posting job's own `timeout-minutes`, ten, and then it
-      # goes on with a warning: a label nobody will take off (a review run that
-      # never started, or one labelled behind this run in the group) is no
-      # reason to fail, and is what the bound is for. An unreadable label keeps
-      # waiting, since "could not tell" must not read as "nothing is posting".
-      # Writes nothing, so it needs no tolerance.
-      #
-      # Held equal in `fix.yml` and `update-branch.yml` by a test.
-      - name: Wait for a review's posting to finish
-        if: steps.state.outputs.proceed == 'true'
+      # `HEAD_SHA`, `PR_STATE` and `PR_MERGED` are the pull request as the
+      # label's event saw it; the branch tip and the labels the command reads
+      # itself, with this job's token, which is also every write it makes.
+      # What it decided is its `gate.json`, which the step below copies into
+      # this job's outputs.
+      - name: Refuse or claim the pull request
+        id: gate
         env:
-          POST_WAIT_SECONDS: "600"
-          POST_POLL_SECONDS: "10"
-        run: |
-          set -uo pipefail
-          deadline=$(( $(date +%s) + POST_WAIT_SECONDS ))
-          while :; do
-            if labels=$(gh pr view "$PR_NUMBER" --json labels --jq '[.labels[].name] | join(",")'); then
-              case ",${labels}," in
-                *,agent:review,*) ;;
-                *) echo "No review is posting on PR #${PR_NUMBER}."; exit 0 ;;
-              esac
-            fi
-            if [ "$(date +%s)" -ge "$deadline" ]; then
-              echo "::warning::\`agent:review\` is still on PR #${PR_NUMBER} (or its labels could not be read) after ${POST_WAIT_SECONDS} seconds, so this run goes on without waiting for a review to finish posting. If a review was posting, this run may not see its findings or its verdict."
-              exit 0
-            fi
-            echo "agent:review is on PR #${PR_NUMBER}: waiting for the review's posting job to finish."
-            sleep "$POST_POLL_SECONDS"
-          done
+          # `GITHUB_TOKEN`, carrying the `packages: read` the caller granted:
+          # there is no anonymous install.
+          NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          OUTPUT_DIR: ${{ runner.temp }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        # `npm exec --prefix` rather than a bare `npx`: see the long note on
+        # the runner step below.
+        run: npm exec --prefix "$RUNNER_TEMP" --yes --package=@jeffwlawson/agent-workflows@0.9.2 -- agent-workflows fix:gate
 
-      # The clock the failure step reads a time limit off (#220). A job that
+      # Glue only Actions can do (ADR 0003): the gate's decision, copied into
+      # the step output `proceed`, which the job's `refused` and the clock
+      # read. `always()`, so a gate that decided to go ahead and then failed,
+      # at the probe, still says so; nothing where it wrote no `gate.json`, or
+      # one with no `proceed`, which `refused` reads as a gate that died
+      # before deciding. And the reason the gate failed with, where it wrote
+      # one, as `failure-reason`, whole, under a delimiter of its own, as
+      # review's job hands its on.
+      - name: Hand the gate's decision to the job
+        id: state
+        if: always()
+        run: |
+          reason="${RUNNER_TEMP}/failure_reason.txt"
+          if [ -f "$reason" ]; then
+            delimiter="REASON_$(date +%s%N)_${RANDOM}"
+            {
+              echo "failure-reason<<${delimiter}"
+              printf '%s\n' "$(cat "$reason")"
+              echo "$delimiter"
+            } >> "$GITHUB_OUTPUT"
+          fi
+          file="${RUNNER_TEMP}/gate.json"
+          [ -f "$file" ] || { echo "fix:gate wrote no gate.json; this run decided nothing."; exit 0; }
+          jq -r 'to_entries[] | "\(.key)=\(.value)"' "$file" >> "$GITHUB_OUTPUT"
+
+      # The clock the agent's job reads its time limit off (#220). A job that
       # reaches its `timeout-minutes` is cancelled, not failed, and nothing in
-      # the `needs` context says which cancellation it was, so that step
-      # compares how long the agent's job could have run with its limit. Last
-      # in this job, so it starts as near the agent's job as a step here can,
-      # and is read from this job's outputs rather than the agent's, which a
-      # step there could rewrite.
+      # the `needs` context says which cancellation it was, so that job's last
+      # step compares how long it could have run with its limit. Last in this
+      # job, so it starts as near the agent's job as a step here can, and is
+      # read from this job's outputs, which the agent cannot reach.
       - name: Start the agent's clock
         if: steps.state.outputs.proceed == 'true'
         id: clock
@@ -316,9 +264,13 @@ jobs:
     # is not. `vars` is among the contexts this key may read, and in a called
     # workflow it resolves against the caller's repository. `fromJSON` because
     # a variable is a string and this key wants a number; a value that is not
-    # one fails the job before any step, which `doctor` reports. The failure
-    # step in `publish` names the same figure.
+    # one fails the job before any step, which `doctor` reports.
+    # `fix:conclude` in `publish` names the same figure.
     timeout-minutes: ${{ fromJSON(vars.AGENT_TIMEOUT_MINUTES || '30') }}
+    # Its one output: whether it ran out of time. See *Measure how the agent's
+    # job ended*. Everything else it hands over is the artifact.
+    outputs:
+      timed-out: ${{ steps.outcome.outputs.timed-out }}
     # **Read-only, and no PAT named anywhere in this job.** Not even in a step
     # that never runs: a secret is delivered to every job whose text names it.
     permissions:
@@ -383,12 +335,8 @@ jobs:
       # run block is an "An expression was expected" startup failure. That is
       # what took this workflow down for two days; see tests/workflows.test.ts.
       #
-      # And the rescue branch an earlier run left (#303), where there is one,
-      # fetched to `refs/rescue/` for the runner to resume from. The runner
-      # decides whether it still builds on this head; this only fetches it.
-      # **An unreadable answer stops the run**, rather than reading as "no
-      # rescue": a run that started over without it, and succeeded, would
-      # delete it.
+      # Checkout plumbing only: the rescue branch an earlier run left is
+      # `fix:prepare`'s to look up and fetch (#471), below.
       - name: Prepare branch and make the PR base available for diffing
         run: |
           set -euo pipefail
@@ -398,21 +346,69 @@ jobs:
           echo "::add-mask::${auth}"
           git -c "http.extraHeader=AUTHORIZATION: basic ${auth}" fetch origin "+refs/heads/${BASE_REF}:refs/heads/${BASE_REF}"
           git checkout -B "$BRANCH"
-          found=0
-          git -c "http.extraHeader=AUTHORIZATION: basic ${auth}" ls-remote --exit-code origin "refs/heads/${RESCUE_BRANCH}" > /dev/null || found=$?
-          case "$found" in
-            0)
-              git -c "http.extraHeader=AUTHORIZATION: basic ${auth}" fetch --no-tags origin "+refs/heads/${RESCUE_BRANCH}:refs/rescue/${RESCUE_BRANCH}"
-              echo "Fetched ${RESCUE_BRANCH}, which an earlier run left, for the runner to resume from." ;;
-            2) echo "No ${RESCUE_BRANCH}, so there is nothing to resume from." ;;
-            *)
-              reason="Couldn't check whether an earlier run left commits on \`${RESCUE_BRANCH}\`, so this run stopped rather than start over without them."
-              printf '%s\n' "$reason" > "${RUNNER_TEMP}/failure_reason.txt"
-              echo "::error::${reason}"
-              exit 1 ;;
-          esac
           git config user.name "sandcastle-agent[bot]"
           git config user.email "sandcastle-agent[bot]@users.noreply.github.com"
+
+      # The package, installed once and early, the way the red check installs
+      # it (#422), for everything of it this job runs: `fix:prepare` before the
+      # PR's code, the runner, and `fix:bundle` after the agent. Node and the registry the package installs from, a version its
+      # `engines.node` names, and no cache, since this job runs the PR's code
+      # and a cache it saved would be restored on the base branch.
+      - name: Set up Node for the package
+        uses: actions/setup-node@v7
+        with:
+          node-version: "24"
+          registry-url: https://npm.pkg.github.com
+          scope: "@jeffwlawson"
+          package-manager-cache: false
+
+      # That step points `NPM_CONFIG_USERCONFIG` at the `.npmrc` it wrote, for
+      # every later step in the job (#429), the adopter's *Install dependencies*
+      # included. So the job's setting goes back to npm's default here, and the
+      # path comes out as `userconfig`, handed in `env:` to each step that
+      # installs or runs the package from this install. The file `setup-node`
+      # wrote, never a second copy.
+      - name: Keep the package's registry to the package's steps
+        id: npmrc
+        run: |
+          echo "userconfig=${NPM_CONFIG_USERCONFIG}" >> "$GITHUB_OUTPUT"
+          echo "NPM_CONFIG_USERCONFIG=${HOME}/.npmrc" >> "$GITHUB_ENV"
+
+      # Into `RUNNER_TEMP` while nothing of the PR's has run, so a command
+      # after the agent finds it there and never asks the registry: `npm exec`
+      # takes a package already installed under its `--prefix` at the exact
+      # version it names without a request. The agent and the PR's own code
+      # (`inputs.setup`) can leave things behind on this runner, so nothing
+      # after them is handed the registry token for an install. From
+      # `RUNNER_TEMP` too, so no `.npmrc` of the checkout is read.
+      - name: Install the package
+        working-directory: ${{ runner.temp }}
+        env:
+          NPM_CONFIG_USERCONFIG: ${{ steps.npmrc.outputs.userconfig }}
+          NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: npm install --prefix "$RUNNER_TEMP" --no-save @jeffwlawson/agent-workflows@0.9.2
+
+      # The rescue branch an earlier run left (#303), where there is one,
+      # fetched to `refs/rescue/` for the runner to resume from (#471). The
+      # runner decides whether it still builds on this head; this only
+      # fetches it. **An unreadable answer stops the run**, rather than
+      # reading as "no rescue": a run that started over without it, and
+      # succeeded, would delete it. `fix/prepare.ts` says why.
+      #
+      # Here, before *Install dependencies*, so nothing of the PR's has run on
+      # this runner while it holds the token: the PR's own code can leave a
+      # git config entry or a hook behind for a later step. From the install
+      # above, and handed the workflow token, read-only in this job, and no
+      # writer. Its reason file goes in a directory of its own, which the
+      # hand-over below carries for `fix:conclude`'s failure comment.
+      - name: Fetch the rescue branch
+        working-directory: ${{ runner.temp }}
+        env:
+          NPM_CONFIG_USERCONFIG: ${{ steps.npmrc.outputs.userconfig }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          OUTPUT_DIR: ${{ runner.temp }}/prepare
+          CHECKOUT: ${{ github.workspace }}
+        run: npm exec --prefix "$RUNNER_TEMP" --yes --package=@jeffwlawson/agent-workflows@0.9.2 -- agent-workflows fix:prepare
 
       # Both setup steps are the adopter's toolchain, so both are skippable.
       # `npm install -g @anthropic-ai/claude-code` below is not: that is the
@@ -437,6 +433,9 @@ jobs:
       - name: Install Claude Code
         run: npm install -g @anthropic-ai/claude-code
 
+      # The runner below runs from the install above and asks the registry for
+      # nothing, so here this step's work is the Node it names; the registry
+      # entry is the shape every runner's job shares, and unread in this one.
       # The runner package lives on GitHub Packages, which has no anonymous
       # install even for a public package — see the long note on the same step in
       # agent-review-reusable.yml. Short version: the scoped `.npmrc` is written
@@ -472,25 +471,26 @@ jobs:
       - name: Run fix agent
         env:
           CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
-          NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           # Unset variable interpolates to "", and the runner falls back to its
           # own default. Change the model in Settings -> Variables, no commit.
           AGENT_MODEL: ${{ vars.AGENT_MODEL }}
           AGENT_MODEL_FIX: ${{ vars.AGENT_MODEL_FIX }}
           OUTPUT_DIR: ${{ runner.temp }}
-        # `npm exec --prefix` rather than a bare `npx`, and the prefix is the
-        # whole point. `npx pkg@version` reuses a package already present in the
-        # working directory when it satisfies the spec — and in the repository
-        # that *publishes* this package, the checkout is such a package. It has
-        # no `dist/` (CI installs, it does not build), so the bin resolves to
-        # nothing and the step dies `command not found` before any runner code
-        # runs (#8). Installing into RUNNER_TEMP sidesteps the name collision.
-        #
-        # A no-op for every consuming repo, which has no package of this name to
-        # collide with — verified against npm 10 and 11, both of which ignore
-        # `--ignore-existing` here. `--prefix` moves the *install*, not the
-        # process `cwd`: the runner still does its git work in the checkout.
-        run: npm exec --prefix "$RUNNER_TEMP" --yes --package=@jeffwlawson/agent-workflows@0.8.4 -- agent-workflows fix
+        # The binary *Install the package* linked, run by its path, from the
+        # checkout, where the runner does its git work. Not `npm exec`, as the
+        # commands of this job are: with the package already under its
+        # `--prefix`, `npm exec` installs nothing and puts no install directory
+        # on `PATH`, only `node_modules/.bin` of the directory it runs in and
+        # each one above it. So from the checkout it finds no command at all
+        # (`agent-workflows: not found`, exit 127, and no reason file), and a
+        # `PATH` entry handed in would come after the checkout's own
+        # `node_modules/.bin`, which the PR's code has just had the chance to
+        # write. By path, nothing is looked up, the version is the install's
+        # pin, and the registry token stays with the install: this step holds
+        # none (#482's rule for an agent's job). Where the PR's code removed
+        # the install, the step fails with no reason file, as the red check's
+        # classify does.
+        run: '"$RUNNER_TEMP/node_modules/.bin/agent-workflows" fix'
 
       # The agent's own record of the session (#269), so a run can be profiled
       # and debugged from what it did and not only from the log, which shows
@@ -564,54 +564,99 @@ jobs:
           retention-days: ${{ inputs.transcript-retention-days }}
           overwrite: true
 
-      # The agent's commits, as the one thing `publish` pushes. A bundle rather
-      # than a push from here: this job holds no token that can write, and the
-      # runner that ran the agent is not one to spend a token on. Thin, the
-      # head this run checked out being its prerequisite, which `publish` has
-      # from its own checkout, and holding exactly the pull request's branch.
-      # No commits is no bundle, which `publish` reads as nothing to push.
+      # The agent's commits, as the one thing `publish` pushes: `fix:bundle`
+      # bundles the branch ahead of the head the run started from, as the
+      # label's event saw it, and writes nothing where there are none, which
+      # `publish` reads as nothing to push. Into a directory of its own, which
+      # the hand-over below carries beside the runner's files.
       #
       # `always()` (#303): a run that failed, was cancelled or timed out hands
       # its commits over too, for `publish` to rescue to a side branch rather
-      # than push. Commits it resumed from count, so a rescue holds all of them.
-      - name: Bundle the branch
+      # than push. From the install above, run from `RUNNER_TEMP` and working
+      # in the checkout, and **with no token**: the agent and the PR's code
+      # have run, and the job's `GH_TOKEN` is set empty for it.
+      - name: Bundle the agent's commits
         if: always()
-        run: |
-          if [ -z "$(git rev-list -n 1 "${BRANCH_HEAD_SHA}..refs/heads/${BRANCH}")" ]; then
-            echo "No new commits, so there is nothing to bundle."
-            exit 0
-          fi
-          git bundle create "${RUNNER_TEMP}/branch.bundle" "refs/heads/${BRANCH}" "^${BRANCH_HEAD_SHA}"
+        working-directory: ${{ runner.temp }}
+        env:
+          NPM_CONFIG_USERCONFIG: ${{ steps.npmrc.outputs.userconfig }}
+          GH_TOKEN: ""
+          OUTPUT_DIR: ${{ runner.temp }}/bundle
+          CHECKOUT: ${{ github.workspace }}
+          BRANCH: ${{ github.event.pull_request.head.ref }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: npm exec --prefix "$RUNNER_TEMP" --yes --package=@jeffwlawson/agent-workflows@0.9.2 -- agent-workflows fix:bundle
 
-      # The bundle, and every file the runner wrote for a step that posts: the
-      # reason file on a failure, the nothing-to-do note, the thread replies,
-      # the conversation record, the top-level comments and the out-of-scope
-      # notes. One artifact, `always()`, because a failed run is one of the
-      # outcomes `publish` reports, and any of them may be missing. Uploading
+      # `fix:prepare`'s reason file on a failure, under `prepare/`;
+      # `fix:bundle`'s files, the bundle and its reason file on a failure,
+      # under `bundle/`; and every file the runner wrote for the publish job:
+      # exactly the files `fix:publish` and `fix:conclude` declare they read
+      # from each (the nothing-to-do note, the rescue it set aside, the round
+      # header, the thread outcomes, the conversation outcomes, the top-level
+      # comments and the out-of-scope notes, as data and with no marker, and
+      # the three reason files, which `fix:conclude`'s failure comment reads).
+      # One artifact, `always()`, because a failed run is one of the outcomes
+      # `publish` reports, and any of them may be missing.
+      # The paths' common directory is `runner.temp`, so `prepare/` and
+      # `bundle/` stay as they are in the artifact and where `publish` downloads it. Uploading
       # needs no scope: the artifact service takes the runner's own token, so
       # this job stays read-only. `overwrite`, so a re-run replaces this
       # attempt's copy rather than failing on the name.
       #
       # What this job hands over is the agent's to write, whatever a step here
       # meant it to be. So `publish` takes nothing from it but this artifact,
-      # which it checks, and reads nothing from this job's outputs.
+      # which it checks, and `timed-out`, which decides nothing (see the step
+      # after this one).
       - name: Hand the branch to the publish job
         if: always()
         uses: actions/upload-artifact@v7
         with:
           name: agent-fix
           path: |
-            ${{ runner.temp }}/branch.bundle
+            ${{ runner.temp }}/prepare/failure_reason.txt
+            ${{ runner.temp }}/bundle/branch.bundle
+            ${{ runner.temp }}/bundle/failure_reason.txt
             ${{ runner.temp }}/failure_reason.txt
             ${{ runner.temp }}/nothing_to_do.txt
+            ${{ runner.temp }}/rescue_ignored.json
+            ${{ runner.temp }}/round_header.txt
             ${{ runner.temp }}/thread_outcomes.json
-            ${{ runner.temp }}/conversation_outcomes.md
+            ${{ runner.temp }}/conversation_outcomes.json
             ${{ runner.temp }}/top_level_comments.json
             ${{ runner.temp }}/out_of_scope_notes.json
-            ${{ runner.temp }}/rescue_ignored.md
           if-no-files-found: ignore
           retention-days: 7
           overwrite: true
+
+      # Whether this job ran out of time, for `fix:conclude`'s failure comment
+      # (#220): glue only Actions can do (ADR 0003). Cancelled is not failed,
+      # and a job that reached its limit is cancelled too, or may read as
+      # failed in `needs`. What tells a timeout apart is the clock the gate
+      # started just before this job: a timed-out job ran its whole limit,
+      # less the moment the runner took to start, hence a minute's slack. The
+      # limit is compared only where it is a positive integer: `fromJSON`
+      # accepts `1.5` and `1e1`, which bash arithmetic refuses, and a limit
+      # this cannot compare reads as no timeout, which is still said as a
+      # cancel.
+      #
+      # Last, and `always()`, so it measures however the job ended. On this
+      # job's runner, after the agent, so it is the agent's to rewrite like any
+      # output here; it decides nothing but which of two sentences a stopped
+      # run's comment gives, and never stands in for a reason the runner wrote.
+      - name: Measure how the agent's job ended
+        id: outcome
+        if: always()
+        env:
+          GH_TOKEN: ""
+          JOB_STATUS: ${{ job.status }}
+          JOB_STARTED: ${{ needs.gate.outputs.started }}
+          TIMEOUT_MINUTES: ${{ vars.AGENT_TIMEOUT_MINUTES || '30' }}
+        run: |
+          timed_out=false
+          if [ "$JOB_STATUS" != "success" ] && [ -n "${JOB_STARTED:-}" ] && [[ "$TIMEOUT_MINUTES" =~ ^[1-9][0-9]*$ ]] && [ $(( $(date +%s) - JOB_STARTED )) -ge $(( TIMEOUT_MINUTES * 60 - 60 )) ]; then
+            timed_out=true
+          fi
+          echo "timed-out=${timed_out}" >> "$GITHUB_OUTPUT"
 
   publish:
     needs: [gate, fix]
@@ -627,646 +672,188 @@ jobs:
     permissions:
       contents: write
       pull-requests: write
+      # The package `fix:publish` and `fix:conclude` run from, installed by
+      # `npm exec`. GitHub Packages has no anonymous install, and the caller
+      # already grants it.
+      packages: read
 
+    # **No job-level `GH_TOKEN`.** A token is handed to the steps that write
+    # with it and to no other, so the checkout, the Node setup, the download
+    # and the upload hold none.
     env:
       PR_NUMBER: ${{ github.event.pull_request.number }}
       BRANCH: ${{ github.event.pull_request.head.ref }}
-      BRANCH_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
-      # The agent's job's, which it looks for to resume from (#303).
+      # The agent's job's, which it looks for to resume from (#303), and
+      # where `fix:conclude` rescues a stopped run's commits to.
       RESCUE_BRANCH: agent/rescue/fix-${{ github.event.pull_request.number }}
-      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       GH_REPO: ${{ github.repository }}
 
     steps:
-      # Into `RUNNER_TEMP`, where every step below looks for the runner's files
-      # as it did when the agent ran in this job. Tolerated: an agent's job
-      # that was killed before its upload leaves nothing to fetch, and the
-      # failure step still has to run.
-      - name: Fetch what the agent handed over
-        continue-on-error: true
-        uses: actions/download-artifact@v8
-        with:
-          name: agent-fix
-          path: ${{ runner.temp }}
-
       # The token every write below that the workflow token cannot make is
       # made with: the loop's App's, `AGENT_PAT`, or the workflow token, in
-      # that order, and `source` says which. Minted here, before the first
-      # write and after the agent finished, and in no other job.
+      # that order, and `source` says which. Minted here, at the job's start
+      # (ADR 0005), after the agent finished, and in no other job. A mint that
+      # fails fails the step: `fix:publish`, which runs only on one that
+      # succeeded, is skipped, and `fix:conclude`, told the mint's outcome,
+      # says why.
       - name: Resolve the loop's token
         id: token
         if: always()
-        uses: jeffwlawson/agent-workflows/.github/actions/loop-token@v0.8.4
+        uses: jeffwlawson/agent-workflows/.github/actions/loop-token@v0.9.2
         with:
           app-id: ${{ secrets.AGENT_APP_ID }}
           private-key: ${{ secrets.AGENT_APP_PRIVATE_KEY }}
           agent-pat: ${{ secrets.AGENT_PAT }}
           github-token: ${{ secrets.GITHUB_TOKEN }}
 
-      # **A finished agent's hand-over must have arrived**, because every step
-      # below reads a missing file as "nothing of that kind": no bundle as no
-      # commits, no outcomes as no replies. Lost whole, it would push nothing,
-      # say nothing and mark the PR ready, green, with the agent's work
-      # dropped. A runner that ends well writes one of these two files every
-      # time, so neither is the hand-over missing, and the run fails into
-      # `Mark blocked on failure` with that said.
-      - name: Check the agent's hand-over arrived
-        if: needs.fix.result == 'success'
-        run: |
-          if [ -f "${RUNNER_TEMP}/thread_outcomes.json" ] || [ -f "${RUNNER_TEMP}/nothing_to_do.txt" ]; then
-            exit 0
-          fi
-          reason="The agent finished, but what it handed over did not arrive, so nothing was pushed or posted."
-          printf '%s\n' "$reason" > "${RUNNER_TEMP}/failure_reason.txt"
-          echo "::error::${reason}"
-          exit 1
-
-      # A rescue branch the runner set aside because the pull request's head
-      # moved since it was saved (#303), said on the pull request however the
-      # run ends, so work nobody built on is not dropped silently. The runner
-      # writes the note; it is absent on every other run.
-      - name: Say the rescue was set aside
-        if: always()
-        run: |
-          note="${RUNNER_TEMP}/rescue_ignored.md"
-          [ -f "$note" ] || exit 0
-          gh pr comment "$PR_NUMBER" --body-file "$note" \
-            || echo "::warning::Could not say on PR #${PR_NUMBER} that ${RESCUE_BRANCH} was set aside."
-
+      # **The one checkout**, of the head the run started from, wherever the
+      # gate claimed the run: what `fix:publish` checks the bundle in and
+      # pushes from, and what `fix:conclude` rescues from. Nothing the agent
+      # touched is on this runner, and no credential is left in it: each push
+      # passes its token itself. `always()`, so a mint that failed still gets
+      # the checkout: without it `fix:conclude` checks the bundle in an empty
+      # workspace, reads it as damaged, and its comment never says the
+      # agent's commits went unsaved for want of a token.
       - name: Checkout PR head
-        if: needs.fix.result == 'success'
-        uses: actions/checkout@v7
-        with:
-          ref: ${{ github.event.pull_request.head.sha }}
-          fetch-depth: 0
-          # Nothing the agent touched is on this runner, and the push below
-          # passes its token on its own command, as everywhere else.
-          persist-credentials: false
-
-      # A fix with nothing to act on is a note, not a failure (#253): no
-      # `agent:blocked`, and the run ends green. But it is not a round that
-      # ended, the way one that declined everything is: nothing was read, so
-      # nothing was decided. The output it writes skips the push, so `pushed`
-      # stays unset, and with it `Mark PR ready for review` and the re-review a
-      # PRD PR asks for whatever was pushed. Otherwise a draft would be handed
-      # over with nothing done, and on a PRD PR a review would be asked for
-      # with nothing for it to rule on.
-      - name: Say there was nothing to do
-        id: nothing
-        if: needs.fix.result == 'success' && success()
-        run: |
-          [ -f "${RUNNER_TEMP}/nothing_to_do.txt" ] || exit 0
-          echo "nothing=true" >> "$GITHUB_OUTPUT"
-          gh pr comment "$PR_NUMBER" --body "**\`agent:fix\` had nothing to do:** There are no open review findings or comments for it to act on." \
-            || echo "::warning::Could not post the nothing-to-do note on PR #${PR_NUMBER}."
-
-      # --force-with-lease pinned to the SHA we checked out: if anything else
-      # advanced the branch during the run, refuse rather than clobber it.
-      #
-      # The output is what `Request re-review` below is gated on, and it is
-      # written on both arms rather than only on the one that pushed: an unset
-      # output is indistinguishable from a step that never ran, and the two
-      # differ in exactly the thing that step has to know. A push that *fails*
-      # writes neither, which is correct — `-e` ends the step there, and a
-      # branch that did not move is not one to ask for a review of.
-      - name: Push branch
-        id: push
-        if: needs.fix.result == 'success' && success() && steps.nothing.outputs.nothing != 'true'
-        # The checkout persists no credential, so the token reaches git here,
-        # for the push alone, as a masked header. Why, and what that does not
-        # cover, is the note on implement.yml's `Push branch`.
-        #
-        # **The bundle is checked before anything is pushed from it**, as
-        # implement.yml's is: intact, exactly the pull request's branch and
-        # nothing else, and built on the head this run was started for. Its
-        # content is the agent's to write and the review's to judge.
-        env:
-          PUSH_TOKEN: ${{ steps.token.outputs.token }}
-        run: |
-          set -euo pipefail
-          bundle="${RUNNER_TEMP}/branch.bundle"
-
-          block() {
-            printf '%s\n' "$1" > "${RUNNER_TEMP}/failure_reason.txt"
-            echo "::error::$1"
-            exit 1
-          }
-
-          if [ ! -f "$bundle" ]; then
-            echo "No new commits, so there is nothing to push."
-            echo "pushed=false" >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
-          git bundle verify --quiet "$bundle" \
-            || block "The agent's commits arrived damaged or incomplete, so nothing was pushed."
-          git bundle unbundle "$bundle" > /dev/null \
-            || block "The agent's commits arrived damaged or incomplete, so nothing was pushed."
-          heads=$(git bundle list-heads "$bundle")
-          if [ "$(wc -l <<< "$heads")" -ne 1 ] || [ "$(cut -d' ' -f2 <<< "$heads")" != "refs/heads/${BRANCH}" ]; then
-            block "The agent's commits arrived on a branch other than \`${BRANCH}\`, or beside other branches, so nothing was pushed."
-          fi
-          git update-ref "refs/heads/${BRANCH}" "$(cut -d' ' -f1 <<< "$heads")"
-          git merge-base --is-ancestor "$BRANCH_HEAD_SHA" "refs/heads/${BRANCH}" \
-            || block "The agent's commits don't build on the PR's head as this run found it, so nothing was pushed."
-
-          auth=$(printf 'x-access-token:%s' "$PUSH_TOKEN" | base64 | tr -d '\n')
-          echo "::add-mask::${auth}"
-          git -c "http.extraHeader=AUTHORIZATION: basic ${auth}" push --force-with-lease="refs/heads/$BRANCH:$BRANCH_HEAD_SHA" origin "$BRANCH"
-          {
-            echo "pushed=true"
-            echo "head=$(git rev-parse "refs/heads/${BRANCH}")"
-          } >> "$GITHUB_OUTPUT"
-
-      # A run that succeeded leaves no rescue branch behind (#303), whether it
-      # resumed from it, and its commits are now on the pull request with the
-      # rest of this run's, or set it aside. Never fails the run: a branch left
-      # behind is set aside by the next run, whose head has moved past it.
-      #
-      # Not on a run with nothing to do: the runner exits before it reads the
-      # rescue, so it neither resumed it nor set it aside, and the commits on
-      # it are still the next run's to resume from.
-      - name: Delete the rescue branch
-        if: needs.fix.result == 'success' && success() && steps.nothing.outputs.nothing != 'true'
-        run: |
-          if ! gh api "repos/{owner}/{repo}/git/ref/heads/${RESCUE_BRANCH}" --silent 2> /dev/null; then
-            echo "No ${RESCUE_BRANCH} to delete."
-            exit 0
-          fi
-          gh api --method DELETE "repos/{owner}/{repo}/git/refs/heads/${RESCUE_BRANCH}" --silent \
-            && echo "Deleted ${RESCUE_BRANCH}: this run succeeded." \
-            || echo "::warning::Could not delete ${RESCUE_BRANCH}. The next run sets it aside; delete it by hand."
-
-      # Reply into every thread the agent reported on, and resolve **none** of
-      # them (#111, and #109 decision 1). The reply still says whether the run
-      # addressed the comment or declined it, and why; what it no longer does is
-      # close the thread on the strength of its own claim.
-      #
-      # The author of a fix marking its own work done is what this removes: a
-      # resolved thread is dropped from the feedback the next review
-      # is handed, so the one pass whose job is "did it land?" could not see
-      # what it was checking. A thread now closes when a **review** has read the
-      # code and verified it (`review.yml`'s posting job) or when a human
-      # closes it.
-      #
-      # A GraphQL mutation keyed on the thread node id, so no REST comment-id
-      # lookup is needed. Runs even when the agent made no commits: "I looked
-      # and declined" is still worth saying out loud.
-      - name: Reply to review threads
-        if: needs.fix.result == 'success' && success()
-        continue-on-error: true
-        env:
-          OUTCOMES: ${{ runner.temp }}/thread_outcomes.json
-        run: |
-          set -uo pipefail
-          [ -f "$OUTCOMES" ] || { echo "No outcomes file; nothing to post."; exit 0; }
-          count=$(jq 'length' "$OUTCOMES")
-          echo "Posting ${count} thread outcome(s)."
-
-          for i in $(seq 0 $((count - 1))); do
-            tid=$(jq -r ".[$i].threadId" "$OUTCOMES")
-            status=$(jq -r ".[$i].status" "$OUTCOMES")
-            body=$(jq -r ".[$i].reply" "$OUTCOMES")
-
-            gh api graphql -f threadId="$tid" -f body="$body" -f query='
-              mutation($threadId:ID!,$body:String!) {
-                addPullRequestReviewThreadReply(
-                  input:{pullRequestReviewThreadId:$threadId, body:$body}
-                ) { clientMutationId }
-              }' >/dev/null \
-              && echo "  replied to ${tid} (${status})" \
-              || echo "  WARNING: reply failed for ${tid}"
-          done
-
-      # What the run did with the **conversation** comments — the surface that
-      # has no threads (#104). It read them and acted on them and reported
-      # nothing, so a comment it *declined* left no trace at all: no reply, no
-      # record, nothing to push back on. Since #103 a maintainer's steering
-      # arrives as exactly such a comment, which is what makes the silent decline
-      # the failure that matters rather than an untidiness.
-      #
-      # One comment per run, whatever the number of outcomes, composed by the
-      # runner from validated output and carrying its own marker so the next run
-      # does not read this record back as feedback to act on — a different marker
-      # from the top-level one, because jeffwlawson/winget-manifest-lint#79
-      # harvests that into issues and a record raises no work.
-      #
-      # `-s` rather than `-f`: the runner writes the file on every run and leaves
-      # it empty when there is nothing to record, so an empty file is "no
-      # conversation comments" and an absent one is a runner that never got here.
-      - name: Post conversation comment outcomes
-        if: needs.fix.result == 'success' && success()
-        continue-on-error: true
-        env:
-          RECORD: ${{ runner.temp }}/conversation_outcomes.md
-        run: |
-          set -uo pipefail
-          [ -f "$RECORD" ] || { echo "No conversation outcomes file; nothing to post."; exit 0; }
-          if [ ! -s "$RECORD" ]; then
-            echo "No conversation comment outcomes, so there is nothing to record."
-            exit 0
-          fi
-          gh pr comment "$PR_NUMBER" --body-file "$RECORD" >/dev/null \
-            && echo "  posted the conversation comment outcomes" \
-            || echo "  WARNING: failed to post the conversation comment outcomes"
-
-      # What belongs to no thread: a refusal spanning threads, a cross-cutting
-      # observation. Something out of scope is a note, posted below. Posted
-      # by the workflow from validated structured output — never by the agent,
-      # which no longer holds a token by this point.
-      #
-      # Silence is the normal outcome. Most runs answer their threads and have
-      # nothing else to say, and a bot that comments on every run is the noise
-      # that teaches a reader to skim. The runner caps and dedupes the list, so
-      # that is bounded mechanically rather than by the prompt alone
-      # (`filterTopLevelComments`), and every body it writes carries
-      # `<!-- agent-fix:top-level -->` so the next run does not read this run's
-      # own comment back as feedback to act on. `pull-requests: write` is
-      # already granted and nothing new is needed; `issues: write` is
-      # deliberately NOT: an agent that raises work does not file it
-      # (docs/parity.md §10).
-      - name: Post top-level comments
-        if: needs.fix.result == 'success' && success()
-        continue-on-error: true
-        env:
-          COMMENTS: ${{ runner.temp }}/top_level_comments.json
-        run: |
-          set -uo pipefail
-          [ -f "$COMMENTS" ] || { echo "No comments file; nothing to post."; exit 0; }
-          count=$(jq 'length' "$COMMENTS")
-          if [ "$count" -eq 0 ]; then
-            echo "No top-level comments, so there is nothing outside the threads."
-            exit 0
-          fi
-          echo "Posting ${count} top-level comment(s)."
-
-          for i in $(seq 0 $((count - 1))); do
-            body_file="${RUNNER_TEMP}/top-level-comment-${i}.md"
-            jq -r ".[$i].body" "$COMMENTS" > "$body_file"
-            gh pr comment "$PR_NUMBER" --body-file "$body_file" >/dev/null \
-              && echo "  posted comment ${i}" \
-              || echo "  WARNING: failed to post comment ${i}"
-          done
-
-      # What the run noticed outside this pull request's scope (#213), one
-      # comment per note, each opening with a heading that says so and carrying
-      # the note as a payload behind `<!-- agent-fix:out-of-scope ... -->`. The
-      # next review reads the notes posted since its last verdict, by that
-      # marker and by this bot having posted them, and rules on each: a
-      # follow-up `follow-ups` files on merge, or dropped with a reason in its
-      # body. Nothing here files anything; `issues: write` is still not granted.
-      #
-      # `posted` is what the re-review below reads, written on both arms, and
-      # true only where a note actually went up: a note that failed to post is
-      # one no review can rule on.
-      - name: Post out-of-scope notes
-        id: notes
-        if: needs.fix.result == 'success' && success()
-        continue-on-error: true
-        env:
-          NOTES: ${{ runner.temp }}/out_of_scope_notes.json
-        run: |
-          set -uo pipefail
-          posted=false
-          count=0
-          [ -f "$NOTES" ] && count=$(jq 'length' "$NOTES")
-          if [ "$count" -eq 0 ]; then
-            echo "No out-of-scope notes."
-          else
-            echo "Posting ${count} out-of-scope note(s)."
-            for i in $(seq 0 $((count - 1))); do
-              body_file="${RUNNER_TEMP}/out-of-scope-note-${i}.md"
-              jq -r ".[$i].body" "$NOTES" > "$body_file"
-              if gh pr comment "$PR_NUMBER" --body-file "$body_file" >/dev/null; then
-                echo "  posted note ${i}"
-                posted=true
-              else
-                echo "  WARNING: failed to post note ${i}"
-              fi
-            done
-          fi
-          echo "posted=${posted}" >> "$GITHUB_OUTPUT"
-
-      # The fix closes itself out: a push that changed the branch asks for the
-      # review of what it changed (#96), and so does an out-of-scope note, which
-      # asks for the review that rules on it (#213). Last of the success arms,
-      # so the re-review is requested only once every thread has its reply and
-      # every note is posted: the review reads them, and a round that started
-      # first would read the round before it.
-      #
-      # **A run that pushed nothing and noted nothing requests nothing.** The
-      # threads it replied to already say why it declined, and the verdict
-      # standing on the head commit is still the right one: nothing has
-      # happened for a review to be about. A note is the one exception, and it
-      # bends that rule on purpose: unreviewed, it is filed by nobody, which is
-      # the loss #213 was written about. The budget below bounds it as it
-      # bounds a push.
-      #
-      # **On a PRD PR, every fix run that got as far as the push asks for a
-      # review, whether or not it pushed** (PRD #222). That review is what ends
-      # the round, and on a PRD PR the end of a round is a verdict, which the
-      # review's `advance` job either moves the chain on from or parks it at,
-      # with a comment on the parent. A run that declined every finding and
-      # asked for nothing would end the round with no verdict, and the chain
-      # would sit on the verdict that asked for the round, saying nothing. `== 'false'`, never
-      # `!= 'true'`: the push writes its output on both arms, and unset is a
-      # run that never reached it. The early stop (#202) bounds the extra
-      # review: a fix round that closed nothing parks rather than starting
-      # another.
-      #
-      # This is the `agent:fix` → `agent:review` leg, which docs/parity.md §10
-      # already calls safe, and what it rests on is the bounds under it: the
-      # review this asks for adds `agent:fix` back only within the pull
-      # request's fix-round budget (#201), and never where the fix round it
-      # follows closed none of the findings it was given (#202). So the leg is
-      # walked at most budget-many times without a human, and stops early on a
-      # round that changed nothing.
-      #
-      # Those bounds, rather than "review adds no trigger label", which stopped
-      # being the whole story at #102. The round rule that bounded it before, a
-      # second-round review barred from recommending another, is retired (PRD
-      # #200 decision 6).
-      #
-      # MUST use the loop's App or AGENT_PAT, like every other label this loop
-      # adds: a label added with GITHUB_TOKEN triggers nothing, so the PR would carry
-      # `agent:review` and simply sit there. Warn loudly rather than pretend it
-      # worked.
-      #
-      # And fail the run if the add itself fails, with a reason naming the way
-      # out. The generic remedy on the failure comment below — re-add
-      # `agent:fix` — is the wrong one here: this run's threads are answered but
-      # still **open**, because only a review closes one now (#111), so a second
-      # fix run would read its own replies back and work the same feedback
-      # again. What is missing is the review, so the remedy names the review.
-      - name: Request re-review
-        if: >-
-          needs.fix.result == 'success' && success() &&
-          (steps.push.outputs.pushed == 'true' || steps.notes.outputs.posted == 'true' ||
-           (startsWith(github.event.pull_request.head.ref, 'agent/prd-') && steps.push.outputs.pushed == 'false'))
-        env:
-          TOKEN_SOURCE: ${{ steps.token.outputs.source }}
-          GH_TOKEN: ${{ steps.token.outputs.token }}
-          PUSHED: ${{ steps.push.outputs.pushed }}
-          # The commit this run pushed, and how long the PR gets to show it as
-          # its head before the label goes on anyway (#229).
-          PUSHED_SHA: ${{ steps.push.outputs.head }}
-          HEAD_WAIT_SECONDS: "60"
-        run: |
-          set -euo pipefail
-          # Wait for the pull request to show the pushed commit as its head
-          # before asking for the review (#229). GitHub moves a PR's head
-          # asynchronously after a push, and a label added before it has would
-          # carry the commit before the push in its payload. Bounded: past it,
-          # the label goes on anyway with a warning, since review reads the
-          # branch tip itself and refuses by name where it cannot settle on it.
-          # Only after a push: a run that only posted notes moved no head.
-          if [ "$PUSHED" = "true" ]; then
-            head=""
-            deadline=$((SECONDS + HEAD_WAIT_SECONDS))
-            until head=$(gh pr view "$PR_NUMBER" --json headRefOid --jq .headRefOid 2>/dev/null) && [ "$head" = "$PUSHED_SHA" ]; do
-              if [ "$SECONDS" -ge "$deadline" ]; then
-                echo "::warning::PR #${PR_NUMBER} still shows ${head:-an unreadable head} as its head ${HEAD_WAIT_SECONDS}s after ${PUSHED_SHA} was pushed. Asking for the review anyway: it reads the branch tip itself, and refuses by name if it cannot settle on ${PUSHED_SHA}."
-                break
-              fi
-              sleep 5
-            done
-          fi
-          # This run's own label comes off before the next step's goes on
-          # (#236): every reply and comment is posted by now, so what is left
-          # is the hand-off. The last step removes it again, which is nothing
-          # where it is already off.
-          gh pr edit "$PR_NUMBER" --remove-label "agent:fix" || true
-          # Removed first, as every trigger label the loop adds (#236): an add
-          # on a label that is somehow still there fires nothing.
-          gh pr edit "$PR_NUMBER" --remove-label "agent:review" || true
-          if ! gh pr edit "$PR_NUMBER" --add-label "agent:review"; then
-            printf "Couldn't add \`agent:review\` after this run, so no re-review was requested.\n" \
-              > "${RUNNER_TEMP}/failure_reason.txt"
-            exit 1
-          fi
-          if [ "$TOKEN_SOURCE" != "app" ] && [ "$TOKEN_SOURCE" != "pat" ]; then
-            # Both, and the comment is the one that reaches anybody (#105). The
-            # verdict this run's fix was made against promised "a re-review
-            # follows automatically", and without the App or the PAT it does not: the label goes
-            # on, nothing fires, and the only sign of it is a warning annotation
-            # on a run nobody opens. One line on the pull request, where the
-            # maintainer who added `agent:fix` is already looking.
-            echo "::warning::Neither the loop's App nor AGENT_PAT is set, so this label was added with GITHUB_TOKEN and will NOT trigger agent-review. Add agent:review by hand on PR #${PR_NUMBER}."
-            gh pr comment "$PR_NUMBER" --body "This run asked for a re-review, but none will start on its own: neither the loop's App nor \`AGENT_PAT\` is set, so the \`agent:review\` label this run added triggers nothing. Remove and re-add \`agent:review\` by hand to review the fix and rule on any out-of-scope notes." \
-              || echo "::warning::…and that could not be said on the pull request either."
-          fi
-
-      # And the other arm: a run that pushed nothing and posted no note has
-      # nobody to hand this pull request to, so it hands it back to the human
-      # (#159). One that posted a note handed it to the review above (#213).
-      #
-      # Draft means "the loop is still working" (docs/parity.md §10), and until
-      # #102 review marked every pull request it finished ready, so this arm had
-      # nothing to do. Review now skips that where the automatic fix is about to
-      # start, on the reading that the re-review at the end of the round marks
-      # it — and a round that declines every finding pushes nothing, asks for
-      # nothing, and so reaches no re-review. That pull request sat in draft
-      # under a verdict saying one was coming, which is the state the draft
-      # signal exists to rule out.
-      #
-      # The pair above is the whole rule: a run that pushed hands over to a
-      # review, and a run that did not is the end of the round. Conditional on
-      # the push rather than on how the round started, because a fix run cannot
-      # see whether a human or a review added its label — and on a pull request
-      # review already marked ready this is a no-op.
-      #
-      # **Never on a PRD PR** (PRD #222), which stays a draft until its final
-      # review approves it, and whose fix runs all hand over to a review above.
-      #
-      # MUST use the loop's App or AGENT_PAT, for review's reason: `GITHUB_TOKEN` cannot convert a
-      # draft at all, whatever it is granted. A warning rather than a failure,
-      # also for review's reason — a pull request stuck in draft is not worth
-      # failing a run over, and by this point every thread already has its
-      # reply.
-      - name: Mark PR ready for review
-        if: >-
-          needs.fix.result == 'success' && success() &&
-          steps.push.outputs.pushed != 'true' && steps.notes.outputs.posted != 'true' &&
-          steps.nothing.outputs.nothing != 'true' &&
-          !startsWith(github.event.pull_request.head.ref, 'agent/prd-')
-        env:
-          GH_TOKEN: ${{ steps.token.outputs.token }}
-        run: |
-          gh pr ready "$PR_NUMBER" \
-            || echo "::warning::Could not mark PR #${PR_NUMBER} ready for review. If neither the loop's App nor AGENT_PAT is set this is expected: GITHUB_TOKEN cannot do it. Mark it ready by hand."
-
-      # The remedy depends on whether the branch moved, the way
-      # `update-branch.yml`'s does — and it has to, because this step's own
-      # advice contradicted the reason above it (#105). Everything after the
-      # push is a step that can fail on a branch that already moved: the thread
-      # replies, the top-level comments and the re-review this run asks for.
-      # "Re-add `agent:fix` to retry" is the wrong answer to all three — the
-      # threads are answered by then, and since #111 they stay open until a
-      # review verifies the fix, so a second fix run re-reads feedback this one
-      # has already acted on and answers it twice.
-      #
-      # Any of the three jobs, where the gate claimed the pull request: the
-      # gate failing after it did, the agent's job failing, timing out or
-      # being cancelled, or a step here. `failure()` in this job sees an
-      # ancestor job's failure too, but not a cancelled one, so each result is
-      # read by name.
-      #
-      # In the loop's one order (#236): the comment, then this run's own label
-      # off, then `agent:blocked`.
-      #
-      # Ahead of it, the rescue (#303): a run that stopped with commits the
-      # pull request does not have keeps them on a side branch, and the
-      # comment names it.
-      - name: Checkout PR head for the rescue
-        if: always() && needs.gate.outputs.refused == 'false' && (needs.fix.result == 'failure' || needs.fix.result == 'cancelled')
+        if: always() && needs.gate.outputs.refused == 'false'
         uses: actions/checkout@v7
         with:
           ref: ${{ github.event.pull_request.head.sha }}
           fetch-depth: 0
           persist-credentials: false
 
-      # **To a side branch with a fixed name, never to the pull request's.** A
-      # commit pushed there would stand on the pull request's head unverified
-      # and with no verdict, so rescued work reaches the pull request only
-      # through the resumed run's own push, after its verify. Nothing else:
-      # no pull request, no review asked for, no label.
-      #
-      # Only where the gate claimed the run, the run stopped (the agent's job
-      # failed, timed out or was cancelled, or a step here failed), and nothing
-      # was pushed to the pull request. The bundle is checked as `Push branch`
-      # checks it, and a bundle that fails a check is not rescued: no bundle at
-      # all is a run with no commits ahead of the head it started from, which
-      # pushes nothing.
-      #
-      # `--force-with-lease`, against the rescue as this step reads it: a run
-      # that stops again overwrites the earlier rescue, which it started from
-      # and so holds all of, and nothing that moved it in between is lost
-      # silently. With the loop's token, as `Push branch` pushes, since the
-      # agent's commits may touch a workflow file.
-      - name: Rescue the agent's commits
-        id: rescue
-        if: always() && needs.gate.outputs.refused == 'false' && (cancelled() || failure() || needs.fix.result == 'failure' || needs.fix.result == 'cancelled') && steps.push.outputs.pushed != 'true'
-        continue-on-error: true
-        env:
-          PUSH_TOKEN: ${{ steps.token.outputs.token }}
-        run: |
-          set -euo pipefail
-          bundle="${RUNNER_TEMP}/branch.bundle"
-
-          skip() {
-            echo "::warning::$1 Nothing was rescued."
-            exit 0
-          }
-
-          if [ ! -f "$bundle" ]; then
-            echo "No commits ahead of the head this run started from, so there is nothing to rescue."
-            exit 0
-          fi
-          git bundle verify --quiet "$bundle" || skip "The agent's commits arrived damaged or incomplete."
-          git bundle unbundle "$bundle" > /dev/null || skip "The agent's commits arrived damaged or incomplete."
-          heads=$(git bundle list-heads "$bundle")
-          if [ "$(wc -l <<< "$heads")" -ne 1 ] || [ "$(cut -d' ' -f2 <<< "$heads")" != "refs/heads/${BRANCH}" ]; then
-            skip "The agent's commits arrived on a branch other than \`${BRANCH}\`, or beside other branches."
-          fi
-          tip=$(cut -d' ' -f1 <<< "$heads")
-          git merge-base --is-ancestor "$BRANCH_HEAD_SHA" "$tip" \
-            || skip "The agent's commits don't build on the PR's head as this run found it."
-
-          # The rescue as it stands, read with the job's token, is what the
-          # lease holds the push to; none is the lease that it must not exist.
-          read=$(printf 'x-access-token:%s' "$GH_TOKEN" | base64 | tr -d '\n')
-          echo "::add-mask::${read}"
-          remote=$(git -c "http.extraHeader=AUTHORIZATION: basic ${read}" ls-remote origin "refs/heads/${RESCUE_BRANCH}")
-          current=$(printf '%s\n' "$remote" | awk -v ref="refs/heads/${RESCUE_BRANCH}" '$2 == ref { print $1 }')
-          auth=$(printf 'x-access-token:%s' "$PUSH_TOKEN" | base64 | tr -d '\n')
-          echo "::add-mask::${auth}"
-          git -c "http.extraHeader=AUTHORIZATION: basic ${auth}" push --force-with-lease="refs/heads/${RESCUE_BRANCH}:${current}" origin "${tip}:refs/heads/${RESCUE_BRANCH}"
-          echo "Rescued $(git rev-list --count "${BRANCH_HEAD_SHA}..${tip}") commit(s) to ${RESCUE_BRANCH}."
-          echo "branch=${RESCUE_BRANCH}" >> "$GITHUB_OUTPUT"
-
-      - name: Mark blocked on failure
-        if: always() && needs.gate.outputs.refused == 'false' && (failure() || cancelled() || needs.gate.result != 'success' || needs.fix.result != 'success')
-        env:
-          # How each job ahead of this one ended, and this job's own status for
-          # a cancel that lands while it runs. `job.status` rather than
-          # `cancelled()`, which GitHub allows only in an `if:`.
-          GATE_RESULT: ${{ needs.gate.result }}
-          AGENT_RESULT: ${{ needs.fix.result }}
-          JOB_STATUS: ${{ job.status }}
-          JOB_STARTED: ${{ needs.gate.outputs.started }}
-          TIMEOUT_MINUTES: ${{ vars.AGENT_TIMEOUT_MINUTES || '30' }}
-          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
-          PUSHED: ${{ steps.push.outputs.pushed }}
-          NOTED: ${{ steps.notes.outputs.posted }}
-          RESCUED: ${{ steps.rescue.outputs.branch }}
-        run: |
-          reason="It stopped without giving a reason. The workflow run's log has the details."
-          if [ -f "${RUNNER_TEMP}/failure_reason.txt" ]; then
-            reason=$(cat "${RUNNER_TEMP}/failure_reason.txt")
-          fi
-          # Cancelled is not failed (#220), and a job that reached its limit
-          # is cancelled too. What tells the two apart is the clock the gate
-          # started just before the agent's job: a timed-out job ran its whole
-          # limit, and the time since that clock is at least that. A reason
-          # file is not read on either; what wrote one was stopped, not
-          # failing. The labels and the retry are a failure's, word for word.
-          #
-          # The clock is read on a failure that left no reason file too: the
-          # agent's result here is the `needs` context's, and a runner that
-          # wrote no reason did not end on its own terms either way.
-          # The limit is compared only where it is a positive integer: `fromJSON`
-          # accepts `1.5` and `1e1`, which bash arithmetic refuses, and under
-          # `bash -e` that would end this step before its comment. A limit the
-          # step cannot compare reads as a cancel, which is still said.
-          stopped=false
-          if [ "$JOB_STATUS" = "cancelled" ] || [ "$GATE_RESULT" = "cancelled" ] || [ "$AGENT_RESULT" = "cancelled" ]; then
-            stopped=true
-            reason="It was cancelled before it finished, by hand or by GitHub."
-          elif [ "$AGENT_RESULT" = "failure" ] && [ ! -f "${RUNNER_TEMP}/failure_reason.txt" ]; then
-            stopped=true
-          fi
-          if [ "$stopped" = "true" ]; then
-            if [ -n "${JOB_STARTED:-}" ] && [[ "$TIMEOUT_MINUTES" =~ ^[1-9][0-9]*$ ]] && [ $(( $(date +%s) - JOB_STARTED )) -ge $(( TIMEOUT_MINUTES * 60 - 60 )) ]; then
-              reason="It timed out after ${TIMEOUT_MINUTES} minutes. The repository variable \`AGENT_TIMEOUT_MINUTES\` raises the limit."
-            fi
-          fi
-          # One pattern for every run that stopped (#253): the reason as a
-          # sentence, starting with a capital and ending in a full stop, then
-          # the run and what to do.
-          reason="${reason^}"
-          case "$reason" in *[.!?]) ;; *) reason="${reason}." ;; esac
-          retry="To try again, add \`agent:fix\`."
-          if [ "$PUSHED" = "true" ]; then
-            retry="Its changes were pushed before it stopped, so running it again would repeat work. Fix the problem above, then add \`agent:review\`."
-          elif [ "$NOTED" = "true" ]; then
-            retry="Its out-of-scope notes were posted before it stopped, so running it again would repeat work. Fix the problem above, then add \`agent:review\` to have them ruled on."
-          fi
-          # A rescue (#303) is named whatever else the retry says, and is the
-          # retry where nothing else was: adding the label resumes from it.
-          if [ -n "${RESCUED:-}" ]; then
-            if [ "$retry" = "To try again, add \`agent:fix\`." ]; then
-              retry="Its commits so far are saved on \`${RESCUED}\`. To resume from them, add \`agent:fix\`."
-            else
-              retry="${retry} Its commits so far are saved on \`${RESCUED}\`, and adding \`agent:fix\` resumes from them."
-            fi
-          fi
-          body_file="${RUNNER_TEMP}/failure-comment.md"
-          printf '**`agent:fix` stopped:** %s\n\n[Workflow run](%s) · %s\n' "$reason" "$RUN_URL" "$retry" > "$body_file"
-          gh pr comment "$PR_NUMBER" --body-file "$body_file" || echo "::warning::Could not post the failure comment on PR #${PR_NUMBER}."
-          gh pr edit "$PR_NUMBER" --remove-label "agent:fix" || true
-          gh pr edit "$PR_NUMBER" --add-label "agent:blocked" || true
-
-      # The trigger label comes off however the run ends (#236): success,
-      # failure, refusal, timeout or cancel, so it never outlives the run.
-      # `always()` alone, in a job that runs wherever the gate did not refuse,
-      # so a pre-flight that died before deciding is covered too; a refusal
-      # took it off already.
-      #
-      # Unlike review and update-branch, a fix run whose pull request moved
-      # while it worked does **not** ask for itself again. A second fix run
-      # reads the same threads, which stay open until a review verifies them
-      # (#111), and answers them twice: the harm the stale-head refusal above
-      # exists to stop. A push made during a fix makes this run's own push fail
-      # its lease anyway, which is `agent:blocked` and a human's call.
-      - name: Always remove the trigger label
+      # The Node both commands run on, and the registry they install from. A
+      # version rather than a version file, since nothing of the pull
+      # request's runs here: the one the package's `engines.node` names, which
+      # `tests/workflows.test.ts` holds it to. `always()`, since conclude runs
+      # on every ending.
+      - name: Authenticate to GitHub Packages
         if: always()
-        run: gh pr edit "$PR_NUMBER" --remove-label "agent:fix" || true
+        uses: actions/setup-node@v7
+        with:
+          node-version: "24"
+          registry-url: https://npm.pkg.github.com
+          scope: "@jeffwlawson"
+          package-manager-cache: false
+
+      # Into a directory of its own under `RUNNER_TEMP`, where both commands
+      # look for the runner's files, for `fix:bundle`'s under `bundle/`, and
+      # `fix:conclude` for `fix:prepare`'s under `prepare/`, where each wrote
+      # them there. Its own, so nothing another step writes at
+      # `RUNNER_TEMP`, the mint's reason file among them, reads as the
+      # runner's. `always()`, so a run that stopped still hands its reason and
+      # its commits to the rescue and the failure comment. Tolerated: an
+      # agent's job that was killed before its upload leaves nothing to fetch,
+      # and `fix:conclude`, told this step's outcome, says so where the agent
+      # finished.
+      - name: Fetch what the agent handed over
+        id: fetch
+        if: always() && needs.gate.outputs.refused == 'false'
+        continue-on-error: true
+        uses: actions/download-artifact@v8
+        with:
+          name: agent-fix
+          path: ${{ runner.temp }}/agent-fix
+
+      # The success arm (#468): the rescue-set-aside note, the nothing-to-do
+      # note, the push, the rescue branch's deletion, the thread replies, the
+      # conversation record, the top-level comments, the out-of-scope notes,
+      # then the re-review or the ready mark. Every string and marker is its
+      # own, from the hand-over's data, and every id it aims a write at it
+      # found on the pull request itself. `fix/publish.ts` says why each is as
+      # it is.
+      #
+      # It reads the runner's files from `FIX_DIR` and `fix:bundle`'s from
+      # `BUNDLE_DIR`, exactly the files its declaration names, and checks
+      # them all, the bundle in the checkout, before its first write. The head
+      # the bundle has to build on is the label's event's, never a file the
+      # agent's job wrote (ADR 0006). On a run that did not finish it posts
+      # only the rescue-set-aside note, where there is one: the rest is
+      # `fix:conclude`'s below.
+      #
+      # Given both tokens: `GH_TOKEN`, the workflow's, which it reads, replies
+      # and comments with, and the loop's, which it pushes, labels and marks
+      # ready with. Only on a mint that succeeded, and never on a finished
+      # agent's run that is being cancelled, which pushes nothing more. From
+      # `RUNNER_TEMP`, so no `.npmrc` of the checkout is read, and working in
+      # the checkout.
+      - name: Publish the fix
+        id: publish
+        if: >-
+          always() && steps.token.outcome == 'success' && needs.fix.result != 'skipped' &&
+          (needs.fix.result != 'success' || !cancelled())
+        working-directory: ${{ runner.temp }}
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          LOOP_TOKEN: ${{ steps.token.outputs.token }}
+          LOOP_TOKEN_SOURCE: ${{ steps.token.outputs.source }}
+          OUTPUT_DIR: ${{ runner.temp }}/publish
+          FIX_DIR: ${{ runner.temp }}/agent-fix
+          BUNDLE_DIR: ${{ runner.temp }}/agent-fix/bundle
+          CHECKOUT: ${{ github.workspace }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          AGENT_RESULT: ${{ needs.fix.result }}
+        run: npm exec --prefix "$RUNNER_TEMP" --yes --package=@jeffwlawson/agent-workflows@0.9.2 -- agent-workflows fix:publish
+
+      # Every other ending, and the label however the run ended (#469): a
+      # stopped run's commits rescued to `RESCUE_BRANCH` where nothing was
+      # pushed to the pull request (#303), the failure comment with the reason
+      # and the retry the ending calls for (#105, #220, #253), then `agent:fix`
+      # off (#236), then `agent:blocked`, in the loop's one order.
+      # `fix/conclude.ts` says why each is as it is.
+      #
+      # `always()`: the ending is the point of it. Told the facts, not the
+      # conclusions: how the gate and the agent's job ended, whether the
+      # agent's job ran out of time and its limit, and the outcome of each
+      # step above, so the package works out which ending this is. It reads
+      # `fix:publish`'s `published.json` and reason from publish's directory,
+      # and `fix:prepare`'s, the runner's and `fix:bundle`'s from the
+      # hand-over, each from its own producer's directory, and checks the bundle in the checkout before
+      # it rescues from it.
+      #
+      # Given both tokens, the loop's empty where it was not minted, which is
+      # one of the endings it reports: it rescues with the loop's, as
+      # `fix:publish` pushes, and writes everything else with the workflow's.
+      - name: Conclude the run
+        if: always()
+        working-directory: ${{ runner.temp }}
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          LOOP_TOKEN: ${{ steps.token.outputs.token }}
+          LOOP_TOKEN_SOURCE: ${{ steps.token.outputs.source }}
+          OUTPUT_DIR: ${{ runner.temp }}/conclude
+          PUBLISH_DIR: ${{ runner.temp }}/publish
+          PREPARE_DIR: ${{ runner.temp }}/agent-fix/prepare
+          FIX_DIR: ${{ runner.temp }}/agent-fix
+          BUNDLE_DIR: ${{ runner.temp }}/agent-fix/bundle
+          CHECKOUT: ${{ github.workspace }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          REFUSED: ${{ needs.gate.outputs.refused }}
+          GATE_RESULT: ${{ needs.gate.result }}
+          GATE_REASON: ${{ needs.gate.outputs.failure-reason }}
+          AGENT_RESULT: ${{ needs.fix.result }}
+          TIMED_OUT: ${{ needs.fix.outputs.timed-out }}
+          TIMEOUT_MINUTES: ${{ vars.AGENT_TIMEOUT_MINUTES || '30' }}
+          MINT_OUTCOME: ${{ steps.token.outcome }}
+          DOWNLOAD_OUTCOME: ${{ steps.fetch.outcome }}
+          PUBLISH_OUTCOME: ${{ steps.publish.outcome }}
+        run: npm exec --prefix "$RUNNER_TEMP" --yes --package=@jeffwlawson/agent-workflows@0.9.2 -- agent-workflows fix:conclude
+
+      # Every write the two commands made, one line each as it landed, and a
+      # last line for how each ended (ADR 0005), kept for whoever audits the
+      # run. One artifact, each command's log by the path it declares, and no
+      # wildcard. `always()`, since a run that stopped is the one a log is
+      # read for, and nothing of a command that never ran.
+      - name: Keep the write logs
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: agent-fix-write-log
+          path: |
+            ${{ runner.temp }}/publish/write_log.jsonl
+            ${{ runner.temp }}/conclude/write_log.jsonl
+          if-no-files-found: ignore
+          retention-days: 7
+          overwrite: true

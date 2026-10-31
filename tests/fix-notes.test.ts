@@ -137,11 +137,19 @@ describe("filterOutOfScopeNotes", () => {
   /** A note posted twice would be ruled on, and filed, twice. */
   it("drops a note an earlier run already posted on this pull request", () => {
     const kept = filterOutOfScopeNotes([IGNORED_FIELDS, NEW_TOOL], [renderOutOfScopeNote(IGNORED_FIELDS)]);
-    expect(kept).toEqual([renderOutOfScopeNote(NEW_TOOL)]);
+    expect(kept).toEqual([NEW_TOOL]);
   });
 
   it("drops a repeat within the same run", () => {
     expect(filterOutOfScopeNotes([NEW_TOOL, NEW_TOOL])).toHaveLength(1);
+  });
+
+  /** Kept as data: the marker and the rendering are `fix:publish`'s (#468). */
+  it("keeps each note as its fields, with no marker", () => {
+    const kept = filterOutOfScopeNotes([IGNORED_FIELDS]);
+
+    expect(kept).toEqual([IGNORED_FIELDS]);
+    expect(JSON.stringify(kept)).not.toContain("<!--");
   });
 });
 
@@ -292,8 +300,8 @@ describe("a note's end, in the review body and on merge", () => {
 
   /** jeffwlawson/mealie-mcp-server#82, replayed: both notes are filed when the PR merges. */
   it("files both of jeffwlawson/mealie-mcp-server#82's notes as issues", () => {
-    const notes = filterOutOfScopeNotes([IGNORED_FIELDS, NEW_TOOL]).map((comment, i) => {
-      const note = readOutOfScopeNote(comment);
+    const notes = filterOutOfScopeNotes([IGNORED_FIELDS, NEW_TOOL]).map((kept, i) => {
+      const note = readOutOfScopeNote(renderOutOfScopeNote(kept));
       if (note === undefined) throw new Error("the posted note did not read back");
       return posted(note, `IC_${i}`);
     });

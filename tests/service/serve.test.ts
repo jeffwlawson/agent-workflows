@@ -37,4 +37,52 @@ describe("the worker's start", () => {
     expect(lines).toEqual([]);
     expect(fs.readdirSync(scratch)).toEqual([]);
   });
+
+  // #461: `bwrap`'s network is its own, and the proxy is its only way out, so
+  // a worker that would start every agent without one does not start.
+  it("refuses the bwrap sandbox, its default, with no AGENT_SANDBOX_PROXY, naming the setting, before it installs anything", async () => {
+    const lines: string[] = [];
+
+    await expect(serveWorker({ ...SETTINGS, WORK_DIR: scratch }, (text) => lines.push(text))).rejects.toThrow(/needs `AGENT_SANDBOX_PROXY`/);
+
+    expect(lines).toEqual([]);
+    expect(fs.readdirSync(scratch)).toEqual([]);
+  });
+
+  it("refuses an AGENT_SANDBOX_PROXY that is not a URL with a host", async () => {
+    await expect(serveWorker({ ...SETTINGS, WORK_DIR: scratch, AGENT_SANDBOX_PROXY: "127.0.0.1:3128" }, () => {})).rejects.toThrow(
+      /`AGENT_SANDBOX_PROXY` is `127.0.0.1:3128`, which is not an `http:` URL with a host/,
+    );
+    expect(fs.readdirSync(scratch)).toEqual([]);
+  });
+
+  // #535: the sandbox reaches the proxy by a loopback address, which an
+  // `https:` proxy's certificate does not name.
+  it("refuses an https: AGENT_SANDBOX_PROXY under bwrap, its default, naming the setting, before it installs anything", async () => {
+    const lines: string[] = [];
+
+    await expect(serveWorker({ ...SETTINGS, WORK_DIR: scratch, AGENT_SANDBOX_PROXY: "https://proxy.example:3128" }, (text) => lines.push(text))).rejects.toThrow(
+      /`AGENT_SANDBOX_PROXY` is `https:\/\/proxy.example:3128`, an `https:` URL.*`http:` URL/,
+    );
+
+    expect(lines).toEqual([]);
+    expect(fs.readdirSync(scratch)).toEqual([]);
+  });
+
+  // Past the refusal it installs the CLI, which this test stops at once with a
+  // `WORK_DIR` that is a file, rather than reaching a registry.
+  it.each([
+    ["none, with no proxy", { AGENT_SANDBOX: "none" }],
+    ["bwrap, with a proxy", { AGENT_SANDBOX_PROXY: "http://127.0.0.1:3128" }],
+    ["none, with an https: sandbox proxy", { AGENT_SANDBOX: "none", AGENT_SANDBOX_PROXY: "https://proxy.example:3128" }],
+    ["bwrap, with an https: WORKER_PROXY and an http: sandbox proxy", { WORKER_PROXY: "https://proxy.example:3128", AGENT_SANDBOX_PROXY: "http://127.0.0.1:3128" }],
+  ] as const)("starts with %s", async (_, given) => {
+    const lines: string[] = [];
+    const file = path.join(scratch, "not-a-directory");
+    fs.writeFileSync(file, "");
+
+    await expect(serveWorker({ ...SETTINGS, WORK_DIR: file, ...given }, (text) => lines.push(text))).rejects.toThrow(/ENOTDIR|EEXIST/);
+
+    expect(lines.join("")).toContain("installing the agent's CLI");
+  });
 });

@@ -3,9 +3,9 @@
  * over. Every mutation is written here, so a write's caller supplies values and
  * never a query.
  */
-import { GitHubError, type Transport } from "./github.js";
-import { toPullRequest, type RawPullRequest } from "./read.js";
-import type { Backend, Call, Tolerated } from "./writer.js";
+import { GitHubError, isServerError, type Transport } from "./github.js";
+import { githubReader, toPullRequest, type RawPullRequest } from "./read.js";
+import { ReadBackFailed, type Backend, type Call, type GitWriteType, type Tolerated } from "./writer.js";
 
 /** A label that is not there to remove: the write is already done. */
 const LABEL_ABSENT: Tolerated = {
@@ -29,10 +29,14 @@ export const MARK_READY = `mutation($id:ID!){
   markPullRequestReadyForReview(input:{pullRequestId:$id}){clientMutationId}
 }`;
 
-/** The writes for `repo` (`owner/name`), over `transport`, which holds the token. */
-export const githubWrites = (repo: string, transport: Transport): Backend => {
+/**
+ * The writes for `repo` (`owner/name`), over `transport`, which holds the
+ * token: every write type but the git ones, which `gitWrites` makes.
+ */
+export const githubWrites = (repo: string, transport: Transport): Omit<Backend, GitWriteType> => {
   const issue = (number: number): string => `/repos/${repo}/issues/${number}`;
   const pull = (number: number): string => `/repos/${repo}/pulls/${number}`;
+  const reader = githubReader(repo, transport);
   const livePull = async (call: Call, number: number) =>
     toPullRequest((await call("GET pull", () => transport.rest({ method: "GET", path: pull(number) }), "read")) as RawPullRequest);
 
@@ -103,6 +107,63 @@ export const githubWrites = (repo: string, transport: Transport): Backend => {
       }
       await call("resolve", () => transport.graphql(RESOLVE_THREAD, { threadId: thread.threadId, reason: thread.reason }));
       return { outcome: "applied" };
+    },
+    reply: async (call, reply) => {
+      await call("reply", () => transport.graphql(REPLY_TO_THREAD, { threadId: reply.threadId, body: reply.body }));
+      return { outcome: "applied" };
+    },
+    openPullRequest: async (call, open) => {
+      let opened: { readonly number: number; readonly html_url: string };
+      try {
+        opened = (await call("POST pulls", () =>
+          transport.rest({
+            method: "POST",
+            path: `/repos/${repo}/pulls`,
+            body: { base: open.base, head: open.head, title: open.title, body: open.body, draft: open.draft },
+          }),
+        )) as typeof opened;
+      } catch (error) {
+        // GitHub has answered an open with an error and opened the pull
+        // request all the same (#329), so a server error is read back before
+        // it is called a failure: by head and base, never by the body.
+        if (!isServerError(error)) throw error;
+        let found;
+        try {
+          found = await call("GET pulls", () => reader.openPullRequest(open.head, open.base), "read");
+        } catch (readError) {
+          throw new ReadBackFailed(error, readError);
+        }
+        if (found === undefined) throw error;
+        return { outcome: "applied", number: found.number, url: found.url, readBack: error instanceof Error ? error.message : String(error) };
+      }
+      return { outcome: "applied", number: opened.number, url: opened.html_url };
+    },
+    createIssue: async (call, create) => {
+      let created: { readonly number: number; readonly html_url: string };
+      try {
+        created = (await call("POST issues", () =>
+          transport.rest({
+            method: "POST",
+            path: `/repos/${repo}/issues`,
+            body: { title: create.title, body: create.body, labels: create.labels },
+          }),
+        )) as typeof created;
+      } catch (error) {
+        // As an open is (#329): a server error is read back before it is
+        // called a failure, by the caller's label and match, never by search.
+        if (!isServerError(error)) throw error;
+        let found;
+        try {
+          found = (await call("GET issues", () => reader.labelledIssues(create.readBack.label), "read")).find((issue) =>
+            create.readBack.matches(issue.body),
+          );
+        } catch (readError) {
+          throw new ReadBackFailed(error, readError);
+        }
+        if (found === undefined) throw error;
+        return { outcome: "applied", number: found.number, url: found.url, readBack: error instanceof Error ? error.message : String(error) };
+      }
+      return { outcome: "applied", number: created.number, url: created.html_url };
     },
     editPullRequest: async (call, number, edit) => {
       // Read whatever the edit names, title or body or neither, so "nothing to

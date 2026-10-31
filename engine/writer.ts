@@ -9,9 +9,9 @@
  * throws, and whether the command stops is whether the loop caught the throw.
  * Only the loop knows which writes it can live without.
  *
- * What a write does on GitHub is a `Backend`: `githubWrites` in
- * `engine/writes.ts` for a run, a fake for a test. Limits, the log and the
- * throw are this module's, so a test exercises the same ones a run does.
+ * What a write does is a `Backend`: `githubWrites` in `engine/writes.ts` and
+ * `gitWrites` in `engine/git.ts` for a run, a fake for a test. Limits, the log
+ * and the throw are this module's, so a test exercises the same ones a run does.
  */
 import { GitHubError } from "./github.js";
 
@@ -80,6 +80,81 @@ export interface ThreadClose {
   readonly reason: ResolutionReason;
 }
 
+/** A reply to a review thread, which leaves the thread as it was: open, if it was open. */
+export interface ThreadReply {
+  readonly threadId: string;
+  readonly body: string;
+}
+
+/**
+ * What a ref must hold on the remote for a push to it to go ahead, as git's
+ * `--force-with-lease` checks it: the commit the caller read it at, or no
+ * such ref at all.
+ */
+export type Lease = { readonly tip: string } | { readonly absent: true };
+
+/** `commit` pushed to `ref`, a full ref name such as `refs/heads/x`, under `lease`. */
+export interface RefPush {
+  readonly ref: string;
+  readonly commit: string;
+  readonly lease: Lease;
+}
+
+/** `ref` deleted on the remote, leased against the tip the caller read. */
+export interface RefDelete {
+  readonly ref: string;
+  readonly lease: { readonly tip: string };
+}
+
+/** A pull request to open, from `head` into `base`, both branch names. */
+export interface PullRequestOpen {
+  readonly base: string;
+  readonly head: string;
+  readonly title: string;
+  readonly body: string;
+  readonly draft: boolean;
+}
+
+/**
+ * A pull request opened: its number and link. `readBack` is the server error
+ * GitHub answered the open with, where it did and the read-back found the
+ * pull request open all the same, so the caller can say so.
+ */
+export interface Opened {
+  readonly outcome: "applied";
+  readonly number: number;
+  readonly url: string;
+  readonly readBack?: string;
+}
+
+/**
+ * An issue to open, with its labels set in the same call. `readBack` is how a
+ * server error is read past: the issues carrying `label` are listed, and the
+ * first whose body `matches` accepts is the one this write made. Both are the
+ * caller's, so the engine spells no label and parses no marker.
+ */
+export interface IssueCreate {
+  readonly title: string;
+  readonly body: string;
+  readonly labels: readonly string[];
+  readonly readBack: {
+    readonly label: string;
+    readonly matches: (body: string) => boolean;
+  };
+}
+
+/**
+ * An issue opened: its number and link. `readBack` is the server error GitHub
+ * answered the create with, where it did and the read-back found the issue
+ * all the same, so the caller can say so.
+ */
+export interface IssueCreated {
+  readonly outcome: "applied";
+  readonly number: number;
+  readonly url: string;
+  readonly readBack?: string;
+}
+
 /**
  * A pull request's title and body. `body` is handed the body as it is now and
  * returns the new one, or `undefined` to leave it, so a splice is made against
@@ -106,13 +181,42 @@ export interface Writer {
    * where the reply landed and the resolve did not.
    */
   replyAndResolve(thread: ThreadClose): Promise<Done>;
+  /** A reply alone: the thread is never resolved by it. */
+  reply(reply: ThreadReply): Promise<Done>;
   /** Nothing to change, by title or by what `body` returns for the live body, is `unchanged`. */
   editPullRequest(pr: number, edit: PullRequestEdit): Promise<Done>;
+  /**
+   * A pull request opened. **A server error is not "not opened"**: GitHub
+   * allows one open pull request per head and base, so on one the open pull
+   * requests from exactly this head into exactly this base are read back, and
+   * the one found is the result. Never matched on anything the body says, and
+   * never retried. A read-back that fails too throws `ReadBackFailed`, naming
+   * both errors.
+   */
+  openPullRequest(open: PullRequestOpen): Promise<Opened>;
+  /**
+   * An issue opened, its labels set at creation. **A server error is not "not
+   * created"**: on one, and only on one, the issues carrying the read-back
+   * label are listed, never searched, and the first the caller's match
+   * accepts is the result. One not found throws the server error; a read-back
+   * that fails too throws `ReadBackFailed`, naming both. Never retried.
+   */
+  createIssue(create: IssueCreate): Promise<IssueCreated>;
+  /**
+   * A push of a commit to a ref, forced where the lease holds and failed where
+   * it does not. A ref already at the commit is `unchanged`.
+   */
+  pushRef(push: RefPush): Promise<Done>;
+  /** A ref deleted, where the lease holds, and failed where it does not. */
+  deleteRef(remove: RefDelete): Promise<Done>;
 }
 
 export type WriteType = keyof Writer;
 
-/** What each write does on GitHub, handed a `Call` for every GitHub call it makes so the log can list them. */
+/** The write types made over git rather than GitHub's API: `gitWrites` in `engine/git.ts`. */
+export type GitWriteType = "pushRef" | "deleteRef";
+
+/** What each write does, handed a `Call` for every call it makes, to GitHub or to git, so the log can list them. */
 export type Backend = {
   readonly [K in WriteType]: (call: Call, ...args: Parameters<Writer[K]>) => ReturnType<Writer[K]>;
 };
@@ -170,6 +274,23 @@ export class WriteFailed extends Error {
   }
 }
 
+/**
+ * A write GitHub answered with a server error, whose read-back, of whether it
+ * landed anyway, failed too: neither "done" nor "not done" is known. Thrown by
+ * the write type, as the `cause` of its `WriteFailed`.
+ */
+export class ReadBackFailed extends Error {
+  constructor(
+    readonly written: unknown,
+    readonly read: unknown,
+  ) {
+    super(`GitHub answered with a server error (${describe(written)}), and reading back whether the write landed failed too (${describe(read)})`, {
+      cause: written,
+    });
+    this.name = "ReadBackFailed";
+  }
+}
+
 /** A write past its type's limit, refused before any call: our own code's bug, so never trimmed. */
 export class LimitReached extends Error {
   constructor(
@@ -211,7 +332,13 @@ const TARGETS: { readonly [K in WriteType]: (...args: Parameters<Writer[K]>) => 
   markReadyForReview: (pr) => `#${pr}`,
   postReview: (variables) => `${variables.pullRequestId} ${variables.commitOID.slice(0, 7)}`,
   replyAndResolve: (thread) => `${thread.threadId} ${thread.reason}${thread.reply === undefined ? " (already replied)" : ""}`,
+  reply: (reply) => reply.threadId,
   editPullRequest: (pr, edit) => `#${pr}${edit.title === undefined ? "" : " title"}${edit.body === undefined ? "" : " body"}`,
+  openPullRequest: (open) => `${open.head} into ${open.base}${open.draft ? " draft" : ""}`,
+  // By its title and labels: the body is the caller's prose, and the log is not where it is kept.
+  createIssue: (create) => `${JSON.stringify(create.title)}${create.labels.length === 0 ? "" : ` ${create.labels.join(" ")}`}`,
+  pushRef: (push) => `${push.ref} ${push.commit.slice(0, 7)} ${"tip" in push.lease ? `over ${push.lease.tip.slice(0, 7)}` : "new"}`,
+  deleteRef: (remove) => `${remove.ref} at ${remove.lease.tip.slice(0, 7)}`,
 };
 
 export interface WriteLog {
@@ -285,7 +412,7 @@ export const createWriters = <T extends string>(options: {
         error,
       );
     }
-    const result = done as Done | Posted;
+    const result = done as Done | Posted | Opened | IssueCreated;
     record({ token, type, target, outcome: result.outcome, calls, ...("url" in result ? { url: result.url } : {}) });
     return done;
   };
@@ -301,7 +428,12 @@ export const createWriters = <T extends string>(options: {
       markReadyForReview: bound("markReadyForReview"),
       postReview: bound("postReview"),
       replyAndResolve: bound("replyAndResolve"),
+      reply: bound("reply"),
       editPullRequest: bound("editPullRequest"),
+      openPullRequest: bound("openPullRequest"),
+      createIssue: bound("createIssue"),
+      pushRef: bound("pushRef"),
+      deleteRef: bound("deleteRef"),
     };
   };
 

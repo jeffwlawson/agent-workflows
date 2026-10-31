@@ -3,6 +3,7 @@
  * limits, the throw, the log and its last line, over two tokens at once.
  */
 import { describe, expect, it } from "vitest";
+import { GitHubError } from "../../engine/github.js";
 import { LimitReached, WriteFailed } from "../../engine/writer.js";
 import { fakeGitHub, fakeReader, fakeWriters } from "./fakes.js";
 
@@ -122,6 +123,66 @@ describe("the writer", () => {
     expect(github.threads.get(7)?.get("T1")).toEqual({ replies: [] });
   });
 
+  it("replies and leaves the thread open, and a command limited to replies cannot close one", async () => {
+    const github = fakeGitHub();
+    github.threads.set(7, new Map([["T1", { replies: [] }]]));
+    const { writers, writes, entries } = fakeWriters(github, ["workflow"], { reply: 2 });
+
+    await writers.workflow.reply({ threadId: "T1", body: "fixed in the next push" });
+    await expect(writers.workflow.replyAndResolve({ threadId: "T1", reply: "x", reason: "ADDRESSED" })).rejects.toBeInstanceOf(LimitReached);
+
+    expect(entries[0]).toEqual({ seq: 1, token: "workflow", type: "reply", target: "T1", outcome: "applied", calls: ["reply ok"] });
+    expect(github.threads.get(7)?.get("T1")).toEqual({ replies: ["fixed in the next push"] });
+    expect(writes.map((w) => w.type)).toEqual(["reply", "replyAndResolve"]);
+  });
+
+  it("logs a failed reply as failed, and resolves nothing", async () => {
+    const github = fakeGitHub();
+    github.threads.set(7, new Map([["T1", { replies: [] }]]));
+    github.fails = (write) => write.type === "reply";
+    const { writers, entries } = fakeWriters(github, ["workflow"], { reply: 1 });
+
+    await expect(writers.workflow.reply({ threadId: "T1", body: "b" })).rejects.toBeInstanceOf(WriteFailed);
+
+    expect(entries[0]).toMatchObject({ outcome: "failed", calls: ["reply 422 refused by the fake"] });
+    expect(github.threads.get(7)?.get("T1")).toEqual({ replies: [] });
+  });
+
+  it("pushes and deletes a ref under its lease in the fake, logs a lost lease failed, and caps both", async () => {
+    const github = fakeGitHub();
+    github.branches.set("feature", SHA);
+    const next = "b".repeat(40);
+    const { writers, entries } = fakeWriters(github, ["loop"], { pushRef: 3, deleteRef: 1 });
+
+    await writers.loop.pushRef({ ref: "refs/heads/feature", commit: next, lease: { tip: SHA } });
+    await expect(writers.loop.pushRef({ ref: "refs/heads/feature", commit: SHA, lease: { tip: SHA } })).rejects.toBeInstanceOf(WriteFailed);
+    await writers.loop.pushRef({ ref: "refs/heads/rescue", commit: next, lease: { absent: true } });
+    await writers.loop.deleteRef({ ref: "refs/heads/rescue", lease: { tip: next } });
+    await expect(writers.loop.pushRef({ ref: "refs/heads/other", commit: next, lease: { absent: true } })).rejects.toBeInstanceOf(LimitReached);
+
+    expect(entries.map((e) => `${e.type} ${e.target} ${e.outcome}`)).toEqual([
+      "pushRef refs/heads/feature bbbbbbb over aaaaaaa applied",
+      "pushRef refs/heads/feature aaaaaaa over aaaaaaa failed",
+      "pushRef refs/heads/rescue bbbbbbb new applied",
+      "deleteRef refs/heads/rescue at bbbbbbb applied",
+      "pushRef refs/heads/other bbbbbbb new refused",
+    ]);
+    expect(entries[1]?.calls).toEqual(["git push rejected: [rejected] (stale info)"]);
+    expect([...github.branches]).toEqual([["feature", next]]);
+  });
+
+  it("is unchanged in the fake where the ref is already at the commit, whatever the lease says, as git reports it", async () => {
+    const github = fakeGitHub();
+    github.branches.set("feature", SHA);
+    const { writers, entries } = fakeWriters(github, ["loop"], { pushRef: 2 });
+
+    expect(await writers.loop.pushRef({ ref: "refs/heads/feature", commit: SHA, lease: { tip: "b".repeat(40) } })).toEqual({ outcome: "unchanged" });
+    expect(await writers.loop.pushRef({ ref: "refs/heads/feature", commit: SHA, lease: { absent: true } })).toEqual({ outcome: "unchanged" });
+
+    expect(entries.map((e) => e.outcome)).toEqual(["unchanged", "unchanged"]);
+    expect([...github.branches]).toEqual([["feature", SHA]]);
+  });
+
   it("resolves alone a thread that already carries its reply", async () => {
     const github = fakeGitHub();
     github.threads.set(7, new Map([["T1", { replies: ["earlier"] }]]));
@@ -178,6 +239,41 @@ describe("the writer", () => {
     expect(again).toEqual({ outcome: "unchanged" });
     expect(await reader.commitStatuses(SHA)).toEqual([{ context: "ctx", state: "success", targetUrl: null, description: "d", creator: "workflow" }]);
     expect(reads.map((r) => r.method)).toEqual(["pullRequest", "pullRequest", "commitStatuses"]);
+  });
+});
+
+describe("the fake reader's follow-ups reads", () => {
+  it("reads a pull request's review history, the issues carrying a label newest first, and the repository's labels", async () => {
+    const github = fakeGitHub([{ number: 7 }]);
+    const history = [{ author: "bot", body: "b", lastEditedAt: null, url: "u" }];
+    github.reviewHistory.set(7, history);
+    github.repoLabels.push("pr-follow-up");
+    github.filed.set(3, { title: "a", body: "old", state: "CLOSED", stateReason: "COMPLETED" });
+    github.filed.set(5, { title: "b", body: "new", state: "OPEN", stateReason: null });
+    github.filed.set(4, { title: "c", body: "unlabelled", state: "OPEN", stateReason: null });
+    github.issueLabels.set(3, ["pr-follow-up"]);
+    github.issueLabels.set(5, ["pr-follow-up"]);
+    const { reader, reads } = fakeReader(github);
+
+    expect(await reader.reviewHistory(7)).toEqual(history);
+    expect((await reader.labelledIssues("pr-follow-up")).map((issue) => [issue.number, issue.state, issue.body])).toEqual([
+      [5, "OPEN", "new"],
+      [3, "CLOSED", "old"],
+    ]);
+    expect(await reader.repoLabels()).toEqual(["pr-follow-up"]);
+    await expect(reader.reviewHistory(8)).rejects.toBeInstanceOf(GitHubError);
+    expect(reads.map((r) => r.method)).toEqual(["reviewHistory", "labelledIssues", "repoLabels", "reviewHistory"]);
+  });
+
+  it("lists an issue the fake writer creates", async () => {
+    const github = fakeGitHub([{ number: 7 }]);
+    const { reader } = fakeReader(github);
+    const { writers } = fakeWriters(github, ["workflow"], { createIssue: 1 });
+
+    const created = await writers.workflow.createIssue({ title: "t", body: "b", labels: ["x"], readBack: { label: "x", matches: () => true } });
+
+    expect(created).toEqual({ outcome: "applied", number: 8, url: "https://github.com/o/r/issues/8" });
+    expect(await reader.labelledIssues("x")).toEqual([{ number: 8, url: created.url, state: "OPEN", stateReason: null, body: "b" }]);
   });
 });
 

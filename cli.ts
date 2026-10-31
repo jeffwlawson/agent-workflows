@@ -3,9 +3,9 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import { fileURLToPath } from "node:url";
 import { commonWriters } from "./shared/common.js";
-import type { CommandIo, OutputWriters, ReadingIo } from "./shared/command-io.js";
+import type { MergingIo, OutputWriters, ReadingIo, RewritingCheckoutIo } from "./shared/command-io.js";
 import { COMMANDS, type Command, type Runner } from "./shared/contract.js";
-import { fail, readInputs, writers, type InputValues } from "./shared/env.js";
+import { fail, gitEnvironment, readInputs, writers, type InputValues } from "./shared/env.js";
 import { VERSION } from "./shared/manifest.js";
 import { SERVICE, type ServiceProcess } from "./service/settings.js";
 
@@ -145,25 +145,58 @@ const readingCommand = <C extends ReadingCommand>(
 });
 
 /**
+ * A command that reads GitHub and fetches from it into a checkout, and writes
+ * nothing to it: handed, besides its inputs, the reader and a fetcher, both
+ * over its `GH_TOKEN`, the fetcher working in its `CHECKOUT`, a merger there
+ * that fetches with it, and its declared output files. No writer: a fetch
+ * and a merge change the checkout alone.
+ */
+type FetchingCommand = {
+  [C in ReadingCommand]: (typeof COMMANDS)[C]["inputs"] extends { readonly CHECKOUT: unknown } ? C : never;
+}[ReadingCommand];
+
+const fetchingCommand = <C extends FetchingCommand>(
+  name: C,
+  load: () => Promise<(inputs: InputValues<(typeof COMMANDS)[C]["inputs"]>, io: MergingIo<(typeof COMMANDS)[C]["outputs"]>) => Promise<unknown>>,
+  summary: string,
+): Subcommand => ({
+  kind: "command",
+  summary,
+  run: async (args) => {
+    refuseArguments(name, args);
+    const fn = await load();
+    const { liveFetchingIo } = await import("./shared/command-io.js");
+    const declared = COMMANDS[name];
+    const inputs = readInputs(declared.inputs);
+    const outputs = writers<(typeof COMMANDS)[C]["outputs"]>(declared.outputs);
+    try {
+      await fn(inputs, liveFetchingIo(inputs, outputs, { dir: inputs.CHECKOUT, env: gitEnvironment() }));
+    } catch (error) {
+      fail(error instanceof Error ? error.message : String(error));
+    }
+  },
+});
+
+/**
  * A command that writes through the engine's writer (ADR 0005): one that
- * declares the loop's token and a write log, and is handed, besides its
- * inputs, the real writers over both tokens and the reader, built here from
- * those inputs. Every write it makes is appended to `write_log.jsonl` as it
+ * declares a write log, and is handed, besides its inputs, the real writers
+ * over both tokens and the reader, built here from those inputs. One that
+ * declares no loop token, `fix:gate`, writes with the workflow's alone, and
+ * its `loop` writer holds no token, as one whose optional loop token is
+ * empty does. Every write it makes is appended to `write_log.jsonl` as it
  * lands, and the log's last line says how the command ended, whether it
- * returned or threw.
+ * returned or threw. Its git writes and reads, and its fetches and merges, are
+ * made in `CHECKOUT` where it declares one, and in the directory it runs in
+ * otherwise.
  */
 type WritingCommand = {
-  [C in Command]: (typeof COMMANDS)[C]["inputs"] extends { readonly LOOP_TOKEN: unknown }
-    ? "write_log.jsonl" extends (typeof COMMANDS)[C]["outputs"][number]
-      ? C
-      : never
-    : never;
+  [C in Command]: "write_log.jsonl" extends (typeof COMMANDS)[C]["outputs"][number] ? C : never;
 }[Command];
 
 const writingCommand = <C extends WritingCommand>(
   name: C,
   load: () => Promise<
-    (inputs: InputValues<(typeof COMMANDS)[C]["inputs"]>, io: CommandIo<(typeof COMMANDS)[C]["outputs"]>) => Promise<unknown>
+    (inputs: InputValues<(typeof COMMANDS)[C]["inputs"]>, io: RewritingCheckoutIo<(typeof COMMANDS)[C]["outputs"]>) => Promise<unknown>
   >,
   summary: string,
 ): Subcommand => ({
@@ -176,7 +209,13 @@ const writingCommand = <C extends WritingCommand>(
     const declared = COMMANDS[name];
     const inputs = readInputs(declared.inputs);
     const outputs = writers<(typeof COMMANDS)[C]["outputs"]>(declared.outputs);
-    const { io, end } = liveCommandIo(inputs, outputs, (line) => outputs.appendLine("write_log.jsonl", line));
+    const declaredValues = inputs as Readonly<Record<string, string>>;
+    const checkout = declaredValues["CHECKOUT"];
+    const tokens = { GH_REPO: inputs.GH_REPO, GH_TOKEN: inputs.GH_TOKEN, LOOP_TOKEN: declaredValues["LOOP_TOKEN"] ?? "" };
+    const { io, end } = liveCommandIo(tokens, outputs, (line) => outputs.appendLine("write_log.jsonl", line), {
+      dir: checkout ?? process.cwd(),
+      env: gitEnvironment(),
+    });
     try {
       await fn(inputs, io);
       end();
@@ -291,12 +330,97 @@ export const SUBCOMMANDS: Readonly<Record<string, Subcommand>> = {
     },
   },
   fix: runner("fix", () => import("./fix/fix.js")),
-  "follow-ups:file": command(
+  "fix:gate": writingCommand(
+    "fix:gate",
+    async () => (await import("./fix/gate.js")).gate,
+    "Refuse a fix run on a closed, moved or deleted pull request, or claim it and wait for a review's posting (no model).",
+  ),
+  "fix:prepare": fetchingCommand(
+    "fix:prepare",
+    async () => (await import("./fix/prepare.js")).prepare,
+    "Fetch the rescue branch an earlier stopped fix run left, for the runner to resume from (no model).",
+  ),
+  "fix:bundle": command(
+    "fix:bundle",
+    async () => (await import("./fix/bundle.js")).bundle,
+    "Bundle the agent's commits on a pull request's branch for the publish job (no model).",
+  ),
+  "fix:publish": writingCommand(
+    "fix:publish",
+    async () => (await import("./fix/publish.js")).publish,
+    "Push a fix run's commits and post its replies, comments and notes, then hand it on (no model).",
+  ),
+  "fix:conclude": writingCommand(
+    "fix:conclude",
+    async () => (await import("./fix/conclude.js")).conclude,
+    "End a fix run however it ended: its rescue, its failure comment and its label (no model).",
+  ),
+  "follow-ups:file": writingCommand(
     "follow-ups:file",
     async () => (await import("./follow-ups/file.js")).file,
     "File a closed PR's recorded review findings as triageable issues (no model).",
   ),
+  "follow-ups:conclude": writingCommand(
+    "follow-ups:conclude",
+    async () => (await import("./follow-ups/conclude.js")).conclude,
+    "Say on a closed PR that its filing run stopped, and how to retry it (no model).",
+  ),
   implement: runner("implement", () => import("./implement/implement.js")),
+  "implement:gate": writingCommand(
+    "implement:gate",
+    async () => (await import("./implement/gate.js")).gate,
+    "Refuse or defer an implement run on an issue of the wrong shape, or claim it and name its branch (no model).",
+  ),
+  "implement-prd:gate": writingCommand(
+    "implement-prd:gate",
+    async () => (await import("./implement-prd/gate.js")).gate,
+    "Refuse or defer an implement-prd run on a PRD parent, or claim it and decide its slice (no model).",
+  ),
+  "implement-prd:prepare": fetchingCommand(
+    "implement-prd:prepare",
+    async () => (await import("./implement-prd/prepare.js")).prepare,
+    "Check the PRD branch out at the tip the catch-up left, and fetch an earlier stopped run's rescue (no model).",
+  ),
+  "implement-prd:bundle": command(
+    "implement-prd:bundle",
+    async () => (await import("./implement-prd/bundle.js")).bundle,
+    "Bundle the agent's commits on a PRD branch for the publish job (no model).",
+  ),
+  "implement-prd:publish": writingCommand(
+    "implement-prd:publish",
+    async () => (await import("./implement-prd/publish.js")).publish,
+    "Mark a built slice's commits with its Agent-Slice trailer and push them, then open or reuse the PRD PR and ask for its review (no model).",
+  ),
+  "implement-prd:conclude": writingCommand(
+    "implement-prd:conclude",
+    async () => (await import("./implement-prd/conclude.js")).conclude,
+    "End an implement-prd run however it ended: its rescue, its failure comment, its labels and the stopped slice's row (no model).",
+  ),
+  "implement-prd:catch-up": writingCommand(
+    "implement-prd:catch-up",
+    async () => (await import("./implement-prd/catch-up.js")).catchUp,
+    "Merge the default branch into a PRD branch before a slice is built, and push it, or park the chain on a conflict (no model).",
+  ),
+  "implement:prepare": command(
+    "implement:prepare",
+    async () => (await import("./implement/prepare.js")).prepare,
+    "Create the agent's branch at the base commit the gate read, as the loop's committer (no model).",
+  ),
+  "implement:bundle": command(
+    "implement:bundle",
+    async () => (await import("./implement/bundle.js")).bundle,
+    "Bundle the agent's commits on an issue's branch for the publish job (no model).",
+  ),
+  "implement:publish": writingCommand(
+    "implement:publish",
+    async () => (await import("./implement/publish.js")).publish,
+    "Push an implement run's commits, open its draft pull request and ask for its review (no model).",
+  ),
+  "implement:conclude": writingCommand(
+    "implement:conclude",
+    async () => (await import("./implement/conclude.js")).conclude,
+    "End an implement run however it ended: its failure comment and its labels (no model).",
+  ),
   "implement-prd": runner("implement-prd", () => import("./implement-prd/implement-prd.js")),
   init: {
     kind: "install",
@@ -362,6 +486,36 @@ export const SUBCOMMANDS: Readonly<Record<string, Subcommand>> = {
     "Move a PRD PR's chain on after a review, or park it, and write its progress list (no model).",
   ),
   "update-branch": runner("update-branch", () => import("./update-branch/update-branch.js")),
+  "update-branch:gate": writingCommand(
+    "update-branch:gate",
+    async () => (await import("./update-branch/gate.js")).gate,
+    "Refuse a branch refresh on a closed pull request, or claim it and wait for a review's posting (no model).",
+  ),
+  "update-branch:merge": fetchingCommand(
+    "update-branch:merge",
+    async () => (await import("./update-branch/merge.js")).merge,
+    "Fetch a pull request's base branch and try merging it in: up to date, clean or conflicted (no model).",
+  ),
+  "update-branch:prepare": fetchingCommand(
+    "update-branch:prepare",
+    async () => (await import("./update-branch/prepare.js")).prepare,
+    "Make the gate's conflicted merge again for the agent, refusing where it no longer conflicts (no model).",
+  ),
+  "update-branch:bundle": command(
+    "update-branch:bundle",
+    async () => (await import("./update-branch/bundle.js")).bundle,
+    "Bundle the agent's resolution of a pull request's conflicts for the publish job (no model).",
+  ),
+  "update-branch:publish": writingCommand(
+    "update-branch:publish",
+    async () => (await import("./update-branch/publish.js")).publish,
+    "Push a refreshed pull request's branch, carry its verdict over or ask for a review, and say so (no model).",
+  ),
+  "update-branch:conclude": writingCommand(
+    "update-branch:conclude",
+    async () => (await import("./update-branch/conclude.js")).conclude,
+    "End a branch refresh however it ended: its failure comment, its label and asking again (no model).",
+  ),
   worker: serviceProcess(
     "worker",
     async () => (await import("./service/serve.js")).serveWorker,

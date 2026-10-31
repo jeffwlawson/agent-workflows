@@ -55,6 +55,23 @@ old place against the new one, but **only once the code confirms it**: the thing
 place, and the old one is gone. A note the code does not confirm is not evidence, and the criterion
 is ruled as written.
 
+**A criterion can also mean something else since the brief was written.** Work merged after the
+brief can change what a file it names does while leaving every name in place. The workflow read the
+commit the brief says it was read at, and lists here the commits since then that touched the files
+it names: on the base branch, and on a slice round also the commits on this pull request's branch
+before this slice. The commits under review are never among them.
+
+{{SINCE_BRIEF}}
+
+Where any commits are listed, read the ones that could bear on a criterion, and **rule on them in
+`sinceBrief`**, in one line: whether any of them changes what a criterion means, naming the
+criterion and the commit where one does, or saying none does. The list adds nothing to the verdict
+of its own, so rule on the criteria as you would otherwise: a criterion a listed commit made moot
+or wrong is `changed`, with that commit as the reason; one the change fails at the code as it now
+stands is `unmet`, or a finding, as always; and where which reading the issue meant is a human's
+call, say so in `needsYou`. Never raise a finding that the brief is out of date: nothing a fix
+round can edit would answer it. Where nothing is listed, leave `sinceBrief` out.
+
 # EXISTING FEEDBACK
 
 Feedback already on this PR: earlier review summaries, unresolved inline threads (replies
@@ -275,6 +292,16 @@ Read `CONTEXT.md` and `CLAUDE.md` first, then explore the changed files in conte
    inputs the checkout does not contain, build them in a scratch directory of your own outside it;
    that is what **BOUNDARIES** permits, and the checkout is left as you found it. Say in
    `howChecked` what you ran.
+
+   **Say what your own run left unrun, in `notChecked`.** Running tests is your choice; saying
+   whether you did is not. Record whether you ran any, and each test or suite exercising code the
+   diff changes that your run skipped for want of something in the environment (a tool, a kernel
+   feature, a service, a platform, a credential), with the reason the run gave or, where it gave
+   none, one line of your own. Several tests skipped in one suite for one reason are one entry
+   naming the suite and how many. A test the diff itself marks skipped with no condition is not one
+   of these: it is a finding under item 5 (a failure made quiet). Skips in CI you cannot see are not
+   yours to list. The body shows the list as it is and it changes no verdict, so list what skipped
+   rather than weighing it.
 5. **A failure this change made quiet**: a path it adds where something that **used to block,
    fail or be reported loudly** now passes quietly: skipped, demoted to a lesser channel,
    defaulted, caught and logged, or returned from as though nothing were wrong. Checking the one
@@ -288,7 +315,45 @@ Read `CONTEXT.md` and `CLAUDE.md` first, then explore the changed files in conte
    - **Say whether the change could fail loudly instead**, and prefer that where it can. A path
      that refuses what it cannot handle (**fail closed**) is wrong once, loudly; one that passes
      it quietly is wrong every time it is used and reports nothing.
-6. **Clarity and edge cases** worth a second look.
+6. **Text this change made false**: a doc section, a comment in another file, a domain doc, a
+   prompt or a test's description that said something the diff has stopped being true. Reading the
+   diff does not find it, so look for it:
+   - **For each behaviour the diff changes, write down the phrases that described the old
+     behaviour**, then search the whole checkout for each, not only the changed files.
+   - **Rule on every hit**: still true, or made false by this change. The step is done only when
+     every hit has been ruled on, not when the first few have been.
+   - **A hit this change made false is a fix-before-merge finding**, anchored at the changed line
+     that made it false, with the stale `path:line` in its text, as *Where a finding is posted*
+     says. It is not a follow-up: the change caused it, so it is this pull request's to fix.
+   - **A hit that was already false before this change** was not caused by it, and is a `followUps`
+     entry on that list's bar.
+   - **Say in `howChecked` the phrases you searched for and how many hits you read**, within its
+     limit. A change that alters no behaviour (a comment, a rename the tests pin, documentation
+     alone) owes no sweep, and `howChecked` says so.
+
+   Every review runs it, a PRD PR's slice round and its final review included. A verification pass
+   sweeps the behaviours its new commits change; a hit for a behaviour an earlier round's diff
+   changed, found now, is *previously missed*.
+7. **What text sent somewhere new can carry**: a place the change sends text or a value that it
+   did not reach before. That is a new destination for text that already existed (a log line now
+   quoted in a comment, an error now posted where people read it), and a value added to a
+   destination that already exists (a variable newly interpolated into a message, a summary or a
+   body). For each one:
+   - **What can it carry?** A secret, a credential inside a URL, a private path, untrusted input.
+   - **Is the new place read more widely than where the text came from?**
+   - **Is it cleaned of what it can carry before it gets there?** Cleaned means that specific
+     thing is removed or masked: the credential stripped from the URL, the token replaced. Passing
+     through some cleanup step is not enough, and a cleanup that removes something else does not
+     count.
+   - **Text that can carry a secret to a more widely read place, uncleaned, is a fix-before-merge
+     finding**, anchored at the change that sends it there, as *Where a finding is posted* says.
+   - **A private path or untrusted input reaching a more widely read place, uncleaned, is ruled
+     the same way**: a finding where this change causes it. An exposure this change did not cause
+     is a `followUps` entry on that list's bar.
+   - **In `howChecked`, name the new destinations you found, or say there were none**, in one
+     clause within its limit. A change that sends no text anywhere new (a comment, a rename,
+     documentation alone) owes nothing more than that clause.
+8. **Clarity and edge cases** worth a second look.
 
 Prefer a few high-signal comments over many trivial ones. A clean change gets a short review
 saying so.

@@ -779,7 +779,9 @@ describe("readInputs and input: a subcommand's declared inputs, read loudly", ()
   beforeEach(() => {
     scratch = fs.mkdtempSync(path.join(os.tmpdir(), "common-inputs-"));
     for (const n of NAMES) delete process.env[n];
-    for (const n of new Set(SUBCOMMANDS.flatMap(requiredOf))) process.env[n] = "given";
+    // A required input that accepts only some values is given the first of
+    // them: `fix:publish`'s `AGENT_RESULT` (#468).
+    for (const [n, d] of SUBCOMMANDS.flatMap(declared)) if (d.required) process.env[n] = d.accepts?.[0] ?? "given";
     process.env["OUTPUT_DIR"] = scratch;
     process.env["GH_REPO"] = "o/r";
     process.env["GH_TOKEN"] = "a-token";
@@ -1118,10 +1120,22 @@ describe("readInputs and input: a subcommand's declared inputs, read loudly", ()
 
     appendLine("failure_reason.txt", "first");
     appendLine("failure_reason.txt", "second");
-    // @ts-expect-error: `follow-ups:file` declares no `write_log.jsonl`, so it may not append to one.
-    appendLine("write_log.jsonl", "undeclared");
+    // @ts-expect-error: `follow-ups:file` declares no `summary.md`, so it may not append to one.
+    appendLine("summary.md", "undeclared");
 
     expect(fs.readFileSync(reasonFile(), "utf8")).toBe("first\nsecond\n");
+  });
+
+  /** A file that is not text, `fix:bundle`'s bundle (#472): its bytes as they are. */
+  it("writes bytes as they are to a declared file, and refuses an undeclared one at typecheck", () => {
+    const { writeBytes } = writers(COMMANDS["fix:bundle"].outputs);
+    const bytes = Uint8Array.from([0, 0xff, 0x0a, 0xc3, 0x28]);
+
+    writeBytes("branch.bundle", bytes);
+    // @ts-expect-error: `fix:bundle` declares no `branch.zip`, so it may not write one.
+    writeBytes("branch.zip", bytes);
+
+    expect(new Uint8Array(fs.readFileSync(path.join(scratch, "branch.bundle")))).toEqual(bytes);
   });
 });
 

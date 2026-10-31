@@ -30,6 +30,44 @@
  */
 export const DEFAULT_LOOP_ACCOUNT = "github-actions[bot]";
 
+/**
+ * Who the merge commits the loop makes are made by: the name and noreply
+ * address every workflow's merge of a base branch, and the resolution of one,
+ * is committed as, and the identity `implement:prepare` gives the checkout
+ * an implement agent commits in. Handed to the engine's merge
+ * (`engine/git.ts`), which spells no identity of its own. The workflows'
+ * shell steps that still merge spell it too, until their steps move.
+ */
+export const LOOP_COMMITTER = {
+  name: "sandcastle-agent[bot]",
+  email: "sandcastle-agent[bot]@users.noreply.github.com",
+} as const;
+
+
+// Fix's markers, which `fix:publish` writes from `fix`'s hand-over and the
+// runners read back off the loop's own comments.
+
+/**
+ * Appended to every top-level comment `fix` posts. It keeps the comment out
+ * of the next fix run's feedback and is what that channel is deduped on
+ * (`shared/fix-output.ts`). Not a selector for filing anything.
+ */
+export const TOP_LEVEL_COMMENT_MARKER = "<!-- agent-fix:top-level -->";
+
+/**
+ * Ends the record of what a fix run did with the conversation comments (#104):
+ * a different string from `TOP_LEVEL_COMMENT_MARKER`, since a record repeated
+ * across rounds is correct and a top-level comment repeated is not.
+ */
+export const CONVERSATION_OUTCOME_MARKER = "<!-- agent-fix:conversation-outcomes -->";
+
+/**
+ * The selector an out-of-scope note carries (#213), followed by the note as
+ * JSON inside the same HTML comment (`shared/fix-notes.ts`). Read only off a
+ * comment the loop posted, never on the marker alone.
+ */
+export const OUT_OF_SCOPE_NOTE_MARKER = "agent-fix:out-of-scope";
+
 // Headings and markers in posts.
 
 /**
@@ -123,6 +161,23 @@ export const DRAFT_NOTE_START = "<!-- agent:draft-note -->";
 export const DRAFT_NOTE_END = "<!-- /agent:draft-note -->";
 
 /**
+ * The PRD PR's **`Closes` block**: the parent and every sub-issue still open,
+ * on one line, each with its own keyword, since GitHub reads a closing keyword
+ * anywhere in the body. So merging the PRD PR closes exactly the work it
+ * holds, and nothing closes before that. Workflow-owned like the progress
+ * table, between its own markers, which the review's rewrite of the summary
+ * splices around. Written by `implement-prd:publish` into the frame, and
+ * appended to a PRD PR an older release opened, which has no block.
+ */
+export const CLOSES_START = "<!-- agent:closes -->";
+
+export const CLOSES_END = "<!-- /agent:closes -->";
+
+/** The `Closes` block for `parent` and its sub-issues still `open`, markers and all. */
+export const closesBlock = (parent: number, open: readonly number[]): string =>
+  `${CLOSES_START}\nCloses ${[parent, ...open].map((issue) => `#${issue}`).join(", closes ")}\n${CLOSES_END}`;
+
+/**
  * The **progress table** on a PRD PR's note: one row per sub-issue, between
  * these markers, workflow-owned and rendered from state
  * (`shared/progress-list.ts`).
@@ -138,6 +193,29 @@ export const PROGRESS_END = "<!-- /agent:progress -->";
  * to the workflows' copies by a test.
  */
 export const FINAL_REVIEW_MARK = "<!-- agent:final-review requested -->";
+
+/**
+ * The chain's first run's comment on the PRD parent, saying which sub-issue
+ * it builds first, ends with this: a retry of a first run that stopped finds
+ * the comment it posted by it, and posts no second (`implement-prd:gate`).
+ */
+export const PRD_STARTED_MARK = "<!-- agent:prd-started -->";
+
+/**
+ * The end of the note on an approved slice's sub-issue, naming the head it
+ * was approved on: a retry past the same approval finds the note it posted by
+ * it, and posts no second (`implement-prd:gate`).
+ */
+export const sliceApprovedMark = (sha: string): string => `<!-- agent:slice-approved ${sha} -->`;
+
+/**
+ * The end of the **post-merge checklist** (#544): the comment the follow-ups
+ * run posts on a merged pull request, listing each linked brief's *After
+ * merge, by a human* items. A re-run finds the checklist it posted by it, and
+ * posts no second. A selector, not a control: only a comment one of the loop's
+ * accounts posted counts, since anyone who can comment can type it.
+ */
+export const POST_MERGE_CHECKLIST_MARK = "<!-- agent:post-merge-checklist -->";
 
 /**
  * The **status line** (#298): one line at the top of the PRD PR's note, saying
@@ -209,6 +287,99 @@ export const TRIAGE_LABEL = "needs-triage";
  */
 export const FOLLOW_UP_STUB_LABEL = "pr-follow-up";
 
+/**
+ * JSON that survives being put inside an HTML comment.
+ *
+ * `<` and `>` are escaped into the JSON rather than stripped: prose carried in
+ * the payload may legitimately contain `-->`, which would end the comment early
+ * and truncate what is left to invalid JSON — a reader that files nothing
+ * rather than one that files three. `JSON.parse` decodes the escapes, so the
+ * round trip is exact.
+ *
+ * Shared by every payload a marker carries deliberately. The block in a review
+ * body and the dedup payload on a filed stub are written by different halves of
+ * the feature and read by the same one, and this hazard is identical in both.
+ */
+export const embeddableJson = (value: unknown): string =>
+  JSON.stringify(value).replace(/</g, "\\u003c").replace(/>/g, "\\u003e");
+
+/**
+ * The stub payload's shape, versioned for the same reason the review block is
+ * and on its own timeline (#81): the two are written and read by different
+ * pairs of releases, and the gap this one spans is the longer of the two: a key
+ * written into an issue is read back by every run after it, for as long as that
+ * issue exists, since the stubs are listed open and closed, and a `wontfix`
+ * closure is the case that most needs its key to still match.
+ *
+ * Deliberately **not** the block's `FOLLOW_UPS_VERSION`, which they shared
+ * until this was split out. Moving one to reshape the other's payload is a cost
+ * with no connection to the change that caused it: while they shared one, a
+ * bump here also refused every findings block already posted by the previous
+ * release, filing nothing for pull requests that recorded their findings
+ * correctly. `embeddableJson` stays shared, because a JSON escaper is not the
+ * coupling.
+ */
+export const STUB_KEY_VERSION = 2;
+
+/**
+ * The key a stub is matched on, written into the stub and read back on the next
+ * run. Never the prose: a stub may be reworded freely, and a matcher that read
+ * the prose would break on the first person who tidied one up.
+ *
+ * It answers **two** questions with different authority (#82), which is why
+ * `location` is written verbatim and `seq` is written at all:
+ *
+ * | | Question | Fields | Authority |
+ * |---|---|---|---|
+ * | Identity | did this run already file this finding? | `pr` + `location` + `seq` | binding |
+ * | Relatedness | is there an issue a triager should see? | `location`, normalised | advisory |
+ *
+ * One key served both until #82 and could not: it was the normalised path, so
+ * two findings in one file were one finding, and the loser of that was skipped
+ * rather than linked. Storing the normalised form is what made identity as
+ * coarse as relatedness, so the raw string is what goes in and normalisation
+ * happens on the way back out.
+ *
+ * Version `2` makes every stub the previous release filed unmatchable, so the
+ * next review raising a finding at one of those paths files fresh rather than
+ * linking. Accepted on the grounds the planner's `stubKey` states: an
+ * unreadable key files a duplicate rather than skipping a real finding, which
+ * is one click to close.
+ *
+ * Moved here byte for byte from the planner's `dedupPayload` (#510), so the
+ * read-back and the planner name one spelling; `tests/record.test.ts` pins its
+ * bytes. The parser stays with the planner (`stubKey`).
+ */
+export const stubMarker = (location: string, prNumber: number, seq: number): string =>
+  `<!--${embeddableJson({ version: STUB_KEY_VERSION, location, pr: prNumber, seq })}-->`;
+
+/**
+ * What `follow-ups:conclude` says of a filing run that stopped (#511), word
+ * for word as the shell step *Report the failure on the PR* said it before:
+ * the reason it gives where nothing more is known, and the retry. The retry
+ * is the marker's: it stays on a run that stopped, and re-adding a label
+ * already there fires no event, so the gesture is remove, then add. Since
+ * #544 the run posts the post-merge checklist first, on every merge, so the
+ * retry names it too: on a merge without the label, adding it is the retry,
+ * and a retry posts no second checklist. Adding it also files, and removing
+ * it is the opt-out of filing, so the retry says so, and names the one route
+ * that does not file: a re-run of the job, which reads the label live.
+ */
+export const FOLLOW_UPS_STOPPED = {
+  timedOut: (minutes: string): string => `It timed out after ${minutes} minutes.`,
+  cancelled: "It was cancelled before it finished, by hand or by GitHub.",
+  noReason: "It stopped without giving a reason. The workflow run's log has the details.",
+  retry: `The post-merge checklist may not have been posted, and some follow-up issues may not have been filed. To try again, remove \`${FOLLOW_UPS_LABEL}\` and add it back. Where it is not on, adding it is the retry, but it also files the follow-ups the review recorded; re-running the failed job on Actions retries without filing. Nothing is posted or filed twice.`,
+} as const;
+
+/**
+ * The comment a stopped filing run posts on its pull request, in the one
+ * pattern every stopped run's takes (#253): `sentence`, already a sentence,
+ * then the run's link and the retry.
+ */
+export const followUpsStoppedComment = (sentence: string, runUrl: string): string =>
+  `**\`${FOLLOW_UPS_LABEL}\` stopped:** ${sentence}\n\n[Workflow run](${runUrl}) · ${FOLLOW_UPS_STOPPED.retry}\n`;
+
 // The orchestrator a repository is served by.
 
 /**
@@ -223,14 +394,6 @@ export const ORCHESTRATOR_VARIABLE = "AGENT_ORCHESTRATOR";
 
 export const SERVICE_ORCHESTRATOR = "service";
 
-/**
- * The trigger labels the service orchestrator answers on a repository that
- * opts in, and the one list of them: the dispatcher reads it to decide what is
- * a job, and `doctor` to name the labels nothing answers there. Every other
- * `agent:*` label waits for its workflow to move into commands (#410).
- */
-export const SERVICE_LABELS: readonly string[] = [REVIEW_LABEL];
-
 // Branch patterns.
 
 /**
@@ -240,10 +403,91 @@ export const SERVICE_LABELS: readonly string[] = [REVIEW_LABEL];
  */
 export const PRD_BRANCH_PREFIX = "agent/prd-";
 
+/**
+ * What an issue branch's name starts with: `agent/issue-<n>-<slug>`, the
+ * branch `implement` builds a standalone issue on, and the head of its PR.
+ */
+export const ISSUE_BRANCH_PREFIX = "agent/issue-";
+
+/**
+ * The branch `implement` builds issue `issue` on, its slug from `title`:
+ * lowercased, every run of anything but `[a-z0-9]` one `-`, the ends trimmed,
+ * then cut to 50, which can leave a trailing `-` the trim came too early to
+ * take. Byte for byte what the shell step it replaced wrote, on the runner's
+ * `C.UTF-8` locale, so a retry lands on the branch an older release named:
+ * only ASCII is lowercased there, and every other character is a separator,
+ * so `toLowerCase`, which turns `İ` into an ASCII `i`, would name another
+ * branch.
+ */
+export const issueBranch = (issue: number, title: string): string => `${ISSUE_BRANCH_PREFIX}${issue}-${slugOf(title)}`;
+
+/**
+ * Where a stopped fix run on pull request `pr` leaves its commits, its
+ * `RESCUE_BRANCH`: `agent/rescue/fix-<pr>`, as `fix.yml` names it for its
+ * steps. The service's fix job names it from here.
+ */
+export const fixRescueBranch = (pr: number): string => `agent/rescue/fix-${pr}`;
+
+/**
+ * Where a stopped implement-prd run on PRD parent `parent` leaves its commits,
+ * its `RESCUE_BRANCH`: `agent/rescue/prd-<parent>`, as `implement-prd.yml`
+ * names it for its steps. The service's implement-prd job names it from here.
+ */
+export const prdRescueBranch = (parent: number): string => `agent/rescue/prd-${parent}`;
+
+/**
+ * The stable half of every PRD branch of parent `parent`, `agent/prd-<parent>-`,
+ * with the dash that stops #17 matching #171's branch: what the PRD branch is
+ * found by, since the slug half comes from an editable title.
+ */
+export const prdBranchStem = (parent: number): string => `${PRD_BRANCH_PREFIX}${parent}-`;
+
+/**
+ * The PRD branch a chain's first run names for parent `parent`, its slug from
+ * `title` as `issueBranch`'s is. Only ever the name of a branch that does not
+ * exist yet: a chain already started is found by `prdBranchStem`.
+ */
+export const prdBranch = (parent: number, title: string): string => `${prdBranchStem(parent)}${slugOf(title)}`;
+
+/** A branch's slug, as the shell steps the commands replaced wrote it. */
+const slugOf = (title: string): string =>
+  title
+    .replace(/[A-Z]/g, (letter) => letter.toLowerCase())
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, 50);
+
+/**
+ * What a pull request's body says to close issue `issue` with, as a match:
+ * `Closes`, `Fixes` or `Resolves`, any case, then `#<issue>` and a word
+ * boundary, so `#12` is not `#123`. A PR whose body carries it is the issue's,
+ * and `implement` refuses to open a second.
+ */
+export const closingReference = (issue: number): RegExp => new RegExp(String.raw`(closes|fixes|resolves)\s+#${issue}\b`, "i");
+
+/**
+ * A pull request's **linked issue**: the first issue a closing keyword in its
+ * body names, its number the first group. On a PRD PR that is the parent,
+ * which its `Closes` block names first. The review reads its criteria from it,
+ * and the follow-ups run its post-merge checklist (#544).
+ */
+export const LINKED_ISSUE = /(?:closes|fixes|resolves)\s+#(\d+)/i;
+
 // Commit trailers.
 
 /** The trailer key a build run's commits carry, as `Agent-Slice: #<sub>`. */
 export const SLICE_TRAILER = "Agent-Slice";
+
+/** The `Agent-Slice` trailer naming sub-issue `sub`, as `implement-prd:publish` writes it. */
+export const sliceTrailer = (sub: number): string => `${SLICE_TRAILER}: #${sub}`;
+
+/**
+ * A line of a commit message that is an `Agent-Slice` trailer, the sub-issue
+ * it names as its group: the key in any case, as git's own parser reads it,
+ * and nothing else on the line. Global and multiline, for `matchAll` over a
+ * whole message.
+ */
+export const SLICE_TRAILER_LINE = new RegExp(String.raw`^${SLICE_TRAILER}:[ \t]*#([0-9]+)[ \t]*$`, "gim");
 
 /**
  * The trailer key `implement-prd`'s own merge of the default branch carries,
@@ -254,3 +498,7 @@ export const SLICE_TRAILER = "Agent-Slice";
  * it as a slice's commit.
  */
 export const CATCH_UP_TRAILER = "Agent-Catch-Up";
+
+/** The message of `implement-prd`'s merge of `base` into the PRD branch `branch`, made before slice `sub`. */
+export const catchUpMessage = (base: string, branch: string, sub: number): string =>
+  `Merge ${base} into ${branch}\n\n${CATCH_UP_TRAILER}: #${sub}`;

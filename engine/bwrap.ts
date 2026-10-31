@@ -15,18 +15,37 @@
  * invisible but `/usr`, a few named files under `/etc`, and the read-only
  * directories the settings name for the toolchain.
  *
+ * What the checkout holds outside git, the dependencies and build output the
+ * repository's setup left there, is carried in as well: Sandcastle fills the
+ * worktree from a bundle, which holds only history, so without it the agent
+ * would work without what its verify command needs. The provider copies each
+ * untracked path into the sandbox's home as it is created, and `CARRY_HOOKS`,
+ * which the run is started with, links them into the worktree once Sandcastle
+ * has cloned it there. Each is excluded there too, so Sandcastle's copy-out,
+ * which hands back every untracked path that is not ignored, never takes what
+ * was carried in for the agent's own work.
+ *
+ * The sandbox's network is its own loopback and nothing else (#461), so the
+ * proxy its settings name is the only way out rather than a variable a tool
+ * may ignore. For the life of each sandbox a host end (`proxy-relay.ts`)
+ * listens on a socket private to it and forwards to the proxy, and every
+ * `exec` binds the socket in and starts the inside end before its command.
+ *
  * Engine code (ADR 0005): it knows nothing of the loop and reads no
  * environment. Its settings are arguments, and the agent driver hands them in.
  * It uses the host's temporary directory as Sandcastle does, since Sandcastle
  * writes its session files there and the guard below has to find them.
  */
-import { spawn } from "node:child_process";
+import { execFile, spawn } from "node:child_process";
 import { existsSync } from "node:fs";
-import { cp, mkdir, mkdtemp, readdir, realpath, rm } from "node:fs/promises";
+import { cp, mkdir, mkdtemp, readdir, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import * as path from "node:path";
 import { createInterface } from "node:readline";
+import { promisify } from "node:util";
 import { createIsolatedSandboxProvider } from "@ai-hero/sandcastle";
+import { bwrapArgs, SANDBOX_HOME, SANDBOX_WORKTREE } from "./bwrap-args.js";
+import { startProxyRelay } from "./proxy-relay.js";
 
 /** What a `bwrap` sandbox is given, beyond what Sandcastle hands each run. */
 export interface BwrapSettings {
@@ -34,30 +53,36 @@ export interface BwrapSettings {
   readonly roBinds: readonly string[];
   /** `PATH` inside the sandbox. */
   readonly path: string;
-  /** The proxy every request leaves through, set as every proxy variable. Absent is none. */
-  readonly proxy?: string;
+  /**
+   * The proxy every request leaves through: an `http:` URL with a host, never
+   * `https:`, since the sandbox names it by a loopback address its certificate
+   * would not name (#535), and the sandbox's only way out. Required, since a sandbox with a
+   * network of its own and no proxy reaches nothing, the model's API included.
+   */
+  readonly proxy: string;
   /** The host directory the run starts in, the repository Sandcastle writes its patches under. */
   readonly repoDir: string;
   /** The host's home, under which Sandcastle looks for a session before it resumes one. */
   readonly homeDir: string;
 }
 
-const HOME = "/home/agent";
-const WORKTREE = `${HOME}/workspace`;
+const HOME = SANDBOX_HOME;
+/**
+ * Where, in the sandbox's home, the checkout's untracked paths wait for the
+ * worktree: outside it, since Sandcastle replaces the worktree with its clone.
+ */
+const CARRY = `${HOME}/.carry`;
+/**
+ * The carried paths as exclude patterns, one a line, waiting beside them for
+ * the worktree's `info/exclude`.
+ */
+const CARRY_EXCLUDE = `${HOME}/.carry-exclude`;
+/** Sandcastle's own directory in the checkout, its worktrees and patches: never carried. */
+const SANDCASTLE_DIR = ".sandcastle";
+/** Room for `git ls-files`' list of a checkout's untracked paths. */
+const LIST_BUFFER = 64 * 1024 * 1024;
 /** Output kept per stream for the result; `onLine` sees everything. */
 const TAIL = 1_000_000;
-
-/** Files under `/etc` the toolchain needs: TLS roots, DNS, the user's name. */
-const ETC = [
-  "/etc/ssl",
-  "/etc/ca-certificates",
-  "/etc/resolv.conf",
-  "/etc/hosts",
-  "/etc/nsswitch.conf",
-  "/etc/passwd",
-  "/etc/group",
-  "/etc/alternatives",
-];
 
 /** Map a sandbox path to the host path that backs it, or refuse. */
 export const toHost = (root: string, sandboxPath: string): string => {
@@ -95,6 +120,63 @@ export const assertHostTarget = (repoDir: string, hostPath: string): void => {
   if (!inPatches && !isSession) throw new Error(`bwrap: refusing to write outside the patch directory: ${abs}`);
 };
 
+/**
+ * What the checkout at `repoDir` holds outside git, each path relative to it:
+ * everything untracked, ignored or not, with a wholly untracked directory
+ * named once, and Sandcastle's own directory left out. What the agent would
+ * see in the checkout itself, with no sandbox, beside what git checks out.
+ */
+export const untrackedPaths = async (repoDir: string): Promise<string[]> => {
+  const { stdout } = await promisify(execFile)("git", ["-C", repoDir, "ls-files", "-z", "--others", "--directory"], {
+    maxBuffer: LIST_BUFFER,
+  });
+  return stdout
+    .split("\0")
+    .map((entry) => entry.replace(/\/$/, ""))
+    .filter((entry) => entry !== "" && entry !== SANDCASTLE_DIR && !entry.startsWith(`${SANDCASTLE_DIR}/`));
+};
+
+/**
+ * Whether `entry` can be carried: a name with a line break in it cannot be
+ * written as an exclude pattern, and Sandcastle's copy-out, which reads `git
+ * ls-files` a line at a time, could not name it either, so it is left behind.
+ */
+export const carriable = (entry: string): boolean => !/[\n\r]/.test(entry);
+
+/**
+ * The `info/exclude` line that matches `entry`, a path relative to the
+ * worktree, and nothing else: anchored at the worktree's root, with every
+ * character a pattern reads specially, and a trailing space, escaped.
+ */
+export const excludePattern = (entry: string): string =>
+  `/${entry.replace(/[\\*?[!#]/g, "\\$&").replace(/ +$/, (spaces) => spaces.replace(/ /g, "\\ "))}`;
+
+/**
+ * The hooks a run in this provider is started with: once Sandcastle has cloned
+ * the worktree, the carried paths are hard-linked into it, so the copy is made
+ * once, on the host, and the staging directory removed; and their patterns
+ * appended to the worktree's `info/exclude`, so Sandcastle's copy-out, which
+ * takes every untracked path that is not ignored, takes none of them. Without
+ * it a carried symlink pointing out of the sandbox, or at nothing, fails the
+ * copy-out and the agent's commits with it, and every other carried file is
+ * copied back over the checkout's own. A command of its own, with no path in
+ * it: the paths it moves are the checkout's, so none of them is ever a word of
+ * a command line.
+ */
+export const CARRY_HOOKS = {
+  sandbox: {
+    onSandboxReady: [
+      {
+        command:
+          `if [ -d ${CARRY} ]; then cp -al ${CARRY}/. . && rm -rf ${CARRY}; fi && ` +
+          `if [ -f ${CARRY_EXCLUDE} ]; then exclude="$(git rev-parse --git-path info/exclude)" && ` +
+          `mkdir -p "$(dirname "$exclude")" && cat ${CARRY_EXCLUDE} >> "$exclude" && rm -f ${CARRY_EXCLUDE}; fi`,
+        timeoutMs: 10 * 60_000,
+      },
+    ],
+  },
+} as const;
+
 const sessionsIn = (root: string): string => path.join(root, "home", ".claude", "projects");
 
 /** Sandcastle's own naming for a session file's directory (its `encodeProjectPath`). */
@@ -131,10 +213,6 @@ export const bwrap = (settings: BwrapSettings) => {
     }
   };
 
-  const { proxy } = settings;
-  const proxyVars =
-    proxy === undefined ? [] : ["HTTPS_PROXY", "HTTP_PROXY", "https_proxy", "http_proxy"].flatMap((name) => ["--setenv", name, proxy]);
-
   return createIsolatedSandboxProvider({
     name: "bwrap",
     create: async ({ env }) => {
@@ -143,50 +221,48 @@ export const bwrap = (settings: BwrapSettings) => {
       await mkdir(path.join(root, "home", "workspace"), { recursive: true });
       await mkdir(path.join(root, "tmp"), { recursive: true });
       if (sessionStore !== undefined) await cp(sessionStore, sessionsIn(root), { recursive: true });
+      // Copied, never linked, from the checkout: what the agent changes stays
+      // in the sandbox. A symlink is copied as the link it is, never followed,
+      // so one setup left pointing at a host file brings nothing of it in.
+      const carried = (await untrackedPaths(settings.repoDir)).filter(carriable);
+      for (const entry of carried) {
+        const target = toHost(root, path.posix.join(CARRY, entry));
+        await mkdir(path.dirname(target), { recursive: true });
+        await cp(path.join(settings.repoDir, entry), target, { recursive: true, verbatimSymlinks: true });
+      }
+      if (carried.length > 0) {
+        await writeFile(toHost(root, CARRY_EXCLUDE), carried.map((entry) => `${excludePattern(entry)}\n`).join(""));
+      }
+      const relay = await startProxyRelay(settings.proxy).catch(async (error: unknown) => {
+        await rm(root, { recursive: true, force: true });
+        throw new Error(`bwrap: ${error instanceof Error ? error.message : String(error)}`);
+      });
 
-      const args = (cwd: string): string[] => [
-        "--unshare-all",
-        "--share-net",
-        "--die-with-parent",
-        "--new-session",
-        "--cap-drop", "ALL",
-        "--hostname", "sandbox",
-        "--clearenv",
-        "--ro-bind", "/usr", "/usr",
-        "--symlink", "usr/bin", "/bin",
-        "--symlink", "usr/sbin", "/sbin",
-        "--symlink", "usr/lib", "/lib",
-        ...(existsSync("/usr/lib64") ? ["--symlink", "usr/lib64", "/lib64"] : []),
-        ...ETC.filter((p) => existsSync(p)).flatMap((p) => ["--ro-bind", p, p]),
-        "--dev", "/dev",
-        "--proc", "/proc",
-        // Writable state, before the read-only toolchain binds: a later mount
-        // over the same tree wins, and a tmpfs over /home would hide them.
-        "--tmpfs", "/home",
-        "--bind", path.join(root, "home"), HOME,
-        "--bind", path.join(root, "tmp"), "/tmp",
-        ...settings.roBinds.flatMap((p) => ["--ro-bind", p, p]),
-        "--chdir", cwd,
-        "--setenv", "HOME", HOME,
-        "--setenv", "PATH", settings.path,
-        "--setenv", "LANG", "C.UTF-8",
-        "--setenv", "TMPDIR", "/tmp",
-        ...proxyVars,
-        // Telemetry and the auto-updater reach hosts no egress allowlist should
-        // need to name; the agent's own work needs only the API.
-        "--setenv", "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC", "1",
-        "--setenv", "DISABLE_AUTOUPDATER", "1",
-        ...Object.entries(env).flatMap(([k, v]) => ["--setenv", k, v]),
-      ];
+      const args = (cwd: string): string[] =>
+        bwrapArgs({
+          home: path.join(root, "home"),
+          tmp: path.join(root, "tmp"),
+          roBinds: settings.roBinds,
+          cwd,
+          path: settings.path,
+          relay: { socket: relay.socket, proxy: settings.proxy },
+          env: {
+            // Telemetry and the auto-updater reach hosts no egress allowlist
+            // should need to name; the agent's own work needs only the API.
+            CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: "1",
+            DISABLE_AUTOUPDATER: "1",
+            ...env,
+          },
+        });
 
       return {
-        worktreePath: WORKTREE,
+        worktreePath: SANDBOX_WORKTREE,
 
         exec: (command, opts) =>
           new Promise((resolve, reject) => {
             // No sudo in here: the sandbox has no root to give. Sandcastle
             // itself never asks for it (`sudo: true` appears nowhere in 0.12.0).
-            const child = spawn("bwrap", [...args(opts?.cwd ?? WORKTREE), "sh", "-c", command], {
+            const child = spawn("bwrap", [...args(opts?.cwd ?? SANDBOX_WORKTREE), "sh", "-c", command], {
               stdio: [opts?.stdin === undefined ? "ignore" : "pipe", "pipe", "pipe"],
             });
             const { stdout: out, stderr: err } = child;
@@ -222,6 +298,7 @@ export const bwrap = (settings: BwrapSettings) => {
         },
 
         close: async () => {
+          await relay.close();
           await keepSessions(root);
           await rm(root, { recursive: true, force: true });
         },

@@ -3,12 +3,13 @@ import { createServer, type IncomingMessage, type Server } from "node:http";
 import * as path from "node:path";
 import { hostEnvironment, type InputValues } from "../shared/env.js";
 import { VERSION } from "../shared/manifest.js";
+import { sandboxRefusal } from "../shared/sandbox.js";
 import { createDispatcher, parseOwners, type DoorRequest, type DoorResponse } from "./dispatcher.js";
 import { liveAppGitHub } from "./github-app.js";
-import type { ReviewJob } from "./job.js";
+import type { Job } from "./job.js";
 import type { DISPATCHER, WORKER } from "./settings.js";
 import { jobDoor, oneAtATime, runJob, SUMMARY_FILE } from "./worker.js";
-import { installCli, liveGit, liveLauncher, liveTokens, routeThroughProxy } from "./worker-live.js";
+import { installCli, liveGit, liveLauncher, liveSandbox, liveTokens, routeThroughProxy } from "./worker-live.js";
 
 /**
  * The service's two processes behind HTTP. The dispatcher's two doors, each
@@ -153,12 +154,17 @@ export const serveDispatcher = async (
  * own under `WORK_DIR/runs`, kept afterwards with each subcommand's output
  * directory and log and the run's summary. Each phase's outcome is logged as the job ends.
  * Where `WORKER_PROXY` names a proxy, everything the worker asks of the
- * network, and everything it starts, goes through it.
+ * network, and everything it starts, goes through it. A `bwrap` sandbox with
+ * no `AGENT_SANDBOX_PROXY` is refused before anything is installed (#461).
  */
 export const serveWorker = async (settings: InputValues<typeof WORKER>, stdout: (text: string) => void): Promise<void> => {
   const log = (line: string): void => stdout(`${new Date().toISOString()} ${line}\n`);
   const port = wholeNumber("JOBS_PORT", settings.JOBS_PORT);
   const host = hostEnvironment(proxyUrl("WORKER_PROXY", settings.WORKER_PROXY));
+  // Refused here as a runner would refuse it, but at start: `AGENT_SANDBOX` is
+  // `bwrap` where unset, and every job would otherwise fail the same way.
+  const refusal = sandboxRefusal(settings.AGENT_SANDBOX, settings.AGENT_SANDBOX_PROXY);
+  if (refusal !== undefined) throw new Error(refusal);
   routeThroughProxy(host);
   const prefix = path.join(settings.WORK_DIR, "claude-code", settings.CLAUDE_CODE_VERSION);
   log(`installing the agent's CLI, @anthropic-ai/claude-code@${settings.CLAUDE_CODE_VERSION}, into ${prefix}`);
@@ -175,14 +181,15 @@ export const serveWorker = async (settings: InputValues<typeof WORKER>, stdout: 
     AGENT_SANDBOX_PROXY: settings.AGENT_SANDBOX_PROXY,
   };
 
-  const work = async (job: ReviewJob): Promise<void> => {
+  const work = async (job: Job): Promise<void> => {
     const runDir = path.join(settings.WORK_DIR, "runs", `${new Date().toISOString().replace(/[:.]/g, "-")}-${job.id}`);
     fs.mkdirSync(runDir, { recursive: true });
-    log(`job ${job.id}: reviewing ${job.repo}#${job.pr} at ${job.headSha}, in ${runDir}`);
+    log(`job ${job.id}: ${job.workflow} on ${job.repo}#${"issue" in job ? job.issue : "headSha" in job ? `${job.pr} at ${job.headSha}` : job.pr}, in ${runDir}`);
     const phases = await runJob(job, {
       token: liveTokens(settings.DISPATCHER_TOKEN_URL, settings.WORKER_SECRET, job.id),
       launch: liveLauncher,
       git: liveGit(host),
+      sandbox: liveSandbox(host),
       host,
       agent,
       cliBin,

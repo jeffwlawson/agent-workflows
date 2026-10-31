@@ -210,6 +210,24 @@ given (`C1`, `C2`, …). An id you were not given is dropped. Empty where you we
 
 A criterion you omit is listed as not checked.
 
+## What merged since the brief: `sinceBrief`
+
+Where the brief listed commits since the linked issue's brief was read, the review's ruling on
+them, in one line: whether any changes what a criterion means, naming the criterion and the commit
+where one does, or that none does. Omit it where no commits were listed; one omitted where there
+were is shown as no ruling given.
+
+## What the review's own test run left unrun: `notChecked`
+
+Whether the review ran tests, `ranTests`, and in `skipped` each test or suite exercising code the
+diff changes that its run skipped for want of something in the environment, as `test` and
+`reason`: the reason as the run reported it, or the review's one line on why. Several tests skipped
+in one suite for one reason are one entry naming the suite and how many. Use an empty `skipped`
+where the review ran tests and none of those skipped, and `ranTests: false` where it says it ran
+none. A test the diff itself marks skipped with no condition is not an entry: it is a finding.
+Leave the field out only where the review does not say whether it ran tests; the body then says
+so, and never reads it as no run. It changes no verdict.
+
 ```json
 <output>
 {
@@ -248,7 +266,14 @@ A criterion you omit is listed as not checked.
     { "id": "C1", "status": "met" },
     { "id": "C2", "status": "changed", "reason": "The service answers before the work exists, so the change returns its tracking id instead." },
     { "id": "C3", "status": "unmet", "reason": "The body does not say which tests cover the failure path.", "severity": "low", "path": "src/example.ts", "line": 42 }
-  ]
+  ],
+  "sinceBrief": "None of the listed commits changes what a criterion means: they move code the criteria do not name.",
+  "notChecked": {
+    "ranTests": true,
+    "skipped": [
+      { "test": "the storage suite (7 tests)", "reason": "skipped: the database service is not running here" }
+    ]
+  }
 }
 </output>
 ```
@@ -257,5 +282,6 @@ A criterion you omit is listed as not checked.
 empty array for any of the eight lists with no entries (`verified` is empty when you were
 given no open findings to rule on, `noteRulings` when you were given no notes, and `criteria` when
 you were given no criteria). Leave
-`needsYou` out entirely unless it applies, and `title`, `summary` and the Merge Danger fields out
+`needsYou` out entirely unless it applies, `sinceBrief` out where no commits were listed, `notChecked`
+out only where the review does not say whether it ran tests, and `title`, `summary` and the Merge Danger fields out
 where the brief said this review leaves them as they are.

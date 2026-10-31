@@ -4,9 +4,9 @@ import {
   FIX_LABEL,
   FOLLOW_UPS_LABEL,
   ORCHESTRATOR_VARIABLE,
-  SERVICE_LABELS,
   SERVICE_ORCHESTRATOR,
 } from "../shared/record.js";
+import { SERVICE_LABELS } from "../service/dispatcher.js";
 import {
   passesSecret,
   readInstalledCallers,
@@ -51,7 +51,7 @@ import type { CliIo } from "../cli.js";
  * - **`gatherFacts`** asks GitHub the questions a checkout cannot answer — which
  *   secrets are set, whether Actions may open pull requests, what the default
  *   `GITHUB_TOKEN` grants a job that asks for nothing, which labels exist, which Actions policies apply,
- *   what the fix-round budget, time limit and orchestrator variables hold, and what this package's latest release is. Every one of them can come back
+ *   what the fix-round budget, time limit, orchestrator and setup variables hold, and what this package's latest release is. Every one of them can come back
  *   unreadable (no `gh`, no auth, no admin), and an unreadable answer is
  *   reported as unknown rather than folded into a pass.
  * - **`diagnose`** rules on the callers and those facts and nothing else. It is
@@ -147,7 +147,16 @@ export interface RepoFacts {
    * where that could not be known, which is neither orchestrator.
    */
   readonly orchestrator: string | null | undefined;
+  /**
+   * The repository's setup on the service, `AGENT_SETUP` (#525): its value,
+   * `null` where it is set nowhere, and `undefined` where that could not be
+   * known. Ruled on only where the service orchestrator serves the repository.
+   */
+  readonly agentSetup: string | null | undefined;
 }
+
+/** The repository variable the service reads the repository's setup from. */
+export const SETUP_VARIABLE = "AGENT_SETUP";
 
 /** The repository variable the review reads its fix-round budget from (#201). */
 export const FIX_ROUNDS_VARIABLE = "AGENT_MAX_FIX_ROUNDS";
@@ -1388,9 +1397,36 @@ const diagnoseService = (
     });
   }
 
+  // The service runs no caller's `setup:` (#525), so one passed where
+  // `AGENT_SETUP` is unset is an install that no longer happens. Set to
+  // anything, the variable is the admin's answer, and not compared.
+  const setups = callers.filter((caller) => caller.setup !== undefined);
+  if (setups.length > 0 && (facts.agentSetup === null || facts.agentSetup === "" || facts.agentSetup === undefined)) {
+    const passed = setups
+      .map((caller) => `${caller.file}'s \`${caller.jobId}\` job passes \`setup: ${caller.setup ?? ""}\``)
+      .join(", ");
+    add({
+      severity: "warning",
+      check: "repository setup",
+      problem:
+        (facts.agentSetup === undefined
+          ? `Could not read the repository variable \`${SETUP_VARIABLE}\`, and ${passed}. `
+          : `${passed}, and the repository variable \`${SETUP_VARIABLE}\` is ` +
+            `${facts.agentSetup === null ? "unset" : "empty"}. `) +
+        `The service orchestrator does not run a caller's \`setup:\` input and reads ` +
+        `\`${SETUP_VARIABLE}\` instead, so ${facts.agentSetup === undefined ? "unless it is set, " : ""}` +
+        `its runs start with nothing installed.`,
+      fix:
+        `${facts.agentSetup === undefined ? "Where it is unset, set" : "Set"} \`${SETUP_VARIABLE}\` to the install and setup this repository needs ` +
+        `(docs/deploying-the-service.md#the-repositorys-setup).`,
+    });
+  }
+
   // The one list the dispatcher reads too, so the two cannot disagree. The
-  // follow-ups marker is named with the trigger labels: a review here still
-  // adds it, and on merge nothing files.
+  // follow-ups marker is named with the trigger labels, since a review adds
+  // it and the service answers it. This release's service answers every one,
+  // so the check names nothing; it stays for a label a release adds before
+  // the service answers it.
   const unanswered = [...TRIGGER_LABELS.map((label) => label.name), FOLLOW_UPS_LABEL].filter(
     (name) => !SERVICE_LABELS.includes(name),
   );
@@ -1407,29 +1443,6 @@ const diagnoseService = (
       fix:
         `Do those steps by hand while the service serves this repository, or delete ` +
         `\`${ORCHESTRATOR_VARIABLE}\` to have GitHub Actions answer every label again.`,
-    });
-  }
-
-  // The service runs every review with a budget of 0 while it answers no
-  // `agent:fix`, whatever the variable says. Unset is no setting, so says
-  // nothing; a value that is not a count is ignored here as any other is.
-  if (
-    !SERVICE_LABELS.includes(FIX_LABEL) &&
-    typeof facts.maxFixRounds === "string" &&
-    COUNT.test(facts.maxFixRounds) &&
-    Number(facts.maxFixRounds) > 0
-  ) {
-    add({
-      severity: "warning",
-      check: "fix-round budget",
-      problem:
-        `The repository variable \`${FIX_ROUNDS_VARIABLE}\` is \`${facts.maxFixRounds}\`, but the service ` +
-        `orchestrator answers no \`${FIX_LABEL}\`, so it runs every review with a fix-round budget of ` +
-        `0: no review here adds \`${FIX_LABEL}\`, and every verdict asking for changes leaves the round ` +
-        `to you.`,
-      fix:
-        `Set it to \`0\` so it says what happens here. It counts again if you switch back to GitHub ` +
-        `Actions.`,
     });
   }
 
@@ -1616,6 +1629,7 @@ export const gatherFacts = (dir: string, packageName: string = PACKAGE_NAME): Re
     FIX_ROUNDS_VARIABLE,
     ...TIMEOUT_VARIABLES.map((v) => v.name),
     ORCHESTRATOR_VARIABLE,
+    SETUP_VARIABLE,
   ];
   const variables = (endpoint: string): readonly string[] | undefined =>
     list(
@@ -1659,6 +1673,7 @@ export const gatherFacts = (dir: string, packageName: string = PACKAGE_NAME): Re
         ? undefined
         : Object.fromEntries(TIMEOUT_VARIABLES.map(({ name }) => [name, variable(name)])),
     orchestrator: variable(ORCHESTRATOR_VARIABLE),
+    agentSetup: variable(SETUP_VARIABLE),
   };
 };
 

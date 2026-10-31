@@ -16,7 +16,7 @@ the middle. One workflow per label transition, near enough:
 | `agent:review` on a **PR** | `review` | wait for CI, review the diff, verify what earlier rounds found and resolve what landed, mark ready |
 | `agent:fix` on a **PR** | `fix` | act on review feedback, reply to every thread it is asked about and close none, record what it did with the conversation comments, ask for a re-review if it pushed or left an out-of-scope note |
 | `agent:update-branch` on a **PR** | `update-branch` | merge the base branch in, resolve conflicts, carry the verdict over or ask for a re-review |
-| `agent:follow-ups` on a **merged PR** | `follow-ups` | file the out-of-scope findings its review recorded, as `needs-triage` stubs |
+| `agent:follow-ups` on a **merged PR** | `follow-ups` | file the out-of-scope findings its review recorded, as `needs-triage` stubs; on **every** merge, labelled or not, post the linked briefs' *After merge, by a human* checklist |
 
 `implement` and `implement-prd` share one label and partition on **issue shape**: a parent with
 sub-issues goes to the PRD chain, everything else to the single-issue run. The chain works one
@@ -30,7 +30,8 @@ default branch, so the CI configured for the default branch runs on every slice 
 to set up. No slice has a branch or a pull request of its own (PRD #222).
 
 A sub-issue's commits on the PRD branch are its **slice range**. Every commit a build run makes
-carries an `Agent-Slice: #<sub>` trailer, written by the workflow before the push, and
+carries an `Agent-Slice: #<sub>` trailer, written by `implement-prd:publish` before the push, out of
+the agent's reach (#502), and
 `shared/slice-ranges.ts` derives the ranges from the PRD branch's first-parent log: a slice starts
 at the first parent of its earliest trailered commit and ends where the next one starts. Fix, human
 and conflict-resolution commits carry no trailer and belong to the range they fall in, a
@@ -279,9 +280,13 @@ writers of it would break "the newest record wins".
 **And the review body is where the rounds are kept** (#109, decisions 8 and 9). It is a findings
 record, not a rendering of the latest pass: the round header, `## Agent review`, the assessment, one sentence the
 review wrote naming what is unresolved, the step, a count, then *Open*, *Previously missed*,
-*Resolved since last review*, *Acceptance criteria* and *Follow-ups*, then *How this was checked*,
-then a rule and the run. A group with nothing in it is omitted and that rule is the only
-divider in the body. Every entry carries a **severity** — `high` / `medium` / `low`, which orders the list
+*Still open* (closures GitHub refused, #257), *Resolved since last review*, *Acceptance criteria*,
+*Since the brief*, *Not checked here*, *Follow-ups* and *Notes from `agent:fix` not filed*, then
+*How this was checked*, then a rule and the run. A group with nothing in it is
+omitted, except *Not checked here*, which is on every review (#543): what the review's own test run
+skipped of the tests exercising the change, for want of something in the environment, with the
+reason; or that it skipped none, ran none, or did not say. Its content, never its absence, says
+what went unchecked, and it derives nothing. The horizontal rule before the run is the only divider in the body. Every entry carries a **severity** — `high` / `medium` / `low`, which orders the list
 and decides nothing else; a test permutes it across a review and holds the verdict identical. It is
 rendered as a **chip this repository hosts**, pinned to the release that posted it, and the thread
 the entry points at opens with the same one (#135) — one badge, so the two surfaces cannot label one
@@ -329,6 +334,19 @@ case it was, and `review:publish` writes the line. On a PRD
 PR a slice round is handed its own sub-issue's criteria, and the final review is handed none and
 says nothing: each slice was held to its own in its round, and the final review reads what each
 round recorded.
+
+Wherever a review is handed criteria, it is also **handed what changed since the brief** (#541).
+The brief is the text the criteria came from; the workflow reads the commit its *Where things are*
+section says it was read at, and lists the commits since then that touched the files that section
+names: on the base branch, and on a slice round also the PRD branch's commits before that slice,
+never the commits under review. The review rules in one line on whether any of them changes what a
+criterion means, and moves a criterion through the rulings it already has (*changed*, *unmet*, or
+`needsYou`), so the list adds no verdict of its own. `review:publish` shows the list and the ruling
+in a *Since the brief* group beside *Acceptance criteria*, naming any named file gone from the base
+or path not found at the read-at commit, and on a slice round where the PRD branch's commits
+before it could not be listed; where the check could not run (no such section, no read-at commit,
+one that does not resolve or is not on the base, no named file at it, or git failing to read it) it
+says why in one line there instead.
 
 **What the change is lives in the pull request's body, not the review** (#218). The run that opens
 a pull request writes its **frame** once and never again, in the order #298 settled: a note saying
@@ -389,7 +407,12 @@ draft.
 `follow-ups` is the row that is not quite a label transition. The **merge** is what fires it and
 the label is a marker it reads — re-adding that label to a closed PR is a manual entry point rather
 than the normal path — and it is the one workflow an adopter can decline by not copying its caller
-(`docs/ADOPTING.md` §4). It is also the only one that runs **no model**: the review agent records
+(`docs/ADOPTING.md` §4). It has **two jobs** (#544). On every merge, labelled or not, it posts one
+**post-merge checklist**: the *After merge, by a human* items of the linked issue's latest brief,
+the one the review reads its criteria from, or on a PRD PR of the parent's and every sub-issue's,
+each under its issue, read from trusted text only and cleaned, and posted once. Then, only where
+the label is on, it **files**: the label gates the filing and nothing else, since removing it is
+the opt-out of filing, not of being reminded. It is also the only one that runs **no model**: the review agent records
 the findings and cannot file them, and the workflow holding `issues: write` decides what to file
 with a pure function (`docs/parity.md` §10). On a PRD chain it fires once, at the PRD PR's merge, since nothing
 merges into the PRD branch through a pull request any more (#247). That PR's newest review carries
@@ -438,9 +461,25 @@ guards written as steps, such as the preflight refusals and the bundle check, an
 which token each write uses. [ADR 0003](./docs/adr/0003-reusable-keeps-what-only-actions-can-do.md)
 records the rule and why it replaced "every guard and every step" in the reusable. `review` has
 moved (PRD #409): every one of its steps that reads or changes the record or decides is a command.
-**Five reusables still run their steps as inline shell**: `implement`, `implement-prd`, `fix`,
-`update-branch` and `follow-ups`, whose filing alone is a command, `follow-ups:file`. Until a
-reusable has moved, a fix to one of its steps still goes in its YAML.
+So has `fix` (PRD #466): its gate job's work is `fix:gate`, the rescue lookup in its agent's job
+`fix:prepare`, its bundling `fix:bundle`, its publish job's success arm `fix:publish` and the
+ending after it `fix:conclude`, and `fix.yml` runs no inline shell that decides. So has
+`update-branch` (PRD #480): its gate job's work is `update-branch:gate` and `update-branch:merge`,
+the repeated merge in its agent's job `update-branch:prepare`, its bundling
+`update-branch:bundle`, its publish job's success arm `update-branch:publish` and the ending after
+it `update-branch:conclude`, and `update-branch.yml` runs no inline shell that decides. So has
+`implement` (PRD #489): its gate job's work is `implement:gate`, the branch's creation in its
+agent's job `implement:prepare`, its bundling `implement:bundle`, its publish job's success path
+`implement:publish` and the ending after it `implement:conclude`, and `implement.yml` runs no
+inline shell that decides. So has `implement-prd` (PRD #496, PRD #497): its gate job's work is
+`implement-prd:gate`, its catch-up job's `implement-prd:catch-up`, the PRD branch's preparation in
+its agent's job `implement-prd:prepare`, its bundling `implement-prd:bundle`, its publish job's
+success path `implement-prd:publish` and the ending after it `implement-prd:conclude`, and
+`implement-prd.yml` runs no inline shell that decides. And so has `follow-ups` (PRD #508), the
+last: its filing is `follow-ups:file`, reading and writing through the engine, and the ending after
+it `follow-ups:conclude`, and `follow-ups.yml` runs no inline shell that decides. **Every reusable
+has moved**: what shell is left records facts only Actions has (a clock, a job's status), and a fix
+to a step goes in its command.
 
 **A runner** is the part of the package that does an agent's work: TypeScript plus a prompt, invoked
 as one subcommand of one published binary. It takes its whole input from the environment; passing
@@ -451,10 +490,14 @@ an argument is refused rather than ignored. Its boundary with whatever invokes i
 that reads or changes the PR or issue, or decides anything, and starts no agent. It is invoked the
 way a runner is, as one subcommand with no arguments and its whole input in the environment, and
 fails the way a runner does. It is named `<workflow>:<step>`, such as `review:publish`, so a bare
-name is always a runner. `follow-ups:file`, `review:gate`, `review:budget`, `review:collect-checks`,
-`review:red-check-place`, `review:red-check-classify`, `review:publish`, `review:conclude` and
-`review:advance` are the commands today; every other step a command will be still runs as YAML
-shell, in the five reusables that have not moved. A command that
+name is always a runner. `fix:gate`, `fix:prepare`, `fix:bundle`, `fix:publish`, `fix:conclude`, `follow-ups:file`, `follow-ups:conclude`,
+`implement:gate`, `implement:prepare`, `implement:bundle`, `implement:publish`, `implement:conclude`, `implement-prd:gate`, `implement-prd:catch-up`,
+`implement-prd:prepare`, `implement-prd:bundle`, `implement-prd:publish`, `implement-prd:conclude`, `review:gate`,
+`review:budget`, `review:collect-checks`, `review:red-check-place`, `review:red-check-classify`,
+`review:publish`, `review:conclude`, `review:advance`, `update-branch:gate`, `update-branch:merge`,
+`update-branch:prepare`, `update-branch:bundle`, `update-branch:publish` and
+`update-branch:conclude` are the commands today, and no step that decides still runs as YAML
+shell. A command that
 only decides or reads, as `review:gate` does before the review job's checkout (#420),
 `review:budget` does for the fix-round budget after it (#331) and `review:collect-checks` does
 for the CI wait (#421), is handed the GitHub reader and no writer, and what it settles leaves it
@@ -574,23 +617,60 @@ is `service/`: not a workflow's folder, not `shared/`, and not `engine/`, since 
 contract and the record, which makes it loop code.
 
 The **dispatcher** (#456) is the only holder of the GitHub App's key. GitHub's webhooks arrive at
-one of its doors, and an `agent:review` delivery on a repository that opted in, with the App
+one of its doors, and a trigger label's delivery on a repository that opted in, with the App
 installed on its owner's account or one its `EXTRA_OWNERS` lists, becomes a **job**
-for the worker: what the label's event carried, the variables review reads, the App's login read
-off the App's own record, an id, a deadline and the release. A job carries no token. The worker
-asks for one at the other door at the start of each phase, `read` or `write`, and the dispatcher
+for the worker: what the label's event carried, the repository variables the service reads, the App's login read
+off the App's own record, an id, a deadline and the release. A job has a **kind**, one per workflow
+the service serves, named in its `workflow` field and routed to from the trigger label: at this
+release the kinds are `review` (`ReviewJob`), from `agent:review`, `fix` (`FixJob`), from
+`agent:fix`, and `update-branch` (`UpdateBranchJob`), from `agent:update-branch`, each on a pull
+request's delivery, and `implement` (`ImplementJob`, #517) and `implement-prd` (`ImplementPrdJob`,
+#518), both from `agent:implement` on an issue's: that label starts two jobs, as it starts two
+workflows on Actions, and each gate defers the other's issue shape without a word, so the
+dispatcher never reads the shape. The last kind, `follow-ups` (`FollowUpsJob`, #519), is the one
+not started by a label alone: every merge of a same-repository pull request starts it, whatever its
+labels (#544), with no author gate, as does `agent:follow-ups` added to a closed pull request, with
+one. Every trigger label the
+loop has is served.
+The map is keyed by event, so a label is answered on the event type it belongs to and on no other,
+and each event has a route of its own reading its own payload: an implement or implement-prd job carries an issue,
+with no head, and the repository's default branch as its base. A job's deadline is its kind's own time limit plus the dispatcher's margin. The labels the service
+answers, `SERVICE_LABELS`, are that map's keys, on either event. The label's sender must be able to write to the
+repository, unless it is the App itself, whose labels the loop's commands add
+([ADR 0008](./docs/adr/0008-service-job-kinds-and-own-app-sender.md)). A job carries no token. The worker
+asks for one at the other door at the start of each phase, `read`, `write` or `push`, and the dispatcher
 mints one for that job's repository alone, before its deadline, after reading the opt-in again, so
 deleting the variable stops a job in flight at its next phase. The job's format is one module,
 `service/job.ts`, which both processes import, so it only has to hold within one release.
 
-The **worker** (#457) runs each job the way `review.yml` runs review, as a **thin adapter**: the
-same subcommands in the same order (`service/worker.ts`), each a child process of its own
-installed package, so the service and every subcommand it runs are one release. It writes nothing
+The **worker** (#457) runs each job the way its workflow's reusable runs it, `review.yml` for a
+`review` job, `fix.yml` for a `fix` job, `update-branch.yml` for an `update-branch` job and
+`implement.yml` for an `implement` job, `implement-prd.yml` for an `implement-prd` job and
+`follow-ups.yml` for a `follow-ups` job, as a **thin adapter**: the same subcommands in the same
+order, under each job's and step's `if:` rather than in order alone (`service/worker.ts`),
+each a child process of its own installed package, so the service and every subcommand it runs are
+one release. Each kind has a run function of its own, following its workflow's orchestrator
+blocks, built from shared phase primitives: ask for a token, run a subcommand, run the sandboxed
+runner, and run the repository's setup, `AGENT_SETUP`, in the bwrap sandbox in the checkout with no
+token, never on the worker's host. It writes nothing
 to the record and spells no record string; what it reads between phases is the hand-over the
-reusable's glue steps read, copied across as it is. Each subcommand's environment is built by one
+reusable's glue steps read, copied across as it is; a phase it did not start gets its reason
+written where the next command reads that phase's, as Actions would have it written there. Each subcommand's environment is built by one
 function from its declaration in the contract, and holds nothing else of the worker's but `PATH`,
 `HOME` and `LANG`, so a token reaches a subcommand only where its phase was handed it: the runner
-gets the `read` token, never the `write` one.
+gets the `read` token, never the `write` or `push` one. A run function checks out what each of
+its reusable's jobs checks out, a checkout per job, whether or not the job before left its checkout
+changed (#530): `fix`'s publish job checks the head out again as `update-branch`'s does. It differs
+only where a command needs it, and that workflow's *Service orchestrator* block in
+`docs/platform-spec.md` says so, as implement-prd's publish checkout of `head` does. With `fix` served, the review's fix-round
+budget is the repository's `AGENT_MAX_FIX_ROUNDS`, read as on Actions (PRD #515): it was held at 0
+until something answered the `agent:fix` a review adds. A token's **kind** is what it may write: `read`
+writes nothing, `write` adds what a posting phase writes (the pull request, issues and statuses),
+and `push` is `write` with Contents: write and Workflows: write added, for a phase that pushes. Not
+a wider `write`, which would hand review's posting phases push rights they never use, and not a
+loop/workflow split as on Actions, since on the service both would be the same App identity. The
+runner only ever gets `read`, so Contents: write with Workflows: write, the pair that can push a
+workflow, is never where the agent runs.
 
 Their settings are declared in `service/settings.ts` in the contract's style and read through
 `readInputs`, like a runner's inputs, but they are no runner's inputs and have no row in the spec:

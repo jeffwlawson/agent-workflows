@@ -14,6 +14,8 @@ import { RUNNERS } from "../shared/contract.js";
 import { staleFailure, staleReason } from "../shared/stale.js";
 
 const INPUTS = readInputs(RUNNERS["implement"].inputs);
+/** Chosen at start, so a sandbox that cannot run the agent stops the run before any of its work. */
+const SANDBOX = agentSandbox(INPUTS);
 const LOOP_ACCOUNTS = readLoopAccounts(INPUTS.AGENT_LOOP_LOGINS);
 
 const ISSUE_NUMBER = INPUTS.ISSUE_NUMBER;
@@ -55,7 +57,7 @@ try {
   const result = await sandcastle.run({
     name: `implement-#${ISSUE_NUMBER}`,
     agent: claudeAgent("implement", INPUTS),
-    sandbox: agentSandbox(INPUTS),
+    ...SANDBOX,
     logging: { type: "stdout" },
     promptFile: path.join(import.meta.dirname, "prompt.md"),
     promptArgs: {

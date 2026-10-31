@@ -18,7 +18,7 @@ import {
   type CarriedFinding,
   type VerificationEntry,
 } from "./review-verification.js";
-import { BODY_HEADING, FIX_ROUND_STATUS, FOLLOW_UPS_LABEL, FOLLOW_UPS_MARKER } from "./record.js";
+import { BODY_HEADING, embeddableJson, FIX_ROUND_STATUS, FOLLOW_UPS_LABEL, FOLLOW_UPS_MARKER } from "./record.js";
 
 /**
  * A problem the review found and this pull request will not fix — a defect in a
@@ -72,6 +72,16 @@ export interface FollowUp {
  * list runs past this by exactly their number — see `recordFollowUps`.
  */
 export const MAX_FOLLOW_UPS = 3;
+
+/**
+ * The most follow-ups a review's hand-over may carry, and so the most issues
+ * one `follow-ups:file` run may open (#510): far past any review, a guard
+ * against a runaway rather than a budget. **Not** `MAX_FOLLOW_UPS`, which is
+ * how many one round records; a PRD PR's review carries every round's
+ * forward. One figure for both workflows, so the guard and the limit it
+ * guards cannot drift apart.
+ */
+export const FOLLOW_UPS_LIST_LIMIT = 200;
 
 /**
  * The cap for a pull request with `landedSlices` slices on it (#247):
@@ -299,7 +309,38 @@ export interface ReviewOutput {
    * criteria to identify.
    */
   readonly criteria?: CriterionRuling[];
+  /**
+   * The review's one-line ruling on the commits that touched the brief's files
+   * since it was read (#541): whether any of them changes what a criterion
+   * means, naming the criterion and the commit where one does. Wanted only
+   * where it was handed any; absent, the body says it gave none. It derives
+   * no verdict: a criterion it moves is ruled in `criteria`.
+   */
+  readonly sinceBrief?: string;
+  /**
+   * What the review's own test run left unrun (#543): whether it ran tests,
+   * and each test or suite exercising changed code that skipped for want of
+   * something in the environment, with the reason. Absent where the review
+   * did not say, which the body says rather than reading it as no run. It
+   * derives nothing: not the verdict, not `needsYou`, not the follow-ups.
+   */
+  readonly notChecked?: NotChecked;
 }
+
+/** A test or suite the review's own run skipped, and why, as the run reported it (#543). */
+export interface SkippedTest {
+  readonly test: string;
+  readonly reason: string;
+}
+
+/** Whether the review ran tests, and what its run skipped of the ones exercising the change (#543). */
+export interface NotChecked {
+  readonly ranTests: boolean;
+  readonly skipped: readonly SkippedTest[];
+}
+
+/** The most skipped tests the body lists; the rest are counted in one line. */
+export const MAX_NOT_CHECKED = 20;
 
 /**
  * What the pull request's other checks said when the review ran, collected by
@@ -388,6 +429,14 @@ export interface VerdictRow {
    * cannot, since both stops keep the plain row's key and its line.
    */
   readonly stop?: "budget spent" | "no progress";
+  /**
+   * Why a *changes recommended* row starts no round where the workflow would
+   * have started one: on a PRD PR, the review carries no round header the
+   * budget could count it by (#442). Not a stop: nothing about the loop is
+   * spent, and a later numbered round starts its own. The body says it, under
+   * *How this was checked*; the line does not change (#297).
+   */
+  readonly withheld?: "unnumbered";
   /**
    * Whether the workflow adds `agent:fix` itself on this verdict: a *changes
    * recommended* row where the budget step said a round would start and the
@@ -548,6 +597,18 @@ export interface VerdictInputs {
    * with nothing anywhere saying so.
    */
   readonly autoFix: boolean;
+  /**
+   * Where this review carries no round header, because the pull request's
+   * earlier rounds could not be read (#298), and on which kind of pull
+   * request. Absent where it is numbered.
+   *
+   * On a PRD PR the budget counts a fix-round status by the header of the
+   * review it links, so a round started from this one could not be counted:
+   * the count would be unreadable from then on, and no later round on the PR
+   * would start (#442). So there it starts none, and says why. A regular PR's
+   * budget counts every status, so its review asks with or without a header.
+   */
+  readonly unnumbered?: "prd pr" | "regular pr";
   /**
    * The fix-round budget and how much of it this pull request has spent, or
    * on a PRD PR this round (#331), where the workflow could count it (#201). Read only where no round is starting:
@@ -978,12 +1039,24 @@ const unresolvedSentence = (record: ReviewRecord): string => {
  * to be short, which is the whole of the change: the cap is the part a review
  * cannot talk its way past.
  */
-const renderHowChecked = (howChecked: string | undefined): string | undefined =>
-  howChecked === undefined
+const renderHowChecked = (howChecked: string | undefined, withheld?: "unnumbered"): string | undefined => {
+  const lines = [howChecked, withheld === undefined ? undefined : WITHHELD_SENTENCE[withheld]].filter(
+    (line) => line !== undefined,
+  );
+  return lines.length === 0
     ? undefined
-    : ["<details>", "<summary><b>How this was checked</b></summary>", "", howChecked, "", "</details>"].join(
-        "\n",
-      );
+    : ["<details>", "<summary><b>How this was checked</b></summary>", "", lines.join("\n\n"), "", "</details>"].join("\n");
+};
+
+/**
+ * Why no automatic fix round started where one would have (#442). In the
+ * body because the verdict's line is the same either way (#297), so this is
+ * where a maintainer learns that the round is theirs to start.
+ */
+const WITHHELD_SENTENCE: Readonly<Record<"unnumbered", string>> = {
+  unnumbered:
+    "_No automatic fix round was started: this pull request's earlier rounds could not be read, so this review carries no round number, and the fix-round budget could not have counted a round it started. To have the agent make the changes, add the `agent:fix` label._",
+};
 
 /**
  * GitHub's ceiling on a review body. Over it, `addPullRequestReview` answers
@@ -1064,7 +1137,8 @@ const shedSentence = (shed: Shed): string | undefined => {
  * the review's own sentence naming what is unresolved, the step in italics, the
  * count and — on the rounds that have one — the line saying a finding was moved
  * to the follow-ups, then *Open*, *Previously missed*, *Resolved since last
- * review*, *Acceptance criteria* (#214), *Follow-ups* and *How this was checked*, then a rule and the run
+ * review*, *Acceptance criteria* (#214), *Since the brief* (#541), *Not checked
+ * here* (#543), *Follow-ups* and *How this was checked*, then a rule and the run
  * that produced it. What the change *is* is not here: it is the summary block
  * in the pull request's body (#218), so it is said in one place. The order is Copilot code review's
  * own overview, which is the point — a maintainer who has read one of those
@@ -1072,10 +1146,15 @@ const shedSentence = (shed: Shed): string | undefined => {
  *
  * Three rules about the groups are worth stating because breaking one of them
  * is invisible. **A group with nothing in it is omitted**, so a disclosure
- * widget never opens on nothing. **What is owed is expanded and what is done is
- * folded**: *Open* and *Previously missed* are what the verdict has just told a
- * reader to act on — and *Previously missed* counts toward that verdict, which
- * is why it is not collapsed the way Copilot collapses its equivalent — while
+ * widget never opens on nothing. The one exception is *Not checked here*, on
+ * every body: with nothing to list it is one italic line saying the run skipped
+ * none, ran none, or did not say, so its content and never its absence says
+ * what went unchecked; it is a widget only where it lists something. **What is
+ * owed is expanded and what is done is folded**: *Open* and *Previously missed*
+ * are what the verdict has just told a reader to act on — and *Previously
+ * missed* counts toward that verdict, which is why it is not collapsed the way
+ * Copilot collapses its equivalent — and *Since the brief* and *Not checked
+ * here* are what to read before merging, while
  * *Resolved*, *Follow-ups* and *How this was checked* start closed. And **the
  * only horizontal rule in the body is the one above the run link**: a divider
  * between groups reads as a section break in a list that is one record.
@@ -1123,6 +1202,8 @@ export interface ReviewBodyHandOver {
   readonly assessment?: string | undefined;
   readonly needsYou?: string | undefined;
   readonly howChecked?: string | undefined;
+  /** Why the review started no automatic fix round where it would have (#442), from the verdict's row; said under *How this was checked*. */
+  readonly fixRoundWithheld?: "unnumbered" | undefined;
   readonly open: readonly RecordEntry[];
   readonly missed: readonly RecordEntry[];
   /** Worst first, in the record's order, each with the thread it closes where it has one. */
@@ -1172,7 +1253,83 @@ export interface ReviewBodyHandOver {
    * purpose and says nothing.
    */
   readonly criteriaCase?: CriteriaCase | undefined;
+  /**
+   * What merged since the brief was read, and the review's ruling on it
+   * (#541), from `checkSinceBrief`. Absent where the review was handed no
+   * criteria, which is where the check does not run and the body says nothing.
+   */
+  readonly sinceBrief?: SinceBrief | undefined;
+  /**
+   * What the review's own test run left unrun (#543), at most
+   * `MAX_NOT_CHECKED` entries and how many more there were. Absent where the
+   * review did not say, and the body says so.
+   */
+  readonly notChecked?: (NotChecked & { readonly more: number }) | undefined;
 }
+
+/** One commit the since-the-brief check lists (#541). */
+export interface SinceCommit {
+  readonly sha: string;
+  readonly subject: string;
+}
+
+/** The commits of one group, newest first, at most `MAX_SINCE_COMMITS`, and how many more there were. */
+export interface SinceCommits {
+  readonly commits: readonly SinceCommit[];
+  readonly more: number;
+}
+
+/** The most commits the since-the-brief check lists in all, so a brief read long ago cannot crowd the body. */
+export const MAX_SINCE_COMMITS = 20;
+
+/**
+ * Why the since-the-brief check could not run (#541): the brief has no *Where
+ * things are* section, or no read-at commit in it; the commit it names does
+ * not resolve, or is not an ancestor of the base; no file it names exists
+ * at that commit; or git failed reading it, which costs the check and never
+ * the review.
+ */
+export type SinceBriefSkip = "no section" | "no read-at commit" | "unresolved" | "not an ancestor" | "no file found" | "unreadable";
+
+/**
+ * The since-the-brief check (#541): the commits that touched the files a
+ * brief's *Where things are* names since the commit it says it was read at,
+ * on the base branch, and on a PRD PR's slice round on the PRD branch before
+ * this slice. Never the commits under review. Read by the workflow, before
+ * the agent starts; the review only rules on it, in `ruling`.
+ *
+ * `commit` is the read-at word as the brief writes it. `notFound` are the
+ * backticked words with a `/` that name no path at it, and `gone` the files
+ * that existed there and do not at the base.
+ */
+export type SinceBrief =
+  | {
+      readonly kind: "not run";
+      readonly reason: SinceBriefSkip;
+      readonly commit?: string | undefined;
+      readonly notFound?: readonly string[] | undefined;
+    }
+  | {
+      readonly kind: "ran";
+      readonly commit: string;
+      readonly files: readonly string[];
+      readonly gone: readonly string[];
+      readonly notFound: readonly string[];
+      readonly onBase: SinceCommits;
+      /** On a slice round, the PRD branch's commits before this slice: earlier slices and catch-up merges. */
+      readonly onBranch?: SinceCommits | undefined;
+      /**
+       * On a slice round, set where this slice starts on the PRD branch
+       * could not be read, so its earlier commits are not listed and the body
+       * says so rather than showing the base's alone.
+       */
+      readonly branchUnread?: true | undefined;
+      readonly ruling?: string | undefined;
+    };
+
+/** Whether the check listed any commit, which is where the review is asked to rule. */
+export const sinceBriefListed = (since: SinceBrief | undefined): boolean =>
+  since?.kind === "ran" && since.onBase.commits.length + (since.onBranch?.commits.length ?? 0) > 0;
 
 /**
  * The linked issue as the runner read it (#435): none, its text read, or its
@@ -1250,6 +1407,8 @@ export interface ReviewDecisions {
    * handed no criteria on purpose.
    */
   readonly linkedIssue?: LinkedIssue | undefined;
+  /** What the since-the-brief check found (#541), where it was asked; the ruling is `output.sinceBrief`. */
+  readonly sinceBrief?: SinceBrief | undefined;
 }
 
 /**
@@ -1274,6 +1433,7 @@ export const reviewBodyHandOver = (decisions: ReviewDecisions): ReviewBodyHandOv
     ...(output.assessment === undefined ? {} : { assessment: output.assessment }),
     ...(output.needsYou === undefined ? {} : { needsYou: output.needsYou }),
     ...(output.howChecked === undefined ? {} : { howChecked: output.howChecked }),
+    ...(decisions.verdict.withheld === undefined ? {} : { fixRoundWithheld: decisions.verdict.withheld }),
     open: record.open,
     missed: record.missed,
     resolved,
@@ -1287,6 +1447,24 @@ export const reviewBodyHandOver = (decisions: ReviewDecisions): ReviewBodyHandOv
     ...(decisions.linkedIssue === undefined
       ? {}
       : { criteriaCase: criteriaCase(decisions.linkedIssue, decisions.criteria?.length ?? 0) }),
+    // The ruling is kept only where there was anything to rule on.
+    ...(decisions.sinceBrief === undefined
+      ? {}
+      : {
+          sinceBrief:
+            sinceBriefListed(decisions.sinceBrief) && output.sinceBrief !== undefined && decisions.sinceBrief.kind === "ran"
+              ? { ...decisions.sinceBrief, ruling: output.sinceBrief }
+              : decisions.sinceBrief,
+        }),
+    ...(output.notChecked === undefined
+      ? {}
+      : {
+          notChecked: {
+            ranTests: output.notChecked.ranTests,
+            skipped: output.notChecked.skipped.slice(0, MAX_NOT_CHECKED),
+            more: Math.max(0, output.notChecked.skipped.length - MAX_NOT_CHECKED),
+          },
+        }),
   };
 };
 
@@ -1397,9 +1575,11 @@ const renderBody = (
       renderGroup(UNCLOSED_GROUP.title, cut(resolved.unclosed), UNCLOSED_GROUP.open, UNCLOSED_GROUP.subtitle),
       renderGroup(RESOLVED_GROUP.title, cut(resolved.closed), RESOLVED_GROUP.open),
       renderCriteriaGroup(parts.criteria, shed.titles) ?? criteriaNote(parts.criteriaCase),
+      renderSinceBrief(parts.sinceBrief, shed.titles),
+      renderNotChecked(parts.notChecked, shed.titles),
       renderFollowUpsGroup(followUps, parts.droppedFollowUps, !shed.followUpTitles, parts.followUpsCap, parts.followUpsCarried),
       renderDroppedNotesGroup(parts.droppedNotes),
-      renderHowChecked(parts.howChecked),
+      renderHowChecked(parts.howChecked, parts.fixRoundWithheld),
       // The only rule in the body, and it is here rather than between the groups
       // because this is the only place the subject changes: everything above is
       // the review, and this is the run that posted it.
@@ -1503,7 +1683,11 @@ export const deriveVerdict = (output: ReviewOutput, inputs: VerdictInputs): Verd
     // row's `startsFixRound` and nothing a maintainer reads (#297). The
     // automatic fix selects on that field, which is what makes the derivation
     // and the job one decision.
-    if (inputs.autoFix) return { ...row, startsFixRound: true };
+    //
+    // Except from a PRD PR's review with no header (#442): its round would
+    // be one the budget cannot attribute, which stops every later round on
+    // the PR. One `agent:fix` by hand is the cheaper loss.
+    if (inputs.autoFix) return inputs.unnumbered === "prd pr" ? { ...row, withheld: "unnumbered" } : { ...row, startsFixRound: true };
     // And where no round starts because the budget is spent, the row records
     // why (#201), for the park comment. Not on a budget of 0, where nothing
     // was spent.
@@ -1744,6 +1928,8 @@ export const reviewOutputSchema = standardSchema<ReviewOutput>((raw) => {
     "noteRulings",
   ).map(parseNoteRuling);
   const criteria = asArray(record["criteria"] ?? [], "criteria").map(parseCriterionRuling);
+  const sinceBrief = optionalReason(record["sinceBrief"] ?? record["since_brief"], "sinceBrief");
+  const notChecked = parseNotChecked(record["notChecked"] ?? record["not_checked"]);
   const door = parseDoor(record["door"]);
   const doorNote = parseNote(record["doorNote"] ?? record["door_note"]);
   const blastRadius = parseBlastRadius(record["blastRadius"] ?? record["blast_radius"]);
@@ -1784,6 +1970,11 @@ export const reviewOutputSchema = standardSchema<ReviewOutput>((raw) => {
     ...(noteRulings.length === 0 ? {} : { noteRulings }),
     // Absent where the review was handed no criteria, for the same reason.
     ...(criteria.length === 0 ? {} : { criteria }),
+    // Absent where the review was handed no commits since the brief, or ruled none.
+    ...(sinceBrief === undefined ? {} : { sinceBrief: oneLine(sinceBrief) }),
+    // Absent where the review did not say whether it ran tests, which is not
+    // the same as saying it ran none.
+    ...(notChecked === undefined ? {} : { notChecked }),
     // Merge Danger (#356), each part absent where the model gave none.
     ...(door === undefined ? {} : { door }),
     ...(doorNote === undefined ? {} : { doorNote }),
@@ -1809,6 +2000,36 @@ const parseTestSketch = (value: unknown): TestSketch[] => {
   const raw = typeof record["sketch"] === "string" ? record["sketch"].trim() : "";
   const sketch = (SKETCH_FENCE.exec(raw)?.[2] ?? raw).replace(/\s+$/, "");
   return test === "" || sketch.trim() === "" ? [] : [{ test, sketch }];
+};
+
+/**
+ * What the review's own test run left unrun (#543), read leniently: it is
+ * display. An entry naming no test or no reason is dropped, and a field with
+ * no `ranTests` to read is absent rather than a run of none, unless it lists
+ * a skip, which only a run can have met. A list every entry of which was
+ * dropped, or a run with no list, is absent too, rather than a run that
+ * skipped nothing.
+ */
+const parseNotChecked = (value: unknown): NotChecked | undefined => {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) return undefined;
+  const record = value as Record<string, unknown>;
+  const listed = record["skipped"];
+  const skipped = (Array.isArray(listed) ? listed : []).flatMap(parseSkippedTest);
+  const ran = record["ranTests"] ?? record["ran_tests"];
+  if (skipped.length > 0) return { ranTests: true, skipped };
+  // A list whose every entry was dropped, or a run with no list, says nothing
+  // about what skipped: not that nothing did.
+  if (Array.isArray(listed) && listed.length > 0) return undefined;
+  if (ran === true && !Array.isArray(listed)) return undefined;
+  return typeof ran === "boolean" ? { ranTests: ran, skipped } : undefined;
+};
+
+const parseSkippedTest = (value: unknown): SkippedTest[] => {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) return [];
+  const record = value as Record<string, unknown>;
+  const test = typeof record["test"] === "string" ? oneLine(withoutComments(record["test"])) : "";
+  const reason = typeof record["reason"] === "string" ? oneLine(withoutComments(record["reason"])) : "";
+  return test === "" || reason === "" ? [] : [{ test, reason }];
 };
 
 /**
@@ -2036,28 +2257,15 @@ export const recordFollowUps = (
  * cheapest way for a reader to refuse a shape it does not know.
  *
  * **This block and nothing else** — the dedup key on a filed stub carries its
- * own `STUB_KEY_VERSION` (`shared/follow-up-plan.ts`), and the two move
+ * own `STUB_KEY_VERSION` (`shared/record.ts`), and the two move
  * separately on purpose (#81). One constant for both made a bump for either
  * payload refuse the other, so a key change cost the filing of every review
  * body the previous release had already posted.
  */
 export const FOLLOW_UPS_VERSION = 1;
 
-/**
- * JSON that survives being put inside an HTML comment.
- *
- * `<` and `>` are escaped into the JSON rather than stripped: prose carried in
- * the payload may legitimately contain `-->`, which would end the comment early
- * and truncate what is left to invalid JSON — a reader that files nothing
- * rather than one that files three. `JSON.parse` decodes the escapes, so the
- * round trip is exact.
- *
- * Shared by both payloads deliberately. The block in a review body and the
- * dedup payload on a filed stub are written by different halves of the feature
- * and read by the same one, and this hazard is identical in both.
- */
-export const embeddableJson = (value: unknown): string =>
-  JSON.stringify(value).replace(/</g, "\\u003c").replace(/>/g, "\\u003e");
+/** Re-exported where its readers have always found it; it is spelled in `shared/record.ts`. */
+export { embeddableJson };
 
 /**
  * The block as written, found wherever it sits in a body.
@@ -2348,6 +2556,109 @@ const criteriaNote = (found: CriteriaCase | undefined): string | undefined => {
     default:
       return undefined;
   }
+};
+
+/** Why the since-the-brief check could not run, as the body says it. */
+const SINCE_SKIPPED: Readonly<Record<SinceBriefSkip, (commit: string) => string>> = {
+  "no section": () => "the brief has no *Where things are* section",
+  "no read-at commit": () => "the brief's *Where things are* section names no commit it was read at",
+  unresolved: (commit) => `the commit the brief says it was read at, \`${commit}\`, could not be found`,
+  "not an ancestor": (commit) => `the commit the brief says it was read at, \`${commit}\`, is not on the base branch`,
+  "no file found": (commit) => `no file the brief's *Where things are* names exists at \`${commit}\``,
+  unreadable: () => "git could not read the commits since the commit the brief says it was read at",
+};
+
+/** The body's note where a slice round's earlier commits could not be listed. */
+const BRANCH_UNREAD =
+  "**Not listed:** this branch's commits before this slice, since where this slice starts on the PRD branch could not be read.";
+
+const codeList = (words: readonly string[]): string => words.map((word) => `\`${word}\``).join(", ");
+
+/**
+ * What merged since the linked issue's brief was read (#541), beside the
+ * *Acceptance criteria* group: the commits that touched the files its *Where
+ * things are* names since the commit it was read at, and the review's ruling
+ * on whether any changes what a criterion means. One line where the check
+ * could not run, saying why, or where no commit touched them; `undefined`
+ * where it was not asked, which is where the review was handed no criteria.
+ *
+ * The workflow's to lay out, so a commit the review ruled nothing on is still
+ * listed, and a ruling it did not give is said. Not a record: nothing reads it
+ * back.
+ */
+export const renderSinceBrief = (since: SinceBrief | undefined, shorten = false): string | undefined => {
+  if (since === undefined) return undefined;
+  if (since.kind === "not run") {
+    const notFound =
+      since.notFound === undefined || since.notFound.length === 0
+        ? ""
+        : ` (not found there: ${codeList(since.notFound)})`;
+    return `_**Since the brief:** not checked, because ${SINCE_SKIPPED[since.reason](since.commit ?? "")}${notFound}._`;
+  }
+  const notes = [
+    since.gone.length === 0 ? undefined : `**No longer at the base:** ${codeList(since.gone)}.`,
+    since.notFound.length === 0 ? undefined : `**Not found at \`${since.commit}\`:** ${codeList(since.notFound)}.`,
+    since.branchUnread === true ? BRANCH_UNREAD : undefined,
+  ].filter((note) => note !== undefined);
+  const files = `${since.files.length} ${since.files.length === 1 ? "file" : "files"}`;
+  if (!sinceBriefListed(since)) {
+    return [`_**Since the brief:** no commit since \`${since.commit}\` touched the ${files} its *Where things are* names._`, ...notes].join(
+      "\n\n",
+    );
+  }
+  const subject = (value: string): string => (shorten ? shortened(oneLine(value), SHED_TITLE_LENGTH) : oneLine(value));
+  const group = (title: string, group: SinceCommits | undefined): string[] =>
+    group === undefined || group.commits.length + group.more === 0
+      ? []
+      : [
+          title,
+          "",
+          ...group.commits.map((c) => `- \`${c.sha.slice(0, 7)}\` ${subject(c.subject)}`),
+          ...(group.more === 0 ? [] : [`- …and ${group.more} more.`]),
+          "",
+        ];
+  const listed = since.onBase.commits.length + since.onBase.more + (since.onBranch === undefined ? 0 : since.onBranch.commits.length + since.onBranch.more);
+  const ruling = since.ruling === undefined ? "_The review gave no ruling on these._" : `**Ruling:** ${oneLine(since.ruling)}`;
+  return [
+    "<details open>",
+    `<summary><b>Since the brief</b> (${listed}) · commits since <code>${since.commit}</code> that touched the files it names</summary>`,
+    "",
+    `Files checked: ${codeList(since.files)}.`,
+    "",
+    ...group("On the base branch, newest first:", since.onBase),
+    ...group("On this branch before this slice, newest first:", since.onBranch),
+    ruling,
+    ...notes.flatMap((note) => ["", note]),
+    "",
+    "</details>",
+  ].join("\n");
+};
+
+/**
+ * What the review's own test run left unrun (#543), after *Since the brief*
+ * and before *Follow-ups*, on every review: the tests or suites exercising
+ * the change that skipped for want of something in the environment, each
+ * with its reason, or one line saying the run skipped none, that the review
+ * ran no tests, or that it did not say. Its content, never its absence, says
+ * whether anything went unchecked. Never shed; under `shorten` each entry is
+ * cut as a commit subject is. Not a record: nothing reads it back.
+ */
+export const renderNotChecked = (notChecked: ReviewBodyHandOver["notChecked"], shorten = false): string => {
+  const line = (text: string): string => `_**Not checked here:** ${text}_`;
+  if (notChecked === undefined) return line("The review did not say whether it ran tests.");
+  if (!notChecked.ranTests) return line("The review ran no tests.");
+  const listed = notChecked.skipped.length + notChecked.more;
+  if (listed === 0) return line("The review's own test run skipped nothing that exercises this change.");
+  const cut = (value: string): string => (shorten ? shortened(oneLine(value), SHED_TITLE_LENGTH) : oneLine(value));
+  return [
+    "<details open>",
+    `<summary><b>Not checked here</b> (${listed}) · tests exercising this change that the review's own run skipped</summary>`,
+    "",
+    ...notChecked.skipped.map((entry) => `- **${cut(entry.test)}**: ${cut(entry.reason)}`),
+    ...(notChecked.more === 0 ? [] : [`- …and ${notChecked.more} more.`]),
+    "",
+    "</details>",
+  ].join("\n");
 };
 
 /** A criterion a round's record says was not met as written: changed on purpose, or unmet. */

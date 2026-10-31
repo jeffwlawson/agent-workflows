@@ -1,7 +1,6 @@
 import * as fs from "node:fs";
 import { describe, expect, it } from "vitest";
 import {
-  CONVERSATION_OUTCOME_MARKER,
   filterConversationOutcomes,
   filterOutcomes,
   filterTopLevelComments,
@@ -9,12 +8,13 @@ import {
   isAgentConversationOutcome,
   isAgentTopLevelComment,
   renderConversationOutcomes,
-  TOP_LEVEL_COMMENT_MARKER,
+  renderTopLevelComment,
   unmarkedBody,
   type ConversationOutcome,
   type FixOutput,
   type ThreadOutcome,
 } from "../shared/fix-output.js";
+import { CONVERSATION_OUTCOME_MARKER, TOP_LEVEL_COMMENT_MARKER } from "../shared/record.js";
 import { closingReplyReason } from "../shared/review-verification.js";
 
 /**
@@ -149,10 +149,16 @@ describe("fixOutputSchema topLevelComments", () => {
 describe("filterTopLevelComments", () => {
   const comment = (body: string) => ({ body });
 
-  it("stamps every kept comment with the marker", () => {
+  /** The marker is `fix:publish`'s to add (#468): nothing the runner writes carries one. */
+  it("keeps each comment as its text alone, with no marker", () => {
     const kept = filterTopLevelComments([comment("out of scope: X")]);
-    expect(kept[0]?.body).toBe(`out of scope: X\n\n${TOP_LEVEL_COMMENT_MARKER}`);
-    expect(isAgentTopLevelComment(kept[0]?.body)).toBe(true);
+    expect(kept[0]?.body).toBe("out of scope: X");
+    expect(isAgentTopLevelComment(kept[0]?.body)).toBe(false);
+  });
+
+  it("drops the marker and header a comment arrives with", () => {
+    const kept = filterTopLevelComments([comment(`**Fix 1**\n\nsaid\n\n${TOP_LEVEL_COMMENT_MARKER}`)]);
+    expect(kept).toEqual([{ body: "said" }]);
   });
 
   it("caps a run at two, keeping the first two", () => {
@@ -200,6 +206,8 @@ describe("filterTopLevelComments", () => {
 describe("top-level comment marker", () => {
   it("recognises a body it stamped", () => {
     expect(isAgentTopLevelComment(`note\n\n${TOP_LEVEL_COMMENT_MARKER}`)).toBe(true);
+    expect(renderTopLevelComment("note")).toBe(`note\n\n${TOP_LEVEL_COMMENT_MARKER}`);
+    expect(isAgentTopLevelComment(renderTopLevelComment("note"))).toBe(true);
   });
 
   it("leaves a human comment alone", () => {
@@ -696,9 +704,10 @@ describe("the fix runner records conversation outcomes", () => {
     expect(source).toContain("feedback.conversationComments");
   });
 
-  it("writes the record where the workflow posts it from", () => {
-    expect(source).toContain("conversation_outcomes.md");
-    expect(source).toContain("renderConversationOutcomes(");
+  /** As data: the record is rendered by `fix:publish`, which reads each author and link from GitHub (#468). */
+  it("writes the outcomes as data, and renders no record", () => {
+    expect(source).toContain('writeJson("conversation_outcomes.json", conversationOutcomes)');
+    expect(source).not.toContain("renderConversationOutcomes(");
   });
 });
 

@@ -430,6 +430,14 @@ export interface VerdictRow {
    */
   readonly stop?: "budget spent" | "no progress";
   /**
+   * Why a *changes recommended* row starts no round where the workflow would
+   * have started one: on a PRD PR, the review carries no round header the
+   * budget could count it by (#442). Not a stop: nothing about the loop is
+   * spent, and a later numbered round starts its own. The body says it, under
+   * *How this was checked*; the line does not change (#297).
+   */
+  readonly withheld?: "unnumbered";
+  /**
    * Whether the workflow adds `agent:fix` itself on this verdict: a *changes
    * recommended* row where the budget step said a round would start and the
    * early stop did not fire (#201, #202). Present only then.
@@ -589,6 +597,18 @@ export interface VerdictInputs {
    * with nothing anywhere saying so.
    */
   readonly autoFix: boolean;
+  /**
+   * Where this review carries no round header, because the pull request's
+   * earlier rounds could not be read (#298), and on which kind of pull
+   * request. Absent where it is numbered.
+   *
+   * On a PRD PR the budget counts a fix-round status by the header of the
+   * review it links, so a round started from this one could not be counted:
+   * the count would be unreadable from then on, and no later round on the PR
+   * would start (#442). So there it starts none, and says why. A regular PR's
+   * budget counts every status, so its review asks with or without a header.
+   */
+  readonly unnumbered?: "prd pr" | "regular pr";
   /**
    * The fix-round budget and how much of it this pull request has spent, or
    * on a PRD PR this round (#331), where the workflow could count it (#201). Read only where no round is starting:
@@ -1019,12 +1039,24 @@ const unresolvedSentence = (record: ReviewRecord): string => {
  * to be short, which is the whole of the change: the cap is the part a review
  * cannot talk its way past.
  */
-const renderHowChecked = (howChecked: string | undefined): string | undefined =>
-  howChecked === undefined
+const renderHowChecked = (howChecked: string | undefined, withheld?: "unnumbered"): string | undefined => {
+  const lines = [howChecked, withheld === undefined ? undefined : WITHHELD_SENTENCE[withheld]].filter(
+    (line) => line !== undefined,
+  );
+  return lines.length === 0
     ? undefined
-    : ["<details>", "<summary><b>How this was checked</b></summary>", "", howChecked, "", "</details>"].join(
-        "\n",
-      );
+    : ["<details>", "<summary><b>How this was checked</b></summary>", "", lines.join("\n\n"), "", "</details>"].join("\n");
+};
+
+/**
+ * Why no automatic fix round started where one would have (#442). In the
+ * body because the verdict's line is the same either way (#297), so this is
+ * where a maintainer learns that the round is theirs to start.
+ */
+const WITHHELD_SENTENCE: Readonly<Record<"unnumbered", string>> = {
+  unnumbered:
+    "_No automatic fix round was started: this pull request's earlier rounds could not be read, so this review carries no round number, and the fix-round budget could not have counted a round it started. To have the agent make the changes, add the `agent:fix` label._",
+};
 
 /**
  * GitHub's ceiling on a review body. Over it, `addPullRequestReview` answers
@@ -1170,6 +1202,8 @@ export interface ReviewBodyHandOver {
   readonly assessment?: string | undefined;
   readonly needsYou?: string | undefined;
   readonly howChecked?: string | undefined;
+  /** Why the review started no automatic fix round where it would have (#442), from the verdict's row; said under *How this was checked*. */
+  readonly fixRoundWithheld?: "unnumbered" | undefined;
   readonly open: readonly RecordEntry[];
   readonly missed: readonly RecordEntry[];
   /** Worst first, in the record's order, each with the thread it closes where it has one. */
@@ -1399,6 +1433,7 @@ export const reviewBodyHandOver = (decisions: ReviewDecisions): ReviewBodyHandOv
     ...(output.assessment === undefined ? {} : { assessment: output.assessment }),
     ...(output.needsYou === undefined ? {} : { needsYou: output.needsYou }),
     ...(output.howChecked === undefined ? {} : { howChecked: output.howChecked }),
+    ...(decisions.verdict.withheld === undefined ? {} : { fixRoundWithheld: decisions.verdict.withheld }),
     open: record.open,
     missed: record.missed,
     resolved,
@@ -1544,7 +1579,7 @@ const renderBody = (
       renderNotChecked(parts.notChecked, shed.titles),
       renderFollowUpsGroup(followUps, parts.droppedFollowUps, !shed.followUpTitles, parts.followUpsCap, parts.followUpsCarried),
       renderDroppedNotesGroup(parts.droppedNotes),
-      renderHowChecked(parts.howChecked),
+      renderHowChecked(parts.howChecked, parts.fixRoundWithheld),
       // The only rule in the body, and it is here rather than between the groups
       // because this is the only place the subject changes: everything above is
       // the review, and this is the run that posted it.
@@ -1648,7 +1683,11 @@ export const deriveVerdict = (output: ReviewOutput, inputs: VerdictInputs): Verd
     // row's `startsFixRound` and nothing a maintainer reads (#297). The
     // automatic fix selects on that field, which is what makes the derivation
     // and the job one decision.
-    if (inputs.autoFix) return { ...row, startsFixRound: true };
+    //
+    // Except from a PRD PR's review with no header (#442): its round would
+    // be one the budget cannot attribute, which stops every later round on
+    // the PR. One `agent:fix` by hand is the cheaper loss.
+    if (inputs.autoFix) return inputs.unnumbered === "prd pr" ? { ...row, withheld: "unnumbered" } : { ...row, startsFixRound: true };
     // And where no round starts because the budget is spent, the row records
     // why (#201), for the park comment. Not on a budget of 0, where nothing
     // was spent.

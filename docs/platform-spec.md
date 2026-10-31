@@ -1761,6 +1761,17 @@ Reviews a pull request and writes everything a posting step needs; it posts noth
 Preconditions: the pull request's head checked out as `BRANCH`, and its base, `BASE_REF`, fetched
 so the diff matches GitHub's.
 
+**When the verdict asks for a fix round.** On *changes recommended*, where `AUTO_FIX` is `true` and
+the fix round this review follows closed at least one of its findings, or it follows none. Except on
+a PRD PR when the earlier rounds could not be read (#442): the review then carries no round header,
+and `review:budget` counts a status there by the header of the review it links, so a round started
+from it would make every later count on the PR unreadable. That review asks for none, says under
+*How this was checked* that none was started and why, warns in the log, and hands `review:advance`
+the park reason `unnumbered`, so the park comment gives that reason rather than the budget or the
+token; the way on is
+`agent:fix` by hand. The line is the same either way. Off a PRD PR the budget counts every status,
+so a review asks with or without a header.
+
 ### Inputs
 
 | Input | Kind | Default | What it is |
@@ -1790,7 +1801,7 @@ so the diff matches GitHub's.
 | Output | When it is written |
 |---|---|
 | `findings.json` | The findings to open a thread for: where each goes, its severity and title, the agent's text, and whether an earlier review had read its code. |
-| `review_body.json` | What the body is written from: the verdict, the agent's assessment, the record's entries, the criteria and, except on a PRD PR's final review, why there are none where there are none (`criteria found`, `none in the issue`, `no linked issue` or `untrusted issue`), where criteria were handed what merged since the brief (#541: the commits since its read-at commit that touched the files it names, or why the check could not run) with the review's ruling, what the review's own test run left unrun (#543: whether it ran tests, and each test or suite exercising the change it skipped for want of something in the environment, with the reason, at most 20 and how many more; absent where the review did not say), the follow-ups, and the data behind the header, the round note and the red tests. |
+| `review_body.json` | What the body is written from: the verdict, the agent's assessment, the record's entries, the criteria and, except on a PRD PR's final review, why there are none where there are none (`criteria found`, `none in the issue`, `no linked issue` or `untrusted issue`), where criteria were handed what merged since the brief (#541: the commits since its read-at commit that touched the files it names, or why the check could not run) with the review's ruling, what the review's own test run left unrun (#543: whether it ran tests, and each test or suite exercising the change it skipped for want of something in the environment, with the reason, at most 20 and how many more; absent where the review did not say), the follow-ups, and the data behind the header, the round note and the red tests, and, where a PRD PR's review with no header asked for no round it would have, that it withheld one (`unnumbered`). |
 | `thread_resolutions.json` | The earlier findings this review verified: each thread, why it closes, and the agent's note or the maintainer's reply to quote. Written on every run. |
 | `verdict.json` | The verdict's key, whether it starts a fix round, how many findings it leaves open, and, on *changes recommended* with no round, which of #200's stops kept it from asking for one (`budget spent` or `no progress`), where one did. |
 | `pr_summary.json` | Signals by existing: the title, the agent's summary, whether the round is final, and the data behind the Evidence and the Merge Danger. |
@@ -1970,7 +1981,8 @@ read off the branch's history.
   sub-issue, the last slice with an `Agent-Slice` trailer; in the final review (`ROUND` `final`), a
   review headed as the final review. A status with no link, a link to no review on the pull request,
   or a linked review with no round header makes the count unreadable, as does a branch whose
-  current slice cannot be told.
+  current slice cannot be told. A review that could not number itself posts no status there (§8),
+  so it costs no round and leaves the count readable.
 - **The decision.** A round starts where fewer are spent than the budget and `LOOP_TOKEN_SOURCE` is
   `app` or `pat`. A count that cannot be read starts none and warns, and is never read as none spent.
   A budget of 0 counts nothing.
@@ -2200,7 +2212,9 @@ shedding; then, where `pr_summary.json` is there, the title and the summary bloc
 the body as it stands, headed by `REVIEWED_SHA` (a body with half a block, or two, gets the title
 alone, and the final review's write drops the draft-only note); then, off a PRD PR, the status
 line, between its markers and nowhere else; then the `agent-review` status on `REVIEWED_SHA`,
-linking the review, and `agent-fix-round` beside it where the review claimed a fix round. The
+linking the review, and `agent-fix-round` beside it where the review claimed a fix round, never on a
+PRD PR for a review with no round header, which the budget could not count (#442: a warning says
+so). The
 title, summary, status line and statuses are tolerated: one GitHub refuses is a warning, since a
 posted review is worth more than any of them. A server error on the review (a 5xx, or GraphQL's "An internal error occurred") is read
 back before it is taken as "not posted": a review on `REVIEWED_SHA` with the posted body is this

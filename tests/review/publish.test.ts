@@ -1322,6 +1322,44 @@ describe("review:publish posts the verdict", () => {
     ]);
   });
 
+  /**
+   * On a PRD PR the budget counts a fix-round status by the header of the
+   * review it links (#442), so a status linking a review with none would make
+   * every later count on the PR unreadable. The runner asks for no round from
+   * such a review; publish posts none for one either way.
+   */
+  it("posts no fix round's status for a review with no header on a PRD PR", async () => {
+    handOver(decide({ verdict: { ...VERDICTS["changes recommended"], startsFixRound: true } }));
+
+    await run({ ...INPUTS(), BRANCH: PRD_BRANCH });
+
+    expect(statuses().map((status) => status.context)).toEqual([VERDICT_CONTEXT]);
+    expect(console.log).toHaveBeenCalledWith(expect.stringContaining(`::warning::Posted no \`${FIX_ROUND_STATUS.context}\` status`));
+  });
+
+  it("posts the fix round's status for a numbered review on a PRD PR", async () => {
+    handOver(decide({ verdict: { ...VERDICTS["changes recommended"], startsFixRound: true } }), {
+      header: { scope: { kind: "slice", k: 1, n: 2, subIssue: 41 }, number: 1 },
+    });
+
+    await run({ ...INPUTS(), BRANCH: PRD_BRANCH });
+
+    expect(statuses().map((status) => status.context).sort()).toEqual([FIX_ROUND_STATUS.context, VERDICT_CONTEXT].sort());
+  });
+
+  /** The body says no round started and why, where a maintainer reads how the review was checked. */
+  it("says in the body why a review with no header on a PRD PR started no round", async () => {
+    handOver(decide({ verdict: { ...VERDICTS["changes recommended"], withheld: "unnumbered" } }));
+
+    await run({ ...INPUTS(), BRANCH: PRD_BRANCH });
+
+    const body = posted()?.body ?? "";
+    const checked = body.slice(body.indexOf("<summary><b>How this was checked</b>"));
+    expect(checked.slice(0, checked.indexOf("</details>"))).toContain("No automatic fix round was started");
+    expect(checked).toContain("`agent:fix`");
+    expect(statuses().map((status) => status.context)).toEqual([VERDICT_CONTEXT]);
+  });
+
   it("posts the verdict last, after the review, the title and summary, and the status line", async () => {
     setPr({ body: `${statusBlock("old")}\n${FRAME}` });
     handOver(decide({ verdict: { ...VERDICTS["changes recommended"], startsFixRound: true } }));

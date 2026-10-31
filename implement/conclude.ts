@@ -1,29 +1,37 @@
-import type { Limits, Writer } from "../engine/writer.js";
-import { describe, issueNumber, tolerated } from "../shared/command-helpers.js";
-import type { CommandIo } from "../shared/command-io.js";
+import * as path from "node:path";
+import { GitHubError } from "../engine/github.js";
+import { WriteFailed, type Lease, type Limits, type Writer } from "../engine/writer.js";
+import { checkBundle } from "../shared/bundle.js";
+import { describe, inWriteLog, issueNumber, tolerated } from "../shared/command-helpers.js";
+import type { CheckoutIo } from "../shared/command-io.js";
 import { COMMANDS, type DirectoryFiles, type DirectoryInput } from "../shared/contract.js";
 import type { InputValues } from "../shared/env.js";
-import { choice, count, json, matching, object, optional, readDirectory, text, type FileParsers, type HandOver } from "../shared/hand-over.js";
+import { choice, count, json, matching, object, optional, readDirectory, text, type FileParsers, type HandOver, type Parser } from "../shared/hand-over.js";
 import { BLOCKED_LABEL, IMPLEMENT_LABEL, REVIEW_LABEL } from "../shared/record.js";
+import { present, rescueIgnored, setAsideNote } from "./hand-over.js";
 
 type Declared = (typeof COMMANDS)["implement:conclude"];
 type Inputs = InputValues<Declared["inputs"]>;
-type Io = CommandIo<Declared["outputs"]>;
+type Io = CheckoutIo<Declared["outputs"]>;
 
 /**
  * `implement:conclude` (#493): how every implement run ends, success
  * included. It runs `always()`, after `implement:publish`, and writes in the
- * loop's one order (#236): the failure comment, then `agent:implement` off,
- * then `agent:blocked`.
+ * loop's one order (#236): every result posted, then `agent:implement` off,
+ * then `agent:blocked` where the run stopped.
  *
+ * - **A rescue the runner set aside** (#270) is said on the issue however the
+ *   run ended, so work nobody built on is not dropped silently. Publish never
+ *   says it, so this is the one place it is said.
  * - **A run that finished**, `implement:publish` included: `agent:implement`
  *   off, again where publish took it off already, since publish's removal is
  *   tolerated. Every other word of a finished run is publish's.
  * - **A run that stopped**, any of its three jobs, after a gate that decided
- *   the issue was its own: the failure comment, with the reason and the
- *   retry; `agent:implement` off; `agent:blocked`. Where publish opened a pull
- *   request before it stopped, the comment names it and says to add
- *   `agent:review` on it, since a retry would be refused for it.
+ *   the issue was its own: its commits rescued, where nothing was pushed to
+ *   `BRANCH` (#270); the failure comment, with the reason and the retry,
+ *   naming the rescue; `agent:implement` off; `agent:blocked`. Where publish
+ *   opened a pull request before it stopped, the comment names it and says to
+ *   add `agent:review` on it, since a retry would be refused for it.
  * - **A gate that died before deciding**: the failure comment, with the
  *   retry that says to remove the label first, and `agent:blocked`, but
  *   **`agent:implement` stays on**. That run may have been the one that
@@ -40,7 +48,7 @@ type Io = CommandIo<Declared["outputs"]>;
  *
  * Every write is tolerated, as the shell before it tolerated each with
  * `|| true` or a warning: a run that cannot comment still takes its label
- * off.
+ * off, and a rescue that fails is said and skipped.
  */
 export const conclude = async (inputs: Inputs, io: Io): Promise<void> => {
   const issue = issueNumber(inputs.ISSUE_NUMBER);
@@ -65,11 +73,24 @@ export const conclude = async (inputs: Inputs, io: Io): Promise<void> => {
     "failure_reason.txt": text,
   });
   const prepared = readEach(declared.PREPARE_DIR, inputs.PREPARE_DIR, { "failure_reason.txt": text });
-  const ran = readEach(declared.IMPLEMENT_DIR, inputs.IMPLEMENT_DIR, { "failure_reason.txt": text });
-  const bundled = readEach(declared.BUNDLE_DIR, inputs.BUNDLE_DIR, { "failure_reason.txt": text });
+  // The runner's two files each on their own, since the agent's runner can
+  // write anything into either: a set-aside note that does not read must not
+  // cost the comment the reason beside it.
+  const ran = readEach(declared.IMPLEMENT_DIR, inputs.IMPLEMENT_DIR, { "failure_reason.txt": text, "rescue_ignored.json": SKIPPED });
+  const setAside = readEach(declared.IMPLEMENT_DIR, inputs.IMPLEMENT_DIR, {
+    "failure_reason.txt": SKIPPED,
+    "rescue_ignored.json": rescueIgnored(inputs.RESCUE_BRANCH),
+  })["rescue_ignored.json"];
+  const bundled = readEach(declared.BUNDLE_DIR, inputs.BUNDLE_DIR, { "branch.bundle": present, "failure_reason.txt": text });
 
-  const { workflow } = io.writers(LIMITS);
+  const { workflow, loop } = io.writers(LIMITS);
   const state = published["published.json"];
+
+  if (setAside !== undefined) {
+    await tolerated(`Could not say on #${issue} that ${setAside.branch} was set aside.`, () =>
+      workflow.comment(issue, setAsideNote(setAside.branch, inputs.BASE_REF)),
+    );
+  }
 
   if (ending.kind === "finished") {
     // Publish takes the label off before it asks for the review (#236), but
@@ -86,7 +107,11 @@ export const conclude = async (inputs: Inputs, io: Io): Promise<void> => {
     bundle: bundled["failure_reason.txt"],
     publish: published["failure_reason.txt"],
   });
-  const retry = retryOf(ending.kind === "undecided", state?.pr);
+  const saved =
+    ending.kind === "stopped" && state?.pushed !== true
+      ? await rescueCommits(inputs, io, loop, bundled["branch.bundle"] !== undefined, bundled["failure_reason.txt"] !== undefined)
+      : ({ kind: "none" } as const);
+  const retry = retryOf(ending.kind === "undecided", state?.pr, saved, inputs.RESCUE_BRANCH);
   await tolerated(`Could not post the failure comment on #${issue}.`, () => workflow.comment(issue, failureComment(inputs, reason, retry)));
   if (ending.kind === "stopped") await removeTrigger(issue, workflow);
   await tolerated(undefined, () => workflow.addLabel(issue, BLOCKED_LABEL));
@@ -182,6 +207,111 @@ const readEach = <F extends DirectoryFiles, const P extends FileParsers<F>>(
   }
 };
 
+/** A file of a directory read on its own, by another call. */
+const SKIPPED: Parser<undefined> = () => undefined;
+
+/**
+ * What became of a stopped run's commits: none to save, saved, or not saved,
+ * with `why` the clause the failure comment gives for it.
+ */
+type Saved = { readonly kind: "none" } | { readonly kind: "rescued" } | { readonly kind: "unsaved"; readonly why: string };
+
+/**
+ * **A stopped run's commits, kept on a side branch** (#270), as fix and
+ * implement-prd keep theirs (#303): the rescue branch, keyed to the issue's
+ * number so a retitled issue still finds it, and never `BRANCH`, which
+ * `implement:publish` pushes leased on the tip the gate read. Rescued work
+ * reaches a pull request only through the resumed run's own push, after its
+ * verify. Nothing else: no pull request, no review asked for, no label.
+ *
+ * Only where nothing was pushed to `BRANCH`, which the caller checks, and
+ * where there is a bundle: none is a run with no commits ahead of the base it
+ * started from, unless `implement:bundle` failed, was stopped before it
+ * wrote anything (`BUNDLE_OUTCOME`), or the hand-over could not be fetched,
+ * when what the run made is unknown and said to be unsaved. The
+ * bundle is checked as `implement:publish` checks it, and one that fails a
+ * check is not rescued.
+ *
+ * **Every way the commits go unsaved is said in the comment**, with why
+ * (#270): a retry that read as though there were none would start over
+ * without them, and nobody would look for them in the log.
+ *
+ * Under a lease on the rescue as it is read here: a run that stops again
+ * overwrites the earlier rescue, which it started from and so holds all of,
+ * and nothing that moved it in between is lost silently. With the loop's
+ * token, as publish pushes, since the agent's commits may touch a workflow
+ * file; a mint that failed leaves none to push with, which the comment says.
+ */
+const rescueCommits = async (inputs: Inputs, io: Io, loop: Writer, bundled: boolean, bundleFailed: boolean): Promise<Saved> => {
+  const rescue = inputs.RESCUE_BRANCH;
+  if (!bundled) {
+    if (bundleFailed) {
+      console.log(`::warning::The agent's commits could not be bundled, so none were saved on ${rescue}.`);
+      return { kind: "unsaved", why: UNBUNDLED };
+    }
+    if (inputs.DOWNLOAD_OUTCOME === "failure") {
+      console.log(`::warning::What the agent's job handed over could not be fetched, so no commits were saved on ${rescue}.`);
+      return { kind: "unsaved", why: UNFETCHED };
+    }
+    // A bundle step ended before it wrote anything, by its time limit, a
+    // cancel, or a failure before the command could write its reason: what
+    // the run made is unknown, not none.
+    if (inputs.BUNDLE_OUTCOME === "cancelled") {
+      console.log(`::warning::The agent's commits were not bundled before the bundle step was stopped, so none were saved on ${rescue}.`);
+      return { kind: "unsaved", why: UNFINISHED };
+    }
+    if (inputs.BUNDLE_OUTCOME === "failure") {
+      console.log(`::warning::The agent's commits could not be bundled, so none were saved on ${rescue}.`);
+      return { kind: "unsaved", why: UNBUNDLED };
+    }
+    console.log("No commits ahead of the base this run started from, so there is nothing to rescue.");
+    return { kind: "none" };
+  }
+  // The token first: with none there is nothing to push with whatever the
+  // bundle holds, and a check that failed for another reason would hide that
+  // the commits went unsaved.
+  if (inputs.LOOP_TOKEN === "" || inputs.MINT_OUTCOME !== "success") {
+    console.log(`::warning::The loop's token was not minted, so the agent's commits were not saved on ${rescue}.`);
+    return { kind: "unsaved", why: NO_TOKEN };
+  }
+  let tip: string;
+  try {
+    tip = await checkBundle(io.git, path.join(inputs.BUNDLE_DIR, "branch.bundle"), inputs.BRANCH, inputs.BASE_SHA, "rescued", `\`${inputs.BASE_REF}\``);
+  } catch (error) {
+    console.log(`::warning::${describe(error)}`);
+    return { kind: "unsaved", why: UNCHECKED(inputs.BASE_REF) };
+  }
+
+  let lease: Lease;
+  try {
+    lease = { tip: await io.github.branchTip(rescue) };
+  } catch (error) {
+    if (!(error instanceof GitHubError && error.status === 404)) {
+      console.log(`::warning::Could not read ${rescue}, so the agent's commits were not saved there: ${describe(error)}`);
+      return { kind: "unsaved", why: UNREAD };
+    }
+    lease = { absent: true };
+  }
+  try {
+    await loop.pushRef({ ref: `refs/heads/${rescue}`, commit: tip, lease });
+  } catch (error) {
+    if (!(error instanceof WriteFailed)) throw error;
+    console.log(`::warning::${inWriteLog(`Could not push the agent's commits to ${rescue}, so nothing was rescued.`)}`);
+    return { kind: "unsaved", why: UNPUSHED };
+  }
+  console.log(`Rescued the agent's commits, up to ${tip}, to ${rescue}.`);
+  return { kind: "rescued" };
+};
+
+/** Why a stopped run's commits went unsaved, each as the comment says it after "were not saved on `<rescue>`:". */
+const NO_TOKEN = "the loop's token was not minted, so there was nothing to push them with.";
+const UNBUNDLED = "the agent's job could not bundle them, and the workflow run's log says why.";
+const UNFINISHED = "the agent's job was stopped before it finished bundling them, and the workflow run's log says why.";
+const UNFETCHED = "what the agent's job handed over could not be fetched, so there were none to push.";
+const UNCHECKED = (base: string): string => `they could not be checked against \`${base}\` before the push, and the workflow run's log says why.`;
+const UNREAD = "GitHub would not say whether the branch already holds commits, so pushing could have overwritten them.";
+const UNPUSHED = "GitHub refused the push, and the workflow run's log says why.";
+
 /**
  * What to do next. The label comes off at the end of a decided run since
  * #236, so adding it is the retry. Not after a gate that died before
@@ -189,14 +319,26 @@ const readEach = <F extends DirectoryFiles, const P extends FileParsers<F>>(
  * there fires no event. And not where publish opened the pull request before
  * it stopped: the gate refuses an issue an open pull request closes, so the
  * way on is that pull request's review.
+ *
+ * A rescue is named whatever else the retry says, and is the retry where
+ * nothing else was: adding the label resumes from it (#270). Where commits
+ * went unsaved, for whatever reason, the comment says so, and why.
  */
-const retryOf = (undecided: boolean, pr: number | undefined): string => {
-  if (pr !== undefined) {
-    return `It opened PR #${pr} before it stopped, so adding \`${IMPLEMENT_LABEL}\` again would be refused. Fix the problem above, then add \`${REVIEW_LABEL}\` to PR #${pr}.`;
+const retryOf = (undecided: boolean, pr: number | undefined, saved: Saved, rescue: string): string => {
+  const plain = `To try again, add \`${IMPLEMENT_LABEL}\`.`;
+  const retry =
+    pr !== undefined
+      ? `It opened PR #${pr} before it stopped, so adding \`${IMPLEMENT_LABEL}\` again would be refused. Fix the problem above, then add \`${REVIEW_LABEL}\` to PR #${pr}.`
+      : undecided
+        ? `To try again, remove \`${IMPLEMENT_LABEL}\` if it is still on this issue, then add it.`
+        : plain;
+  if (saved.kind === "rescued") {
+    return retry === plain
+      ? `Its commits so far are saved on \`${rescue}\`. To resume from them, add \`${IMPLEMENT_LABEL}\`.`
+      : `${retry} Its commits so far are saved on \`${rescue}\`, and adding \`${IMPLEMENT_LABEL}\` resumes from them.`;
   }
-  return undecided
-    ? `To try again, remove \`${IMPLEMENT_LABEL}\` if it is still on this issue, then add it.`
-    : `To try again, add \`${IMPLEMENT_LABEL}\`.`;
+  if (saved.kind === "unsaved") return `${retry} Its commits were not saved on \`${rescue}\`: ${saved.why}`;
+  return retry;
 };
 
 /**
@@ -219,10 +361,12 @@ const removeTrigger = (issue: number, workflow: Writer): Promise<boolean> =>
   tolerated(undefined, () => workflow.removeLabel(issue, IMPLEMENT_LABEL));
 
 /**
- * What conclude may write, and how many of each (ADR 0005): the failure
- * comment, `agent:implement` off, and `agent:blocked` on.
+ * What conclude may write, and how many of each (ADR 0005): with the
+ * workflow's token, the set-aside note and the failure comment,
+ * `agent:implement` off and `agent:blocked` on; with the loop's, the rescue
+ * push.
  */
-const LIMITS: Limits = { comment: 1, removeLabel: 1, addLabel: 1 };
+const LIMITS: Limits = { comment: 2, removeLabel: 1, addLabel: 1, pushRef: 1 };
 
 const FLAG = choice([true, false]);
 

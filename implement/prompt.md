@@ -4,6 +4,7 @@ Implement issue #{{ISSUE_NUMBER}}: {{ISSUE_TITLE}}
 
 You are on branch `{{BRANCH}}`, already created from `{{BASE_REF}}`.
 
+{{RESUME}}
 # ISSUE
 
 {{ISSUE_CONTEXT}}
@@ -56,6 +57,8 @@ Run the verify command `CLAUDE.md` names before committing. It must pass.
 # COMMIT
 
 Make one or more commits on `{{BRANCH}}` with conventional commit messages.
+Commit as soon as the work first passes the verify command `CLAUDE.md` names, and make later changes
+as further commits. A run can be stopped at its time limit, and only committed work survives that.
 Do not use em dashes in anything you write; use a comma, colon, semicolon, parentheses, or a new sentence instead.
 
 Do not push. Do not edit labels. Do not create GitHub comments.

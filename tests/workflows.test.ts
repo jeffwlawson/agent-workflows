@@ -4899,7 +4899,8 @@ describe("agent-implement-prd's catch-up is `implement-prd:catch-up`, after the 
 /**
  * Implement's agent job (#491): one early install, before *Install
  * dependencies*, and its two shell steps around the agent become
- * `implement:prepare` and `implement:bundle`, run from it with no token, and
+ * `implement:prepare`, run from it with the job's read token (#270), and
+ * `implement:bundle`, run from it with no token, and
  * the runner runs the install's binary by its path. What each command does
  * is held in `tests/implement/prepare.test.ts` and
  * `tests/implement/bundle.test.ts`; what is held here is what the YAML owns:
@@ -4981,9 +4982,10 @@ describe("implement's agent job runs implement:prepare and implement:bundle from
    * After the base checkout, from the install, before anything of the
    * adopter's runs, and handed the gate's base commit, never the base
    * branch's tip: the agent builds on the base the publish job checks
-   * against.
+   * against. With the job's read token, which it fetches the rescue with
+   * (#270), and which meets nothing of the adopter's this early.
    */
-  it("creates the branch with implement:prepare at the gate's base commit, before the adopter's code, with no token", () => {
+  it("creates the branch with implement:prepare at the gate's base commit, before the adopter's code, with the job's read token", () => {
     const prepare = step("Create branch");
     const env = { ...job().env, ...prepare?.env };
 
@@ -4991,34 +4993,42 @@ describe("implement's agent job runs implement:prepare and implement:bundle from
     expect(index("Create branch")).toBeLessThan(index("Setup Node.js"));
     expect(prepare?.if).toBeUndefined();
     expect(prepare?.["working-directory"]).toBe("${{ runner.temp }}");
-    expect(prepare?.env).toMatchObject({
+    expect(prepare?.env).toEqual({
       NPM_CONFIG_USERCONFIG: "${{ steps.npmrc.outputs.userconfig }}",
-      GH_TOKEN: "",
       OUTPUT_DIR: "${{ runner.temp }}/prepare",
       CHECKOUT: "${{ github.workspace }}",
       BRANCH: "${{ needs.gate.outputs.branch }}",
       BASE_SHA: "${{ needs.gate.outputs.base }}",
     });
     expect(env["BASE_REF"]).toBe("${{ inputs.default-branch }}");
+    expect(env["GH_TOKEN"]).toBe("${{ secrets.GITHUB_TOKEN }}");
+    expect(job().permissions).toEqual({ contents: "read", issues: "read", packages: "read" });
     for (const name of Object.keys(COMMANDS["implement:prepare"].inputs)) expect(env, name).toHaveProperty(name);
-    const set = Object.keys(prepare?.env ?? {}).filter((name) => name !== "NPM_CONFIG_USERCONFIG" && name !== "GH_TOKEN");
+    const set = Object.keys(prepare?.env ?? {}).filter((name) => name !== "NPM_CONFIG_USERCONFIG");
     for (const name of set) expect(COMMANDS["implement:prepare"].inputs, name).toHaveProperty(name);
-    expect(COMMANDS["implement:prepare"].inputs).not.toHaveProperty("GH_TOKEN");
-    expect(JSON.stringify(prepare)).not.toMatch(/secrets\.|NODE_AUTH_TOKEN|LOOP_TOKEN/);
+    expect(COMMANDS["implement:prepare"].inputs).toHaveProperty("RESCUE_BRANCH");
+    expect(JSON.stringify(prepare)).not.toMatch(/NODE_AUTH_TOKEN|LOOP_TOKEN/);
   });
 
-  /** Where the runner succeeded, after it and the transcript, with the gate's base commit its prerequisite, and no token. */
-  it("bundles the branch with implement:bundle on success, ahead of the gate's base commit, with no token", () => {
+  /**
+   * However the runner ended (#270), so a stopped run hands its commits over
+   * for the rescue: after it and the transcript, with the gate's base commit
+   * its prerequisite, and no token.
+   */
+  it("bundles the branch with implement:bundle however the agent ended, ahead of the gate's base commit, with no token", () => {
     const bundle = step("Bundle the branch");
     const env = { ...job().env, ...bundle?.env };
     const runner = steps().findIndex((s) => subcommandRun(s) === "implement");
 
-    expect(bundle?.if).toBe("success()");
+    expect(bundle?.if).toBe("always()");
     expect(index("Bundle the branch")).toBeGreaterThan(runner);
     expect(index("Bundle the branch")).toBeGreaterThan(index("Upload the session transcript"));
     expect(index("Bundle the branch")).toBe(index("Hand the branch to the publish job") - 1);
     expect(index("Measure how the agent's job ended")).toBe(steps().length - 1);
-    expect(job().outputs).toEqual({ "timed-out": "${{ steps.outcome.outputs.timed-out }}" });
+    // How the bundle step ended, set by Actions rather than the agent, so a
+    // bundle stopped before it wrote anything is not read as no commits (#270).
+    expect(bundle?.id).toBe("bundle");
+    expect(job().outputs).toEqual({ "timed-out": "${{ steps.outcome.outputs.timed-out }}", bundled: "${{ steps.bundle.outcome }}" });
     expect(bundle?.["working-directory"]).toBe("${{ runner.temp }}");
     expect(bundle?.env).toMatchObject({
       NPM_CONFIG_USERCONFIG: "${{ steps.npmrc.outputs.userconfig }}",
@@ -5078,7 +5088,8 @@ describe("implement's agent job runs implement:prepare and implement:bundle from
       TIMEOUT_MINUTES: "${{ vars.AGENT_TIMEOUT_MINUTES || '30' }}",
     });
     expect(outcome?.run).toBe(jobNamed(path.join(WORKFLOW_DIR, "fix.yml"), "fix").steps?.at(-1)?.run);
-    expect(job().outputs).toEqual({ "timed-out": "${{ steps.outcome.outputs.timed-out }}" });
+    // Beside how the bundle step ended (#270), which the bundle's test holds.
+    expect(job().outputs).toMatchObject({ "timed-out": "${{ steps.outcome.outputs.timed-out }}" });
   });
 });
 
@@ -8094,7 +8105,7 @@ describe("a run that times out or is cancelled says so, as a failure does", () =
       TIMEOUT_MINUTES: AGENT_MINUTES,
     });
     expect(outcome?.run ?? "").toContain("TIMEOUT_MINUTES * 60 - 60");
-    expect(jobNamed(fileOf(command), command).outputs).toEqual({ "timed-out": "${{ steps.outcome.outputs.timed-out }}" });
+    expect(jobNamed(fileOf(command), command).outputs).toMatchObject({ "timed-out": "${{ steps.outcome.outputs.timed-out }}" });
     expect(failureStep(command).env?.["TIMED_OUT"]).toBe(`\${{ needs.${command}.outputs.timed-out }}`);
   });
 
@@ -9323,7 +9334,15 @@ describe("a split run keeps every write off the agent's runner", () => {
     // and implement-prd's (#505): whether its job ran out of time, which only
     // that job can measure, as review's job does, and which picks between two
     // sentences of a stopped run's comment and decides nothing else.
-    if (file.endsWith("fix.yml") || file.endsWith("update-branch.yml") || file.endsWith("implement.yml") || file.endsWith("implement-prd.yml")) {
+    // Implement's second (#270): how its bundle step ended, which picks
+    // between "no commits" and "not saved" where there is no bundle, and
+    // rescues nothing either way.
+    if (file.endsWith("implement.yml")) {
+      expect(jobNamed(file, agent).outputs).toEqual({ "timed-out": "${{ steps.outcome.outputs.timed-out }}", bundled: "${{ steps.bundle.outcome }}" });
+      expect(text.match(new RegExp(`needs\\.${agent}\\.outputs\\.[\\w-]+`, "g"))).toEqual([`needs.${agent}.outputs.timed-out`, `needs.${agent}.outputs.bundled`]);
+      return;
+    }
+    if (file.endsWith("fix.yml") || file.endsWith("update-branch.yml") || file.endsWith("implement-prd.yml")) {
       expect(jobNamed(file, agent).outputs).toEqual({ "timed-out": "${{ steps.outcome.outputs.timed-out }}" });
       expect(text.match(new RegExp(`needs\\.${agent}\\.outputs\\.[\\w-]+`, "g"))).toEqual([`needs.${agent}.outputs.timed-out`]);
       return;
@@ -10113,16 +10132,17 @@ describe("every agent run keeps its session transcript, redacted, for a few days
 });
 
 /**
- * Rescue and resume (#303). A fix or implement-prd run that stops before it
- * finishes keeps the commits it made on a side branch with a fixed name, the
- * failure comment names it, and the next run of the label resumes from it.
- * Both workflows' rescues are commands now, `fix:conclude` (#469) and
- * `implement-prd:conclude` (#505), whose tests hold when each runs, its lease
- * and that it writes nothing else. What is asserted here is what the YAML
- * owns: one rescue branch named in the job that resumes and the job that
- * rescues, the hand-over, and what each command is handed.
+ * Rescue and resume (#303). A fix, implement-prd or implement (#270) run that
+ * stops before it finishes keeps the commits it made on a side branch with a
+ * fixed name, the failure comment names it, and the next run of the label
+ * resumes from it. Every workflow's rescue is a command now, `fix:conclude`
+ * (#469), `implement-prd:conclude` (#505) and `implement:conclude` (#270),
+ * whose tests hold when each runs, its lease and that it writes nothing else.
+ * What is asserted here is what the YAML owns: one rescue branch named in the
+ * job that resumes and the job that rescues, the hand-over, and what each
+ * command is handed.
  */
-describe("rescue and resume for fix and implement-prd", () => {
+describe("rescue and resume for fix, implement-prd and implement", () => {
   const CASES = [
     {
       file: path.join(WORKFLOW_DIR, "fix.yml"),
@@ -10156,6 +10176,23 @@ describe("rescue and resume for fix and implement-prd", () => {
       ignored: "rescue_ignored.json",
       // `implement-prd:publish` deletes the rescue (#502):
       // `tests/implement-prd/publish.test.ts` holds it.
+      deleteIf: "",
+      label: "agent:implement",
+    },
+    {
+      file: IMPLEMENT,
+      agent: "implement",
+      rescue: "agent/rescue/issue-${{ github.event.issue.number }}",
+      // `implement:prepare` (#270): `tests/implement/prepare.test.ts` holds the fetch.
+      prepare: "Create branch",
+      fetchedBy: "implement:prepare",
+      bundle: "Bundle the branch",
+      // `implement:conclude`'s (#270): `tests/implement/conclude.test.ts` holds when.
+      condition: "",
+      // As data, for `implement:conclude` to say (#270).
+      ignored: "rescue_ignored.json",
+      // `implement:publish` deletes the rescue (#270):
+      // `tests/implement/publish.test.ts` holds it.
       deleteIf: "",
       label: "agent:implement",
     },
@@ -10196,6 +10233,49 @@ describe("rescue and resume for fix and implement-prd", () => {
     expect(jobNamed(PRD, "publish").env?.["RESCUE_BRANCH"]).toBe("agent/rescue/prd-${{ github.event.issue.number }}");
     expect(publish?.if).toContain("(needs.gate.outputs.finishing == 'true' || needs.gate.outputs.build == 'false' || needs.implement-prd.result == 'success') && success()");
     expect(steps.find((s) => s.name === "Delete the rescue branch")).toBeUndefined();
+  });
+
+  /**
+   * Implement's deletion is `implement:publish`'s (#270), after its push,
+   * told the rescue branch by the job, and only where the agent's job
+   * succeeded: a stopped run's commits are rescued, never pushed.
+   */
+  it("implement: hands implement:publish the rescue branch, where the agent's job succeeded", () => {
+    const publish = (jobNamed(IMPLEMENT, "publish").steps ?? []).find((s) => s.id === "publish");
+
+    expect(COMMANDS["implement:publish"].inputs).toHaveProperty("RESCUE_BRANCH");
+    expect(publish?.if).toBe("needs.implement.result == 'success' && success()");
+  });
+
+  /**
+   * And the rescue and its set-aside note are `implement:conclude`'s (#270),
+   * run `always()`, told the rescue branch, handed the bundle and the
+   * runner's note through their directories and the loop's token to push
+   * with, and checking the bundle in the one checkout, which runs wherever
+   * the gate claimed the run. No step of the job opens a pull request or
+   * asks for a review but publish's, and conclude adds no label but
+   * `agent:blocked`, which `tests/implement/conclude.test.ts` holds.
+   */
+  it("implement: hands implement:conclude the rescue branch, the bundle, the note and the loop's token, however the run ended", () => {
+    const steps = jobNamed(IMPLEMENT, "publish").steps ?? [];
+    const conclude = steps.find((s) => (s.run ?? "").trim().endsWith(" agent-workflows implement:conclude"));
+    const at = steps.indexOf(conclude ?? {});
+
+    expect(conclude?.if).toBe("always()");
+    expect(at).toBe(steps.findIndex((s) => s.id === "publish") + 1);
+    expect(COMMANDS["implement:conclude"].inputs).toHaveProperty("RESCUE_BRANCH");
+    expect(COMMANDS["implement:conclude"].inputs.BUNDLE_DIR.files).toHaveProperty("branch.bundle");
+    expect(COMMANDS["implement:conclude"].inputs.IMPLEMENT_DIR.files).toHaveProperty("rescue_ignored.json");
+    expect(conclude?.env).toMatchObject({
+      LOOP_TOKEN: "${{ steps.token.outputs.token }}",
+      BUNDLE_DIR: "${{ runner.temp }}/agent-implement/bundle",
+      IMPLEMENT_DIR: "${{ runner.temp }}/agent-implement",
+      CHECKOUT: "${{ github.workspace }}",
+    });
+    const checkout = steps.find((s) => (s.uses ?? "").startsWith("actions/checkout@"));
+    expect(checkout?.if).toBe("always() && needs.gate.outputs.refused == 'false'");
+    const shell = steps.map((s) => s.run ?? "").join("\n");
+    expect(shell).not.toMatch(/gh pr create|agent:review|--add-label/);
   });
 
   /**
@@ -11193,15 +11273,16 @@ describe("implement's publish job publishes the PR with implement:publish and en
   /**
    * A token is handed to the two commands and to nothing else: no job-level
    * `GH_TOKEN`, so the checkout, the Node setup, the download and the upload
-   * hold none. Conclude writes with the workflow token alone.
+   * hold none. Conclude is handed the loop's token for the rescue alone
+   * (#270), optional, since the mint may have failed.
    */
-  it("hands a token to the two commands alone, and conclude no loop token", () => {
+  it("hands a token to the two commands alone, and conclude the loop's where it was minted", () => {
     expect(job().env?.["GH_TOKEN"]).toBeUndefined();
     for (const step of steps().filter((s) => s.run === undefined)) {
       expect(JSON.stringify(step.env ?? {}), step.uses).not.toMatch(/secrets\./);
     }
-    expect(JSON.stringify(conclude()?.env ?? {})).not.toContain("LOOP_TOKEN");
-    expect(COMMANDS["implement:conclude"].inputs).not.toHaveProperty("LOOP_TOKEN");
+    expect(conclude()?.env?.["LOOP_TOKEN"]).toBe("${{ steps.token.outputs.token }}");
+    expect(COMMANDS["implement:conclude"].inputs.LOOP_TOKEN.required).toBe(false);
   });
 
   /**
@@ -11255,9 +11336,10 @@ describe("implement's publish job publishes the PR with implement:publish and en
 
     expect([...new Set([...set, ...optional])].sort()).toEqual(Object.keys(declared).sort());
     for (const input of set) expect(declared, input).toHaveProperty(input);
-    // Only whether it timed out comes from the agent's job, and only to conclude.
+    // Only whether it timed out and how its bundle step ended (#270) come
+    // from the agent's job, and only to conclude.
     const agentOutputs = JSON.stringify(step?.env ?? {}).match(/needs\.implement\.outputs\.[\w-]+/g) ?? [];
-    expect(agentOutputs).toEqual(which === "conclude" ? ["needs.implement.outputs.timed-out"] : []);
+    expect(agentOutputs).toEqual(which === "conclude" ? ["needs.implement.outputs.timed-out", "needs.implement.outputs.bundled"] : []);
   });
 
   it("hands implement:publish the gate's facts and its directories", () => {
@@ -11285,6 +11367,12 @@ describe("implement's publish job publishes the PR with implement:publish and en
     expect(conclude()?.env).toEqual({
       NODE_AUTH_TOKEN: "${{ secrets.GITHUB_TOKEN }}",
       GH_TOKEN: "${{ secrets.GITHUB_TOKEN }}",
+      LOOP_TOKEN: "${{ steps.token.outputs.token }}",
+      LOOP_TOKEN_SOURCE: "${{ steps.token.outputs.source }}",
+      BASE_REF: "${{ inputs.default-branch }}",
+      CHECKOUT: "${{ github.workspace }}",
+      BRANCH: "${{ needs.gate.outputs.branch }}",
+      BASE_SHA: "${{ needs.gate.outputs.base }}",
       OUTPUT_DIR: "${{ runner.temp }}/conclude",
       PUBLISH_DIR: "${{ runner.temp }}/publish",
       PREPARE_DIR: "${{ runner.temp }}/agent-implement/prepare",
@@ -11299,6 +11387,7 @@ describe("implement's publish job publishes the PR with implement:publish and en
       MINT_OUTCOME: "${{ steps.token.outcome }}",
       DOWNLOAD_OUTCOME: "${{ steps.fetch.outcome }}",
       PUBLISH_OUTCOME: "${{ steps.publish.outcome }}",
+      BUNDLE_OUTCOME: "${{ needs.implement.outputs.bundled }}",
     });
     // Each prerequisite of conclude runs `always()` too, so it never reads an empty workspace.
     for (const step of steps().slice(0, at)) {

@@ -240,9 +240,10 @@ checkout is made with, to post the round's ending without a rescue. For update-b
 for `update-branch:bundle`; and `push` for `update-branch:publish` and `update-branch:conclude`, with
 `write` for conclude where `push` is refused, as fix's. For implement: `write` for
 `implement:gate`, which posts its refusals and the start comment and probes the label; `read` for
-the checkout of the base, and a fresh `read` for the runner; none for `implement:prepare` and
-`implement:bundle`; and `push` for `implement:publish` and `implement:conclude`, with `write` for
-conclude where `push` is refused. For implement-prd: `write` for `implement-prd:gate`; `push` for
+the checkout of the base and `implement:prepare`, which fetches a stopped run's rescue branch, and
+a fresh `read` for the runner; none for `implement:bundle`; and `push` for the publish checkout,
+`implement:publish` and `implement:conclude`, with `write` for the checkout and conclude where
+`push` is refused, to post the run's ending without a rescue. For implement-prd: `write` for `implement-prd:gate`; `push` for
 the catch-up's checkout and `implement-prd:catch-up`, which pushes the merge of the default branch
 into the PRD branch, before any agent runs; `read` for the agent's checkout and
 `implement-prd:prepare`, and a fresh `read` for the runner; none for `implement-prd:bundle`; and
@@ -311,11 +312,13 @@ the head moved on while the job ran and no other trigger label is on.
 
 An implement job runs `implement:gate`, and ends there where it refused the issue or deferred a PRD
 to implement-prd. Where it claimed the run, the agent's job checks out the commit the gate read the
-default branch at, and runs `implement:prepare`, which creates the agent's branch there, the setup,
-the runner, and `implement:bundle` where those succeeded. Where they did, `implement:publish`, in a
-checkout of the base of its own, pushes the branch, opens the draft pull request as the App, links
-it on the issue and adds `agent:review` as the App, which the dispatcher answers as the App's own
-label: the pull request then flows into review. `implement:conclude` ends every run. The service
+default branch at, and runs `implement:prepare`, which creates the agent's branch there and fetches
+a stopped run's rescue branch, the setup, the runner, and `implement:bundle`, however those ended.
+Where they succeeded, `implement:publish`, in a checkout of the base of its own, pushes the branch,
+opens the draft pull request as the App, deletes the rescue branch, links it on the issue and adds
+`agent:review` as the App, which the dispatcher answers as the App's own label: the pull request
+then flows into review. `implement:conclude` ends every run, in the same checkout, pushing a stopped
+run's commits to `agent/rescue/issue-<n>` for the next run to resume from. The service
 has no run page, so the link the implement commands give where Actions links its workflow run (the
 start comment, the pull request's frame, the link on the issue and the failure comment) is the
 App's own page, `https://github.com/apps/<slug>`. Review's, fix's and update-branch's failure
@@ -384,8 +387,9 @@ update-branch job's gate, checkout and merge share 15 minutes; the agent's job's
 out; publish's checkout and `update-branch:publish` share 15 minutes, and `update-branch:conclude`
 gets 15. An implement job's gate gets 10 minutes; the agent's job's steps share
 `AGENT_TIMEOUT_MINUTES` (30 where unset), and a build ended at it publishes nothing and says it
-timed out; publish's checkout and `implement:publish` share 15 minutes, and `implement:conclude`
-gets 15. An implement-prd job's gate gets 10 minutes, and the catch-up's checkout and
+timed out; `implement:bundle` gets 5 of its own, so a build stopped at its limit still hands its
+commits over for the rescue; publish's checkout and `implement:publish` share 15 minutes, and
+`implement:conclude` gets 15. An implement-prd job's gate gets 10 minutes, and the catch-up's checkout and
 `implement-prd:catch-up` 10 together; the agent's job's steps share `AGENT_TIMEOUT_MINUTES` (30 where
 unset); `implement-prd:bundle` gets 5 of its own, so a build stopped at its limit still hands its
 commits over for the rescue; publish's checkout and `implement-prd:publish` share 15 minutes, and

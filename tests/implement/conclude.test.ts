@@ -4,11 +4,14 @@ import * as path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { parse } from "yaml";
 import type { Limits } from "../../engine/writer.js";
+import { GitHubError } from "../../engine/github.js";
 import { conclude, MINT_FAILED } from "../../implement/conclude.js";
-import type { CommandIo, Token } from "../../shared/command-io.js";
+import type { BundleHead } from "../../engine/git.js";
+import type { CheckoutIo, Token } from "../../shared/command-io.js";
 import type { COMMANDS } from "../../shared/contract.js";
 import { BLOCKED_LABEL, IMPLEMENT_LABEL } from "../../shared/record.js";
-import { fakeGitHub, fakeReader, fakeWriters, type FakeGitHub } from "../engine/fakes.js";
+import { ignoredNote } from "../../shared/rescue.js";
+import { fakeGit, fakeGitHub, fakeReader, fakeWriters, type FakeGitHub } from "../engine/fakes.js";
 
 /**
  * `implement:conclude` (#493), called the way the CLI calls it: its declared
@@ -29,12 +32,21 @@ import { fakeGitHub, fakeReader, fakeWriters, type FakeGitHub } from "../engine/
 const ISSUE = 135;
 const PR = 152;
 const RUN_URL = "https://github.com/acme/widgets/actions/runs/1";
+const BRANCH = "agent/issue-135-add-a-widget";
+const RESCUE = `agent/rescue/issue-${ISSUE}`;
+/** The commit the gate read `main` at. */
+const BASE = "b".repeat(40);
+/** The agent's last commit, the bundle's one tip. */
+const TIP = "d".repeat(40);
 
 let root: string;
 let github: FakeGitHub;
 let made: ReturnType<typeof fakeWriters<Token>> | undefined;
 let asked: Limits | undefined;
 let logged: string[];
+let git: ReturnType<typeof fakeGit>;
+/** Set to make reading the rescue's tip fail the way GitHub does on a server error. */
+let tipFails: boolean;
 
 type Dir = "publish" | "prepare" | "runner" | "bundle";
 const dirOf = (name: Dir): string => path.join(root, name);
@@ -47,6 +59,8 @@ beforeEach(() => {
   made = undefined;
   asked = undefined;
   logged = [];
+  git = holding();
+  tipFails = false;
   vi.spyOn(console, "log").mockImplementation((line: unknown) => {
     logged.push(String(line));
   });
@@ -66,13 +80,31 @@ const published = (over: Partial<{ pushed: boolean; head: string; pr: number; re
 
 type Inputs = Parameters<typeof conclude>[0];
 
+const bundlePath = (): string => path.join(dirOf("bundle"), "branch.bundle");
+
+/** A git reader over a checkout holding `history`, where the bundle, once handed over, carries `heads`. */
+const holding = (
+  history: Readonly<Record<string, readonly string[]>> = { [TIP]: [BASE, TIP] },
+  heads: readonly BundleHead[] = [{ ref: `refs/heads/${BRANCH}`, commit: TIP }],
+) => fakeGit({ bundles: { [bundlePath()]: heads }, history });
+
+/** The agent's commits, handed over as `implement:bundle` writes them. */
+const bundled = (): void => put("bundle", "branch.bundle", "a bundle");
+
 /** A run that finished, implement:publish included. */
 const INPUTS = (over: Partial<Inputs> = {}): Inputs => ({
   OUTPUT_DIR: path.join(root, "out"),
   GH_REPO: "acme/widgets",
   GH_TOKEN: "workflow-token",
+  LOOP_TOKEN: "loop-token",
+  LOOP_TOKEN_SOURCE: "app",
   ISSUE_NUMBER: String(ISSUE),
+  BASE_REF: "main",
   RUN_URL,
+  RESCUE_BRANCH: RESCUE,
+  CHECKOUT: "/checkout",
+  BRANCH,
+  BASE_SHA: BASE,
   REFUSED: "false",
   GATE_RESULT: "success",
   GATE_REASON: "",
@@ -82,6 +114,7 @@ const INPUTS = (over: Partial<Inputs> = {}): Inputs => ({
   MINT_OUTCOME: "success",
   DOWNLOAD_OUTCOME: "success",
   PUBLISH_OUTCOME: "success",
+  BUNDLE_OUTCOME: "success",
   PUBLISH_DIR: dirOf("publish"),
   PREPARE_DIR: dirOf("prepare"),
   IMPLEMENT_DIR: dirOf("runner"),
@@ -111,13 +144,23 @@ const UNDECIDED = (result: "failure" | "cancelled" = "failure", over: Partial<In
 
 /** The CLI's half: the io, the call, and the log's last line however it ended. */
 const run = async (inputs: Inputs = INPUTS()): Promise<void> => {
-  const io: CommandIo<(typeof COMMANDS)["implement:conclude"]["outputs"]> = {
+  const io: CheckoutIo<(typeof COMMANDS)["implement:conclude"]["outputs"]> = {
     writers: (limits) => {
       asked = limits;
       made = fakeWriters(github, ["loop", "workflow"] as const, limits);
       return made.writers;
     },
-    github: fakeReader(github).reader,
+    github: {
+      ...fakeReader(github).reader,
+      ...(tipFails
+        ? {
+            branchTip: async () => {
+              throw new GitHubError("GET branches failed", 502);
+            },
+          }
+        : {}),
+    },
+    git: git.git,
     outputs: { writeJson: () => {}, writeText: () => {}, writeBytes: () => {}, appendLine: () => {} },
   };
   try {
@@ -526,7 +569,7 @@ describe("implement:conclude takes the trigger label off however a decided run e
   it("writes within its limits", async () => {
     await run(INPUTS(AGENT("failure")));
 
-    expect(asked).toEqual({ comment: 1, removeLabel: 1, addLabel: 1 });
+    expect(asked).toEqual({ comment: 2, removeLabel: 1, addLabel: 1, pushRef: 1 });
   });
 
   it("writes everything with the workflow's token", async () => {
@@ -535,5 +578,239 @@ describe("implement:conclude takes the trigger label off however a decided run e
     await run(INPUTS({ PUBLISH_OUTCOME: "failure" }));
 
     expect(made?.writes.every((w) => w.token === "workflow")).toBe(true);
+  });
+});
+
+/**
+ * A stopped run's commits (#270), kept on the issue's rescue branch rather
+ * than lost with the agent's runner: never `BRANCH`, no pull request, no
+ * review, and no label beyond the failure path's. The comment names the
+ * rescue and says re-adding the label resumes from it.
+ */
+describe("implement:conclude rescues a stopped run's commits to a side branch", () => {
+  it.each([
+    ["timed out", AGENT("cancelled", { TIMED_OUT: "true" })],
+    ["was cancelled", AGENT("cancelled")],
+    ["failed", AGENT("failure")],
+  ] as const)("pushes the commits of a run that %s to the rescue branch, and nothing else", async (_name, over) => {
+    bundled();
+
+    await run(INPUTS(over));
+
+    expect(github.branches.get(RESCUE)).toBe(TIP);
+    expect(github.branches.has(BRANCH)).toBe(false);
+    expect(made?.writes[0]?.args).toEqual([{ ref: `refs/heads/${RESCUE}`, commit: TIP, lease: { absent: true } }]);
+    expect(made?.writes.map((w) => `${w.token} ${w.type}`)[0]).toBe("loop pushRef");
+    expect(writes().slice(1)).toEqual(STOPPED_WRITES);
+    expect(github.pullRequests.size).toBe(0);
+    expect(comment()).toMatch(STOPPED);
+    expect(comment()).toContain(`· Its commits so far are saved on \`${RESCUE}\`. To resume from them, add \`agent:implement\`.\n`);
+    expect(logged).toContain(`Rescued the agent's commits, up to ${TIP}, to ${RESCUE}.`);
+  });
+
+  it("names the rescue beside a retry that names something else", async () => {
+    bundled();
+
+    await run(INPUTS(UNDECIDED("failure", { REFUSED: "false", GATE_RESULT: "success", AGENT_RESULT: "failure", DOWNLOAD_OUTCOME: "success" })));
+
+    expect(github.branches.get(RESCUE)).toBe(TIP);
+    expect(comment()).toContain(`Its commits so far are saved on \`${RESCUE}\``);
+  });
+
+  /** A run that resumed from a rescue and stopped again holds everything the rescue held, so its own replaces it. */
+  it("overwrites an earlier rescue, leased on its tip as read", async () => {
+    const earlier = "c".repeat(40);
+    github.branches.set(RESCUE, earlier);
+    git = holding({ [TIP]: [BASE, earlier, TIP] });
+    bundled();
+
+    await run(INPUTS(AGENT("cancelled", { TIMED_OUT: "true" })));
+
+    expect(made?.writes[0]?.args).toEqual([{ ref: `refs/heads/${RESCUE}`, commit: TIP, lease: { tip: earlier } }]);
+    expect(github.branches.get(RESCUE)).toBe(TIP);
+  });
+
+  it("saves nothing, and says nothing of a rescue, where the run had no commits ahead of the base", async () => {
+    await run(INPUTS(AGENT("cancelled", { TIMED_OUT: "true" })));
+
+    expect(github.branches.has(RESCUE)).toBe(false);
+    expect(writes()).toEqual(STOPPED_WRITES);
+    expect(comment()).toContain(`· ${RETRY}\n`);
+    expect(logged).toContain("No commits ahead of the base this run started from, so there is nothing to rescue.");
+  });
+
+  it("saves nothing where publish pushed the branch before it stopped", async () => {
+    bundled();
+    published({ pushed: true, head: TIP });
+
+    await run(INPUTS({ PUBLISH_OUTCOME: "failure" }));
+
+    expect(github.branches.has(RESCUE)).toBe(false);
+    expect(writes()).toEqual(STOPPED_WRITES);
+  });
+
+  it("saves nothing on a run that finished", async () => {
+    bundled();
+
+    await run();
+
+    expect(github.branches.has(RESCUE)).toBe(false);
+  });
+
+  it("says the commits were not saved, and why, where the loop's token was not minted", async () => {
+    bundled();
+
+    await run(INPUTS(AGENT("cancelled", { TIMED_OUT: "true", MINT_OUTCOME: "failure", LOOP_TOKEN: "", LOOP_TOKEN_SOURCE: "" })));
+
+    expect(github.branches.has(RESCUE)).toBe(false);
+    expect(writes().filter((w) => w.startsWith("loop"))).toEqual([]);
+    expect(comment()).toContain(
+      `· ${RETRY} Its commits were not saved on \`${RESCUE}\`: the loop's token was not minted, so there was nothing to push them with.\n`,
+    );
+  });
+
+  /**
+   * Every way a stopped run's commits go unsaved is said in the comment, with
+   * why (#270), never the plain retry, which would read as though there were
+   * none: a bundle that fails a check (the service's checkout missing among
+   * them, since the check reads it), a rescue whose tip cannot be read, a push
+   * GitHub refuses, a bundle step that failed, and a hand-over that could not
+   * be fetched.
+   */
+  const unsaved = (why: string): string => `· ${RETRY} Its commits were not saved on \`${RESCUE}\`: ${why}\n`;
+  const UNCHECKED = unsaved("they could not be checked against `main` before the push, and the workflow run's log says why.");
+
+  it("says the commits were not saved, and why, where they do not build on the base the run started from", async () => {
+    git = holding({ [TIP]: [TIP] });
+    bundled();
+
+    await run(INPUTS(AGENT("failure")));
+
+    expect(github.branches.has(RESCUE)).toBe(false);
+    expect(warnings()).toContain("::warning::The agent's commits don't build on `main` as this run found it, so nothing was rescued.");
+    expect(comment()).toContain(UNCHECKED);
+  });
+
+  it("says the commits were not saved, and why, where the bundle holds another branch", async () => {
+    git = holding(undefined, [{ ref: "refs/heads/main", commit: TIP }]);
+    bundled();
+
+    await run(INPUTS(AGENT("failure")));
+
+    expect(github.branches.has(RESCUE)).toBe(false);
+    expect(comment()).toContain(UNCHECKED);
+  });
+
+  it("says the commits were not saved, and why, where the bundle cannot be read in the checkout", async () => {
+    git = fakeGit({ bundles: {}, history: {} });
+    bundled();
+
+    await run(INPUTS(AGENT("failure")));
+
+    expect(github.branches.has(RESCUE)).toBe(false);
+    expect(comment()).toContain(UNCHECKED);
+  });
+
+  it("says the commits were not saved, and why, where the rescue's tip cannot be read", async () => {
+    tipFails = true;
+    bundled();
+
+    await run(INPUTS(AGENT("failure")));
+
+    expect(writes().filter((w) => w.startsWith("loop"))).toEqual([]);
+    expect(warnings()[0]).toMatch(/^::warning::Could not read agent\/rescue\/issue-135, so the agent's commits were not saved there: /);
+    expect(comment()).toContain(
+      unsaved("GitHub would not say whether the branch already holds commits, so pushing could have overwritten them."),
+    );
+  });
+
+  it("warns, still comments and blocks, and says the commits were not saved, where the rescue push fails", async () => {
+    github.fails = (write) => write.type === "pushRef";
+    bundled();
+
+    await run(INPUTS(AGENT("failure")));
+
+    expect(github.branches.has(RESCUE)).toBe(false);
+    expect(writes().slice(1)).toEqual(STOPPED_WRITES);
+    expect(warnings()[0]).toMatch(/^::warning::Could not push the agent's commits to agent\/rescue\/issue-135, so nothing was rescued\./);
+    expect(comment()).toContain(unsaved("GitHub refused the push, and the workflow run's log says why."));
+  });
+
+  it("says the commits were not saved, and why, where implement:bundle failed", async () => {
+    put("bundle", "failure_reason.txt", "Couldn't bundle the agent's commits.");
+
+    await run(INPUTS(AGENT("failure")));
+
+    expect(writes()).toEqual(STOPPED_WRITES);
+    expect(comment()).toContain(unsaved("the agent's job could not bundle them, and the workflow run's log says why."));
+  });
+
+  /**
+   * A bundle step ended before it wrote anything (#270): stopped at its own
+   * limit on the service, or in a cancel on Actions, or failed before the
+   * command could write its reason. No file is then unknown, not no commits.
+   */
+  it.each([
+    ["was stopped", "cancelled", "the agent's job was stopped before it finished bundling them, and the workflow run's log says why."],
+    ["failed without a reason", "failure", "the agent's job could not bundle them, and the workflow run's log says why."],
+  ] as const)("says the commits were not saved, and why, where the bundle step %s before it wrote anything", async (_name, outcome, why) => {
+    await run(INPUTS(AGENT("cancelled", { BUNDLE_OUTCOME: outcome })));
+
+    expect(writes()).toEqual(STOPPED_WRITES);
+    expect(comment()).toContain(unsaved(why));
+    expect(logged).not.toContain("No commits ahead of the base this run started from, so there is nothing to rescue.");
+  });
+
+  it("reads no bundle as no commits where the bundle step succeeded", async () => {
+    await run(INPUTS(AGENT("failure", { BUNDLE_OUTCOME: "success" })));
+
+    expect(comment()).toContain(`· ${RETRY}\n`);
+  });
+
+  it("says the commits were not saved, and why, where the hand-over could not be fetched", async () => {
+    await run(INPUTS(AGENT("failure", { DOWNLOAD_OUTCOME: "failure" })));
+
+    expect(writes()).toEqual(STOPPED_WRITES);
+    expect(comment()).toContain(unsaved("what the agent's job handed over could not be fetched, so there were none to push."));
+  });
+});
+
+/**
+ * A rescue the runner set aside because the base moved since it was saved
+ * (#270), said on the issue however the run ended, so work nobody built on is
+ * not dropped silently.
+ */
+describe("implement:conclude says a rescue was set aside", () => {
+  const note = ignoredNote(IMPLEMENT_LABEL, RESCUE, "`main`");
+
+  it("on the issue, first, on a run that finished", async () => {
+    put("runner", "rescue_ignored.json", { branch: RESCUE, movedPast: "c".repeat(40) });
+
+    await run();
+
+    expect(comments()).toEqual([note]);
+    expect(note).toBe(
+      `**\`agent:implement\` started fresh:** An earlier run saved its unfinished commits on \`${RESCUE}\`, but \`main\` has moved since, so this run did not build on them. The branch is deleted once a run succeeds.\n`,
+    );
+    expect(writes()).toEqual([`workflow comment ${ISSUE}`, `workflow removeLabel ${ISSUE} ${IMPLEMENT_LABEL}`]);
+  });
+
+  it("before the failure comment, on a run that stopped", async () => {
+    put("runner", "rescue_ignored.json", { branch: RESCUE, movedPast: "c".repeat(40) });
+
+    await run(INPUTS(AGENT("failure")));
+
+    expect(comments()[0]).toBe(note);
+    expect(writes()).toEqual([`workflow comment ${ISSUE}`, ...STOPPED_WRITES]);
+  });
+
+  it("skips a note naming another branch, and still gives the runner's reason", async () => {
+    put("runner", "rescue_ignored.json", { branch: "agent/rescue/issue-1", movedPast: "c".repeat(40) });
+    put("runner", "failure_reason.txt", "The runner wrote this.");
+
+    await run(INPUTS(AGENT("failure")));
+
+    expect(comments()).toHaveLength(1);
+    expect(comment()).toContain("The runner wrote this.");
   });
 });

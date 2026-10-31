@@ -7,7 +7,7 @@
  * | File | Holds |
  * |---|---|
  * | `findings.json` | One entry per finding to post: id, placement, severity, title, the agent's text, path, line, and whether it was previously missed |
- * | `review_body.json` | The verdict and its cause, the agent's assessment, the open, resolved and missed entries, criteria results and why there are none, what merged since the brief, what the review's own test run skipped, follow-ups and their cap, red-test results, and the data behind the header and the round note |
+ * | `review_body.json` | The verdict and its cause, the agent's assessment, the open, resolved and missed entries, criteria results and why there are none, what merged since the brief, what the review's own test run skipped, follow-ups and their cap, the carried follow-ups ruled resolved and why, red-test results, and the data behind the header and the round note |
  * | `thread_resolutions.json` | Per thread: id, reason, whether it was already replied to, and the agent's note or the maintainer's reply to quote |
  * | `pr_summary.json` | The title, the agent's summary, whether the round is final, and the data behind Evidence and merge danger. Written only where this review rewrites them |
  * | `verdict.json` | The verdict's key, whether it starts a fix round, how many findings it leaves open, and which stop kept it from starting one |
@@ -534,6 +534,8 @@ export const handOverParsers = (known: Known) => {
           droppedFollowUps: NUMBER,
           followUpsCap: NUMBER,
           followUpsCarried: YES_NO,
+          resolvedFollowUps: optional(list(object({ title: text, location: text, reason: text }), { max: FOLLOW_UPS_LIST_LIMIT })),
+          resolvedFollowUpIds: optional(list(ID, { max: FOLLOW_UPS_LIST_LIMIT })),
           droppedNotes: list(object({ title: text, reason: text, url: optional(LINK) }), { max: MAX_ENTRIES }),
           criteria: list(
             object({ id: CRITERION_ID, text, status: choice(["met", "changed", "unmet", "unchecked"]), reason: optional(text) }),

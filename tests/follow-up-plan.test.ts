@@ -11,7 +11,9 @@ import {
   followUpsPayload,
   recordFollowUps,
   renderFollowUpsBlock,
+  parseFollowUpsBlock,
   type FollowUp,
+  type FollowUpRuling,
 } from "../shared/review-output.js";
 import { FOLLOW_UP_STUB_LABEL, FOLLOW_UPS_MARKER, TRIAGE_LABEL } from "../shared/record.js";
 import { loopAccounts } from "../shared/loop-accounts.js";
@@ -1151,5 +1153,62 @@ describe("earlierFollowUps", () => {
 
     expect(result.issues.map((i) => i.title)).toEqual([...three(1), ...three(2)].map((f) => f.title));
     expect(result.report).not.toMatch(/dropped/);
+  });
+
+  /**
+   * #494's sequence (#495): round 1 records F; a later commit fixes it, and
+   * round 2 rules it resolved; round 3 neither carries it, although round 1's
+   * review still lists it, nor files it at the merge. The follow-up beside it,
+   * ruled open in round 2 and not ruled on in round 3, is carried with its id
+   * and filed once.
+   */
+  it("drops a follow-up a later round ruled resolved, from every round after and from the filing", () => {
+    const post = (findings: FollowUp[], earlier: readonly FilingReview[], rulings: readonly FollowUpRuling[] = []): FilingReview => {
+      const read = earlierFollowUps(earlier, ACCOUNTS);
+      const recorded = recordFollowUps([], findings, [], {
+        cap: followUpsCap(2),
+        carried: read.carried,
+        resolved: read.resolved,
+        rulings,
+      });
+      return review([], {
+        body: `A summary.\n\n${renderFollowUpsBlock(recorded.followUps, recorded.dropped, recorded.moved, recorded.cap, recorded.carried, recorded.resolved)}`,
+      });
+    };
+    const round1 = post(
+      [
+        followUp({ title: "the spec says no file is written", location: "docs/spec.md:597" }),
+        followUp({ title: "still true", location: "src/other.ts:1" }),
+      ],
+      [],
+    );
+    const [f, kept] = parseFollowUpsBlock(round1.body)?.followUps ?? [];
+    if (f?.id === undefined || kept?.id === undefined) throw new Error("round 1 recorded no ids");
+
+    const round2 = post([], [round1], [
+      { id: f.id, status: "resolved", reason: "A later commit corrected the spec." },
+      { id: kept.id, status: "open" },
+    ]);
+    expect(parseFollowUpsBlock(round2.body)?.followUps).toEqual([kept]);
+
+    const round3Earlier = earlierFollowUps([round1, round2], ACCOUNTS);
+    expect(round3Earlier.carried.flatMap((e) => [...e.moved, ...e.rest]).map((e) => e.id)).toEqual([kept.id, kept.id]);
+    expect(round3Earlier.resolved).toEqual([f.id]);
+
+    const round3 = post([], [round1, round2]);
+    expect(parseFollowUpsBlock(round3.body)?.followUps).toEqual([kept]);
+    expect(parseFollowUpsBlock(round3.body)?.resolved).toEqual([f.id]);
+
+    const result = plan([], [], { reviews: [round1, round2, round3] });
+    expect(result.issues.map((i) => i.title)).toEqual(["still true"]);
+  });
+
+  it("keeps an entry with no id, from a release before ids, whatever a round rules", () => {
+    const old = followUp({ title: "from before ids" });
+    const round1 = review([], { body: `A summary.\n\n${renderFollowUpsBlock([old], 0, 0)}` });
+    const read = earlierFollowUps([round1], ACCOUNTS);
+    const recorded = recordFollowUps([], [], [], { carried: read.carried, resolved: read.resolved, rulings: [] });
+
+    expect(recorded.followUps).toEqual([old]);
   });
 });

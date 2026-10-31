@@ -245,6 +245,15 @@ describe("update-branch:conclude says how a stopped run stopped", () => {
     expect(comment()).toContain(`[Workflow run](${RUN_URL}) · ${RETRY}\n`);
   });
 
+  // The service has no run page, so no run id: an empty `[Workflow run]()`
+  // links nowhere, and #463's failure comment carried one.
+  it("links no run where it has none, as on the service", async () => {
+    await run(INPUTS({ ...CONFLICTS("failure"), GITHUB_RUN_ID: "" }));
+
+    expect(comment()).not.toContain("[Workflow run]");
+    expect(comment()).toMatch(/^\*\*`agent:update-branch` stopped:\*\* [^\n]+\n\nTo try again, add `agent:update-branch`\.\n$/);
+  });
+
   it("makes a reason written in lower case and with no full stop a sentence", async () => {
     put("runner", "failure_reason.txt", "the push was rejected\n");
 

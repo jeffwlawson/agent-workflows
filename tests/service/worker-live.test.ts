@@ -1,4 +1,4 @@
-import { spawnSync } from "node:child_process";
+import { execFileSync, spawnSync } from "node:child_process";
 import * as fs from "node:fs";
 import { createServer, type Server } from "node:http";
 import { connect, createServer as createNetServer, type AddressInfo, type Server as NetServer } from "node:net";
@@ -7,7 +7,7 @@ import * as path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { SANDBOX_WORKTREE } from "../../engine/bwrap-args.js";
 import { RELAY_PORT } from "../../engine/proxy-relay.js";
-import { installCli, liveSandbox, liveTokens, routeThroughProxy, SETUP_SHELL } from "../../service/worker-live.js";
+import { installCli, liveGit, liveSandbox, liveTokens, routeThroughProxy, SETUP_SHELL } from "../../service/worker-live.js";
 import { gitEnvironment, hostEnvironment, PROXY_VARIABLES, type HostEnvironment } from "../../shared/env.js";
 import { SUBPROCESS_TIMEOUT } from "../../vitest.config.js";
 
@@ -459,5 +459,84 @@ describe.skipIf(!bwrapRuns())("setup's network, in a real sandbox (skipped where
     expect(read("proxied.txt").trim()).toBe("reply:proxied");
     const interfaces = read("interfaces.txt").split("\n").slice(2).filter((line) => line.trim() !== "");
     expect(interfaces.map((line) => line.split(":")[0]!.trim())).toEqual(["lo"]);
+  });
+});
+
+/**
+ * The checkout the service's git edge makes (#567), from a repository on disk
+ * that `HOME`'s git configuration names in place of the GitHub URL, so
+ * nothing reaches a network. The base carries a release tag behind its tip,
+ * annotated as `npm version` makes one, and a lightweight tag at its tip.
+ */
+describe("the checkout the service makes", () => {
+  let home: string;
+  let origin: string;
+  let dir: string;
+  let head: string;
+
+  const git = (cwd: string, ...args: string[]): string =>
+    execFileSync("git", ["-c", "user.name=t", "-c", "user.email=t@example.com", "-c", "tag.gpgSign=false", "-c", "commit.gpgSign=false", ...args], {
+      cwd,
+      env: { PATH: process.env["PATH"] ?? "", HOME: home, GIT_CONFIG_NOSYSTEM: "1" },
+      encoding: "utf8",
+      timeout: SUBPROCESS_TIMEOUT,
+    });
+
+  beforeEach(async () => {
+    home = path.join(scratch, "home");
+    origin = path.join(scratch, "origin");
+    dir = path.join(scratch, "checkout");
+    fs.mkdirSync(home);
+    fs.mkdirSync(origin);
+    fs.writeFileSync(path.join(home, ".gitconfig"), `[url "file://${origin}"]\n\tinsteadOf = https://github.com/owner/repo.git\n`);
+    git(origin, "init", "--quiet", "--initial-branch=main");
+    fs.writeFileSync(path.join(origin, "version.txt"), "1.0.0\n");
+    git(origin, "add", ".");
+    git(origin, "commit", "--quiet", "-m", "v1.0.0");
+    git(origin, "tag", "-a", "v1.0.0", "-m", "v1.0.0");
+    fs.writeFileSync(path.join(origin, "version.txt"), "1.1.0\n");
+    git(origin, "commit", "--quiet", "-am", "later");
+    git(origin, "tag", "base-tip");
+    git(origin, "checkout", "--quiet", "-b", "feature");
+    fs.writeFileSync(path.join(origin, "change.txt"), "change\n");
+    git(origin, "add", ".");
+    git(origin, "commit", "--quiet", "-m", "change");
+    head = git(origin, "rev-parse", "HEAD").trim();
+    git(origin, "checkout", "--quiet", "main");
+
+    await liveGit({ PATH: process.env["PATH"] ?? "", HOME: home }).checkout({
+      dir,
+      repo: "owner/repo",
+      branch: "feature",
+      sha: head,
+      baseRef: "main",
+      token: "the-token",
+      committer: "agent[bot]",
+      signal: new AbortController().signal,
+    });
+  }, SUBPROCESS_TIMEOUT * 4);
+
+  it("holds every tag the base has, as Actions' fetch-depth: 0 does, with the head checked out and the base beside it", () => {
+    expect(git(dir, "tag", "--list").trim().split("\n")).toEqual(["base-tip", "v1.0.0"]);
+    expect(git(dir, "show", "v1.0.0:version.txt")).toBe("1.0.0\n");
+    expect(git(dir, "rev-parse", "HEAD").trim()).toBe(head);
+    expect(git(dir, "rev-parse", "main").trim()).toBe(git(origin, "rev-parse", "main").trim());
+  });
+
+  it("hands the tags to the agent's copy, which Sandcastle clones from a bundle of the checkout's every ref", () => {
+    const bundle = path.join(scratch, "repo.bundle");
+    const copy = path.join(scratch, "copy");
+    git(dir, "bundle", "create", bundle, "--all");
+    git(scratch, "clone", "--quiet", bundle, copy);
+
+    expect(git(copy, "show", "v1.0.0:version.txt")).toBe("1.0.0\n");
+    expect(git(copy, "show", "base-tip:version.txt")).toBe("1.1.0\n");
+  });
+
+  it("stores no token in the checkout's configuration", () => {
+    const config = fs.readFileSync(path.join(dir, ".git", "config"), "utf8");
+    expect(config).not.toContain(Buffer.from("x-access-token:the-token").toString("base64"));
+    expect(config).not.toContain("extraHeader");
+    expect(config).not.toContain("the-token");
   });
 });

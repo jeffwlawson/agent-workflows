@@ -259,7 +259,10 @@ with the base, `fix:prepare`, which fetches a stopped round's rescue branch into
 runner, and `fix:bundle`, however those ended. Then, in a checkout of the head of its own, as
 `fix.yml`'s publish job makes, `fix:publish` pushes the agent's commits and asks for the re-review, and `fix:conclude` ends the round, pushing a stopped round's commits to
 `agent/rescue/fix-<n>` for the next round to resume from. The checkout keeps no token in its
-configuration: each command is handed its token in its environment. It does keep a committer, the
+configuration: each command is handed its token in its environment. Every checkout the worker
+makes fetches the head, the base and every tag the repository has, the tags `fetch-depth: 0` gives
+on Actions, so a verify command that reads a release by its tag (a version check, `git describe`)
+passes here as it does there; it fetches no other branch. It does keep a committer, the
 App's login and its no-reply address, as `fix.yml`'s checkout sets one, since the agent commits.
 
 An update-branch job runs `update-branch:gate`, and ends there where it refused; where it claimed the run, it checks the head out
@@ -267,7 +270,10 @@ with the base and runs `update-branch:merge` there. A clean merge, or a branch a
 goes straight to `update-branch:publish`, which makes the merge again in a checkout of its own,
 pushes it and carries the verdict over; no setup and no runner run. A merge that conflicts runs the
 agent's job first, in a third checkout: `update-branch:prepare`, which makes the same merge again,
-the setup, the runner, and `update-branch:bundle` where those succeeded. Publish then pushes the
+the setup, the runner, and `update-branch:bundle` where those succeeded. In the `bwrap` sandbox the
+agent resolves the conflicts as a squash, on a branch of its own, and the runner makes the merge
+commit in the checkout from what it committed, since the sandbox can carry neither a merge in
+progress in nor a merge commit out (`docs/platform-spec.md` §10). Publish then pushes the
 resolution and adds `agent:review` as the App, which the dispatcher answers as the App's own label.
 `update-branch:conclude` ends every run, and asks for `agent:update-branch` again, as the App, where
 the head moved on while the job ran and no other trigger label is on.
@@ -281,7 +287,8 @@ it on the issue and adds `agent:review` as the App, which the dispatcher answers
 label: the pull request then flows into review. `implement:conclude` ends every run. The service
 has no run page, so the link the implement commands give where Actions links its workflow run (the
 start comment, the pull request's frame, the link on the issue and the failure comment) is the
-App's own page, `https://github.com/apps/<slug>`.
+App's own page, `https://github.com/apps/<slug>`. Review's, fix's and update-branch's failure
+comments, which build their link from the Actions run, give none on the service.
 
 An implement-prd job runs `implement-prd:gate`, and ends there where it refused the PRD or deferred
 a regular issue to implement. Where it claimed the run, the gate decided one of three things. **A

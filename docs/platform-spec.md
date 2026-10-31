@@ -296,7 +296,12 @@ the host's home, credentials or other runs:
   excluded in the copy's `info/exclude`, so it is never handed back as the agent's work, and a
   setup's untracked file the agent means to commit takes `git add -f` there;
 - the agent's work comes back only as Sandcastle's patches and session files: a write under `.git`,
-  or of a symlink that leaves the sandbox, is refused.
+  or of a symlink that leaves the sandbox, is refused;
+- so a merge in progress in the checkout is not in the copy, which is cloned from history, and a
+  merge commit the agent made would not come back, since the patches leave merges out. A runner
+  whose agent concludes a merge, `update-branch`'s (§10), has its agent work on a branch of its
+  own, has the copy put mid-merge as a squash, and makes the merge itself, in the checkout, from
+  the tree the agent committed.
 
 Whatever provider a runner offers ***must*** support resuming a session, since a runner that
 extracts a structured result runs the agent twice, the second time resuming the first session.
@@ -458,7 +463,7 @@ string the agent wrote, so the agent cannot forge one of those through a review.
 | `<!-- agent-fix:out-of-scope {…} -->` | A note on a finding the fix judged out of scope. | `fix:publish`, from `fix`'s `out_of_scope_notes.json` | `review`, which rules on it; `fix`, to not repeat it |
 | `<!-- agent-fix:top-level -->` | A top-level comment the fix posted. Read on a trusted author's post too. | `fix:publish`, from `fix`'s `top_level_comments.json` | `review`, `fix`, to leave the loop's own comments out of the feedback |
 | `<!-- agent-fix:conversation-outcomes -->` | The comment saying what the fix did with the conversation. | `fix:publish`, from `fix`'s `conversation_outcomes.json` | `review`, `fix`, the same |
-| `<!-- agent-follow-ups {…} -->` | A review body that recorded out-of-scope findings. An edited review's is refused. | `review:publish`, from `review`'s `review_body.json` | `review`, to not record one twice; `follow-ups:file`, to file them |
+| `<!-- agent-follow-ups {…} -->` | A review body that recorded out-of-scope findings: `version` (`1`), `dropped`, `moved`, `cap`, `cut` where not zero, `followUps`, and on a PRD PR `resolved`, the ids of every carried follow-up a round on it ruled resolved (#495), written where not empty, so a later round carries none of them from an older review. A reader that does not know a field ignores it. An edited review's is refused. | `review:publish`, from `review`'s `review_body.json` | `review`, to not record one twice; `follow-ups:file`, to file them |
 | `<!-- agent-red-tests {…} -->` | A slice round's review body: the red check's tests. | `review:publish`, from `review`'s `review_body.json` | `review`, on the PRD PR's final review |
 | `<summary><b>Acceptance criteria</b>` | A review body's criteria group, its `- **Changed:**` and `- **Unmet:**` lines. | `review:publish`, from `review`'s `review_body.json` | `review`, on later rounds of the same slice |
 | `<!--{"version",…,"location","pr","seq"}-->` | The end of a filed follow-up issue's body. | `follow-ups:file`, which files it through `createIssue`, as `stubMarker` in `shared/record.ts` spells it | `follow-ups:file`, to not file one twice, and to read back a stub GitHub filed while answering with a server error |
@@ -649,7 +654,7 @@ it does not trust is left out of what the agent is shown. Nothing else of the re
 >   fetch, which need `refused == 'false'`, are skipped. So is the agent's job where the gate
 >   claimed the run and then failed, as at the probe, since the job needs the gate's success.
 > - **The agent's job**, where the gate succeeded and claimed the run: a `read` token; a checkout
->   of the base branch, by name, as `implement.yml`'s, with no token stored in it;
+>   of the base branch, by name, with the repository's tags, as `implement.yml`'s, with no token stored in it;
 >   `implement:prepare`, handed no token, which creates `BRANCH` there at `base`, the commit the
 >   gate read the base branch at; the repository's setup,
 >   `AGENT_SETUP`, in the bwrap sandbox with no token, where Actions runs the caller's `setup:`; a
@@ -1137,7 +1142,8 @@ earlier run of this PRD left commits on `RESCUE_BRANCH`, that branch fetched to
 >   base on purpose: the bundle is the PRD branch less `head`, and `implement-prd:publish` and
 >   `implement-prd:conclude`'s rescue each check it before they fetch anything, which fails in a
 >   checkout without `head`. Actions' `fetch-depth: 0` fetches every branch, the PRD branch among
->   them; the service's checkout fetches the base alone. `implement-prd:publish` runs where the gate succeeded and the run is the finishing
+>   them; the service's checkout fetches the base alone, beside the head, and every tag, the set
+>   `fetch-depth: 0` brings. `implement-prd:publish` runs where the gate succeeded and the run is the finishing
 >   one, builds nothing (`open-only`), or its agent's job succeeded, and the mint and the checkout
 >   did, pointed at the gate's and bundle's directories. Then `implement-prd:conclude`, however the
 >   run ended, pointed at every producer's directory. Publish holds `push` as both `GH_TOKEN` and
@@ -1801,7 +1807,7 @@ so a review asks with or without a header.
 | Output | When it is written |
 |---|---|
 | `findings.json` | The findings to open a thread for: where each goes, its severity and title, the agent's text, and whether an earlier review had read its code. |
-| `review_body.json` | What the body is written from: the verdict, the agent's assessment, the record's entries, the criteria and, except on a PRD PR's final review, why there are none where there are none (`criteria found`, `none in the issue`, `no linked issue` or `untrusted issue`), where criteria were handed what merged since the brief (#541: the commits since its read-at commit that touched the files it names, or why the check could not run) with the review's ruling, what the review's own test run left unrun (#543: whether it ran tests, and each test or suite exercising the change it skipped for want of something in the environment, with the reason, at most 20 and how many more; absent where the review did not say), the follow-ups, and the data behind the header, the round note and the red tests, and, where a PRD PR's review with no header asked for no round it would have, that it withheld one (`unnumbered`). |
+| `review_body.json` | What the body is written from: the verdict, the agent's assessment, the record's entries, the criteria and, except on a PRD PR's final review, why there are none where there are none (`criteria found`, `none in the issue`, `no linked issue` or `untrusted issue`), where criteria were handed what merged since the brief (#541: the commits since its read-at commit that touched the files it names, or why the check could not run) with the review's ruling, what the review's own test run left unrun (#543: whether it ran tests, and each test or suite exercising the change it skipped for want of something in the environment, with the reason, at most 20 and how many more; absent where the review did not say), the follow-ups, on a PRD PR the carried follow-ups this review ruled resolved, each with its reason, and the ids of every one ruled resolved on the pull request so far (#495), both absent where there are none, and the data behind the header, the round note and the red tests, and, where a PRD PR's review with no header asked for no round it would have, that it withheld one (`unnumbered`). |
 | `thread_resolutions.json` | The earlier findings this review verified: each thread, why it closes, and the agent's note or the maintainer's reply to quote. Written on every run. |
 | `verdict.json` | The verdict's key, whether it starts a fix round, how many findings it leaves open, and, on *changes recommended* with no round, which of #200's stops kept it from asking for one (`budget spent` or `no progress`), where one did. |
 | `pr_summary.json` | Signals by existing: the title, the agent's summary, whether the round is final, and the data behind the Evidence and the Merge Danger. |
@@ -1824,7 +1830,11 @@ text, and `review:publish` and `review:advance` write every final string from th
 - The open and settled findings: `agent-finding` markers on the loop's threads,
   and `agent-resolution` on the loop's closing replies.
 - The fix's `agent-fix:out-of-scope` notes, posted since the last review, to rule on.
-- Earlier reviews' `agent-follow-ups`, `agent-red-tests` and acceptance criteria groups.
+- Earlier reviews' `agent-follow-ups`, `agent-red-tests` and acceptance criteria groups. On a PRD
+  PR the agent is shown each follow-up an earlier round recorded, less those any round ruled
+  resolved, with its id, and rules on each (#495): `open`, or `resolved` with a reason. One ruled
+  resolved is left out of this review's follow-ups; every other stays, an unruled one and one with
+  no id included.
 - The pull request body's `agent:summary` block, and its `Closes #<n>` line.
 - The feedback threads, the linked issue and its comments, through `isTrustedAuthor`, with the
   fix's own comments (`agent-fix:top-level`, `agent-fix:conversation-outcomes`) left out.
@@ -1858,7 +1868,7 @@ text, and `review:publish` and `review:advance` write every final string from th
 > own and an environment built from its declaration, and writes nothing to the record itself. It
 > asks the dispatcher for a `read` token and runs `review:gate` with the head commit, state and
 > merged flag the label's event carried, and the repository's variables. Where the gate went ahead
-> it checks out the settled commit as `BRANCH`, fetches `BASE_REF`, the token passed with each
+> it checks out the settled commit as `BRANCH`, fetches `BASE_REF` and the repository's tags, the token passed with each
 > fetch and never stored in the checkout, then runs `review:budget` and `review:collect-checks`,
 > and the runner, in the sandbox its settings name, with a fresh `read` token as `GH_TOKEN`. Where the
 > review finished it asks for a `write` token and runs `review:publish`, pointed at the runner's
@@ -2520,7 +2530,7 @@ diffing, which the orchestrator prepares, and `RESCUE_BRANCH` fetched to
 > summary notes the refusal. An undecided gate is not a refusal, and conclude still runs. Where the
 > gate succeeded and claimed the
 > run, it asks for a `read` token and checks out the event's head as `BRANCH`, fetching
-> `BASE_REF`, the token passed with each fetch and never stored in the checkout, which keeps only a
+> `BASE_REF` and the repository's tags, the token passed with each fetch and never stored in the checkout, which keeps only a
 > committer, the App's login, as `fix.yml`'s checkout step sets one. Then `fix:prepare`, with the
 > same token, which fetches `RESCUE_BRANCH` into the checkout; the repository's setup, `AGENT_SETUP`,
 > in the bwrap sandbox with no token; and the runner, in the sandbox its settings name, with a fresh
@@ -2817,8 +2827,8 @@ before it, and it works out the ending from them. Each is one of:
 - **A run that finished**, the agent's job and every step before this one: `agent:fix` off.
   Every other word of it is `fix:publish`'s.
 - **A run that stopped**: the rescue, below; then the failure comment, `` **`agent:fix` stopped:** ``
-  and the reason as a sentence, the run's link, and the retry; then `agent:fix` off, then
-  `agent:blocked`. The reason is, where the agent's job finished, the first of the mint, the
+  and the reason as a sentence, the run's link where there is a run, and the retry; then
+  `agent:fix` off, then `agent:blocked`. The reason is, where the agent's job finished, the first of the mint, the
   download and `fix:publish` that did not succeed: a fixed sentence for the mint and the download,
   `fix:publish`'s `failure_reason.txt`, or a cancel where that step was cancelled or skipped.
   Otherwise, where the gate, the agent's job or a step was cancelled, a cancel, or the time limit
@@ -2906,6 +2916,20 @@ the head checked out as `BRANCH`, with `git merge origin/<BASE_REF>` already run
 conflicts, `origin/<BASE_REF>` at the base commit `update-branch:merge` read: `update-branch:prepare`
 leaves the checkout so, and refuses where it cannot. A merge that does not conflict needs no runner.
 
+It ends with the merge committed in the checkout, on `BRANCH`: the head and the base commit its
+parents, in that order, and the agent's resolution its tree. Under `none` the agent commits it
+there itself. Under `bwrap` (§2.2) the agent's copy holds no merge in progress and hands back no
+merge commit, and Sandcastle's own merge of its work into the checkout is one git refuses
+mid-merge, which is how #463's first run on the service stopped. So the agent works on
+`sandcastle/update-branch-pr-<PR_NUMBER>/merge`, made at the head, where Sandcastle leaves its
+commits; the copy, where it is at the head, is put mid-merge with `git merge --squash` of the base
+commit, after the checkout's untracked paths are carried in, so the agent meets the same conflicts
+staged and its commit is an ordinary one; and the runner makes the merge with `git commit-tree`,
+from the tree of that branch's tip, git's subject for the merge and the body of the agent's last
+message, moves `BRANCH` onto it with `git reset --hard`, and deletes the branch. A branch with no
+commit of the agent's on it, or one Sandcastle left checked out in a worktree of its own, a
+copy-out that did not finish, fails the run, and nothing is pushed.
+
 ### Inputs
 
 | Input | Kind | Default | What it is |
@@ -2954,7 +2978,7 @@ neither.
 > with the state and merged flag the label's event carried. A refusal ends the run there, as on
 > Actions it skips the publish job: no token is asked for after it, publish and
 > `update-branch:conclude` do not run, and the run's summary notes the refusal. Where the gate
-> claimed the run, it checks out the event's head as `BRANCH`, fetching `BASE_REF`, with that token passed with each
+> claimed the run, it checks out the event's head as `BRANCH`, fetching `BASE_REF` and the repository's tags, with that token passed with each
 > fetch and never stored, and runs `update-branch:merge` there with the same token: outside the
 > sandbox, since it runs none of the pull request's code, and holding no `push` token, since
 > nothing is pushed until publish. Only where the merge conflicted does the agent's job run: a
@@ -3334,8 +3358,8 @@ one of:
   otherwise, which is not a failure), and every step before this one. `agent:update-branch` off,
   then the re-request, below. Every other word of it is `update-branch:publish`'s.
 - **A run that stopped**: the failure comment, `` **`agent:update-branch` stopped:** `` and the
-  reason as a sentence, the run's link, and the retry; then `agent:update-branch` off, then
-  `agent:blocked`. The reason is, where the gate and the agent's job finished, the first of the
+  reason as a sentence, the run's link where there is a run, and the retry; then
+  `agent:update-branch` off, then `agent:blocked`. The reason is, where the gate and the agent's job finished, the first of the
   mint, the download (on `conflicts` only) and `update-branch:publish` that did not succeed: a
   fixed sentence for the mint and the download, `update-branch:publish`'s `failure_reason.txt`, or
   a cancel where that step was cancelled or skipped. Otherwise, where the gate, the agent's job or

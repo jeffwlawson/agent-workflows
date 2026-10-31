@@ -4,6 +4,7 @@ import * as path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { SANDBOX_WORKTREE } from "../../engine/bwrap-args.js";
 import { CI_WAIT_SECONDS } from "../../review/collect-checks.js";
+import { issueRescueBranch } from "../../shared/record.js";
 import {
   DEFAULT_FIX_MINUTES,
   DEFAULT_REVIEW_MINUTES,
@@ -1683,17 +1684,18 @@ describe("the worker's implement job, on a run that goes ahead", () => {
     ]);
   });
 
-  it("hands each subcommand its job's token kind: write to the gate, none to prepare and bundle, read alone to the runner, push to publish and conclude", async () => {
+  it("hands each subcommand its job's token kind: write to the gate, read to prepare and the runner, none to bundle, push to publish and conclude", async () => {
     const s = setup(IMPLEMENT_ORDINARY);
     await runJob(IMPLEMENT_JOB, s.edges);
 
     expect(s.asked).toEqual(["write", "read", "read", "push"]);
     expect(tokensIn(s.env("implement:gate"))).toEqual(["write-token-1"]);
-    expect(tokensIn(s.env("implement:prepare"))).toEqual([]);
+    // The agent's job's read token, which it fetches the rescue with (#270).
+    expect(tokensIn(s.env("implement:prepare"))).toEqual(["read-token-2"]);
     expect(tokensIn(s.env("implement"))).toEqual(["read-token-3"]);
     expect(tokensIn(s.env("implement:bundle"))).toEqual([]);
     expect(s.env("implement:publish")).toMatchObject({ GH_TOKEN: "push-token-4", LOOP_TOKEN: "push-token-4", LOOP_TOKEN_SOURCE: "app" });
-    expect(tokensIn(s.env("implement:conclude"))).toEqual(["push-token-4"]);
+    expect(s.env("implement:conclude")).toMatchObject({ GH_TOKEN: "push-token-4", LOOP_TOKEN: "push-token-4", LOOP_TOKEN_SOURCE: "app" });
   });
 
   it("puts only the read token in the runner's environment, beside the agent's own", async () => {
@@ -1731,7 +1733,9 @@ describe("the worker's implement job, on a run that goes ahead", () => {
 
     const issue = { GH_REPO: "owner/repo", ISSUE_NUMBER: "12" };
     expect(s.env("implement:gate")).toMatchObject({ ...issue, ISSUE_TITLE: "Add a thing", ISSUE_STATE: "open", BASE_REF: "main", RUN_URL });
-    expect(s.env("implement:prepare")).toMatchObject({ BRANCH, BASE_REF: "main", BASE_SHA: BASE });
+    const rescue = { RESCUE_BRANCH: "agent/rescue/issue-12" };
+    expect(issueRescueBranch(12)).toBe(rescue.RESCUE_BRANCH);
+    expect(s.env("implement:prepare")).toMatchObject({ GH_REPO: "owner/repo", BRANCH, BASE_REF: "main", BASE_SHA: BASE, ...rescue });
     expect(s.env("implement")).toMatchObject({
       ...AGENT,
       ...issue,
@@ -1741,6 +1745,7 @@ describe("the worker's implement job, on a run that goes ahead", () => {
       AGENT_MODEL: "a-model",
       AGENT_MODEL_IMPLEMENT: "a-build-model",
       AGENT_LOOP_LOGINS: "loop-app[bot]",
+      ...rescue,
     });
     expect(s.env("implement:bundle")).toMatchObject({ BRANCH, BASE_SHA: BASE });
     expect(s.env("implement:publish")).toMatchObject({
@@ -1752,8 +1757,17 @@ describe("the worker's implement job, on a run that goes ahead", () => {
       BRANCH_TIP: TIP,
       RUN_URL,
       BUNDLE_DIR: s.env("implement:bundle")["OUTPUT_DIR"],
+      ...rescue,
     });
-    expect(s.env("implement:conclude")).toMatchObject({ ...issue, RUN_URL });
+    expect(s.env("implement:conclude")).toMatchObject({
+      ...issue,
+      RUN_URL,
+      BASE_REF: "main",
+      BRANCH,
+      BASE_SHA: BASE,
+      CHECKOUT: s.env("implement:publish")["CHECKOUT"],
+      ...rescue,
+    });
   });
 
   it("tells conclude how each job and step ended, pointed at each producer's directory", async () => {
@@ -1846,7 +1860,8 @@ describe("the worker's implement job, where the gate does not claim the run", ()
     });
     await runJob(IMPLEMENT_JOB, s.edges);
 
-    expect(s.events).toEqual(["write token", "implement:gate", "push token", "implement:conclude"]);
+    // The publish job's checkout runs wherever the gate claimed the run, as on Actions.
+    expect(s.events).toEqual(["write token", "implement:gate", "push token", "checkout", "implement:conclude"]);
     expect(s.env("implement:conclude")).toMatchObject({
       REFUSED: "false",
       GATE_RESULT: "failure",
@@ -1874,17 +1889,25 @@ describe("the worker's implement job, where it stops", () => {
     await runJob(IMPLEMENT_JOB, s.edges);
 
     expect(s.events).not.toContain("implement:publish");
-    expect(s.events.slice(-2)).toEqual(["push token", "implement:conclude"]);
-    expect(s.checkouts).toHaveLength(1);
+    expect(s.events.slice(-3)).toEqual(["push token", "checkout", "implement:conclude"]);
+    expect(s.checkouts).toHaveLength(2);
     expect(s.env("implement:conclude")).toMatchObject({ AGENT_RESULT: "failure", MINT_OUTCOME: "success", DOWNLOAD_OUTCOME: "success" });
     expect(s.env("implement:conclude")).not.toHaveProperty("PUBLISH_OUTCOME");
   });
 
-  it("bundles nothing where the runner failed, as the bundle step runs on success alone", async () => {
+  /** #270: as the bundle step's `always()`, so a stopped run's commits reach conclude's rescue. */
+  it("still bundles where the runner failed, and hands conclude the bundle, the rescue branch and the push token", async () => {
     const s = setup({ ...IMPLEMENT_ORDINARY, implement: { exit: 1 } });
     await runJob(IMPLEMENT_JOB, s.edges);
 
-    expect(s.events).not.toContain("implement:bundle");
+    expect(s.events.slice(-5)).toEqual(["implement", "implement:bundle", "push token", "checkout", "implement:conclude"]);
+    expect(s.env("implement:conclude")).toMatchObject({
+      AGENT_RESULT: "failure",
+      BUNDLE_DIR: s.env("implement:bundle")["OUTPUT_DIR"],
+      RESCUE_BRANCH: "agent/rescue/issue-12",
+      LOOP_TOKEN: "push-token-4",
+      CHECKOUT: path.join(s.runDir, "publish-checkout"),
+    });
   });
 
   it("starts no runner where the setup failed, and gives conclude the setup's reason as the runner's", async () => {
@@ -1911,13 +1934,31 @@ describe("the worker's implement job, where it stops", () => {
     );
   });
 
-  it("ends a runner still running at AGENT_TIMEOUT_MINUTES, publishes nothing, and tells conclude it timed out", async () => {
+  it("ends a runner still running at AGENT_TIMEOUT_MINUTES, still bundles, publishes nothing, and tells conclude it timed out", async () => {
     const s = setup({ ...IMPLEMENT_ORDINARY, implement: { hangs: true } }, { minuteMs: 5 });
     await runJob({ ...IMPLEMENT_JOB, variables: { ...IMPLEMENT_JOB.variables, AGENT_TIMEOUT_MINUTES: "2" } }, s.edges);
 
-    expect(s.events).not.toContain("implement:bundle");
+    expect(s.events).toContain("implement:bundle");
     expect(s.events).not.toContain("implement:publish");
     expect(s.env("implement:conclude")).toMatchObject({ AGENT_RESULT: "cancelled", TIMED_OUT: "true", TIMEOUT_MINUTES: "2" });
+  });
+
+  /** #270: the agent's limit has fired by then, so the bundle has `BUNDLE_MINUTES` of its own, as `fix:bundle` does. */
+  it("bundles under a limit of its own after a timed-out runner, which the agent's having run out does not abort", async () => {
+    const s = setup({ ...IMPLEMENT_ORDINARY, implement: { hangs: true } }, { minuteMs: 5 });
+    await runJob(IMPLEMENT_JOB, s.edges);
+
+    const signals = Object.fromEntries(s.launched.map(({ subcommand, signal }) => [subcommand, signal.aborted]));
+    expect(signals).toMatchObject({ implement: true, "implement:bundle": false, "implement:conclude": false });
+    expect(s.env("implement:conclude")).toMatchObject({ AGENT_RESULT: "cancelled", TIMED_OUT: "true", BUNDLE_DIR: s.env("implement:bundle")["OUTPUT_DIR"] });
+  });
+
+  it("hands conclude no loop token, so it rescues nothing, where the push token was refused", async () => {
+    const s = setup({ ...IMPLEMENT_ORDINARY, implement: { exit: 1 } }, { refused: [4] });
+    await runJob(IMPLEMENT_JOB, s.edges);
+
+    expect(s.env("implement:conclude")).toMatchObject({ MINT_OUTCOME: "failure", GH_TOKEN: "write-token-5" });
+    expect(s.env("implement:conclude")).not.toHaveProperty("LOOP_TOKEN");
   });
 
   it("publishes nothing where the push token was refused, and concludes with a token that writes", async () => {

@@ -4,7 +4,7 @@ import { SANDBOX_WORKTREE } from "../engine/bwrap-args.js";
 import { COMMANDS, RUNNERS, type Command, type Runner } from "../shared/contract.js";
 import type { HostEnvironment } from "../shared/env.js";
 import { sandboxRefusal } from "../shared/sandbox.js";
-import { fixRescueBranch, PRD_BRANCH_PREFIX, prdRescueBranch } from "../shared/record.js";
+import { fixRescueBranch, issueRescueBranch, PRD_BRANCH_PREFIX, prdRescueBranch } from "../shared/record.js";
 import type { DoorRequest, DoorResponse } from "./dispatcher.js";
 import {
   FOLLOW_UPS_MINUTES,
@@ -1473,18 +1473,22 @@ const runUpdateBranch = async (job: UpdateBranchJob, edges: JobEdges): Promise<r
  *    asked for after it, and neither the agent's job, publish nor conclude
  *    runs. A PRD therefore gets silence, as it does on Actions.
  * 2. The agent's job, where the gate succeeded and claimed the run: a `read`
- *    token, the checkout of `BASE_REF` by name; `implement:prepare`, which
- *    creates the gate's `BRANCH` there at the commit the gate read the base at,
- *    handed no token; the repository's setup, in the sandbox; a fresh `read`
- *    token, then the runner, with it as `GH_TOKEN`; and, where those
- *    succeeded, `implement:bundle`, with no token.
+ *    token, the checkout of `BASE_REF` by name; `implement:prepare`, with the
+ *    same token, which creates the gate's `BRANCH` there at the commit the
+ *    gate read the base at and fetches the rescue branch (#270); the
+ *    repository's setup, in the sandbox; a fresh `read` token, then the
+ *    runner, with it as `GH_TOKEN`; and `implement:bundle`, with no token,
+ *    however those ended.
  * 3. The publish job, wherever the gate did not refuse, an undecided gate
- *    included: a `push` token, then, where the agent's job and the mint
- *    succeeded, a checkout of the base, by name, of its own and `implement:publish` in
- *    it, which pushes, opens the pull request, links it on the issue and adds
+ *    included: a `push` token, or where that is refused a `write` token, and
+ *    where the gate claimed the run a checkout of the base, by name, of its
+ *    own, which the bundle is checked in. Then, where the agent's job and the
+ *    mint succeeded, `implement:publish` in it, which pushes, deletes the
+ *    rescue branch, opens the pull request, links it on the issue and adds
  *    `agent:review`.
- * 4. `implement:conclude`, however the run ended, with the `push` token, or a
- *    `write` token where `push` was refused.
+ * 4. `implement:conclude`, however the run ended, in the same checkout, with
+ *    the `push` token, which it rescues a stopped run's commits with, or a
+ *    `write` token where `push` was refused, and then no loop token.
  *
  * The runner never holds a token that writes: `push` is asked for only once
  * the agent's job is over, and handed to publish and conclude alone.
@@ -1492,13 +1496,15 @@ const runUpdateBranch = async (job: UpdateBranchJob, edges: JobEdges): Promise<r
  * **Every phase has a time limit**, as every job on Actions does: the gate
  * `IMPLEMENT_GATE_MINUTES`; the agent's job's steps share
  * `AGENT_TIMEOUT_MINUTES` (`fixTimeLimit`), and one still running at it is
- * ended and conclude told the run timed out; publish's checkout and publish
+ * ended and conclude told the run timed out; the bundle `BUNDLE_MINUTES`, so
+ * a stopped run still hands its commits over; publish's checkout and publish
  * share `IMPLEMENT_POSTING_MINUTES`, and conclude has as long.
  */
 const runImplement = async (job: ImplementJob, edges: JobEdges): Promise<readonly Phase[]> => {
   const { note, limit, outputDir, checkout, ask, run, runAgent, setup, notStarted, done } = startRun(job, edges);
   const publishCheckout = path.join(edges.runDir, "publish-checkout");
   const runUrl = serviceRunUrl(job.appLogin);
+  const rescueBranch = issueRescueBranch(job.issue);
   /**
    * The base branch by its name, as each of the reusable's jobs checks it
    * out, into `dir`, with `token`: `implement:prepare` and
@@ -1579,11 +1585,12 @@ const runImplement = async (job: ImplementJob, edges: JobEdges): Promise<readonl
         }
       }
     }
-    if (going()) {
-      // Handed no token: it reads nothing but the checkout.
+    if (going() && read !== undefined) {
+      // The agent's job's read token, as on Actions, where it fetches the
+      // rescue branch.
       const prepared = await run(
         "implement:prepare",
-        { CHECKOUT: checkout, BRANCH: branch, BASE_REF: job.baseRef, BASE_SHA: base },
+        { ...common, GH_TOKEN: read, CHECKOUT: checkout, BRANCH: branch, BASE_SHA: base, RESCUE_BRANCH: rescueBranch },
         edges.runDir,
         agentLimit.signal,
       );
@@ -1614,6 +1621,7 @@ const runImplement = async (job: ImplementJob, edges: JobEdges): Promise<readonl
           AGENT_MODEL: job.variables.AGENT_MODEL,
           AGENT_MODEL_IMPLEMENT: job.variables.AGENT_MODEL_IMPLEMENT,
           BRANCH: branch,
+          RESCUE_BRANCH: rescueBranch,
         },
         checkout,
         agentLimit.signal,
@@ -1621,42 +1629,53 @@ const runImplement = async (job: ImplementJob, edges: JobEdges): Promise<readonl
       if (built.timedOut) timedOut();
       else if (!built.ok) agent.result = "failure";
     }
-    // Only where the runner succeeded, as the bundle step's `if: success()`.
-    // It is handed no token.
-    if (going()) {
-      const bundled = await run("implement:bundle", { CHECKOUT: checkout, BRANCH: branch, BASE_SHA: base }, edges.runDir, agentLimit.signal);
-      if (bundled.timedOut) timedOut();
-      else if (!bundled.ok) agent.result = "failure";
-    }
     agentLimit.clear();
+
+    // However the steps before it ended, as the bundle step's `always()`, so
+    // a stopped run hands its commits over for conclude to rescue (#270). It
+    // is handed no token, and has a limit of its own, since the agent's may
+    // have fired.
+    const bundleLimit = limit(BUNDLE_MINUTES);
+    const bundled = await run("implement:bundle", { CHECKOUT: checkout, BRANCH: branch, BASE_SHA: base }, edges.runDir, bundleLimit.signal);
+    bundleLimit.clear();
+    if (bundled.timedOut && agent.result === "success") agent.result = "cancelled";
+    else if (!bundled.ok && agent.result === "success") agent.result = "failure";
   }
   const agentRan = agent.result !== "skipped";
 
   // 3. The publish job, which runs wherever the gate did not refuse: its
-  // token, then, where the agent's job succeeded and the mint did, publish, in
-  // a checkout of the base of its own. A checkout that failed is publish's
-  // failure, with its reason, or its cancel where it ran out of time, where
-  // Actions skips publish. There is nothing to download: the
-  // hand-over is on this disk.
+  // token, then, where the gate claimed the run, a checkout of the base of
+  // its own, which publish pushes from and conclude checks a stopped run's
+  // bundle in before it rescues it; then, where the agent's job succeeded and
+  // the mint did, publish. Where `push` was refused, conclude is handed a
+  // `write` token instead, for its comment and labels, and the checkout is
+  // made with that. A checkout that failed is publish's failure, with its
+  // reason, or its cancel where it ran out of time, where Actions skips
+  // publish. There is nothing to download: the hand-over is on this disk.
   const push = await ask("push");
   const mintOutcome = push === undefined ? "failure" : "success";
-  let publishOutcome = "";
-  const publishDir = outputDir("implement:publish");
-  if (push !== undefined && agent.result === "success") {
-    const publishLimit = limit(IMPLEMENT_POSTING_MINUTES);
-    let checkedOut = false;
+  const concluding = push ?? (await ask("write"));
+  const publishLimit = limit(IMPLEMENT_POSTING_MINUTES);
+  let checkedOut = false;
+  let checkoutFailed: { readonly timedOut: boolean; readonly why: string } | undefined;
+  if (refused === "false" && concluding !== undefined) {
     try {
-      await checkOut(publishCheckout, push, publishLimit.signal);
+      await checkOut(publishCheckout, concluding, publishLimit.signal);
       note("checkout", "success");
       checkedOut = true;
     } catch (error) {
-      if (publishLimit.signal.aborted) {
-        note("checkout", "timed out");
-        publishOutcome = "cancelled";
-      } else {
-        note("checkout", `failure: ${message(error)}`);
-        publishOutcome = "failure";
-        notStarted("implement:publish", `\`${job.baseRef}\` could not be checked out to publish the branch: ${message(error)}`);
+      const timedOut = publishLimit.signal.aborted;
+      note("checkout", timedOut ? "timed out" : `failure: ${message(error)}`);
+      checkoutFailed = { timedOut, why: message(error) };
+    }
+  }
+  let publishOutcome = "";
+  const publishDir = outputDir("implement:publish");
+  if (push !== undefined && agent.result === "success") {
+    if (checkoutFailed !== undefined) {
+      publishOutcome = checkoutFailed.timedOut ? "cancelled" : "failure";
+      if (!checkoutFailed.timedOut) {
+        notStarted("implement:publish", `\`${job.baseRef}\` could not be checked out to publish the branch: ${checkoutFailed.why}`);
       }
     }
     if (checkedOut) {
@@ -1670,6 +1689,7 @@ const runImplement = async (job: ImplementJob, edges: JobEdges): Promise<readonl
           BRANCH: branch,
           BASE_SHA: base,
           BRANCH_TIP: gate["tip"],
+          RESCUE_BRANCH: rescueBranch,
           CHECKOUT: publishCheckout,
           BUNDLE_DIR: bundleDir,
         },
@@ -1678,13 +1698,12 @@ const runImplement = async (job: ImplementJob, edges: JobEdges): Promise<readonl
       );
       publishOutcome = published.timedOut ? "cancelled" : published.ok ? "success" : "failure";
     }
-    publishLimit.clear();
   }
+  publishLimit.clear();
 
   // 4. Conclude, however the run ended, with the `push` token. Where that was
-  // refused it is told the mint failed, so it asks for `write` instead, which
-  // is all its comment and labels need.
-  const concluding = push ?? (await ask("write"));
+  // refused it is told the mint failed, and holds the `write` token, which is
+  // all its comment and labels need, and no loop token, so it rescues nothing.
   if (concluding === undefined) {
     // Nothing can say so on the issue, so the worker's log says why the run
     // ended as well.
@@ -1698,6 +1717,14 @@ const runImplement = async (job: ImplementJob, edges: JobEdges): Promise<readonl
     {
       ...common,
       GH_TOKEN: concluding,
+      // The loop's token is the `push` token alone: empty where the mint
+      // failed, as the publish job's is, so conclude rescues nothing then.
+      LOOP_TOKEN: push,
+      LOOP_TOKEN_SOURCE: push === undefined ? undefined : TOKEN_SOURCE,
+      CHECKOUT: publishCheckout,
+      RESCUE_BRANCH: rescueBranch,
+      BRANCH: branch,
+      BASE_SHA: base,
       REFUSED: refused,
       GATE_RESULT: gateResult,
       GATE_REASON: gateReason,

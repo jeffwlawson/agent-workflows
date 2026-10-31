@@ -8,15 +8,18 @@ import {
   readInputs,
   readLoopAccounts,
   scrubGitHubTokens,
+  writers,
 } from "../shared/common.js";
 import { agentSandbox, claudeAgent } from "../shared/agent.js";
 import { RUNNERS } from "../shared/contract.js";
+import { rescueRef, resumeFromRescue, resumeSection } from "../shared/rescue.js";
 import { staleFailure, staleReason } from "../shared/stale.js";
 
 const INPUTS = readInputs(RUNNERS["implement"].inputs);
 /** Chosen at start, so a sandbox that cannot run the agent stops the run before any of its work. */
 const SANDBOX = agentSandbox(INPUTS);
 const LOOP_ACCOUNTS = readLoopAccounts(INPUTS.AGENT_LOOP_LOGINS);
+const { writeJson } = writers(RUNNERS["implement"].outputs);
 
 const ISSUE_NUMBER = INPUTS.ISSUE_NUMBER;
 const ISSUE_TITLE = INPUTS.ISSUE_TITLE;
@@ -33,6 +36,14 @@ const BRANCH = INPUTS.BRANCH;
  * exist (docs/ADOPTING.md §5).
  */
 const BASE_REF = INPUTS.BASE_REF;
+
+/**
+ * Where a run of this issue that stopped before it finished left its commits
+ * (#270), and where this one looks for them to resume from. Keyed to the
+ * issue's number, so a retitled issue, whose `BRANCH` is named afresh, still
+ * finds it.
+ */
+const RESCUE_BRANCH = INPUTS.RESCUE_BRANCH;
 
 try {
   // Read the issue here and pass it in, rather than letting the agent shell out
@@ -54,6 +65,19 @@ try {
   // Context fetched; the agent has no legitimate use for the GitHub token.
   scrubGitHubTokens();
 
+  // An earlier run's unpushed commits (#270), where they still build on the
+  // base this run's branch was created at. Set aside, and said so on the
+  // issue by `implement:conclude`, where the base moved since they were
+  // saved: handed over as the branch and its tip, the commit this run moved
+  // past.
+  const resume = resumeFromRescue(RESCUE_BRANCH);
+  if (resume.kind === "resumed") {
+    console.log(`Resuming from ${resume.commits} commit(s) an earlier run saved on ${RESCUE_BRANCH}.`);
+  } else if (resume.kind === "ignored") {
+    console.log(`::warning::${RESCUE_BRANCH} was saved on an older ${BASE_REF}, so this run starts fresh.`);
+    writeJson("rescue_ignored.json", { branch: RESCUE_BRANCH, movedPast: git(["rev-parse", rescueRef(RESCUE_BRANCH)]).trim() });
+  }
+
   const result = await sandcastle.run({
     name: `implement-#${ISSUE_NUMBER}`,
     agent: claudeAgent("implement", INPUTS),
@@ -66,6 +90,7 @@ try {
       BRANCH,
       BASE_REF,
       ISSUE_CONTEXT: issueContext,
+      RESUME: resumeSection(resume, RESCUE_BRANCH),
     },
     maxIterations: 1,
   });

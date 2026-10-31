@@ -116,26 +116,26 @@ describe("implement:bundle", () => {
     CEILING,
   );
 
+  /**
+   * It runs however the agent ended (#270), so a stopped run with no commits
+   * ahead of the base hands nothing over, and conclude rescues nothing.
+   */
   it(
-    "refuses where the agent made no commits on the branch",
+    "bundles nothing, and succeeds, where the agent made no commits on the branch",
     () => {
       const { root, base } = checkout();
 
-      expect(() => run(root, base)).toThrow(
-        `The agent finished without committing on \`${BRANCH}\`, so nothing was handed to the publish job.`,
-      );
+      expect(run(root, base).size).toBe(0);
     },
     CEILING,
   );
 
   it(
-    "refuses where the branch was never created",
+    "bundles nothing, and succeeds, where the branch was never created",
     () => {
       const { root, base } = checkout();
 
-      expect(() => run(root, base, "agent/never-checked-out")).toThrow(
-        "The agent's job has no `agent/never-checked-out` to hand over, so nothing was handed to the publish job.",
-      );
+      expect(run(root, base, "agent/never-checked-out").size).toBe(0);
     },
     CEILING,
   );
@@ -147,7 +147,7 @@ describe("implement:bundle", () => {
       commit(root, "one.txt");
 
       expect(() => run(root, "0123456789abcdef0123456789abcdef01234567")).toThrow(
-        /^Couldn't bundle the agent's commits on `agent\/issue-7-add-a-widget`, so none were handed to the publish job: /,
+        /^Couldn't bundle the agent's commits on `agent\/issue-7-add-a-widget` ahead of 0123456789abcdef0123456789abcdef01234567, so none were handed to the publish job: /,
       );
     },
     CEILING,

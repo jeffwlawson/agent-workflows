@@ -429,6 +429,15 @@ export const issueBranch = (issue: number, title: string): string => `${ISSUE_BR
 export const fixRescueBranch = (pr: number): string => `agent/rescue/fix-${pr}`;
 
 /**
+ * Where a stopped implement run on issue `issue` leaves its commits, its
+ * `RESCUE_BRANCH`: `agent/rescue/issue-<issue>`, as `implement.yml` names it
+ * for its steps (#270). Keyed to the number alone, so a retitled issue, whose
+ * own branch is named afresh, still finds it. The service's implement job
+ * names it from here.
+ */
+export const issueRescueBranch = (issue: number): string => `agent/rescue/issue-${issue}`;
+
+/**
  * Where a stopped implement-prd run on PRD parent `parent` leaves its commits,
  * its `RESCUE_BRANCH`: `agent/rescue/prd-<parent>`, as `implement-prd.yml`
  * names it for its steps. The service's implement-prd job names it from here.

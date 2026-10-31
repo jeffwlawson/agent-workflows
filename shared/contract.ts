@@ -265,6 +265,7 @@ export interface CommandContract {
  *
  * - `implement-prd`'s `rescue_ignored.json` is the rescue it set aside, as
  *   `fix`'s is: data, which `implement-prd:conclude` writes the note from.
+ *   `implement`'s is the same, for `implement:conclude` (#270).
  * - `review`'s `park.json` and `progress.json`, on a PRD PR, are what
  *   `review:advance` parks the chain and writes the progress table from, as
  *   data (ADR 0007): written before the agent runs, and again once the
@@ -288,8 +289,9 @@ export const RUNNERS = {
       ISSUE_TITLE: REQUIRED,
       BRANCH: REQUIRED,
       BASE_REF: REQUIRED,
+      RESCUE_BRANCH: REQUIRED,
     },
-    outputs: [...EVERY_SUBCOMMAND_OUTPUTS],
+    outputs: [...EVERY_SUBCOMMAND_OUTPUTS, "rescue_ignored.json"],
   },
   "implement-prd": {
     inputs: {
@@ -458,8 +460,7 @@ const REVIEW_PUBLISH = {
  * since it reads no repository and is handed none. The red check's two
  * (#422), whose job runs the pull request's own code, `fix:bundle`
  * (#472), `update-branch:bundle` (#483), `implement:bundle` (#491) and
- * `implement-prd:bundle` (#501), which run after the agent, and
- * `implement:prepare` (#491), which needs none.
+ * `implement-prd:bundle` (#501), which run after the agent.
  */
 export const TOKENLESS = {
   OUTPUT_DIR: EVERY_SUBCOMMAND.OUTPUT_DIR,
@@ -625,11 +626,12 @@ const IMPLEMENT_BUNDLE = {
  */
 const IMPLEMENT_PREPARE = {
   inputs: {
-    ...TOKENLESS,
+    ...EVERY_SUBCOMMAND,
     CHECKOUT: REQUIRED,
     BRANCH: REQUIRED,
     BASE_REF: REQUIRED,
     BASE_SHA: REQUIRED,
+    RESCUE_BRANCH: REQUIRED,
   },
   outputs: [...EVERY_SUBCOMMAND_OUTPUTS],
 } as const satisfies CommandContract;
@@ -758,6 +760,7 @@ const IMPLEMENT_PUBLISH = {
     BRANCH: REQUIRED,
     BASE_SHA: REQUIRED,
     BRANCH_TIP: EMPTY,
+    RESCUE_BRANCH: REQUIRED,
     RUN_URL: REQUIRED,
     CHECKOUT: REQUIRED,
     HEAD_WAIT_SECONDS: { required: false, default: "60" },
@@ -997,13 +1000,15 @@ const REVIEW_RED_CHECK_PLACE = {
  * - `implement:prepare` creates the agent's `BRANCH` in `CHECKOUT` at
  *   `BASE_SHA`, the commit the gate read `BASE_REF` at, and checks it out,
  *   with the loop's committer as the checkout's identity. A checkout that
- *   does not hold `BASE_SHA` is refused. It reads no repository and is
- *   handed no token.
+ *   does not hold `BASE_SHA` is refused. Then it fetches `RESCUE_BRANCH`,
+ *   where an earlier stopped run left one, as `refs/rescue/<RESCUE_BRANCH>`,
+ *   as `fix:prepare` fetches it (#270): a tip it cannot read stops the run
+ *   rather than reading as no rescue. It reads with the workflow token and
+ *   writes nothing to the record.
  * - `implement:bundle` bundles the agent's commits on `BRANCH`, in
  *   `CHECKOUT`, ahead of `BASE_SHA`, the gate's base commit, into
- *   `branch.bundle`. Where there is nothing to bundle it refuses: it runs
- *   only where the agent succeeded. It reads no repository and is handed no
- *   token.
+ *   `branch.bundle`, however the agent ended (#270). No commits, or no
+ *   branch, is no bundle. It reads no repository and is handed no token.
  * - `implement:publish` checks the bundle `implement:bundle` wrote, read
  *   through `BUNDLE_DIR`, in `CHECKOUT`: there, intact, holding exactly
  *   `BRANCH`, and building on `BASE_SHA`, the gate's base commit. Then it
@@ -1014,9 +1019,10 @@ const REVIEW_RED_CHECK_PLACE = {
  *   error; links it on the issue; waits, bounded by `HEAD_WAIT_SECONDS` and
  *   polled every `HEAD_POLL_SECONDS`, for it to show the pushed head; and
  *   takes `agent:implement` off and puts `agent:review` on, removed first,
- *   with the loop's token. `published.json` is whether it pushed, the pushed
- *   head, the pull request's number and whether the review was requested,
- *   written as each becomes true.
+ *   with the loop's token. After the push it deletes `RESCUE_BRANCH`, leased
+ *   on its tip as read (#270). `published.json` is whether it pushed, the
+ *   pushed head, the pull request's number and whether the review was
+ *   requested, written as each becomes true.
  * - `review:advance` moves a PRD PR's chain on after a review, or parks it:
  *   the progress table and status line for how the round ended, then
  *   `agent:implement` back on the parent on a slice round's approval, or the
@@ -1169,8 +1175,14 @@ export const COMMANDS = {
   "implement:conclude": {
     inputs: {
       ...EVERY_SUBCOMMAND,
+      ...LOOP_IF_MINTED,
       ISSUE_NUMBER: REQUIRED,
+      BASE_REF: REQUIRED,
       RUN_URL: REQUIRED,
+      RESCUE_BRANCH: REQUIRED,
+      CHECKOUT: REQUIRED,
+      BRANCH: EMPTY,
+      BASE_SHA: EMPTY,
       REFUSED: { required: false, default: "", accepts: ["true", "false"] },
       GATE_RESULT: { required: true, accepts: RESULTS },
       GATE_REASON: EMPTY,
@@ -1189,8 +1201,10 @@ export const COMMANDS = {
       }),
       IMPLEMENT_DIR: readsFrom("implement", {
         "failure_reason.txt": "sometimes",
+        "rescue_ignored.json": "sometimes",
       }),
       BUNDLE_DIR: readsFromCommand("implement:bundle", IMPLEMENT_BUNDLE, {
+        "branch.bundle": "sometimes",
         "failure_reason.txt": "sometimes",
       }),
     },

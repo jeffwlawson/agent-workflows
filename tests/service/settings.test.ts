@@ -1,6 +1,7 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { describe, expect, it } from "vitest";
+import { SERVICE_APP_EVENTS, SERVICE_APP_PERMISSIONS } from "../../service/dispatcher.js";
 import { DISPATCHER, WORKER } from "../../service/settings.js";
 import type { Inputs } from "../../shared/contract.js";
 
@@ -64,5 +65,32 @@ describe("the deployment guide's worker settings", () => {
 
   it("lists every setting the worker declares, and no other, each as required or optional as declared", () => {
     expect(new Map([...table].sort())).toEqual(new Map([...kindOf(WORKER)].sort()));
+  });
+});
+
+// #560: what the dispatcher checks the App's own record against at start is
+// the guide's Permissions table and event list, read by whoever sets up the App.
+describe("the deployment guide's App permissions and events", () => {
+  const app = sectionsOf(sectionsOf(GUIDE, 2).get("The GitHub App") ?? "", 3);
+  const permissions = new Map(
+    (app.get("Permissions") ?? "").split("\n").flatMap((row) => {
+      const cells = row.split("|").map((cell) => cell.trim());
+      const name = /^`([^`]+)`$/.exec(cells[2] ?? "")?.[1];
+      return name === undefined ? [] : [[name, cells[3] ?? ""] as const];
+    }),
+  );
+  const events = [...(app.get("The webhook") ?? "").matchAll(/\*\*[^*]+\*\* \(`([^`]+)`\)/g)].map((match) => match[1]);
+
+  it("finds the table and the list", () => {
+    expect(permissions.size).toBeGreaterThan(0);
+    expect(events.length).toBeGreaterThan(0);
+  });
+
+  it("lists every permission the service needs, by its API name, and no other, each at the access needed", () => {
+    expect(new Map([...permissions].sort())).toEqual(new Map(Object.entries(SERVICE_APP_PERMISSIONS).sort()));
+  });
+
+  it("lists every event the service needs, and no other", () => {
+    expect([...events].sort()).toEqual([...SERVICE_APP_EVENTS].sort());
   });
 });

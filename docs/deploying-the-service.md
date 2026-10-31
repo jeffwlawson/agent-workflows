@@ -62,16 +62,16 @@ the first.
 
 Repository permissions:
 
-| Permission | Access | Why |
-|---|---|---|
-| Metadata | read | every API call, and a label's sender's permission |
-| Variables (`actions_variables` in the API) | read | `AGENT_ORCHESTRATOR`, re-read at every token, and the variables the service reads, `AGENT_SETUP` among them: the repository's own, else its organization's shared with it, as `vars` resolves them |
-| Contents | write | the checkout and the pull request's history, read by every phase; a push, by a `push` token only |
-| Pull requests | write | the review, its threads, the title and summary, and the ready mark |
-| Issues | write | comments and labels, the issue an implement job builds, and a PRD's parent |
-| Checks | read | CI's result, which the review's verdict reads |
-| Commit statuses | write | the verdict and the fix-round statuses |
-| Workflows | write | a push touching `.github/workflows/**` is refused without it, *after* the agent has done all its work |
+| Permission | In the API | Access | Why |
+|---|---|---|---|
+| Metadata | `metadata` | read | every API call, and a label's sender's permission |
+| Variables | `actions_variables` | read | `AGENT_ORCHESTRATOR`, re-read at every token, and the variables the service reads, `AGENT_SETUP` among them: the repository's own, else its organization's shared with it, as `vars` resolves them |
+| Contents | `contents` | write | the checkout and the pull request's history, read by every phase; a push, by a `push` token only |
+| Pull requests | `pull_requests` | write | the review, its threads, the title and summary, and the ready mark |
+| Issues | `issues` | write | comments and labels, the issue an implement job builds, and a PRD's parent |
+| Checks | `checks` | read | CI's result, which the review's verdict reads |
+| Commit statuses | `statuses` | write | the verdict and the fix-round statuses |
+| Workflows | `workflows` | write | a push touching `.github/workflows/**` is refused without it, *after* the agent has done all its work |
 
 The worker asks for one of three kinds of token at each phase: `read`, which every phase reads
 with and the only one the runner is ever handed; `write`, which adds the pull request, issue and
@@ -82,8 +82,12 @@ why it is a kind of its own rather than a wider `write`, and why it is acceptabl
 Actions (ADOPTING §2), neither the App's key nor a `push` token is ever where the agent runs. The
 key stays with the dispatcher, and a token reaches a subcommand only where its phase was handed it.
 
-A permission the App lacks fails the mint of the token that asks for it, so it is named in the
-dispatcher's log as the job's phase starts, rather than surfacing as a failed write mid-run.
+The dispatcher reads what the App is granted and subscribed to off the App's own record at start,
+and logs a `warning:` line for each gap: a permission not granted, or granted below the access
+this table needs, naming the access it holds and the tokens whose mint it fails, and an event
+under *The webhook* the App is not subscribed to. A gap warns and the dispatcher starts regardless,
+since review alone needs less than the whole table; a token the gap fails is refused when a phase
+asks for it, `422`, with `the App lacks a permission it asks for` in the log.
 
 Under *Where can this GitHub App be installed?*, choose **Only on this account**. A public App
 can be installed by anyone, on their own repositories, and every one of those would otherwise be a
@@ -102,8 +106,9 @@ In the App's settings, under *Webhook*:
 - **Active**, with the **Webhook URL** the address your dispatcher's webhook door is reached at
   from the internet, ending `/github`;
 - a **Webhook secret**, which is the dispatcher's `GITHUB_WEBHOOK_SECRET`;
-- under *Subscribe to events*, **Pull request** and **Issues**. An issue's label reaches the
-  dispatcher only on an `issues` delivery, so without **Issues** nothing answers `agent:implement`.
+- under *Subscribe to events*, **Pull request** (`pull_request`) and **Issues** (`issues`). An
+  issue's label reaches the dispatcher only on an `issues` delivery, so without **Issues** nothing
+  answers `agent:implement`.
 
 GitHub's *Recent Deliveries* page shows each delivery and the dispatcher's answer: `202` for every
 delivery whose signature verified, whatever became of it, and `401` for one that did not. What

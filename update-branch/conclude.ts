@@ -223,7 +223,9 @@ const failureComment = (inputs: Inputs, reason: string, retry: string): string =
   const trimmed = reason.trim();
   const capital = trimmed.charAt(0).toUpperCase() + trimmed.slice(1);
   const sentence = /[.!?]$/.test(capital) ? capital : `${capital}.`;
-  return `**\`${UPDATE_BRANCH_LABEL}\` stopped:** ${sentence}\n\n[Workflow run](${workflowRunUrl(inputs) ?? ""}) · ${retry}\n`;
+  // No run, no link: the service has no run page, and `[Workflow run]()` links nowhere.
+  const runUrl = workflowRunUrl(inputs);
+  return `**\`${UPDATE_BRANCH_LABEL}\` stopped:** ${sentence}\n\n${runUrl === undefined ? "" : `[Workflow run](${runUrl}) · `}${retry}\n`;
 };
 
 /** The trigger label comes off however the run ends (#236), so it never outlives the run. */

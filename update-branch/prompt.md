@@ -52,8 +52,9 @@ the **first line** of your comment: a silently broken merge is far worse than a 
 
 # COMMIT
 
-Commit the merge on `{{BRANCH}}`. Keep the default merge-commit subject, but replace the body
-with a summary of each non-trivial resolution and why.
+Commit the merge with `git commit`, on the branch already checked out; do not switch branches or
+start the merge again. Keep the default merge-commit subject, but replace the body with a summary
+of each non-trivial resolution and why.
 Do not use em dashes in anything you write; use a comma, colon, semicolon, parentheses, or a new sentence instead.
 
 Do not push. Do not edit labels. Do not create GitHub comments; your comment is returned as

@@ -267,7 +267,10 @@ with the base and runs `update-branch:merge` there. A clean merge, or a branch a
 goes straight to `update-branch:publish`, which makes the merge again in a checkout of its own,
 pushes it and carries the verdict over; no setup and no runner run. A merge that conflicts runs the
 agent's job first, in a third checkout: `update-branch:prepare`, which makes the same merge again,
-the setup, the runner, and `update-branch:bundle` where those succeeded. Publish then pushes the
+the setup, the runner, and `update-branch:bundle` where those succeeded. In the `bwrap` sandbox the
+agent resolves the conflicts as a squash, on a branch of its own, and the runner makes the merge
+commit in the checkout from what it committed, since the sandbox can carry neither a merge in
+progress in nor a merge commit out (`docs/platform-spec.md` §10). Publish then pushes the
 resolution and adds `agent:review` as the App, which the dispatcher answers as the App's own label.
 `update-branch:conclude` ends every run, and asks for `agent:update-branch` again, as the App, where
 the head moved on while the job ran and no other trigger label is on.
@@ -281,7 +284,8 @@ it on the issue and adds `agent:review` as the App, which the dispatcher answers
 label: the pull request then flows into review. `implement:conclude` ends every run. The service
 has no run page, so the link the implement commands give where Actions links its workflow run (the
 start comment, the pull request's frame, the link on the issue and the failure comment) is the
-App's own page, `https://github.com/apps/<slug>`.
+App's own page, `https://github.com/apps/<slug>`. Review's, fix's and update-branch's failure
+comments, which build their link from the Actions run, give none on the service.
 
 An implement-prd job runs `implement-prd:gate`, and ends there where it refused the PRD or deferred
 a regular issue to implement. Where it claimed the run, the gate decided one of three things. **A

@@ -5025,7 +5025,10 @@ describe("implement's agent job runs implement:prepare and implement:bundle from
     expect(index("Bundle the branch")).toBeGreaterThan(index("Upload the session transcript"));
     expect(index("Bundle the branch")).toBe(index("Hand the branch to the publish job") - 1);
     expect(index("Measure how the agent's job ended")).toBe(steps().length - 1);
-    expect(job().outputs).toEqual({ "timed-out": "${{ steps.outcome.outputs.timed-out }}" });
+    // How the bundle step ended, set by Actions rather than the agent, so a
+    // bundle stopped before it wrote anything is not read as no commits (#270).
+    expect(bundle?.id).toBe("bundle");
+    expect(job().outputs).toEqual({ "timed-out": "${{ steps.outcome.outputs.timed-out }}", bundled: "${{ steps.bundle.outcome }}" });
     expect(bundle?.["working-directory"]).toBe("${{ runner.temp }}");
     expect(bundle?.env).toMatchObject({
       NPM_CONFIG_USERCONFIG: "${{ steps.npmrc.outputs.userconfig }}",
@@ -5085,7 +5088,8 @@ describe("implement's agent job runs implement:prepare and implement:bundle from
       TIMEOUT_MINUTES: "${{ vars.AGENT_TIMEOUT_MINUTES || '30' }}",
     });
     expect(outcome?.run).toBe(jobNamed(path.join(WORKFLOW_DIR, "fix.yml"), "fix").steps?.at(-1)?.run);
-    expect(job().outputs).toEqual({ "timed-out": "${{ steps.outcome.outputs.timed-out }}" });
+    // Beside how the bundle step ended (#270), which the bundle's test holds.
+    expect(job().outputs).toMatchObject({ "timed-out": "${{ steps.outcome.outputs.timed-out }}" });
   });
 });
 
@@ -7991,7 +7995,7 @@ describe("a run that times out or is cancelled says so, as a failure does", () =
       TIMEOUT_MINUTES: AGENT_MINUTES,
     });
     expect(outcome?.run ?? "").toContain("TIMEOUT_MINUTES * 60 - 60");
-    expect(jobNamed(fileOf(command), command).outputs).toEqual({ "timed-out": "${{ steps.outcome.outputs.timed-out }}" });
+    expect(jobNamed(fileOf(command), command).outputs).toMatchObject({ "timed-out": "${{ steps.outcome.outputs.timed-out }}" });
     expect(failureStep(command).env?.["TIMED_OUT"]).toBe(`\${{ needs.${command}.outputs.timed-out }}`);
   });
 
@@ -9220,7 +9224,15 @@ describe("a split run keeps every write off the agent's runner", () => {
     // and implement-prd's (#505): whether its job ran out of time, which only
     // that job can measure, as review's job does, and which picks between two
     // sentences of a stopped run's comment and decides nothing else.
-    if (file.endsWith("fix.yml") || file.endsWith("update-branch.yml") || file.endsWith("implement.yml") || file.endsWith("implement-prd.yml")) {
+    // Implement's second (#270): how its bundle step ended, which picks
+    // between "no commits" and "not saved" where there is no bundle, and
+    // rescues nothing either way.
+    if (file.endsWith("implement.yml")) {
+      expect(jobNamed(file, agent).outputs).toEqual({ "timed-out": "${{ steps.outcome.outputs.timed-out }}", bundled: "${{ steps.bundle.outcome }}" });
+      expect(text.match(new RegExp(`needs\\.${agent}\\.outputs\\.[\\w-]+`, "g"))).toEqual([`needs.${agent}.outputs.timed-out`, `needs.${agent}.outputs.bundled`]);
+      return;
+    }
+    if (file.endsWith("fix.yml") || file.endsWith("update-branch.yml") || file.endsWith("implement-prd.yml")) {
       expect(jobNamed(file, agent).outputs).toEqual({ "timed-out": "${{ steps.outcome.outputs.timed-out }}" });
       expect(text.match(new RegExp(`needs\\.${agent}\\.outputs\\.[\\w-]+`, "g"))).toEqual([`needs.${agent}.outputs.timed-out`]);
       return;
@@ -11214,9 +11226,10 @@ describe("implement's publish job publishes the PR with implement:publish and en
 
     expect([...new Set([...set, ...optional])].sort()).toEqual(Object.keys(declared).sort());
     for (const input of set) expect(declared, input).toHaveProperty(input);
-    // Only whether it timed out comes from the agent's job, and only to conclude.
+    // Only whether it timed out and how its bundle step ended (#270) come
+    // from the agent's job, and only to conclude.
     const agentOutputs = JSON.stringify(step?.env ?? {}).match(/needs\.implement\.outputs\.[\w-]+/g) ?? [];
-    expect(agentOutputs).toEqual(which === "conclude" ? ["needs.implement.outputs.timed-out"] : []);
+    expect(agentOutputs).toEqual(which === "conclude" ? ["needs.implement.outputs.timed-out", "needs.implement.outputs.bundled"] : []);
   });
 
   it("hands implement:publish the gate's facts and its directories", () => {
@@ -11264,6 +11277,7 @@ describe("implement's publish job publishes the PR with implement:publish and en
       MINT_OUTCOME: "${{ steps.token.outcome }}",
       DOWNLOAD_OUTCOME: "${{ steps.fetch.outcome }}",
       PUBLISH_OUTCOME: "${{ steps.publish.outcome }}",
+      BUNDLE_OUTCOME: "${{ needs.implement.outputs.bundled }}",
     });
     // Each prerequisite of conclude runs `always()` too, so it never reads an empty workspace.
     for (const step of steps().slice(0, at)) {

@@ -226,8 +226,9 @@ type Saved = { readonly kind: "none" } | { readonly kind: "rescued" } | { readon
  *
  * Only where nothing was pushed to `BRANCH`, which the caller checks, and
  * where there is a bundle: none is a run with no commits ahead of the base it
- * started from, unless `implement:bundle` failed or the hand-over could not be
- * fetched, when what the run made is unknown and said to be unsaved. The
+ * started from, unless `implement:bundle` failed, was stopped before it
+ * wrote anything (`BUNDLE_OUTCOME`), or the hand-over could not be fetched,
+ * when what the run made is unknown and said to be unsaved. The
  * bundle is checked as `implement:publish` checks it, and one that fails a
  * check is not rescued.
  *
@@ -251,6 +252,17 @@ const rescueCommits = async (inputs: Inputs, io: Io, loop: Writer, bundled: bool
     if (inputs.DOWNLOAD_OUTCOME === "failure") {
       console.log(`::warning::What the agent's job handed over could not be fetched, so no commits were saved on ${rescue}.`);
       return { kind: "unsaved", why: UNFETCHED };
+    }
+    // A bundle step ended before it wrote anything, by its time limit, a
+    // cancel, or a failure before the command could write its reason: what
+    // the run made is unknown, not none.
+    if (inputs.BUNDLE_OUTCOME === "cancelled") {
+      console.log(`::warning::The agent's commits were not bundled before the bundle step was stopped, so none were saved on ${rescue}.`);
+      return { kind: "unsaved", why: UNFINISHED };
+    }
+    if (inputs.BUNDLE_OUTCOME === "failure") {
+      console.log(`::warning::The agent's commits could not be bundled, so none were saved on ${rescue}.`);
+      return { kind: "unsaved", why: UNBUNDLED };
     }
     console.log("No commits ahead of the base this run started from, so there is nothing to rescue.");
     return { kind: "none" };
@@ -294,6 +306,7 @@ const rescueCommits = async (inputs: Inputs, io: Io, loop: Writer, bundled: bool
 /** Why a stopped run's commits went unsaved, each as the comment says it after "were not saved on `<rescue>`:". */
 const NO_TOKEN = "the loop's token was not minted, so there was nothing to push them with.";
 const UNBUNDLED = "the agent's job could not bundle them, and the workflow run's log says why.";
+const UNFINISHED = "the agent's job was stopped before it finished bundling them, and the workflow run's log says why.";
 const UNFETCHED = "what the agent's job handed over could not be fetched, so there were none to push.";
 const UNCHECKED = (base: string): string => `they could not be checked against \`${base}\` before the push, and the workflow run's log says why.`;
 const UNREAD = "GitHub would not say whether the branch already holds commits, so pushing could have overwritten them.";

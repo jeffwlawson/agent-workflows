@@ -1556,6 +1556,9 @@ const runImplement = async (job: ImplementJob, edges: JobEdges): Promise<readonl
   const minutes = fixTimeLimit(job.variables.AGENT_TIMEOUT_MINUTES);
   const agent: { result: JobResult; timedOut: boolean } = { result: "skipped", timedOut: false };
   const bundleDir = outputDir("implement:bundle");
+  // How `implement:bundle` ended, as the bundle step's `outcome`: one stopped
+  // at its limit writes nothing, which conclude must not read as no commits.
+  let bundleOutcome = "";
   if (gateResult === "success" && refused === "false") {
     agent.result = "success";
     const agentLimit = limit(minutes);
@@ -1638,6 +1641,7 @@ const runImplement = async (job: ImplementJob, edges: JobEdges): Promise<readonl
     const bundleLimit = limit(BUNDLE_MINUTES);
     const bundled = await run("implement:bundle", { CHECKOUT: checkout, BRANCH: branch, BASE_SHA: base }, edges.runDir, bundleLimit.signal);
     bundleLimit.clear();
+    bundleOutcome = bundled.timedOut ? "cancelled" : bundled.ok ? "success" : "failure";
     if (bundled.timedOut && agent.result === "success") agent.result = "cancelled";
     else if (!bundled.ok && agent.result === "success") agent.result = "failure";
   }
@@ -1734,6 +1738,7 @@ const runImplement = async (job: ImplementJob, edges: JobEdges): Promise<readonl
       MINT_OUTCOME: mintOutcome,
       DOWNLOAD_OUTCOME: agentRan ? "success" : "",
       PUBLISH_OUTCOME: publishOutcome,
+      BUNDLE_OUTCOME: bundleOutcome,
       PUBLISH_DIR: publishDir,
       PREPARE_DIR: outputDir("implement:prepare"),
       IMPLEMENT_DIR: outputDir("implement"),

@@ -114,6 +114,7 @@ const INPUTS = (over: Partial<Inputs> = {}): Inputs => ({
   MINT_OUTCOME: "success",
   DOWNLOAD_OUTCOME: "success",
   PUBLISH_OUTCOME: "success",
+  BUNDLE_OUTCOME: "success",
   PUBLISH_DIR: dirOf("publish"),
   PREPARE_DIR: dirOf("prepare"),
   IMPLEMENT_DIR: dirOf("runner"),
@@ -742,6 +743,28 @@ describe("implement:conclude rescues a stopped run's commits to a side branch", 
 
     expect(writes()).toEqual(STOPPED_WRITES);
     expect(comment()).toContain(unsaved("the agent's job could not bundle them, and the workflow run's log says why."));
+  });
+
+  /**
+   * A bundle step ended before it wrote anything (#270): stopped at its own
+   * limit on the service, or in a cancel on Actions, or failed before the
+   * command could write its reason. No file is then unknown, not no commits.
+   */
+  it.each([
+    ["was stopped", "cancelled", "the agent's job was stopped before it finished bundling them, and the workflow run's log says why."],
+    ["failed without a reason", "failure", "the agent's job could not bundle them, and the workflow run's log says why."],
+  ] as const)("says the commits were not saved, and why, where the bundle step %s before it wrote anything", async (_name, outcome, why) => {
+    await run(INPUTS(AGENT("cancelled", { BUNDLE_OUTCOME: outcome })));
+
+    expect(writes()).toEqual(STOPPED_WRITES);
+    expect(comment()).toContain(unsaved(why));
+    expect(logged).not.toContain("No commits ahead of the base this run started from, so there is nothing to rescue.");
+  });
+
+  it("reads no bundle as no commits where the bundle step succeeded", async () => {
+    await run(INPUTS(AGENT("failure", { BUNDLE_OUTCOME: "success" })));
+
+    expect(comment()).toContain(`· ${RETRY}\n`);
   });
 
   it("says the commits were not saved, and why, where the hand-over could not be fetched", async () => {

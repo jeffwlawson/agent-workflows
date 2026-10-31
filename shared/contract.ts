@@ -1192,6 +1192,7 @@ export const COMMANDS = {
       MINT_OUTCOME: EMPTY,
       DOWNLOAD_OUTCOME: EMPTY,
       PUBLISH_OUTCOME: EMPTY,
+      BUNDLE_OUTCOME: EMPTY,
       PUBLISH_DIR: readsFromCommand("implement:publish", IMPLEMENT_PUBLISH, {
         "published.json": "sometimes",
         "failure_reason.txt": "sometimes",

@@ -1953,6 +1953,22 @@ describe("the worker's implement job, where it stops", () => {
     expect(s.env("implement:conclude")).toMatchObject({ AGENT_RESULT: "cancelled", TIMED_OUT: "true", BUNDLE_DIR: s.env("implement:bundle")["OUTPUT_DIR"] });
   });
 
+  /**
+   * #270: a bundle step ended at its limit writes nothing, so conclude is
+   * told how it ended, as the step's outcome on Actions, rather than reading
+   * the missing bundle as no commits.
+   */
+  it.each([
+    ["stopped at its limit", { hangs: true }, "cancelled"],
+    ["failed", { exit: 1 }, "failure"],
+    ["succeeded", {}, "success"],
+  ] as const)("tells conclude the bundle step's outcome where it %s", async (_name, bundle, outcome) => {
+    const s = setup({ ...IMPLEMENT_ORDINARY, "implement:bundle": bundle }, { minuteMs: 5 });
+    await runJob(IMPLEMENT_JOB, s.edges);
+
+    expect(s.env("implement:conclude")).toMatchObject({ BUNDLE_OUTCOME: outcome });
+  });
+
   it("hands conclude no loop token, so it rescues nothing, where the push token was refused", async () => {
     const s = setup({ ...IMPLEMENT_ORDINARY, implement: { exit: 1 } }, { refused: [4] });
     await runJob(IMPLEMENT_JOB, s.edges);

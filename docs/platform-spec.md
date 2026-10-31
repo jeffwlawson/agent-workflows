@@ -637,8 +637,8 @@ build, and an orchestrator other than Actions sets its environment in its own co
 > `implement:prepare`, which creates `BRANCH` at the gate's base commit and fetches the rescue
 > branch, then the runner, by the install's path, and, however it ended, `implement:bundle`; it
 > hands the bundle, every reason file and the rescue it set aside to the publish job as one
-> artifact, and its last step measures whether it ran out of time, as its `timed-out` output.
-> `RESCUE_BRANCH` is `agent/rescue/issue-<n>`, set on the agent's job and the publish job. A publish
+> artifact, and its last step measures whether it ran out of time, as its `timed-out` output, beside
+> the bundle step's outcome, as its `bundled` output. `RESCUE_BRANCH` is `agent/rescue/issue-<n>`, set on the agent's job and the publish job. A publish
 > job mints the loop's token, checks the default branch out and runs, where the agent's job
 > succeeded, `implement:publish`, which checks the bundle, pushes `BRANCH`, deletes the rescue
 > branch, opens a draft pull request into the default branch, links it on the issue, and adds
@@ -709,7 +709,8 @@ build, and an orchestrator other than Actions sets its environment in its own co
 >   still running at it is ended with every process it started: the agent's job is then
 >   `cancelled`, with `TIMED_OUT` `true` and `TIMEOUT_MINUTES` the limit, which on Actions the job's
 >   last step measures. `implement:bundle` gets 5 minutes of its own after it, as `fix:bundle`
->   does. Publish's checkout and `implement:publish` share the publish job's 15 minutes, and
+>   does; one still running at it is `BUNDLE_OUTCOME` `cancelled`, as the step's outcome is on
+>   Actions, so conclude says the commits went unsaved. Publish's checkout and `implement:publish` share the publish job's 15 minutes, and
 >   `implement:conclude` gets 15 of its own. The dispatcher's deadline for the job is
 >   the agent's limit plus its margin.
 > - **A phase not started leaves its reason** where `implement:conclude` reads the next one: a
@@ -1018,8 +1019,9 @@ held. Never `BRANCH`, no pull request, no review and no label. No bundle is no c
 `BASE_SHA`, and nothing is pushed. The bundle is checked in `CHECKOUT` as `implement:publish`
 checks it, against `BRANCH` and `BASE_SHA`. An empty `LOOP_TOKEN` or a mint that did not succeed,
 a bundle that fails a check, a rescue's tip that cannot be read, a push that fails, and, with no
-bundle, a `failure_reason.txt` in `BUNDLE_DIR` or a `DOWNLOAD_OUTCOME` of `failure`, each rescue
-nothing, with a warning, and the comment says the commits were not saved, and why.
+bundle, a `failure_reason.txt` in `BUNDLE_DIR`, a `DOWNLOAD_OUTCOME` of `failure`, or a
+`BUNDLE_OUTCOME` of `failure` or `cancelled` (a bundle step ended before it wrote anything), each
+rescue nothing, with a warning, and the comment says the commits were not saved, and why.
 - **A gate that did not decide** (`REFUSED` is empty): the same comment and `agent:blocked`, and
   `agent:implement` is **left on**: that run may have been the event `implement-prd` answers, which
   holds the label while it works.
@@ -1042,7 +1044,9 @@ them. ``; where they went unsaved, the retry is followed by `` Its commits were 
 them with. ``, `` they could not be checked against `<BASE_REF>` before the push, and the workflow
 run's log says why. ``, `` GitHub would not say whether the branch already holds commits, so
 pushing could have overwritten them. ``, `` GitHub refused the push, and the workflow run's log
-says why. ``, `` the agent's job could not bundle them, and the workflow run's log says why. `` or
+says why. ``, `` the agent's job could not bundle them, and the workflow run's log says why. ``,
+`` the agent's job was stopped before it finished bundling them, and the workflow run's log says
+why. `` or
 `` what the agent's job handed over could not be fetched, so there were none to push. ``
 
 Each directory is read on its own, so a file that does not read is a warning and is read as not
@@ -1072,6 +1076,7 @@ comment still takes its label off. Every write but the rescue is made with `GH_T
 | `MINT_OUTCOME` | optional | `""` | The outcome of minting the loop's token: `success`, `failure`, `cancelled` or `skipped`. Empty is not run. |
 | `DOWNLOAD_OUTCOME` | optional | `""` | The same, for fetching the agent's hand-over. |
 | `PUBLISH_OUTCOME` | optional | `""` | The same, for `implement:publish`. |
+| `BUNDLE_OUTCOME` | optional | `""` | The same, for `implement:bundle`, in the agent's job. With no bundle, `failure` or `cancelled` is commits not saved rather than none. |
 | `PUBLISH_DIR` | directory | | `implement:publish`'s `OUTPUT_DIR`. Reads `published.json` (where written) and `failure_reason.txt` (where written). |
 | `PREPARE_DIR` | directory | | `implement:prepare`'s `OUTPUT_DIR`. Reads `failure_reason.txt` (where written). |
 | `IMPLEMENT_DIR` | directory | | The `implement` runner's `OUTPUT_DIR`. Reads `failure_reason.txt` (where written) and `rescue_ignored.json` (where written). |
@@ -1095,8 +1100,9 @@ comment still takes its label off. Every write but the rescue is made with `GH_T
 > `RUNNER_TEMP`, as are the Node setup and the upload around it, and the checkout and the download
 > wherever the gate claimed the run. It is told the gate's `refused` output, result and
 > `failure-reason` output, which the gate job's glue step copies from `implement:gate`'s reason
-> file, the agent's job's result and its `timed-out` output, the limit as `AGENT_TIMEOUT_MINUTES` or
-> 30, and the outcomes of the mint, the download and `implement:publish`. `PUBLISH_DIR` is
+> file, the agent's job's result, its `timed-out` output and its `bundled` output, the bundle step's
+> outcome, the limit as `AGENT_TIMEOUT_MINUTES` or 30, and the outcomes of the mint, the download and
+> `implement:publish`. `PUBLISH_DIR` is
 > `implement:publish`'s `OUTPUT_DIR`, and `PREPARE_DIR`, `IMPLEMENT_DIR` and `BUNDLE_DIR` where the
 > agent's artifact is downloaded, a directory of its own under `runner.temp`, so the mint's reason
 > file is never read as the runner's. `CHECKOUT` is the publish job's one checkout, `RESCUE_BRANCH`

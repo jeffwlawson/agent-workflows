@@ -260,7 +260,10 @@ with the base, `fix:prepare`, which fetches a stopped round's rescue branch into
 runner, and `fix:bundle`, however those ended. Then, in a checkout of the head of its own, as
 `fix.yml`'s publish job makes, `fix:publish` pushes the agent's commits and asks for the re-review, and `fix:conclude` ends the round, pushing a stopped round's commits to
 `agent/rescue/fix-<n>` for the next round to resume from. The checkout keeps no token in its
-configuration: each command is handed its token in its environment. It does keep a committer, the
+configuration: each command is handed its token in its environment. Every checkout the worker
+makes fetches the head, the base and every tag the repository has, the tags `fetch-depth: 0` gives
+on Actions, so a verify command that reads a release by its tag (a version check, `git describe`)
+passes here as it does there; it fetches no other branch. It does keep a committer, the
 App's login and its no-reply address, as `fix.yml`'s checkout sets one, since the agent commits.
 
 An update-branch job runs `update-branch:gate`, and ends there where it refused; where it claimed the run, it checks the head out
@@ -446,6 +449,9 @@ The job door also answers `GET /health` with `200`.
 One deployment, recorded so it can be rebuilt; nothing in it is in the package's code. The
 dispatcher runs on an Unraid server; the worker runs in a VM on it, the *agent box*, which is the
 wall between the agents and the NAS (#364). GitHub reaches the dispatcher through Tailscale Funnel.
+The scripts that build, upgrade and check it are in [`deploy/unraid/`](../deploy/unraid/README.md),
+with this deployment's own values in an `agent-service.conf` beside them; they are not part of the
+package.
 
 ```text
 GitHub ─► Funnel :10000 ─► Unraid 127.0.0.1:8790/github   dispatcher (container, host network)

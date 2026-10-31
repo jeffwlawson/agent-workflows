@@ -671,7 +671,7 @@ build, and an orchestrator other than Actions sets its environment in its own co
 >   fetch, which need `refused == 'false'`, are skipped. So is the agent's job where the gate
 >   claimed the run and then failed, as at the probe, since the job needs the gate's success.
 > - **The agent's job**, where the gate succeeded and claimed the run: a `read` token; a checkout
->   of the base branch, by name, as `implement.yml`'s, with no token stored in it;
+>   of the base branch, by name, with the repository's tags, as `implement.yml`'s, with no token stored in it;
 >   `implement:prepare`, with the same `read` token, which creates `BRANCH` there at `base`, the
 >   commit the gate read the base branch at, and fetches the rescue branch; the repository's setup,
 >   `AGENT_SETUP`, in the bwrap sandbox with no token, where Actions runs the caller's `setup:`; a
@@ -1223,7 +1223,8 @@ earlier run of this PRD left commits on `RESCUE_BRANCH`, that branch fetched to
 >   base on purpose: the bundle is the PRD branch less `head`, and `implement-prd:publish` and
 >   `implement-prd:conclude`'s rescue each check it before they fetch anything, which fails in a
 >   checkout without `head`. Actions' `fetch-depth: 0` fetches every branch, the PRD branch among
->   them; the service's checkout fetches the base alone. `implement-prd:publish` runs where the gate succeeded and the run is the finishing
+>   them; the service's checkout fetches the base alone, beside the head, and every tag, the set
+>   `fetch-depth: 0` brings. `implement-prd:publish` runs where the gate succeeded and the run is the finishing
 >   one, builds nothing (`open-only`), or its agent's job succeeded, and the mint and the checkout
 >   did, pointed at the gate's and bundle's directories. Then `implement-prd:conclude`, however the
 >   run ended, pointed at every producer's directory. Publish holds `push` as both `GH_TOKEN` and
@@ -1948,7 +1949,7 @@ text, and `review:publish` and `review:advance` write every final string from th
 > own and an environment built from its declaration, and writes nothing to the record itself. It
 > asks the dispatcher for a `read` token and runs `review:gate` with the head commit, state and
 > merged flag the label's event carried, and the repository's variables. Where the gate went ahead
-> it checks out the settled commit as `BRANCH`, fetches `BASE_REF`, the token passed with each
+> it checks out the settled commit as `BRANCH`, fetches `BASE_REF` and the repository's tags, the token passed with each
 > fetch and never stored in the checkout, then runs `review:budget` and `review:collect-checks`,
 > and the runner, in the sandbox its settings name, with a fresh `read` token as `GH_TOKEN`. Where the
 > review finished it asks for a `write` token and runs `review:publish`, pointed at the runner's
@@ -2610,7 +2611,7 @@ diffing, which the orchestrator prepares, and `RESCUE_BRANCH` fetched to
 > summary notes the refusal. An undecided gate is not a refusal, and conclude still runs. Where the
 > gate succeeded and claimed the
 > run, it asks for a `read` token and checks out the event's head as `BRANCH`, fetching
-> `BASE_REF`, the token passed with each fetch and never stored in the checkout, which keeps only a
+> `BASE_REF` and the repository's tags, the token passed with each fetch and never stored in the checkout, which keeps only a
 > committer, the App's login, as `fix.yml`'s checkout step sets one. Then `fix:prepare`, with the
 > same token, which fetches `RESCUE_BRANCH` into the checkout; the repository's setup, `AGENT_SETUP`,
 > in the bwrap sandbox with no token; and the runner, in the sandbox its settings name, with a fresh
@@ -3058,7 +3059,7 @@ neither.
 > with the state and merged flag the label's event carried. A refusal ends the run there, as on
 > Actions it skips the publish job: no token is asked for after it, publish and
 > `update-branch:conclude` do not run, and the run's summary notes the refusal. Where the gate
-> claimed the run, it checks out the event's head as `BRANCH`, fetching `BASE_REF`, with that token passed with each
+> claimed the run, it checks out the event's head as `BRANCH`, fetching `BASE_REF` and the repository's tags, with that token passed with each
 > fetch and never stored, and runs `update-branch:merge` there with the same token: outside the
 > sandbox, since it runs none of the pull request's code, and holding no `push` token, since
 > nothing is pushed until publish. Only where the merge conflicted does the agent's job run: a

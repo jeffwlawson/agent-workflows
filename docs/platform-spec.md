@@ -296,7 +296,12 @@ the host's home, credentials or other runs:
   excluded in the copy's `info/exclude`, so it is never handed back as the agent's work, and a
   setup's untracked file the agent means to commit takes `git add -f` there;
 - the agent's work comes back only as Sandcastle's patches and session files: a write under `.git`,
-  or of a symlink that leaves the sandbox, is refused.
+  or of a symlink that leaves the sandbox, is refused;
+- so a merge in progress in the checkout is not in the copy, which is cloned from history, and a
+  merge commit the agent made would not come back, since the patches leave merges out. A runner
+  whose agent concludes a merge, `update-branch`'s (§10), has its agent work on a branch of its
+  own, has the copy put mid-merge as a squash, and makes the merge itself, in the checkout, from
+  the tree the agent committed.
 
 Whatever provider a runner offers ***must*** support resuming a session, since a runner that
 extracts a structured result runs the agent twice, the second time resuming the first session.
@@ -2817,8 +2822,8 @@ before it, and it works out the ending from them. Each is one of:
 - **A run that finished**, the agent's job and every step before this one: `agent:fix` off.
   Every other word of it is `fix:publish`'s.
 - **A run that stopped**: the rescue, below; then the failure comment, `` **`agent:fix` stopped:** ``
-  and the reason as a sentence, the run's link, and the retry; then `agent:fix` off, then
-  `agent:blocked`. The reason is, where the agent's job finished, the first of the mint, the
+  and the reason as a sentence, the run's link where there is a run, and the retry; then
+  `agent:fix` off, then `agent:blocked`. The reason is, where the agent's job finished, the first of the mint, the
   download and `fix:publish` that did not succeed: a fixed sentence for the mint and the download,
   `fix:publish`'s `failure_reason.txt`, or a cancel where that step was cancelled or skipped.
   Otherwise, where the gate, the agent's job or a step was cancelled, a cancel, or the time limit
@@ -2905,6 +2910,20 @@ Resolves the conflicts of a merge of the base branch into the pull request's bra
 the head checked out as `BRANCH`, with `git merge origin/<BASE_REF>` already run and stopped on its
 conflicts, `origin/<BASE_REF>` at the base commit `update-branch:merge` read: `update-branch:prepare`
 leaves the checkout so, and refuses where it cannot. A merge that does not conflict needs no runner.
+
+It ends with the merge committed in the checkout, on `BRANCH`: the head and the base commit its
+parents, in that order, and the agent's resolution its tree. Under `none` the agent commits it
+there itself. Under `bwrap` (§2.2) the agent's copy holds no merge in progress and hands back no
+merge commit, and Sandcastle's own merge of its work into the checkout is one git refuses
+mid-merge, which is how #463's first run on the service stopped. So the agent works on
+`sandcastle/update-branch-pr-<PR_NUMBER>/merge`, made at the head, where Sandcastle leaves its
+commits; the copy, where it is at the head, is put mid-merge with `git merge --squash` of the base
+commit, after the checkout's untracked paths are carried in, so the agent meets the same conflicts
+staged and its commit is an ordinary one; and the runner makes the merge with `git commit-tree`,
+from the tree of that branch's tip, git's subject for the merge and the body of the agent's last
+message, moves `BRANCH` onto it with `git reset --hard`, and deletes the branch. A branch with no
+commit of the agent's on it, or one Sandcastle left checked out in a worktree of its own, a
+copy-out that did not finish, fails the run, and nothing is pushed.
 
 ### Inputs
 
@@ -3334,8 +3353,8 @@ one of:
   otherwise, which is not a failure), and every step before this one. `agent:update-branch` off,
   then the re-request, below. Every other word of it is `update-branch:publish`'s.
 - **A run that stopped**: the failure comment, `` **`agent:update-branch` stopped:** `` and the
-  reason as a sentence, the run's link, and the retry; then `agent:update-branch` off, then
-  `agent:blocked`. The reason is, where the gate and the agent's job finished, the first of the
+  reason as a sentence, the run's link where there is a run, and the retry; then
+  `agent:update-branch` off, then `agent:blocked`. The reason is, where the gate and the agent's job finished, the first of the
   mint, the download (on `conflicts` only) and `update-branch:publish` that did not succeed: a
   fixed sentence for the mint and the download, `update-branch:publish`'s `failure_reason.txt`, or
   a cancel where that step was cancelled or skipped. Otherwise, where the gate, the agent's job or

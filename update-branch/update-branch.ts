@@ -13,7 +13,7 @@ import {
   standardSchema,
   writers,
 } from "../shared/common.js";
-import { agentSandbox, claudeAgent, runWithExtraction } from "../shared/agent.js";
+import { agentSandbox, claudeAgent, concludingMerge, runWithExtraction } from "../shared/agent.js";
 import { RUNNERS } from "../shared/contract.js";
 
 const INPUTS = readInputs(RUNNERS["update-branch"].inputs);
@@ -58,10 +58,15 @@ try {
 
   scrubGitHubTokens();
 
+  // The merge reaches the agent, and its commit comes back, through the
+  // sandbox: an isolated one can carry neither as it is (`concludingMerge`).
+  const name = `update-branch-pr-${PR_NUMBER}`;
+  const merge = concludingMerge(SANDBOX, process.cwd(), name);
+
   const result = await runWithExtraction({
-    name: `update-branch-pr-${PR_NUMBER}`,
+    name,
     agent: claudeAgent("update-branch", INPUTS),
-    ...SANDBOX,
+    ...merge.options,
     logging: { type: "stdout" },
     promptFile: path.join(import.meta.dirname, "prompt.md"),
     promptArgs: {
@@ -76,6 +81,7 @@ try {
     extractionPrompt: fs.readFileSync(path.join(import.meta.dirname, "extraction.md"), "utf8"),
     maxIterations: 1,
   });
+  merge.conclude();
 
   // A half-finished merge must never reach `git push` — it would put conflict
   // markers on the branch. Fail loudly instead; the workflow leaves the remote

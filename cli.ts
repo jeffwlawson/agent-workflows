@@ -228,7 +228,8 @@ const writingCommand = <C extends WritingCommand>(
 
 /**
  * `--dir <path>`, the one option both halves of the install path take, and
- * the switches one of them knows: `init --app` (PRD #314).
+ * the switches one of them knows: `init --app` (PRD #314) and `init --service`
+ * (#562).
  *
  * Unlike a runner these are typed by a human, in somebody else's checkout, so
  * arguments are the interface rather than a misunderstanding of it. An unknown
@@ -430,7 +431,7 @@ export const SUBCOMMANDS: Readonly<Record<string, Subcommand>> = {
       const { livePolicySurface } = await import("./setup/policies.js");
       const { liveLabelSurface } = await import("./setup/labels.js");
       const { liveAppSurface } = await import("./setup/app.js");
-      const { dir, switches } = installArgs("init", args, ["--app"]);
+      const { dir, switches } = installArgs("init", args, ["--app", "--service"]);
       io.stdout(`  in ${dir}\n`);
       const changes = await init({
         dir,
@@ -438,6 +439,7 @@ export const SUBCOMMANDS: Readonly<Record<string, Subcommand>> = {
         labels: liveLabelSurface(dir),
         app: liveAppSurface(dir, io.stdout),
         createApp: switches.has("--app"),
+        service: switches.has("--service"),
       });
       for (const change of changes) {
         io.stdout(`  ${change.action.padEnd(9)} ${change.file}${change.note ? ` (${change.note})` : ""}\n`);

@@ -7,6 +7,7 @@ import {
   APP_PERMISSIONS,
   appManifest,
   manifestFlow,
+  serviceAppManifest,
   suggestedAppName,
   type RegisteredApp,
   type RepoOwner,
@@ -74,11 +75,16 @@ const conversion = {
  * Run the flow, with `browse` as the person: handed the local page's URL, it
  * does whatever the test needs and returns what it saw.
  */
-const flow = async <T>(owner: RepoOwner, api: string, browse: (url: string) => Promise<T>) => {
+const flow = async <T>(
+  owner: RepoOwner,
+  api: string,
+  browse: (url: string) => Promise<T>,
+  manifest = appManifest(owner.login, "https://github.com/acme/agent-workflows"),
+) => {
   let seen: Promise<T> | undefined;
   const outcome = await manifestFlow({
     owner,
-    manifest: appManifest(owner.login, "https://github.com/acme/agent-workflows"),
+    manifest,
     open: (url) => {
       seen = browse(url);
     },
@@ -184,6 +190,32 @@ describe("the manifest flow creates the loop's App", () => {
     });
 
     expect(outcome).toEqual({ id: 4242, slug: "acme-loop-bot", name: "Acme Loop Bot", pem: conversion.pem });
+  });
+
+  /**
+   * A service-ready App (#562) is registered with its webhook, and GitHub
+   * answers with the secret it generated, which is read; an Actions App's
+   * answer carries none, and the App is read as before.
+   */
+  it("posts a service-ready manifest with its webhook, and reads the webhook secret back", async () => {
+    const { api } = await fakeGitHub({ ...conversion, webhook_secret: "s3cret" });
+    const manifest = serviceAppManifest("acme", "https://github.com/acme/agent-workflows", "https://hooks.example.test/github");
+
+    const { outcome, seen } = await flow(
+      { login: "acme", organization: true },
+      api,
+      async (url) => {
+        const form = await readForm(url);
+        await fetch(`${String(form.manifest["redirect_url"])}?code=abc&state=${form.state}`);
+        return form.manifest;
+      },
+      manifest,
+    );
+
+    expect(seen["hook_attributes"]).toEqual({ url: "https://hooks.example.test/github", active: true });
+    expect(seen["default_events"]).toEqual(["pull_request", "issues"]);
+    expect(seen["public"]).toBe(false);
+    expect(outcome).toEqual({ id: 4242, slug: "acme-loop-bot", name: "Acme Loop Bot", pem: conversion.pem, webhookSecret: "s3cret" });
   });
 
   /**

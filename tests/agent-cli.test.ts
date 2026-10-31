@@ -9,7 +9,7 @@ import { SUBCOMMANDS, type CliIo } from "../cli.js";
 import { place as placeRedCheck } from "../review/red-check-place.js";
 import { gate } from "../review/gate.js";
 import { publish } from "../review/publish.js";
-import { SERVICE_LABELS } from "../service/dispatcher.js";
+import { SERVICE_APP_EVENTS, SERVICE_APP_PERMISSIONS, SERVICE_LABELS } from "../service/dispatcher.js";
 import { serveDispatcher, serveWorker } from "../service/serve.js";
 import { SERVICE } from "../service/settings.js";
 import { COMMANDS, RUNNERS } from "../shared/contract.js";
@@ -23,8 +23,10 @@ import {
   advisoryLabelSpecsFor,
   APP_CHANGE,
   init,
+  keyChange,
   labelCommand,
   POLICY_CHANGE,
+  settingsChange,
   labelSpecsFor,
   STATE_LABELS,
   TRIGGER_LABELS,
@@ -1774,6 +1776,29 @@ describe("init installs the reference callers into an adopting repo", () => {
   });
 
   /**
+   * `--service` is `init`'s alone too (#562). A spawned CLI has no terminal,
+   * so it asks nothing it could wait on, registers nothing, and says where
+   * to run it instead.
+   */
+  it.skipIf(process.platform === "win32")("takes --service, which without a terminal registers nothing, and which doctor refuses", async () => {
+    const root = adopted();
+    const bin = fs.mkdtempSync(path.join(os.tmpdir(), "agent-fake-gh-"));
+    roots.push(bin);
+    fs.writeFileSync(path.join(bin, "gh"), "#!/bin/sh\nexit 1\n", { mode: 0o755 });
+    const init = await invoke(["init", "--dir", root, "--service"], {
+      OUTPUT_DIR: scratch,
+      PATH: `${bin}${path.delimiter}${process.env["PATH"] ?? ""}`,
+    });
+
+    expect(init.code).toBe(0);
+    expect(init.out).toMatch(/kept\s+GitHub App \(service mode asks for the webhook URL .* run `init --service` at one\)/);
+
+    const doctor = await invoke(["doctor", "--dir", root, "--service"], { OUTPUT_DIR: scratch });
+    expect(doctor.code).toBe(2);
+    expect(doctor.err).toContain("--service");
+  });
+
+  /**
    * A `--dir` that is not there is a typo rather than a request, and `put`
    * mkdirs recursively: it would scaffold a whole repository under a directory
    * nobody has — reporting the same repo-relative lines a correct run does,
@@ -2598,6 +2623,215 @@ describe("init creates the loop's GitHub App", () => {
     expect(key?.action).toBe("kept");
     expect(key?.note).toContain("https://github.com/organizations/acme/settings/apps/acme-loop-bot");
     expect(key?.note).not.toContain("PRIVATE KEY-----");
+  });
+});
+
+/**
+ * A service-ready App (#562), as `init --service` registers it: the answers
+ * the operator types, in order, and the conversion's answer, against a
+ * surface that records every manifest, secret, page and question.
+ */
+const SERVICE_SECRET = "0f1e2d3c4b5a69788796a5b4c3d2e1f0";
+const SERVICE_PEM = "-----BEGIN RSA PRIVATE KEY-----\nservice-key\n-----END RSA PRIVATE KEY-----\n";
+
+const serviceApp = (scenario: {
+  answers: readonly (string | undefined)[];
+  registered?: RegisteredApp;
+}) => {
+  const manifests: AppManifest[] = [];
+  const stored: string[] = [];
+  const opened: string[] = [];
+  const questions: string[] = [];
+  const answers = [...scenario.answers];
+  const surface: AppSurface = {
+    secrets: () => [],
+    owner: () => ({ login: "acme", organization: true }),
+    orgAdmin: () => true,
+    register: async (_owner, manifest) => {
+      manifests.push(manifest);
+      return scenario.registered ?? { id: 4343, slug: "acme-service", name: "Acme Service", pem: SERVICE_PEM, webhookSecret: SERVICE_SECRET };
+    },
+    setSecret: (name) => {
+      stored.push(name);
+      return undefined;
+    },
+    openInstall: (url) => {
+      opened.push(url);
+    },
+    ask: async (question) => {
+      questions.push(question);
+      return answers.shift();
+    },
+  };
+  return { surface, manifests, stored, opened, questions };
+};
+
+describe("init --service registers a service-ready App", () => {
+  const roots: string[] = [];
+  afterEach(() => {
+    for (const root of roots.splice(0)) fs.rmSync(root, { recursive: true, force: true });
+  });
+  const temp = (prefix: string): string => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), prefix));
+    roots.push(root);
+    return root;
+  };
+  const adopted = (): string => {
+    const root = temp("agent-init-service-");
+    fs.mkdirSync(path.join(root, ".github", "workflows"), { recursive: true });
+    return root;
+  };
+  const run = (surface: AppSurface, dir: string = adopted()) =>
+    init({ dir, github: offline, labels: noLabels, app: surface, service: true });
+
+  const URL_GIVEN = "https://hooks.example.test/agent/github";
+
+  it("asks for the webhook URL and both files, and registers the Actions App's permissions with the service's, its webhook and its events", async () => {
+    const away = temp("agent-service-files-");
+    const settings = path.join(away, "dispatcher.env");
+    const { surface, manifests, stored, opened, questions } = serviceApp({ answers: [URL_GIVEN, settings, ""] });
+
+    const changes = await run(surface);
+
+    expect(questions).toEqual([
+      expect.stringContaining("ending /github"),
+      expect.stringContaining("settings file"),
+      expect.stringContaining(`[${path.join(away, "app.pem")}]`),
+    ]);
+    expect(manifests).toEqual([
+      {
+        name: "acme-agent-loop",
+        url: `https://github.com/${manifest.name.replace(/^@/, "")}`,
+        public: false,
+        default_permissions: {
+          contents: "write",
+          pull_requests: "write",
+          issues: "write",
+          workflows: "write",
+          metadata: "read",
+          actions_variables: "read",
+          checks: "read",
+          statuses: "write",
+        },
+        hook_attributes: { url: URL_GIVEN, active: true },
+        default_events: ["pull_request", "issues"],
+      },
+    ]);
+    // The service's whole need, from the one declaration the dispatcher checks against.
+    for (const [name, access] of Object.entries(SERVICE_APP_PERMISSIONS)) {
+      expect(manifests[0]?.default_permissions[name]).toBe(access);
+    }
+    expect(manifests[0]?.default_events).toEqual(SERVICE_APP_EVENTS);
+    // Never the repository's Actions secrets.
+    expect(stored).toEqual([]);
+    expect(opened).toEqual(["https://github.com/apps/acme-service/installations/new"]);
+    expect(changes.find((c) => c.file.startsWith(APP_CHANGE))?.action).toBe("created");
+  });
+
+  it.skipIf(process.platform === "win32")("writes the three settings and the key, each file mode 600, and prints neither secret", async () => {
+    const away = temp("agent-service-files-");
+    const settings = path.join(away, "dispatcher.env");
+    const key = path.join(away, "keys.pem");
+    const { surface } = serviceApp({ answers: [URL_GIVEN, settings, key] });
+
+    const changes = await run(surface);
+
+    const lines = fs.readFileSync(settings, "utf8").split("\n").filter((line) => line !== "" && !line.startsWith("#"));
+    expect(lines).toEqual([`GITHUB_APP_ID=4343`, `GITHUB_APP_PRIVATE_KEY_FILE=${key}`, `GITHUB_WEBHOOK_SECRET=${SERVICE_SECRET}`]);
+    // The names the dispatcher reads.
+    for (const line of lines) expect(Object.keys(SERVICE.dispatcher.settings)).toContain(line.split("=")[0]);
+    expect(fs.readFileSync(key, "utf8")).toBe(SERVICE_PEM);
+    expect(fs.statSync(settings).mode & 0o777).toBe(0o600);
+    expect(fs.statSync(key).mode & 0o777).toBe(0o600);
+    // The App step is the last, as in Actions mode.
+    expect(changes.slice(-4).map((c) => [c.action, c.file])).toEqual([
+      ["created", `${APP_CHANGE} "Acme Service"`],
+      ["created", keyChange(key)],
+      ["created", settingsChange(settings)],
+      ["kept", "dispatcher's other settings"],
+    ]);
+    // The rest are the operator's, and the closing output says so.
+    const rest = changes.find((c) => c.file === "dispatcher's other settings")?.note ?? "";
+    for (const name of ["WORKER_URL", "WORKER_SECRET", "WEBHOOK_PORT", "TOKEN_PORT"]) expect(rest).toContain(name);
+    const said = JSON.stringify(changes);
+    expect(said).not.toContain(SERVICE_SECRET);
+    expect(said).not.toContain("service-key");
+  });
+
+  it.each([
+    ["not ending /github", "https://hooks.example.test/agent"],
+    ["ending /github/ instead", "https://hooks.example.test/github/"],
+    ["not a URL", "hooks.example.test/github"],
+    ["empty", ""],
+  ])("refuses a webhook URL %s before anything is registered", async (_why, url) => {
+    const away = temp("agent-service-files-");
+    const { surface, manifests, questions } = serviceApp({ answers: [url, path.join(away, "dispatcher.env"), ""] });
+
+    const changes = await run(surface);
+
+    const change = changes.find((c) => c.file === APP_CHANGE);
+    expect(change?.action).toBe("kept");
+    expect(change?.note).toContain("ending /github");
+    expect(manifests).toEqual([]);
+    expect(questions).toHaveLength(1);
+    expect(fs.readdirSync(away)).toEqual([]);
+  });
+
+  it.each(["settings", "key"] as const)("refuses an existing %s file before registering, and leaves it as it was", async (which) => {
+    const away = temp("agent-service-files-");
+    const settings = path.join(away, "dispatcher.env");
+    const key = path.join(away, "app.pem");
+    const existing = which === "settings" ? settings : key;
+    fs.writeFileSync(existing, "already here\n", { mode: 0o644 });
+    const { surface, manifests } = serviceApp({ answers: [URL_GIVEN, settings, key] });
+
+    const changes = await run(surface);
+
+    const change = changes.find((c) => c.file === APP_CHANGE);
+    expect(change?.action).toBe("kept");
+    expect(change?.note).toContain(`${existing} already exists`);
+    expect(manifests).toEqual([]);
+    expect(fs.readFileSync(existing, "utf8")).toBe("already here\n");
+    expect(fs.readdirSync(away)).toEqual([path.basename(existing)]);
+  });
+
+  it("refuses a file inside the checkout, where a commit would publish it", async () => {
+    const root = adopted();
+    const { surface, manifests } = serviceApp({ answers: [URL_GIVEN, path.join(root, "dispatcher.env"), ""] });
+
+    const changes = await run(surface, root);
+
+    expect(changes.find((c) => c.file === APP_CHANGE)?.note).toContain("inside this checkout");
+    expect(manifests).toEqual([]);
+    expect(fs.existsSync(path.join(root, "dispatcher.env"))).toBe(false);
+  });
+
+  it("fails on a conversion with no webhook secret, saying so, and writes nothing", async () => {
+    const away = temp("agent-service-files-");
+    const { surface, stored } = serviceApp({
+      answers: [URL_GIVEN, path.join(away, "dispatcher.env"), ""],
+      registered: { id: 4343, slug: "acme-service", name: "Acme Service", pem: SERVICE_PEM },
+    });
+
+    const changes = await run(surface);
+
+    const refused = changes.find((c) => c.file === settingsChange(path.join(away, "dispatcher.env")));
+    expect(refused?.action).toBe("kept");
+    expect(refused?.note).toContain("carried no webhook secret, so nothing was written");
+    expect(fs.readdirSync(away)).toEqual([]);
+    expect(stored).toEqual([]);
+    expect(JSON.stringify(changes)).not.toContain("service-key");
+  });
+
+  it("asks nothing it cannot be answered: without a terminal it registers nothing and names the terminal", async () => {
+    const { surface, manifests } = serviceApp({ answers: [undefined] });
+
+    const changes = await run(surface);
+
+    const change = changes.find((c) => c.file === APP_CHANGE);
+    expect(change?.action).toBe("kept");
+    expect(change?.note).toContain("init --service");
+    expect(manifests).toEqual([]);
   });
 });
 
@@ -4204,6 +4438,25 @@ describe("doctor names the failures that otherwise look like something else", ()
       const findings = rule(empty(), service({ labels: ["agent:implement", "agent:review", "agent:fix", "agent:update-branch", "agent:blocked"] }));
 
       expect(checks(findings)).toEqual(["note orchestrator", "note service App"]);
+    });
+
+    /**
+     * What `init --service` leaves (#562): the App's settings in files of the
+     * operator's and none in the repository's Actions secrets, which `doctor`
+     * does not ask for where the service serves the repository.
+     */
+    it("rules on a repository init --service set up without asking for its Actions secrets", async () => {
+      const root = empty();
+      const away = fs.mkdtempSync(path.join(os.tmpdir(), "agent-service-files-"));
+      roots.push(away);
+      const { surface, stored } = serviceApp({ answers: ["https://hooks.example.test/github", path.join(away, "dispatcher.env"), ""] });
+      await init({ dir: root, github: offline, labels: noLabels, app: surface, service: true });
+      expect(stored).toEqual([]);
+
+      const findings = rule(root, service({ secrets: [] }));
+
+      expect(findings.filter((finding) => finding.severity === "error")).toEqual([]);
+      expect(findings.filter((finding) => finding.check === "secrets")).toEqual([]);
     });
 
     it("says it cannot check whether the service's App is installed", () => {

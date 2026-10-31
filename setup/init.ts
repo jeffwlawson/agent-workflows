@@ -24,11 +24,14 @@ import {
   type PolicySurface,
 } from "./policies.js";
 import type { LabelSurface } from "./labels.js";
+import { DISPATCHER } from "../service/settings.js";
 import {
   appManifest,
   appSettingsUrl,
   GITHUB_WEB,
   installUrl,
+  serviceAppManifest,
+  WEBHOOK_PATH,
   type AppSurface,
   type RegisteredApp,
   type RepoOwner,
@@ -276,6 +279,11 @@ export interface InitOptions {
   readonly app: AppSurface;
   /** `--app`: create the App without asking, whatever identity the loop has now. */
   readonly createApp?: boolean;
+  /**
+   * `--service`: register a service-ready App for the dispatcher instead
+   * (#562), and write its settings to files rather than to Actions secrets.
+   */
+  readonly service?: boolean;
 }
 
 /** How the policy step names itself in the list of changes. */
@@ -502,7 +510,9 @@ export const init = async (options: InitOptions): Promise<readonly InitChange[]>
   changes.push(...convergeLabels(workflows, options.labels));
   // Last, because it is the one step that waits on a person in a browser:
   // everything that needs nobody is on disk and reported by then.
-  changes.push(...(await setUpApp(options.app, options.createApp === true)));
+  changes.push(
+    ...(options.service === true ? await setUpServiceApp(options.app, dir) : await setUpApp(options.app, options.createApp === true)),
+  );
   return changes;
 };
 
@@ -692,6 +702,161 @@ const storeAppSecrets = (
       `generate a new private key at ${appSettingsUrl(owner, registered.slug)} and set it as ${key}`,
     ),
   ];
+};
+
+/** How a file service mode writes names itself in the list of changes. */
+export const settingsChange = (file: string): string => `dispatcher settings ${file}`;
+export const keyChange = (file: string): string => `private key ${file}`;
+
+/** The dispatcher's settings service mode writes, from what the conversion answers. */
+const [APP_ID_SETTING, KEY_FILE_SETTING, WEBHOOK_SECRET_SETTING] = [
+  "GITHUB_APP_ID",
+  "GITHUB_APP_PRIVATE_KEY_FILE",
+  "GITHUB_WEBHOOK_SECRET",
+] as const satisfies readonly (keyof typeof DISPATCHER)[];
+
+/** Mode 600: the files hold the App's key and the webhook secret, for their owner alone. */
+const SECRET_MODE = 0o600;
+
+/**
+ * A path the operator names, resolved, or why it cannot be written: an
+ * existing file is refused, never overwritten, and so is one inside the
+ * checkout, where a commit would publish the key.
+ */
+const writablePath = (answer: string, dir: string, what: string): string | { readonly refused: string } => {
+  const full = path.resolve(answer);
+  if (fs.existsSync(full)) return { refused: `${full} already exists, and the ${what} is never written over; name a new file` };
+  const parent = path.dirname(full);
+  if (!fs.existsSync(parent) || !fs.statSync(parent).isDirectory()) {
+    return { refused: `${parent}, where the ${what} would go, is not a directory` };
+  }
+  const inside = path.relative(dir, full);
+  if (inside !== ".." && !inside.startsWith(`..${path.sep}`) && !path.isAbsolute(inside)) {
+    return { refused: `${full} is inside this checkout, where a commit would publish it; name a file outside it` };
+  }
+  return full;
+};
+
+/**
+ * Register a service-ready App (#562): the Actions loop's App with the
+ * service's permissions, the dispatcher's webhook and its events, through the
+ * same manifest flow. Its ID, key and webhook secret are the dispatcher's
+ * settings, so they go to files the operator names, each mode 600, and never
+ * to this repository's Actions secrets. Everything is asked, and every answer
+ * checked, before anything is registered: a refusal after it leaves an App on
+ * GitHub whose secret is shown nowhere again.
+ */
+const setUpServiceApp = async (app: AppSurface, dir: string): Promise<readonly InitChange[]> => {
+  const kept = (note: string): readonly InitChange[] => [{ file: APP_CHANGE, action: "kept", note }];
+  const noTerminal = `service mode asks for the webhook URL and where to write the dispatcher's settings, and there is no terminal to ask on; run \`init --service\` at one`;
+
+  const url = (await app.ask(`  The webhook URL GitHub is to deliver to, the dispatcher's webhook door, ending ${WEBHOOK_PATH}: `))?.trim();
+  if (url === undefined) return kept(noTerminal);
+  let parsed: URL | undefined;
+  try {
+    parsed = new URL(url);
+  } catch {
+    parsed = undefined;
+  }
+  if (parsed === undefined || !["https:", "http:"].includes(parsed.protocol) || !url.endsWith(WEBHOOK_PATH)) {
+    return kept(`the webhook URL ${JSON.stringify(url)} is not an http(s) URL ending ${WEBHOOK_PATH}, where the dispatcher's webhook door answers; no App was created`);
+  }
+
+  const settingsAnswer = (await app.ask(`  The dispatcher settings file to write, which must not exist yet: `))?.trim();
+  if (settingsAnswer === undefined) return kept(noTerminal);
+  if (settingsAnswer === "") return kept(`no dispatcher settings file was named; no App was created`);
+  const settings = writablePath(settingsAnswer, dir, "dispatcher settings file");
+  if (typeof settings !== "string") return kept(`${settings.refused}; no App was created`);
+
+  const keyDefault = path.join(path.dirname(settings), "app.pem");
+  const keyAnswer = (await app.ask(`  The private key file to write, which must not exist yet [${keyDefault}]: `))?.trim();
+  if (keyAnswer === undefined) return kept(noTerminal);
+  const key = writablePath(keyAnswer === "" ? keyDefault : keyAnswer, dir, "private key file");
+  if (typeof key !== "string") return kept(`${key.refused}; no App was created`);
+  if (key === settings) return kept(`the private key and the dispatcher settings cannot be the one file ${key}; no App was created`);
+
+  const owner = app.owner();
+  if (owner === undefined) {
+    return kept(`could not read which account owns this repository, which decides where GitHub creates the App; none was created`);
+  }
+
+  const registered = await app.register(owner, serviceAppManifest(owner.login, HOMEPAGE, url));
+  if (typeof registered === "string") return kept(`no App was created: ${registered}`);
+
+  const page = appSettingsUrl(owner, registered.slug);
+  const created: InitChange = {
+    file: `${APP_CHANGE} "${registered.name}"`,
+    action: "created",
+    note: `ID ${registered.id}, with its webhook at ${url}; install it on the repositories the service is to serve at ${installUrl(registered.slug)}`,
+  };
+  if (registered.webhookSecret === undefined) {
+    return [
+      created,
+      {
+        file: settingsChange(settings),
+        action: "kept",
+        note: `GitHub's answer carried no webhook secret, so nothing was written; set a webhook secret and generate a private key at ${page}, and write the dispatcher's settings by hand`,
+      },
+    ];
+  }
+
+  // `wx`: a file that appeared since the check is refused too, never truncated.
+  const write = (file: string, text: string): string | undefined => {
+    try {
+      fs.writeFileSync(file, text, { flag: "wx", mode: SECRET_MODE });
+      fs.chmodSync(file, SECRET_MODE);
+      return undefined;
+    } catch (error) {
+      return error instanceof Error ? error.message : String(error);
+    }
+  };
+  const keyRefused = write(key, registered.pem);
+  if (keyRefused !== undefined) {
+    return [
+      created,
+      {
+        file: keyChange(key),
+        action: "kept",
+        note: `it could not be written (${keyRefused}), and nor was the settings file; generate a private key and set a webhook secret at ${page}, and write the dispatcher's settings by hand`,
+      },
+    ];
+  }
+  const settingsRefused = write(
+    settings,
+    [
+      `# The dispatcher's settings for the GitHub App "${registered.name}", written by ${PACKAGE_NAME} init --service.`,
+      `${APP_ID_SETTING}=${registered.id}`,
+      `${KEY_FILE_SETTING}=${key}`,
+      `${WEBHOOK_SECRET_SETTING}=${registered.webhookSecret}`,
+      "",
+    ].join("\n"),
+  );
+  const written: readonly string[] = [APP_ID_SETTING, KEY_FILE_SETTING, WEBHOOK_SECRET_SETTING];
+  const rest = Object.entries(DISPATCHER).filter(([name]) => !written.includes(name));
+  const required = rest.filter(([, setting]) => setting.required).map(([name]) => name);
+  const optional = rest.filter(([, setting]) => !setting.required).map(([name]) => name);
+  const changes: InitChange[] = [
+    created,
+    { file: keyChange(key), action: "created", note: `mode 600, named by ${KEY_FILE_SETTING}` },
+    settingsRefused === undefined
+      ? {
+          file: settingsChange(settings),
+          action: "created",
+          note: `mode 600, holding ${APP_ID_SETTING}, ${KEY_FILE_SETTING} and ${WEBHOOK_SECRET_SETTING}`,
+        }
+      : {
+          file: settingsChange(settings),
+          action: "kept",
+          note: `it could not be written (${settingsRefused}); set a new webhook secret at ${page}, since this one is shown nowhere again, and write ${APP_ID_SETTING}=${registered.id}, ${KEY_FILE_SETTING}=${key} and ${WEBHOOK_SECRET_SETTING} by hand`,
+        },
+    {
+      file: "dispatcher's other settings",
+      action: "kept",
+      note: `left to you: ${required.join(" and ")} are required, and ${optional.join(", ")} have defaults; add them to the settings file (docs/deploying-the-service.md, The dispatcher)`,
+    },
+  ];
+  app.openInstall(installUrl(registered.slug));
+  return changes;
 };
 
 /** How a label names itself in the list of changes. */

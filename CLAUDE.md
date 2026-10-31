@@ -227,15 +227,16 @@ excluded from the build like `sync-version.ts`, holds a package's bundled tree t
 runtime entries, version for version, with no dev package: `tests/bundled-tree.test.ts` runs it on a
 pack and an install of that pack, and `publish.yml` runs it on the pack before publishing, on the
 release installed through `npm exec` after, and on the Release asset installed by its URL.
+`tests/bundled-tree.test.ts` also fails, naming the package, on a runtime dependency with an install
+script or an `os` or `cpu` field: bundling builds the tree once, on the publishing runner, so adding
+one is a decision to make on purpose.
 
 `publish.yml` packs **once** (#561), with `prepack`'s build, and that one file is what the check
 reads, what `npm publish` uploads, and what is attached, with its `.sha256`, to the tag's GitHub
 Release: the tokenless install, since GitHub Packages' npm registry wants a token even for a public
 package and a public repository's Release assets do not. The *already published* preflight gates
 the registry publish only. A re-run on a published tag fetches the published tarball rather than
-building another, and creates the Release or uploads an asset only where it is missing. `tests/bundled-tree.test.ts` also fails, naming the package, on a runtime
-dependency with an install script or an `os` or `cpu` field: bundling builds the tree once, on the
-publishing runner, so adding one is a decision to make on purpose.
+building another, and creates the Release or uploads an asset only where it is missing.
 
 The checks that made this a chore rather than a hazard are still the backstop, and are what a
 rewrite gone wrong lands on: `PIN` in `tests/workflows.test.ts` is derived from `package.json` and

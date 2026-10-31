@@ -7627,6 +7627,35 @@ describe("the runner package is published from a tag push", () => {
   });
 
   /**
+   * The job can write contents (#561), so the checkout leaves no token in
+   * `.git/config` for a later step, `npm ci`'s install scripts among them, to
+   * push with. The ancestor check's fetch is the one git call after it, and
+   * carries the token in its own environment only.
+   */
+  it("persists no checkout token, and hands the fetch its own", () => {
+    const steps = stepsOf(FILE);
+    const checkout = steps.find((s) => (s.uses ?? "").startsWith("actions/checkout@"));
+    const fetch = steps.find((s) => (s.run ?? "").includes("git fetch"));
+
+    expect(checkout?.with?.["persist-credentials"]).toBe(false);
+    expect(fetch?.env?.["GITHUB_TOKEN"]).toBe("${{ github.token }}");
+    expect(fetch?.run ?? "").toContain("GIT_CONFIG_VALUE_0=");
+    expect(fetch?.run ?? "").toContain("::add-mask::");
+  });
+
+  /**
+   * The registry install check only reads, so it is not behind the preflight: a
+   * run whose Release step failed after the publish is re-run with the version
+   * already published, and a gated check would then never run for it.
+   */
+  it("checks the registry install whether or not this run published", () => {
+    const check = stepsOf(FILE).find((s) => (s.run ?? "").includes("npm exec"));
+
+    expect(check).toBeDefined();
+    expect(check?.if).toBeUndefined();
+  });
+
+  /**
    * The two guards, in order and both present. They catch different mistakes: a
    * tag that names a version the package does not claim (unfindable once
    * published), and a tag that names a version the registry already has

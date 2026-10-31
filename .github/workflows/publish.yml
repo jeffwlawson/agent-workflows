@@ -52,9 +52,15 @@ jobs:
       # `fetch-depth: 0` for the ancestor check below: the default shallow clone
       # has no merge-base to compute against, and `--is-ancestor` on a truncated
       # history answers confidently and wrongly.
+      #
+      # `persist-credentials: false` because the job can write contents (#561):
+      # a token left in `.git/config` could push from any later step, `npm ci`'s
+      # install scripts among them. The one later step that talks to git, the
+      # fetch below, is handed the token for its own command only.
       - uses: actions/checkout@v7
         with:
           fetch-depth: 0
+          persist-credentials: false
 
       # The guard that makes tag-triggered publishing safe: a tag can be pushed
       # from any commit on any branch, so without this, publishing from code
@@ -68,9 +74,15 @@ jobs:
       - name: Require the tagged commit to be on the default branch
         env:
           DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+          GITHUB_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          git fetch --quiet origin "$DEFAULT_BRANCH"
+          auth=$(printf 'x-access-token:%s' "$GITHUB_TOKEN" | base64 -w0)
+          echo "::add-mask::${auth}"
+          GIT_CONFIG_COUNT=1 \
+          GIT_CONFIG_KEY_0="http.${GITHUB_SERVER_URL}/.extraheader" \
+          GIT_CONFIG_VALUE_0="AUTHORIZATION: basic ${auth}" \
+            git fetch --quiet origin "$DEFAULT_BRANCH"
           if ! git merge-base --is-ancestor "$GITHUB_SHA" "origin/${DEFAULT_BRANCH}"; then
             echo "::error::${GITHUB_SHA} is not reachable from origin/${DEFAULT_BRANCH}. Publishing from an unmerged commit would put code on the registry that never landed on the default branch. Merge first, then tag the merge commit."
             exit 1
@@ -254,9 +266,10 @@ jobs:
       # The package root is two levels above the `agent-workflows` binary's
       # target, `dist/cli.js`. The version is already published when this runs,
       # so red here means "installs of this release do not run its tested
-      # tree", not "this release did not ship".
+      # tree", not "this release did not ship". It only reads, so it runs
+      # whether or not this run published: behind the preflight, a run whose
+      # Release step failed after the publish would skip it on every re-run.
       - name: Check an install of the release runs its bundled dependencies
-        if: steps.preflight.outputs.already-published == 'false'
         env:
           NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           VERSION: ${{ steps.version.outputs.version }}

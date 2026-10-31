@@ -110,7 +110,7 @@ each. A row that is a **warning** instead — printed, exit 0 — says so where 
 | the time limits, `AGENT_TIMEOUT_MINUTES` and `AGENT_REVIEW_TIMEOUT_MINUTES`, are positive integers where they are set | §2c: the agent jobs fail before their first step, with no comment and the label left on; the review refuses to start |
 | on a **public** repository, an active Actions policy allows `pull_request_target` for every caller that runs on it; silent on a private or internal one, and a warning where the policies or the visibility could not be read | [On a public repository, `pull_request_target` stops running](#on-a-public-repository-pull_request_target-stops-running): from 2026-11-02 a label is added and no run starts |
 | how many releases each pin is behind | *Keeping the pins fresh* — a report, not a failure |
-| `AGENT_ORCHESTRATOR` is unset or `service`: any other value is an error, and a variable it could not read a warning, never a pass. With `service`, the checks in §2e replace every other row | §2e: a typo in the opt-in leaves Actions serving the repository and the service refusing it, with nothing saying why |
+| `AGENT_ORCHESTRATOR` is unset or `service`: any other value is an error, and a variable it could not read a warning, never a pass. With `service`, the checks in §2e replace every other row, a caller pinned before `v0.8.3` among them | §2e: a typo in the opt-in leaves Actions serving the repository and the service refusing it, with nothing saying why |
 
 The rows it cannot have are
 [A label set when the issue is *created* fires no `labeled` event](#a-label-set-when-the-issue-is-created-fires-no-labeled-event)
@@ -512,6 +512,12 @@ A repository chooses with one **repository variable**, set the way the model one
 
 The skip is in the reusables, so it reaches you through your pin, with no change to a caller. One
 orchestrator serves a repository, for every label (spec §4.2).
+
+**A service repository's callers must be pinned to `v0.8.3` or later**, the first release whose
+reusables carry the skip (#459). A caller pinned earlier calls a reusable with no skip, so it runs on
+Actions beside the service and both answer the same label. `doctor` reports such a caller as an
+error, naming its file and pin, and `init` moves the pin in your own text and touches nothing else. A
+caller pinned to a SHA cannot be ordered against a release, so `doctor` notes it for you to check.
 
 **Switching to the service.** Set the variable to `service` once the service is running and its
 GitHub App is installed on the repository. The callers can stay: each label still starts a caller

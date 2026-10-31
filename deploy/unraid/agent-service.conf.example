@@ -1,0 +1,49 @@
+# agent-service.conf: the settings of one deployment of the service on Unraid.
+#
+# Copy this file to agent-service.conf beside the scripts, on each machine they
+# run on (Unraid's /boot/config/agent-service/, and beside the box's copies),
+# and change what differs from the defaults. Every script reads it as shell
+# before its own defaults, so anything left out here keeps the default the
+# script names. agent-service.conf is git-ignored: it holds your network's
+# layout, not secrets. Secrets are typed at prompts or generated, never set here.
+
+# --- Unraid -------------------------------------------------------------------
+
+# The time zone the dispatcher's container logs in.
+#TZ_NAME=UTC
+
+# The box's network card, reserved for BOX_IP on agentnet. Only read when the VM
+# does not exist yet; install-unraid.sh makes one up and prints it when unset.
+#BOX_MAC=52:54:00:00:00:00
+
+# The dispatcher's appdata, and the user its container runs as (Unraid's
+# nobody:users).
+#APPDATA=/mnt/user/appdata/agent-dispatcher
+#CONTAINER_USER=99:100
+
+# The Funnel port GitHub's webhooks arrive on.
+#FUNNEL_PORT=10000
+
+# --- agentnet, both machines --------------------------------------------------
+
+# The private network between Unraid and the box: Unraid's address on it and
+# the box's reserved one. Any private /24 not otherwise in use works.
+#NET=agentnet
+#BRIDGE=virbr-agent
+#VM=agent-box
+#HOST_IP=192.168.250.1
+#BOX_IP=192.168.250.11
+
+# The doors: the dispatcher's webhook and token doors, the worker's job door.
+#WEBHOOK_PORT=8790
+#TOKEN_PORT=8791
+#JOBS_PORT=8787
+
+# --- The box ------------------------------------------------------------------
+
+# Node (from nodejs.org, linux-x64 only) and the agent's CLI the worker installs.
+#NODE_VERSION=24.21.0
+#CLAUDE_CODE_VERSION=2.1.290
+
+# tinyproxy's port on the box's loopback.
+#PROXY_PORT=3128

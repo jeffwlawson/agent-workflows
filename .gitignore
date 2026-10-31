@@ -5,3 +5,6 @@ dist/
 # Local agent scratch — noSandbox() runs write to the working tree.
 **/output/
 failure_reason.txt
+
+# A deployment's own settings for deploy/unraid/ (copy agent-service.conf.example).
+deploy/**/agent-service.conf

@@ -4,7 +4,7 @@ import * as path from "node:path";
 import { hostEnvironment, type InputValues } from "../shared/env.js";
 import { VERSION } from "../shared/manifest.js";
 import { sandboxRefusal } from "../shared/sandbox.js";
-import { createDispatcher, parseOwners, type DoorRequest, type DoorResponse } from "./dispatcher.js";
+import { appGaps, createDispatcher, parseOwners, type AppRecord, type DoorRequest, type DoorResponse } from "./dispatcher.js";
 import { liveAppGitHub } from "./github-app.js";
 import type { Job } from "./job.js";
 import type { DISPATCHER, WORKER } from "./settings.js";
@@ -100,12 +100,16 @@ export const serveDispatcher = async (
   // The App's owner, read once, here: the account whose installations are
   // served, beside the ones `EXTRA_OWNERS` lists. A dispatcher that cannot
   // read it does not start, rather than serving every account or none.
-  let owner: string;
+  let record: AppRecord;
   try {
-    owner = (await github.app()).owner;
+    record = await github.app();
   } catch (error) {
     throw new Error(`The App's owner could not be read off the App's own record: ${error instanceof Error ? error.message : String(error)}`);
   }
+  const owner = record.owner;
+  // What the App is granted and subscribed to, off the same record: a gap
+  // warns, by name, and the dispatcher starts regardless (#560).
+  for (const gap of appGaps(record)) log(`warning: ${gap}`);
   const owners = [owner, ...parseOwners(settings.EXTRA_OWNERS)];
 
   const dispatcher = createDispatcher({

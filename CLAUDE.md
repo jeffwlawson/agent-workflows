@@ -224,8 +224,15 @@ the registry's metadata sets `_hasShrinkwrap`, and GitHub Packages never sets it
 and was never read. The lockfile stays the one copy. `scripts/bundled-tree.ts`, run from source and
 excluded from the build like `sync-version.ts`, holds a package's bundled tree to the lockfile's
 runtime entries, version for version, with no dev package: `tests/bundled-tree.test.ts` runs it on a
-pack and an install of that pack, and `publish.yml` runs it on the pack before publishing and on the
-release installed through `npm exec` after. The same test fails, naming the package, on a runtime
+pack and an install of that pack, and `publish.yml` runs it on the pack before publishing, on the
+release installed through `npm exec` after, and on the Release asset installed by its URL.
+
+`publish.yml` packs **once** (#561), with `prepack`'s build, and that one file is what the check
+reads, what `npm publish` uploads, and what is attached, with its `.sha256`, to the tag's GitHub
+Release: the tokenless install, since GitHub Packages' npm registry wants a token even for a public
+package and a public repository's Release assets do not. The *already published* preflight gates
+the registry publish only. A re-run on a published tag fetches the published tarball rather than
+building another, and creates the Release or uploads an asset only where it is missing. The same test fails, naming the package, on a runtime
 dependency with an install script or an `os` or `cpu` field: bundling builds the tree once, on the
 publishing runner, so adding one is a decision to make on purpose.
 

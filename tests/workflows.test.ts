@@ -7541,8 +7541,89 @@ describe("the runner package is published from a tag push", () => {
     expect(doc().concurrency?.["cancel-in-progress"]).toBe(false);
   });
 
-  it("takes packages: write and nothing more than it spends", () => {
-    expect(jobOf(FILE).permissions).toEqual({ contents: "read", packages: "write" });
+  /**
+   * `contents: write` is for the Release (#561): creating it and uploading the
+   * tarball are both writes to the repository's contents. Nothing else in the
+   * job writes there.
+   */
+  it("takes packages: write and contents: write for the Release, and nothing more", () => {
+    expect(jobOf(FILE).permissions).toEqual({ contents: "write", packages: "write" });
+  });
+
+  /**
+   * One tarball (#561): the check, the publish and the Release all read the file
+   * the pack step made, so what the registry serves, what the Release offers and
+   * what was held to the lockfile are the same bytes. Before, the check packed
+   * with `--ignore-scripts` and `npm publish` packed again with the build.
+   */
+  it("packs once, and checks, publishes and attaches that one file", () => {
+    const steps = stepsOf(FILE);
+    const packs = steps.filter((s) => (s.run ?? "").includes("npm pack"));
+    const pack = steps.findIndex((s) => s.id === "pack");
+    const tarball = "${{ steps.pack.outputs.tarball }}";
+    const reader = (pattern: RegExp): number => steps.findIndex((s) => pattern.test(s.run ?? ""));
+    const check = reader(/bundled-tree\.ts "\$unpacked\//);
+    const publish = reader(/npm publish/);
+    const release = reader(/gh release upload/);
+
+    expect(packs).toHaveLength(1);
+    expect(packs[0]?.id).toBe("pack");
+    expect(packs[0]?.run ?? "").not.toContain("--ignore-scripts");
+    expect(packs[0]?.run ?? "").toContain('"tarball=');
+    for (const at of [check, publish, release]) {
+      expect(at).toBeGreaterThan(pack);
+      expect(steps[at]?.env?.["TARBALL"]).toBe(tarball);
+    }
+    expect(steps[publish]?.run ?? "").toContain('npm publish "$TARBALL"');
+    expect(steps[release]?.run ?? "").toContain('"$TARBALL"');
+    expect(steps[release]?.run ?? "").toContain('"${TARBALL}.sha256"');
+  });
+
+  /**
+   * A tag the registry already has still gets its Release: a run whose publish
+   * succeeded and whose Release step failed is re-run, and the re-run has to
+   * finish the job. So the pack, the check and the Release are not behind the
+   * preflight, and on that path the pack fetches the published file rather than
+   * building a second one. The Release step adds only what is missing.
+   */
+  it("attaches to the Release whether or not the version was already published", () => {
+    const steps = stepsOf(FILE);
+    const pack = steps.find((s) => s.id === "pack");
+    const release = steps.find((s) => (s.run ?? "").includes("gh release upload"));
+
+    expect(pack?.if).toBeUndefined();
+    expect(pack?.env?.["ALREADY_PUBLISHED"]).toBe("${{ steps.preflight.outputs.already-published }}");
+    expect(release?.if).toBeUndefined();
+    expect(release?.run ?? "").toContain("gh release view");
+    expect(release?.run ?? "").toContain("gh release create");
+  });
+
+  /**
+   * The Release steps name no repository or owner: the repository and the tag
+   * come from the run's own context, so the workflow reads the same in a fork.
+   */
+  it("names the Release's repository and tag from the run's context", () => {
+    const release = stepsOf(FILE).find((s) => (s.run ?? "").includes("gh release upload"));
+
+    expect(release?.env?.["GH_REPO"]).toBe("${{ github.repository }}");
+    expect(release?.env?.["TAG"]).toBe("${{ github.ref_name }}");
+    expect(release?.env?.["GH_TOKEN"]).toBe("${{ github.token }}");
+    expect(JSON.stringify(release)).not.toContain("jeffwlawson");
+  });
+
+  /**
+   * The tokenless install, checked as an adopter would run it: the asset's URL,
+   * with no registry credentials, held to the lockfile like the registry
+   * install, and the attached digest checked against the attached file.
+   */
+  it("installs the attached tarball with no registry credentials and checks its digest", () => {
+    const step = stepsOf(FILE).find((s) => (s.run ?? "").includes("releases/download"));
+
+    expect(step?.env?.["NODE_AUTH_TOKEN"]).toBe("");
+    expect(step?.env?.["NPM_CONFIG_USERCONFIG"]).toBeDefined();
+    expect(step?.run ?? "").toContain("sha256sum -c");
+    expect(step?.run ?? "").toContain("bundled-tree.ts");
+    expect(step?.run ?? "").toContain("${GITHUB_REPOSITORY}");
   });
 
   /**

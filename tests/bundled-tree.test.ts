@@ -152,8 +152,9 @@ describe("bundledTree", () => {
 /**
  * The real artefact. `--ignore-scripts` skips `prepack`'s build, which changes
  * `dist/` and nothing that is bundled. `publish.yml` runs the same comparison
- * against the pack it is about to publish, and against the published release
- * installed through `npm exec`.
+ * against the pack it is about to publish and attach to the Release, against
+ * the published release installed through `npm exec`, and against the attached
+ * tarball installed by its URL with no registry credentials (#561).
  */
 describe("a pack of this package", () => {
   let tarball = "";

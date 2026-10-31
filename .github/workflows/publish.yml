@@ -39,8 +39,13 @@ jobs:
     # *once required reviewers are configured in repo settings*, and nothing in a
     # workflow file can configure them — an environment with no protection rules
     # is inert, so adding one here would ship the appearance of a gate.
+    #
+    # `contents: write` is for the Release (#561): creating the `v<version>`
+    # Release and uploading the tarball to it are writes to the repository's
+    # contents, and nothing else in the job writes there. `packages: write` is
+    # the registry publish.
     permissions:
-      contents: read
+      contents: write
       packages: write
 
     steps:
@@ -112,6 +117,10 @@ jobs:
       # one catches a tag naming a version the registry already has. Re-pushing a
       # moved tag is the likely accident, and it should be a no-op rather than a
       # 409 from the registry surfacing as a red run nobody can act on.
+      #
+      # It gates the registry publish and nothing after the pack: a version the
+      # registry has may still lack its Release (a run whose publish succeeded and
+      # whose Release step failed), and the re-run is what attaches it.
       - name: Skip if already published
         id: preflight
         env:
@@ -120,34 +129,125 @@ jobs:
         run: |
           if npm view "@jeffwlawson/agent-workflows@${VERSION}" version >/dev/null 2>&1; then
             echo "already-published=true" >> "$GITHUB_OUTPUT"
-            echo "::notice::@jeffwlawson/agent-workflows@${VERSION} is already published; nothing to do."
+            echo "::notice::@jeffwlawson/agent-workflows@${VERSION} is already published; only its Release is checked."
           else
             echo "already-published=false" >> "$GITHUB_OUTPUT"
           fi
+
+      # One tarball (#561). The registry, the Release and the bundled-tree check
+      # below all read the file this step makes, so what each serves is the same
+      # bytes the check held to the lockfile. A new version is packed here, where
+      # `prepack` runs the build, so it cannot ship a stale `dist/`. A version the
+      # registry already has is fetched from it instead: a re-run attaching a
+      # missing Release asset attaches the file that was published, never a
+      # second build of it.
+      - name: Pack the release
+        id: pack
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          ALREADY_PUBLISHED: ${{ steps.preflight.outputs.already-published }}
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          set -euo pipefail
+          pack="${RUNNER_TEMP}/pack"
+          mkdir -p "$pack"
+          if [ "$ALREADY_PUBLISHED" = "true" ]; then
+            name=$(node -p "require('./package.json').name")
+            npm pack "${name}@${VERSION}" --pack-destination "$pack" >/dev/null
+          else
+            npm pack --pack-destination "$pack" >/dev/null
+          fi
+          shopt -s nullglob
+          tarballs=("$pack"/*.tgz)
+          if [ "${#tarballs[@]}" -ne 1 ]; then
+            echo "::error::Expected one tarball in ${pack}, found ${#tarballs[@]}."
+            exit 1
+          fi
+          tarball="${tarballs[0]}"
+          (cd "$pack" && sha256sum "$(basename "$tarball")" > "$(basename "$tarball").sha256")
+          echo "tarball=${tarball}" >> "$GITHUB_OUTPUT"
 
       # The release ships its runtime dependencies inside it (#430), as
       # `bundleDependencies`, and npm installs those from the tarball whatever the
       # registry's metadata says. (#414 shipped a shrinkwrap instead, and npm reads
       # one only where the registry sets `_hasShrinkwrap`, which GitHub Packages
-      # never does.) `npm pack` bundles whatever `node_modules` holds, so this
-      # packs from the tree `npm ci` built and holds it to the lockfile before
-      # anything is published: red here means nothing shipped.
+      # never does.) `npm pack` bundles whatever `node_modules` holds, so the pack
+      # above came from the tree `npm ci` built, and this holds it to the lockfile
+      # before anything is published or attached: red here means nothing shipped.
       - name: Check the bundled dependencies match the lockfile
-        if: steps.preflight.outputs.already-published == 'false'
+        env:
+          TARBALL: ${{ steps.pack.outputs.tarball }}
         run: |
           set -euo pipefail
-          pack="${RUNNER_TEMP}/pack"
-          mkdir -p "$pack"
-          npm pack --ignore-scripts --pack-destination "$pack" >/dev/null
-          tar -xzf "$pack"/*.tgz -C "$pack"
-          node scripts/bundled-tree.ts "$pack/package"
+          unpacked="${RUNNER_TEMP}/unpacked"
+          mkdir -p "$unpacked"
+          tar -xzf "$TARBALL" -C "$unpacked"
+          node scripts/bundled-tree.ts "$unpacked/package"
 
-      # `prepack` runs the build, so this cannot ship a stale `dist/`.
+      # Publishes the checked file as it is. `npm publish` of a tarball runs no
+      # lifecycle script and packs nothing, so this is the file the Release gets.
       - name: Publish
         if: steps.preflight.outputs.already-published == 'false'
         env:
           NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: npm publish
+          TARBALL: ${{ steps.pack.outputs.tarball }}
+        run: npm publish "$TARBALL"
+
+      # The tokenless route (#561): GitHub Packages' npm registry wants a token
+      # even for a public package, and a public repository's Release assets do
+      # not, so `npm install <asset URL>` needs none. Creates the tag's Release if
+      # it is absent and uploads the tarball and its `.sha256` only where the
+      # Release lacks them, so a re-run where both exist changes nothing and
+      # never uploads a second copy. The repository and the tag are the run's
+      # own, named by nothing here.
+      - name: Attach the tarball to the Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          TAG: ${{ github.ref_name }}
+          TARBALL: ${{ steps.pack.outputs.tarball }}
+        run: |
+          set -euo pipefail
+          if ! gh release view "$TAG" >/dev/null 2>&1; then
+            gh release create "$TAG" --verify-tag --title "$TAG" \
+              --notes "Install without a registry token: npm install the tarball attached below, by its URL. Check it against the .sha256 beside it first."
+          fi
+          attached=$(gh release view "$TAG" --json assets --jq '.assets[].name')
+          for file in "$TARBALL" "${TARBALL}.sha256"; do
+            name=$(basename "$file")
+            if grep -qxF "$name" <<< "$attached"; then
+              echo "${name} is already attached to ${TAG}."
+            else
+              gh release upload "$TAG" "$file"
+            fi
+          done
+
+      # The tokenless install, as the deployment guide gives it: the asset's URL,
+      # with every registry credential the job holds taken away. The digest is
+      # checked against the attached file, and the installed tree is held to the
+      # lockfile the same way the registry install is below.
+      - name: Check a tokenless install of the attached tarball
+        env:
+          NODE_AUTH_TOKEN: ""
+          NPM_CONFIG_USERCONFIG: ${{ runner.temp }}/no-credentials.npmrc
+          TAG: ${{ github.ref_name }}
+          TARBALL: ${{ steps.pack.outputs.tarball }}
+        run: |
+          set -euo pipefail
+          checker="${GITHUB_WORKSPACE}/scripts/bundled-tree.ts"
+          : > "$NPM_CONFIG_USERCONFIG"
+          name=$(basename "$TARBALL")
+          url="https://github.com/${GITHUB_REPOSITORY}/releases/download/${TAG}/${name}"
+          download="${RUNNER_TEMP}/download"
+          mkdir -p "$download"
+          cd "$download"
+          curl -fsSL -o "$name" "$url"
+          curl -fsSL -o "${name}.sha256" "${url}.sha256"
+          sha256sum -c "${name}.sha256"
+          prefix="${RUNNER_TEMP}/tokenless"
+          npm install --prefix "$prefix" "$url"
+          package=$(node -p "require('${GITHUB_WORKSPACE}/package.json').name")
+          node "$checker" "${prefix}/node_modules/${package}"
 
       # The same comparison against what a run installs: the release, from the
       # registry, through `npm exec` in the pin form the reusable workflows use.

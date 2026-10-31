@@ -600,12 +600,18 @@ export const planFollowUps = (input: FilingInput, accounts: LoopAccounts): Filin
  * edited one is skipped and named, because carrying it would launder the edit
  * into a body the filing end then trusts; so is one this version cannot read.
  * Oldest first, as the reviews are listed.
+ *
+ * An entry any of them names as resolved (#495) is carried from none of them:
+ * the round that ruled it resolved left it out of its own list, and the older
+ * reviews still listing it are why the ruling has to be remembered. Those ids
+ * come back as `resolved`, for this round's payload to carry on.
  */
 export const earlierFollowUps = (
   reviews: readonly FilingReview[],
   accounts: LoopAccounts,
-): { readonly carried: EarlierFollowUps[]; readonly skipped: string[] } => {
-  const carried: EarlierFollowUps[] = [];
+): { readonly carried: EarlierFollowUps[]; readonly resolved: string[]; readonly skipped: string[] } => {
+  const read: EarlierFollowUps[] = [];
+  const resolved = new Set<string>();
   const skipped: string[] = [];
   for (const review of reviews) {
     if (!isWorkflowBot(review.author, accounts) || !hasFollowUpsBlock(review.body)) continue;
@@ -616,10 +622,13 @@ export const earlierFollowUps = (
     try {
       const block = parseFollowUpsBlock(review.body);
       if (block === undefined) continue;
-      carried.push({ moved: block.followUps.slice(0, block.moved), rest: block.followUps.slice(block.moved) });
+      read.push({ moved: block.followUps.slice(0, block.moved), rest: block.followUps.slice(block.moved) });
+      for (const id of block.resolved) resolved.add(id);
     } catch (error) {
       skipped.push(`${review.url} (${error instanceof Error ? error.message : String(error)})`);
     }
   }
-  return { carried, skipped };
+  const open = (entry: FollowUp): boolean => entry.id === undefined || !resolved.has(entry.id);
+  const carried = read.map((earlier) => ({ moved: earlier.moved.filter(open), rest: earlier.rest.filter(open) }));
+  return { carried, resolved: [...resolved], skipped };
 };

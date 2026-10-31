@@ -417,8 +417,11 @@ the findings and cannot file them, and the workflow holding `issues: write` deci
 with a pure function (`docs/parity.md` §10). On a PRD chain it fires once, at the PRD PR's merge, since nothing
 merges into the PRD branch through a pull request any more (#247). That PR's newest review carries
 forward, de-duplicated by the id the workflow gave each entry, every follow-up an earlier round on
-it recorded, because each round there is scoped to one slice and none restates another's; and the
-cap is **three per landed slice**, recorded in the payload and re-applied by the filing end. A
+it recorded, because each round there is scoped to one slice and none restates another's. The
+review rules on each carried entry, still open or resolved at the head it reviewed (#495): one
+ruled resolved is dropped, named with its reason under *How this was checked*, and its id goes
+into the payload so no later round carries it back from an older review; one ruled open, not ruled
+on, or from before ids, stays. And the cap is **three per landed slice**, recorded in the payload and re-applied by the filing end. A
 regular pull request is one slice, so its cap stays three and its review still restates its list
 every round.
 

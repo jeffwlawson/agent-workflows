@@ -153,7 +153,8 @@ git push --follow-tags
 ```
 
 `v*` on a commit reachable from `main` triggers `publish.yml`. It refuses a tag on an unmerged
-commit, and no-ops if the version is already on the registry.
+commit, and on a version already on the registry skips the publish but still attaches the
+release's tarball to its GitHub Release where that is missing.
 
 **That first command is the whole release.** The version appears in twelve files and `npm
 version` bumps two of them; `scripts/sync-version.ts` writes the other ten — the `npm exec`
@@ -232,7 +233,7 @@ reads, what `npm publish` uploads, and what is attached, with its `.sha256`, to 
 Release: the tokenless install, since GitHub Packages' npm registry wants a token even for a public
 package and a public repository's Release assets do not. The *already published* preflight gates
 the registry publish only. A re-run on a published tag fetches the published tarball rather than
-building another, and creates the Release or uploads an asset only where it is missing. The same test fails, naming the package, on a runtime
+building another, and creates the Release or uploads an asset only where it is missing. `tests/bundled-tree.test.ts` also fails, naming the package, on a runtime
 dependency with an install script or an `os` or `cpu` field: bundling builds the tree once, on the
 publishing runner, so adding one is a decision to make on purpose.
 

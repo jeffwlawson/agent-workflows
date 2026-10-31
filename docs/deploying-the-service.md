@@ -506,10 +506,11 @@ Inside it:
   box's services on `lo`, the job door among them, are out of the agent's reach whatever this rule
   says. The repository's setup has the same network (#537), so for setup too it is defence in
   depth. What it still limits on its own is the worker's own traffic;
-- the package installed once, as root, into `/opt/agent-workflows`, by the tokenless install from
-  the release's GitHub Release (*Installing the package*, above), so the worker never reaches the
-  registry itself and the box holds no registry token: an upgrade is the same install at a new
-  version, then a restart;
+- the package installed once, as root, into `/opt/agent-workflows`, by the registry route
+  (*Installing the package*, above), so the worker never reaches the registry itself and the box
+  keeps no registry token: the install asks for one, uses it and deletes it. An upgrade is the
+  same install at a new version, then a restart. The tokenless install would do without the
+  token, but this box does not use it yet;
 - the worker as a systemd unit running that install (`node
   /opt/agent-workflows/node_modules/@jeffwlawson/agent-workflows/dist/cli.js worker`) as the
   worker's user, after tinyproxy, its settings in an `EnvironmentFile` only root can read,

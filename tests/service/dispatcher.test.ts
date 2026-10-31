@@ -159,7 +159,7 @@ describe("the webhook door", () => {
 
   it.each<[string, (s: ReturnType<typeof setup>) => unknown, RegExp]>([
     ["a label the service does not answer", () => labelled({ label: "agent:blocked" }), /`agent:blocked` is not a label this release's service answers/],
-    ["an event that is neither a pull request's nor an issue's", () => labelled(), /not a pull request's or an issue's/],
+    ["an event that is neither a pull request's nor an issue's", () => labelled(), /neither a pull request's nor an issue's event/],
     [
       "a repository the App is not installed on",
       (s) => {

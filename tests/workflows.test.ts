@@ -4899,7 +4899,8 @@ describe("agent-implement-prd's catch-up is `implement-prd:catch-up`, after the 
 /**
  * Implement's agent job (#491): one early install, before *Install
  * dependencies*, and its two shell steps around the agent become
- * `implement:prepare` and `implement:bundle`, run from it with no token, and
+ * `implement:prepare`, run from it with the job's read token (#270), and
+ * `implement:bundle`, run from it with no token, and
  * the runner runs the install's binary by its path. What each command does
  * is held in `tests/implement/prepare.test.ts` and
  * `tests/implement/bundle.test.ts`; what is held here is what the YAML owns:

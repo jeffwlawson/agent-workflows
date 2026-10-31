@@ -109,7 +109,7 @@ export const conclude = async (inputs: Inputs, io: Io): Promise<void> => {
   });
   const saved =
     ending.kind === "stopped" && state?.pushed !== true
-      ? await rescueCommits(inputs, io, loop, bundled["branch.bundle"] !== undefined)
+      ? await rescueCommits(inputs, io, loop, bundled["branch.bundle"] !== undefined, bundled["failure_reason.txt"] !== undefined)
       : ({ kind: "none" } as const);
   const retry = retryOf(ending.kind === "undecided", state?.pr, saved, inputs.RESCUE_BRANCH);
   await tolerated(`Could not post the failure comment on #${issue}.`, () => workflow.comment(issue, failureComment(inputs, reason, retry)));
@@ -210,8 +210,11 @@ const readEach = <F extends DirectoryFiles, const P extends FileParsers<F>>(
 /** A file of a directory read on its own, by another call. */
 const SKIPPED: Parser<undefined> = () => undefined;
 
-/** What became of a stopped run's commits. */
-type Saved = { readonly kind: "none" } | { readonly kind: "rescued" } | { readonly kind: "no token" };
+/**
+ * What became of a stopped run's commits: none to save, saved, or not saved,
+ * with `why` the clause the failure comment gives for it.
+ */
+type Saved = { readonly kind: "none" } | { readonly kind: "rescued" } | { readonly kind: "unsaved"; readonly why: string };
 
 /**
  * **A stopped run's commits, kept on a side branch** (#270), as fix and
@@ -223,8 +226,14 @@ type Saved = { readonly kind: "none" } | { readonly kind: "rescued" } | { readon
  *
  * Only where nothing was pushed to `BRANCH`, which the caller checks, and
  * where there is a bundle: none is a run with no commits ahead of the base it
- * started from. The bundle is checked as `implement:publish` checks it, and
- * one that fails a check is not rescued.
+ * started from, unless `implement:bundle` failed or the hand-over could not be
+ * fetched, when what the run made is unknown and said to be unsaved. The
+ * bundle is checked as `implement:publish` checks it, and one that fails a
+ * check is not rescued.
+ *
+ * **Every way the commits go unsaved is said in the comment**, with why
+ * (#270): a retry that read as though there were none would start over
+ * without them, and nobody would look for them in the log.
  *
  * Under a lease on the rescue as it is read here: a run that stops again
  * overwrites the earlier rescue, which it started from and so holds all of,
@@ -232,25 +241,33 @@ type Saved = { readonly kind: "none" } | { readonly kind: "rescued" } | { readon
  * token, as publish pushes, since the agent's commits may touch a workflow
  * file; a mint that failed leaves none to push with, which the comment says.
  */
-const rescueCommits = async (inputs: Inputs, io: Io, loop: Writer, bundled: boolean): Promise<Saved> => {
+const rescueCommits = async (inputs: Inputs, io: Io, loop: Writer, bundled: boolean, bundleFailed: boolean): Promise<Saved> => {
+  const rescue = inputs.RESCUE_BRANCH;
   if (!bundled) {
+    if (bundleFailed) {
+      console.log(`::warning::The agent's commits could not be bundled, so none were saved on ${rescue}.`);
+      return { kind: "unsaved", why: UNBUNDLED };
+    }
+    if (inputs.DOWNLOAD_OUTCOME === "failure") {
+      console.log(`::warning::What the agent's job handed over could not be fetched, so no commits were saved on ${rescue}.`);
+      return { kind: "unsaved", why: UNFETCHED };
+    }
     console.log("No commits ahead of the base this run started from, so there is nothing to rescue.");
     return { kind: "none" };
   }
-  const rescue = inputs.RESCUE_BRANCH;
   // The token first: with none there is nothing to push with whatever the
   // bundle holds, and a check that failed for another reason would hide that
   // the commits went unsaved.
   if (inputs.LOOP_TOKEN === "" || inputs.MINT_OUTCOME !== "success") {
     console.log(`::warning::The loop's token was not minted, so the agent's commits were not saved on ${rescue}.`);
-    return { kind: "no token" };
+    return { kind: "unsaved", why: NO_TOKEN };
   }
   let tip: string;
   try {
     tip = await checkBundle(io.git, path.join(inputs.BUNDLE_DIR, "branch.bundle"), inputs.BRANCH, inputs.BASE_SHA, "rescued", `\`${inputs.BASE_REF}\``);
   } catch (error) {
     console.log(`::warning::${describe(error)}`);
-    return { kind: "none" };
+    return { kind: "unsaved", why: UNCHECKED(inputs.BASE_REF) };
   }
 
   let lease: Lease;
@@ -259,7 +276,7 @@ const rescueCommits = async (inputs: Inputs, io: Io, loop: Writer, bundled: bool
   } catch (error) {
     if (!(error instanceof GitHubError && error.status === 404)) {
       console.log(`::warning::Could not read ${rescue}, so the agent's commits were not saved there: ${describe(error)}`);
-      return { kind: "none" };
+      return { kind: "unsaved", why: UNREAD };
     }
     lease = { absent: true };
   }
@@ -268,11 +285,19 @@ const rescueCommits = async (inputs: Inputs, io: Io, loop: Writer, bundled: bool
   } catch (error) {
     if (!(error instanceof WriteFailed)) throw error;
     console.log(`::warning::${inWriteLog(`Could not push the agent's commits to ${rescue}, so nothing was rescued.`)}`);
-    return { kind: "none" };
+    return { kind: "unsaved", why: UNPUSHED };
   }
   console.log(`Rescued the agent's commits, up to ${tip}, to ${rescue}.`);
   return { kind: "rescued" };
 };
+
+/** Why a stopped run's commits went unsaved, each as the comment says it after "were not saved on `<rescue>`:". */
+const NO_TOKEN = "the loop's token was not minted, so there was nothing to push them with.";
+const UNBUNDLED = "the agent's job could not bundle them, and the workflow run's log says why.";
+const UNFETCHED = "what the agent's job handed over could not be fetched, so there were none to push.";
+const UNCHECKED = (base: string): string => `they could not be checked against \`${base}\` before the push, and the workflow run's log says why.`;
+const UNREAD = "GitHub would not say whether the branch already holds commits, so pushing could have overwritten them.";
+const UNPUSHED = "GitHub refused the push, and the workflow run's log says why.";
 
 /**
  * What to do next. The label comes off at the end of a decided run since
@@ -283,8 +308,8 @@ const rescueCommits = async (inputs: Inputs, io: Io, loop: Writer, bundled: bool
  * way on is that pull request's review.
  *
  * A rescue is named whatever else the retry says, and is the retry where
- * nothing else was: adding the label resumes from it (#270). Where the loop's
- * token was not minted, the comment says the commits were not saved, and why.
+ * nothing else was: adding the label resumes from it (#270). Where commits
+ * went unsaved, for whatever reason, the comment says so, and why.
  */
 const retryOf = (undecided: boolean, pr: number | undefined, saved: Saved, rescue: string): string => {
   const plain = `To try again, add \`${IMPLEMENT_LABEL}\`.`;
@@ -299,9 +324,7 @@ const retryOf = (undecided: boolean, pr: number | undefined, saved: Saved, rescu
       ? `Its commits so far are saved on \`${rescue}\`. To resume from them, add \`${IMPLEMENT_LABEL}\`.`
       : `${retry} Its commits so far are saved on \`${rescue}\`, and adding \`${IMPLEMENT_LABEL}\` resumes from them.`;
   }
-  if (saved.kind === "no token") {
-    return `${retry} Its commits were not saved on \`${rescue}\`: the loop's token was not minted, so there was nothing to push them with.`;
-  }
+  if (saved.kind === "unsaved") return `${retry} Its commits were not saved on \`${rescue}\`: ${saved.why}`;
   return retry;
 };
 

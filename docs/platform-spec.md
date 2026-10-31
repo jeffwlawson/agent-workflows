@@ -1016,9 +1016,10 @@ orchestrator ran before it, and it works out the ending from them. Each is one o
 being none, so a retry that stops again replaces the rescue it started from and holds everything it
 held. Never `BRANCH`, no pull request, no review and no label. No bundle is no commits ahead of
 `BASE_SHA`, and nothing is pushed. The bundle is checked in `CHECKOUT` as `implement:publish`
-checks it, against `BRANCH` and `BASE_SHA`, and one that fails a check, a rescue's tip that cannot
-be read, or a push that fails, are each a warning and rescue nothing. An empty `LOOP_TOKEN`, or a
-mint that did not succeed, rescues nothing, and the comment says so.
+checks it, against `BRANCH` and `BASE_SHA`. An empty `LOOP_TOKEN` or a mint that did not succeed,
+a bundle that fails a check, a rescue's tip that cannot be read, a push that fails, and, with no
+bundle, a `failure_reason.txt` in `BUNDLE_DIR` or a `DOWNLOAD_OUTCOME` of `failure`, each rescue
+nothing, with a warning, and the comment says the commits were not saved, and why.
 - **A gate that did not decide** (`REFUSED` is empty): the same comment and `agent:blocked`, and
   `agent:implement` is **left on**: that run may have been the event `implement-prd` answers, which
   holds the label while it works.
@@ -1036,9 +1037,13 @@ adding a label already there fires nothing; and `` To try again, add `agent:impl
 otherwise. Where it rescued the commits, the plain retry is `` Its commits so far are saved on
 `<RESCUE_BRANCH>`. To resume from them, add `agent:implement`. ``, and any other is followed by
 `` Its commits so far are saved on `<RESCUE_BRANCH>`, and adding `agent:implement` resumes from
-them. ``; where the loop's token was not minted, the retry is followed by `` Its commits were not
-saved on `<RESCUE_BRANCH>`: the loop's token was not minted, so there was nothing to push them
-with. ``
+them. ``; where they went unsaved, the retry is followed by `` Its commits were not saved on
+`<RESCUE_BRANCH>`: `` and why: `` the loop's token was not minted, so there was nothing to push
+them with. ``, `` they could not be checked against `<BASE_REF>` before the push, and the workflow
+run's log says why. ``, `` GitHub would not say whether the branch already holds commits, so
+pushing could have overwritten them. ``, `` GitHub refused the push, and the workflow run's log
+says why. ``, `` the agent's job could not bundle them, and the workflow run's log says why. `` or
+`` what the agent's job handed over could not be fetched, so there were none to push. ``
 
 Each directory is read on its own, so a file that does not read is a warning and is read as not
 written, and costs the comment no reason another producer gave; the runner's two files are read

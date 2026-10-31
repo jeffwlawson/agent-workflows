@@ -13,7 +13,8 @@
 #TZ_NAME=UTC
 
 # The box's network card, reserved for BOX_IP on agentnet. Only read when the VM
-# does not exist yet; install-unraid.sh makes one up and prints it when unset.
+# does not exist yet, and then it replaces any card already reserved. Unset,
+# install-unraid.sh keeps the card already reserved, or makes one up, and prints it.
 #BOX_MAC=52:54:00:00:00:00
 
 # The dispatcher's appdata, and the user its container runs as (Unraid's

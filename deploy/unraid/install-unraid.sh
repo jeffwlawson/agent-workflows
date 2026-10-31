@@ -53,8 +53,9 @@ VM=${VM:-agent-box}
 HOST_IP=${HOST_IP:-192.168.250.1}
 BOX_IP=${BOX_IP:-192.168.250.11}
 # The card address reserved for the box when there is no VM yet to read one
-# from: give the VM this MAC in the VM form. Unset, one is made up at random and
-# printed; put it in agent-service.conf so a second run reserves the same one.
+# from: give the VM this MAC in the VM form. Set, it replaces any card agentnet
+# already reserves BOX_IP for. Unset, that card is kept, or where there is none
+# one is made up at random and printed; the REMEMBER line names the one reserved.
 BOX_MAC=${BOX_MAC:-}
 WEBHOOK_PORT=${WEBHOOK_PORT:-8790}
 TOKEN_PORT=${TOKEN_PORT:-8791}
@@ -128,9 +129,25 @@ if virsh dominfo "$VM" >/dev/null 2>&1; then
   echo "  found      $VM's card on $NET: $mac"
 else
   vm_card=
-  mac=${BOX_MAC:-$(printf '52:54:00:%02x:%02x:%02x' $((RANDOM % 256)) $((RANDOM % 256)) $((RANDOM % 256)))}
-  [ -n "$BOX_MAC" ] || echo "  made up    MAC $mac: give the VM this MAC, and set BOX_MAC=$mac in agent-service.conf"
-  echo "  no VM yet  reserving $BOX_IP for the card the VM will have (its MAC follows)"
+  echo "  no VM yet  reserving $BOX_IP for the card the VM will have"
+  # The card an earlier run already reserved $BOX_IP for, so a second run names
+  # that one rather than making up another.
+  held=
+  if virsh net-info "$NET" >/dev/null 2>&1; then
+    held=$(virsh net-dumpxml "$NET" | grep "<host " | grep "ip='$BOX_IP'" | sed -n "s/.*mac='\([^']*\)'.*/\1/p" | head -n1 || true)
+  fi
+  if [ -n "$BOX_MAC" ]; then
+    mac=$BOX_MAC
+    if [ -n "$held" ] && [ "$held" != "$mac" ]; then
+      echo "  replacing  $NET's reservation of $BOX_IP for $held with BOX_MAC, $mac"
+    fi
+  elif [ -n "$held" ]; then
+    mac=$held
+    echo "  found      $NET already reserves $BOX_IP for $mac"
+  else
+    mac=$(printf '52:54:00:%02x:%02x:%02x' $((RANDOM % 256)) $((RANDOM % 256)) $((RANDOM % 256)))
+    echo "  made up    MAC $mac: set BOX_MAC=$mac in agent-service.conf to keep it"
+  fi
 fi
 if ! virsh net-info "$NET" >/dev/null 2>&1; then
   xml=$(mktemp)
@@ -159,21 +176,15 @@ hosts=$(virsh net-dumpxml "$NET" | grep "<host " | sed 's/^[[:space:]]*//' || tr
 if grep -q "mac='$mac'.*ip='$BOX_IP'" <<<"$hosts"; then
   echo "  unchanged  $NET reserves $BOX_IP for $mac"
 else
-  holder=$(grep "ip='$BOX_IP'" <<<"$hosts" | head -n1 || true)
-  if [ -z "$vm_card" ] && [ -n "$holder" ]; then
-    # No VM yet, and .11 already kept for a card: that is the card to give it.
-    mac=$(sed -n "s/.*mac='\([^']*\)'.*/\1/p" <<<"$holder")
-    echo "  unchanged  $NET reserves $BOX_IP for $mac"
-  else
-    # The VM's card wins: drop whatever holds .11 or holds this card elsewhere.
-    while IFS= read -r line; do
-      [ -n "$line" ] || continue
-      virsh net-update "$NET" delete ip-dhcp-host "$line" --live --config >/dev/null
-      echo "  removed    $NET's $line"
-    done < <(grep -e "ip='$BOX_IP'" -e "mac='$mac'" <<<"$hosts" || true)
-    virsh net-update "$NET" add ip-dhcp-host "<host mac='$mac' name='$VM' ip='$BOX_IP'/>" --live --config >/dev/null
-    echo "  added      $NET reserves $BOX_IP for $mac"
-  fi
+  # The card chosen above wins (the VM's, BOX_MAC, or a made-up one where
+  # nothing held $BOX_IP): drop whatever holds $BOX_IP or holds this card elsewhere.
+  while IFS= read -r line; do
+    [ -n "$line" ] || continue
+    virsh net-update "$NET" delete ip-dhcp-host "$line" --live --config >/dev/null
+    echo "  removed    $NET's $line"
+  done < <(grep -e "ip='$BOX_IP'" -e "mac='$mac'" <<<"$hosts" || true)
+  virsh net-update "$NET" add ip-dhcp-host "<host mac='$mac' name='$VM' ip='$BOX_IP'/>" --live --config >/dev/null
+  echo "  added      $NET reserves $BOX_IP for $mac"
 fi
 [ -n "$vm_card" ] || echo "  REMEMBER   give the VM the MAC $mac in the VM form, so it gets $BOX_IP"
 

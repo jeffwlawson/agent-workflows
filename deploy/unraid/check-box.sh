@@ -23,9 +23,14 @@ if [ -f "$conf" ]; then . "$conf"; fi
 WORKER_USER=${WORKER_USER:-worker}
 ENV_FILE=${ENV_FILE:-/etc/agent-worker/worker.env}
 WORK_DIR=${WORK_DIR:-/var/lib/agent-worker}
-PKG_JSON=${PKG_JSON:-/opt/agent-workflows/node_modules/@jeffwlawson/agent-workflows/package.json}
+# Derived from the same settings install-box.sh reads, so one changed in
+# agent-service.conf moves the check with the install.
+PREFIX=${PREFIX:-/opt/agent-workflows}
+PKG_JSON=${PKG_JSON:-$PREFIX/node_modules/@jeffwlawson/agent-workflows/package.json}
+UNIT=${UNIT:-agent-worker}
 NODE=${NODE:-/usr/local/bin/node}
-PROXY=${PROXY:-http://127.0.0.1:3128}
+PROXY_PORT=${PROXY_PORT:-3128}
+PROXY=${PROXY:-http://127.0.0.1:$PROXY_PORT}
 TINYPROXY_CONF=${TINYPROXY_CONF:-/etc/tinyproxy/tinyproxy.conf}
 HOST_IP=${HOST_IP:-192.168.250.1}
 BOX_IP=${BOX_IP:-192.168.250.11}
@@ -136,7 +141,7 @@ fi
 section "The worker"
 installed=$(grep -m1 '"version"' "$PKG_JSON" 2>/dev/null | sed 's/.*"version": *"\([^"]*\)".*/\1/')
 # This run of the worker's log alone: what it said since systemd last started it.
-run_log() { journalctl --no-pager -o cat "_SYSTEMD_INVOCATION_ID=$(systemctl show -p InvocationID --value agent-worker)" 2>/dev/null; }
+run_log() { journalctl --no-pager -o cat "_SYSTEMD_INVOCATION_ID=$(systemctl show -p InvocationID --value "$UNIT")" 2>/dev/null; }
 running_version=$(run_log | sed -n 's/.*worker \([0-9][0-9.]*\) listening.*/\1/p' | tail -n1)
 if [ -z "$installed" ]; then
   fail "no package installed at $PKG_JSON"
@@ -146,10 +151,10 @@ else
   pass "installed and running: $installed"
 fi
 echo "  INFO  worker version: ${running_version:-unknown} (check-unraid.sh prints the dispatcher's: they must match)"
-if systemctl is-enabled --quiet agent-worker && systemctl is-active --quiet agent-worker; then
-  pass "agent-worker is enabled and active"
+if systemctl is-enabled --quiet "$UNIT" && systemctl is-active --quiet "$UNIT"; then
+  pass "$UNIT is enabled and active"
 else
-  fail "agent-worker is $(systemctl is-enabled agent-worker 2>/dev/null)/$(systemctl is-active agent-worker 2>/dev/null)"
+  fail "$UNIT is $(systemctl is-enabled "$UNIT" 2>/dev/null)/$(systemctl is-active "$UNIT" 2>/dev/null)"
 fi
 if systemctl is-active --quiet agent-orchestrator 2>/dev/null; then
   fail "the prototype's agent-orchestrator is running: it holds the job door's port"
@@ -212,7 +217,7 @@ section "Jobs since the worker started"
 # script's to print.
 count=$(run_log | grep -ciE 'failed|refused|timed out' || true)
 if [ "${count:-0}" -gt 0 ]; then
-  warn "$count lines of the worker's log since it started mention a failure, refusal or time-out; read them with: journalctl -u agent-worker -b"
+  warn "$count lines of the worker's log since it started mention a failure, refusal or time-out; read them with: journalctl -u $UNIT -b"
 else
   pass "no failure, refusal or time-out in the worker's log since it started"
 fi

@@ -24,7 +24,9 @@ ENV_FILE=${ENV_FILE:-$APPDATA/service.env}
 PKG_JSON=${PKG_JSON:-$APPDATA/pkg/node_modules/@jeffwlawson/agent-workflows/package.json}
 CONTAINER=${CONTAINER:-agent-dispatcher}
 PROTOTYPE_CONTAINER=${PROTOTYPE_CONTAINER:-agent-dispatcher-prototype}
-FIREWALL_SCRIPT=${FIREWALL_SCRIPT:-/boot/config/plugins/user.scripts/scripts/agentnet-firewall/script}
+# FIREWALL_DIR is install-unraid.sh's setting, so one changed there moves the check too.
+FIREWALL_DIR=${FIREWALL_DIR:-/boot/config/plugins/user.scripts/scripts/agentnet-firewall}
+FIREWALL_SCRIPT=${FIREWALL_SCRIPT:-$FIREWALL_DIR/script}
 CHAIN=${CHAIN:-AGENT-EGRESS}
 BRIDGE=${BRIDGE:-virbr-agent}
 VM=${VM:-agent-box}

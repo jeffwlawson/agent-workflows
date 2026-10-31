@@ -217,7 +217,7 @@ jobs:
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         # `npm exec --prefix` rather than a bare `npx`: see the long note on
         # the runner step below.
-        run: npm exec --prefix "$RUNNER_TEMP" --yes --package=@jeffwlawson/agent-workflows@0.9.2 -- agent-workflows fix:gate
+        run: npm exec --prefix "$RUNNER_TEMP" --yes --package=@jeffwlawson/agent-workflows@0.9.3 -- agent-workflows fix:gate
 
       # Glue only Actions can do (ADR 0003): the gate's decision, copied into
       # the step output `proceed`, which the job's `refused` and the clock
@@ -386,7 +386,7 @@ jobs:
         env:
           NPM_CONFIG_USERCONFIG: ${{ steps.npmrc.outputs.userconfig }}
           NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: npm install --prefix "$RUNNER_TEMP" --no-save @jeffwlawson/agent-workflows@0.9.2
+        run: npm install --prefix "$RUNNER_TEMP" --no-save @jeffwlawson/agent-workflows@0.9.3
 
       # The rescue branch an earlier run left (#303), where there is one,
       # fetched to `refs/rescue/` for the runner to resume from (#471). The
@@ -408,7 +408,7 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           OUTPUT_DIR: ${{ runner.temp }}/prepare
           CHECKOUT: ${{ github.workspace }}
-        run: npm exec --prefix "$RUNNER_TEMP" --yes --package=@jeffwlawson/agent-workflows@0.9.2 -- agent-workflows fix:prepare
+        run: npm exec --prefix "$RUNNER_TEMP" --yes --package=@jeffwlawson/agent-workflows@0.9.3 -- agent-workflows fix:prepare
 
       # Both setup steps are the adopter's toolchain, so both are skippable.
       # `npm install -g @anthropic-ai/claude-code` below is not: that is the
@@ -585,7 +585,7 @@ jobs:
           CHECKOUT: ${{ github.workspace }}
           BRANCH: ${{ github.event.pull_request.head.ref }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
-        run: npm exec --prefix "$RUNNER_TEMP" --yes --package=@jeffwlawson/agent-workflows@0.9.2 -- agent-workflows fix:bundle
+        run: npm exec --prefix "$RUNNER_TEMP" --yes --package=@jeffwlawson/agent-workflows@0.9.3 -- agent-workflows fix:bundle
 
       # `fix:prepare`'s reason file on a failure, under `prepare/`;
       # `fix:bundle`'s files, the bundle and its reason file on a failure,
@@ -699,7 +699,7 @@ jobs:
       - name: Resolve the loop's token
         id: token
         if: always()
-        uses: jeffwlawson/agent-workflows/.github/actions/loop-token@v0.9.2
+        uses: jeffwlawson/agent-workflows/.github/actions/loop-token@v0.9.3
         with:
           app-id: ${{ secrets.AGENT_APP_ID }}
           private-key: ${{ secrets.AGENT_APP_PRIVATE_KEY }}
@@ -794,7 +794,7 @@ jobs:
           CHECKOUT: ${{ github.workspace }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
           AGENT_RESULT: ${{ needs.fix.result }}
-        run: npm exec --prefix "$RUNNER_TEMP" --yes --package=@jeffwlawson/agent-workflows@0.9.2 -- agent-workflows fix:publish
+        run: npm exec --prefix "$RUNNER_TEMP" --yes --package=@jeffwlawson/agent-workflows@0.9.3 -- agent-workflows fix:publish
 
       # Every other ending, and the label however the run ended (#469): a
       # stopped run's commits rescued to `RESCUE_BRANCH` where nothing was
@@ -839,7 +839,7 @@ jobs:
           MINT_OUTCOME: ${{ steps.token.outcome }}
           DOWNLOAD_OUTCOME: ${{ steps.fetch.outcome }}
           PUBLISH_OUTCOME: ${{ steps.publish.outcome }}
-        run: npm exec --prefix "$RUNNER_TEMP" --yes --package=@jeffwlawson/agent-workflows@0.9.2 -- agent-workflows fix:conclude
+        run: npm exec --prefix "$RUNNER_TEMP" --yes --package=@jeffwlawson/agent-workflows@0.9.3 -- agent-workflows fix:conclude
 
       # Every write the two commands made, one line each as it landed, and a
       # last line for how each ended (ADR 0005), kept for whoever audits the

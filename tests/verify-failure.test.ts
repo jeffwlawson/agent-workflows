@@ -10,7 +10,7 @@ describe.each([
   { prompt: "implement/prompt.md", base: "`{{BASE_REF}}`" },
   { prompt: "implement-prd/prompt.md", base: "`{{BASE_REF}}`" },
   { prompt: "fix/prompt.md", base: "the PR's base branch" },
-  { prompt: "update-branch/prompt.md", base: "`origin/{{BASE_REF}}`" },
+  { prompt: "update-branch/prompt.md", base: "`refs/remotes/origin/{{BASE_REF}}`" },
 ])("$prompt tells a failure of the change from one of the environment", ({ prompt, base }) => {
   const text = fs.readFileSync(prompt, "utf8").replace(/\s+/g, " ");
 
@@ -41,4 +41,13 @@ describe.each([
 it("update-branch still makes the failure the first line of its comment", () => {
   const text = fs.readFileSync("update-branch/prompt.md", "utf8");
   expect(text).toContain("the **first line** of your comment");
+});
+
+it("update-branch still commits a failure of its own it cannot fix, and names it as its own", () => {
+  const text = fs.readFileSync("update-branch/prompt.md", "utf8").replace(/\s+/g, " ");
+  expect(text).toContain("A failure that is yours and that you cannot fix still gets committed");
+  expect(text).toContain("commit anyway so the resolved merge is not lost");
+  expect(text).toContain(
+    "make the failure the **first line** of your comment, naming it as your own and not the environment's",
+  );
 });

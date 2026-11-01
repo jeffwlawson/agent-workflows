@@ -3920,9 +3920,9 @@ statuses. A check run passes on `SUCCESS`, `NEUTRAL` or `SKIPPED`, and a status 
 **Once per head** is a comment by the loop's accounts (§4.1) already carrying the head's mark; one
 by anyone else does not count, and a comment read that fails says it again rather than not at all.
 
-The arm, the labeller's permission and the refresh asked for are the loop token's; every other
-write is made with `GH_TOKEN`, since none of them has to start a run; so is the next armed pull
-request's refresh. It writes at most one comment, one label off (`agent:merge`, or
+The arm, the labeller's permission, the refresh asked for and the next armed pull request's refresh
+are the loop token's; every other write is made with `GH_TOKEN`, since none of them has to start a
+run. It writes at most one comment, one label off (`agent:merge`, or
 `agent:update-branch` before it is added), one label added, and one status, and besides, on a
 refusal, a disarm or a first red, the queue's: up to three `agent:update-branch` removed and added. `gate.json` is written the moment it decides and again however the command
 ends; one that failed before deciding writes `{}`, and one whose inputs could not be read writes

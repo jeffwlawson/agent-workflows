@@ -1954,9 +1954,12 @@ text, and `review:publish` and `review:advance` write every final string from th
 > it checks out the settled commit as `BRANCH`, fetches `BASE_REF` and the repository's tags, the token passed with each
 > fetch and never stored in the checkout, then runs `review:budget` and `review:collect-checks`,
 > and the runner, in the sandbox its settings name, with a fresh `read` token as `GH_TOKEN`. Where the
-> review finished it asks for a `write` token and runs `review:publish`, pointed at the runner's
-> directory; then `review:conclude`, however the run ended, pointed at publish's directory, with a
-> `write` token and `LOOP_TOKEN_SOURCE` `app`. On a PRD pull request, where the gate went ahead
+> review finished it asks for a `resolve` token, `write`'s permissions with Contents: write, without
+> which a thread on a pull request the App did not open cannot be resolved, and runs
+> `review:publish` with it, pointed at the runner's directory; where that is refused, a `write`
+> token, so the review posts and the threads it found fixed stay open, listed as still open. Then
+> `review:conclude`, however the run ended, pointed at publish's directory, with a `write` token,
+> publish's where it fell back to one, and `LOOP_TOKEN_SOURCE` `app`. On a PRD pull request, where the gate went ahead
 > and conclude's `ended.json` says the head did not move, it then asks for a `write` token of
 > advance's own and runs `review:advance`, pointed at the runner's directory for `park.json` and
 > `progress.json`, and told how the review ended (`REVIEW_RESULT`), how the posting ended
@@ -1983,7 +1986,7 @@ text, and `review:publish` and `review:advance` write every final string from th
 > - **The failures are the reusable's.** Conclude runs however the phases before it ended and is
 >   told each one's real outcome: a runner that failed is `REVIEW_RESULT` `failure` with the
 >   `FAILURE_REASON` its `failure_reason.txt` gave; a `read` token not granted is a review that
->   failed, saying so; a `write` token not granted for publish is `MINT_OUTCOME` `failure`; a
+>   failed, saying so; neither a `resolve` nor a `write` token granted for publish is `MINT_OUTCOME` `failure`; a
 >   publish that failed is `PUBLISH_OUTCOME` `failure`. Where no token is granted to conclude
 >   either, nothing can write to the pull request, and the worker's log says why the run ended.
 > - **Each run leaves a directory**: the checkout, each subcommand's output directory and log, and

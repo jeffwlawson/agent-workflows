@@ -122,17 +122,24 @@ Repository permissions:
 |---|---|---|---|
 | Metadata | `metadata` | read | every API call, a label's sender's permission, and the repositories each installation reaches, which a scan lists |
 | Variables | `actions_variables` | read | `AGENT_ORCHESTRATOR`, re-read at every token, and the variables the service reads, `AGENT_SETUP` among them: the repository's own, else its organization's shared with it, as `vars` resolves them |
-| Contents | `contents` | write | the checkout and the pull request's history, read by every phase; a push, by a `push` token only |
+| Contents | `contents` | write | the checkout and the pull request's history, read by every phase; resolving a review thread on a pull request the App did not open, by a `resolve` token; a push, by a `push` token only |
 | Pull requests | `pull_requests` | write | the review, its threads, the title and summary, and the ready mark; a scan reads an open pull request's head and base |
 | Issues | `issues` | write | comments and labels, the issue an implement job builds, and a PRD's parent; a scan reads the open items carrying a trigger label and their `labeled` events, and comments on one it stops dispatching |
 | Checks | `checks` | read | CI's result, which the review's verdict reads |
 | Commit statuses | `statuses` | write | the verdict and the fix-round statuses |
 | Workflows | `workflows` | write | a push touching `.github/workflows/**` is refused without it, *after* the agent has done all its work |
 
-The worker asks for one of three kinds of token at each phase: `read`, which every phase reads
+The worker asks for one of four kinds of token at each phase: `read`, which every phase reads
 with and the only one the runner is ever handed; `write`, which adds the pull request, issue and
-status writes of the phases that post; and `push`, which adds Contents: write and Workflows: write
-to `write`, for the phases that push and run no agent. Contents: write together with Workflows: write
+status writes of the phases that post; `resolve`, which adds Contents: write and nothing else to
+`write`, for `review:publish` alone; and `push`, which adds Contents: write and Workflows: write
+to `write`, for the phases that push and run no agent. GitHub lets a review thread be resolved by
+the pull request's author or by a holder of repository write access, so with `write` the App
+resolves threads only on the pull requests it opened (#571): with `resolve`, the one phase that
+resolves threads is given what that takes, rather than every posting phase given Contents: write
+through a wider `write`, or Workflows: write through `push`. Like the posting job on Actions, it
+runs no agent, checks nothing out, and reads the agent's output only through the checked
+hand-over readers. Contents: write together with Workflows: write
 is the pair that lets a holder push a workflow into a repository whose runs carry secrets, which is
 why it is a kind of its own rather than a wider `write`, and why it is acceptable at all: as on
 Actions (ADOPTING §2), neither the App's key nor a `push` token is ever where the agent runs. The
@@ -221,7 +228,7 @@ repository's default branch as its base, which stands in for the `default-branch
 since nothing is checked out. The deadline is the job's own time limit, review's, or
 fix's, update-branch's and implement's, or implement-prd's, the sum of its jobs' limits, or
 follow-ups', 10 minutes (below), plus `JOB_DEADLINE_MARGIN_MINUTES`.
-It carries no token: the worker asks for one per phase, `read`, `write` or `push`, and the dispatcher mints
+It carries no token: the worker asks for one per phase, `read`, `write`, `resolve` or `push`, and the dispatcher mints
 one only for a job it dispatched, before that job's deadline, for that job's repository alone, while
 the installation is still on an account it serves, and after reading `AGENT_ORCHESTRATOR` again. Deleting the variable stops a job in flight at its next
 phase.
@@ -318,8 +325,10 @@ refused; a repository or a listing that cannot be read is logged and the scan go
 
 The process that runs review, fix, update-branch, implement, implement-prd and follow-ups. It holds no key: it asks the dispatcher for a token at the
 start of each phase. For review: `read` for the gate, the checkout, the budget and the CI wait, a
-fresh `read` for the runner, so the token's hour starts as the agent does, and `write` for
-`review:publish` and `review:conclude`. For fix: `write` for `fix:gate`, which posts its refusal and
+fresh `read` for the runner, so the token's hour starts as the agent does, `resolve` for
+`review:publish`, and `write` for `review:conclude`. Where the `resolve` token is refused, publish
+asks for `write` instead and conclude reuses it: the review posts, the threads it found fixed stay
+open and are listed under *Still open*, and the worker's log says the `resolve` token was refused. For fix: `write` for `fix:gate`, which posts its refusal and
 probes the label; `read` for the checkout and `fix:prepare`, and a fresh `read` for the runner;
 none for `fix:bundle`; and `push` for the publish checkout, `fix:publish` and `fix:conclude`, the only phases that push. Where the `push`
 token is refused, nothing is published, and `fix:conclude` asks for `write` instead, which the publish

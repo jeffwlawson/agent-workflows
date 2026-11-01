@@ -260,7 +260,7 @@ Each door also answers `GET /health` with `200`.
 
 - **A delivery that arrives while the dispatcher is down is lost.** GitHub does not redeliver on
   its own; redeliver it from the App's *Recent Deliveries*, or remove the label and add it again.
-- **The jobs it dispatched are held in memory, and only the running ones are lost to a restart.** Each
+- **The jobs it dispatched are held in memory, and only the started ones are lost to a restart.** Each
   job carries the id of the dispatcher instance that sent it, fresh at each start, and the scan at
   a restarted dispatcher's start names its own at the worker's held door. The worker drops every
   job it holds *queued* from another instance before it answers, so none of them runs, and the
@@ -621,9 +621,10 @@ The job door also answers `GET /health` with `200`.
   to an open item is picked up by the scan at the dispatcher's start (*What it does not keep*,
   above). What a scan does not list stays lost: a merge's follow-ups, above all.
 - **A dispatcher restarted alone** recovers the jobs the worker holds queued from it: its start
-  scan has the worker drop them and dispatches their items again. Only the jobs running at the time
-  are lost, one in each lane at most, and keep their labels until a person adds them again (*What
-  it does not keep*, above).
+  scan has the worker drop them and dispatches their items again. Only the jobs that had started
+  are lost: the one running in each lane, and every update-branch job waiting for the agent lane
+  after its merge conflicted, of which there can be several. Each keeps its label until a person
+  adds it again (*What it does not keep*, above).
 - **The worker's queue is in memory too**: a worker restarted mid-job loses the jobs running and the ones
   waiting behind them. Its start announcement makes the dispatcher scan, which dispatches each of
   them again, the running ones and the queued ones alike, since each item keeps its label. Where

@@ -541,14 +541,16 @@ GitHub App is installed on the repository. The callers can stay: each label stil
 run, and every job in it skips. `doctor` then checks what the service needs instead of what Actions
 needs. What differs on the service:
 
-- it answers every trigger label but `agent:merge`: `agent:review`, `agent:fix`,
-  `agent:update-branch` and `agent:follow-ups` on a pull request, `agent:implement` on an issue, a
-  regular one or a PRD, and every merge, which posts the post-merge checklist and, where
-  `agent:follow-ups` is on, files the review's follow-ups, as on Actions. `agent:merge` is this
-  release's exception: the service does not answer it, so the merge you decide is carried out on
-  Actions alone (§3, *The merge decision*), and `doctor` names the label as unanswered;
-- its App must be subscribed to **Issues** events as well as **Pull request**, or nothing answers
-  `agent:implement` ([deploying-the-service.md](./deploying-the-service.md#the-webhook));
+- it answers every trigger label: `agent:review`, `agent:fix`, `agent:update-branch`,
+  `agent:follow-ups` and `agent:merge` on a pull request, `agent:implement` on an issue, a regular
+  one or a PRD, and every merge, which posts the post-merge checklist and, where `agent:follow-ups`
+  is on, files the review's follow-ups, as on Actions. `agent:merge` (§3, *The merge decision*) is
+  answered on every service-served repository, with no caller job to leave out, so `doctor` checks
+  the label exists;
+- its App must be subscribed to **Issues**, **Check suite** and **Status** events as well as
+  **Pull request**, or nothing answers `agent:implement`, and an armed pull request waits for its
+  next push or label rather than merging when CI lands
+  ([deploying-the-service.md](./deploying-the-service.md#the-webhook));
 - it reads the repository's install and setup from the repository variable `AGENT_SETUP`, not a
   caller's `setup:` input, and supports no `node-version-file`
   ([deploying-the-service.md](./deploying-the-service.md#the-repositorys-setup)). `doctor` warns

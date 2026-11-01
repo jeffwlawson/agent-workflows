@@ -1581,10 +1581,9 @@ const diagnoseService = (
 
   // The one list the dispatcher reads too, so the two cannot disagree. The
   // follow-ups marker is named with the trigger labels, since a review adds
-  // it and the service answers it. This release's service answers every run
-  // label but `agent:merge` (#588), which arrived on Actions first, so the
-  // check names that one; it stays for any label a release adds before the
-  // service answers it.
+  // it and the service answers it. This release's service answers every
+  // trigger label, `agent:merge` included since #591, so the check names
+  // none; it stays for any label a release adds before the service answers it.
   const unanswered = [...TRIGGER_LABELS.map((label) => label.name), FOLLOW_UPS_LABEL].filter(
     (name) => !SERVICE_LABELS.includes(name),
   );

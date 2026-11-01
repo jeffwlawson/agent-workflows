@@ -15,11 +15,13 @@ import {
   sign,
   SIGNATURE_HEADER,
   FOLLOW_UPS_MINUTES,
+  MERGE_MINUTES,
   type FixJob,
   type FollowUpsJob,
   type ImplementJob,
   type ImplementPrdJob,
   type Job,
+  type MergeJob,
   type ReviewJob,
   type TokenKind,
   type UpdateBranchJob,
@@ -30,7 +32,9 @@ import {
   IMPLEMENT_POSTING_MINUTES,
   IMPLEMENT_PRD_GATE_MINUTES,
   IMPLEMENT_PRD_POSTING_MINUTES,
+  admit,
   heldDoor,
+  MERGE_WAIT_SECONDS,
   jobDoor,
   oneAtATime,
   REDACTED,
@@ -1630,7 +1634,7 @@ describe("the job door", () => {
     const response = d.handle(request(job));
 
     expect(response.status).toBe(400);
-    expect(JSON.parse(response.body)).toEqual({ refusal: "`workflow` is not one of `review`, `fix`, `update-branch`, `implement`, `implement-prd`, `follow-ups`" });
+    expect(JSON.parse(response.body)).toEqual({ refusal: "`workflow` is not one of `review`, `fix`, `update-branch`, `implement`, `implement-prd`, `follow-ups`, `merge`" });
     expect(d.accepted).toEqual([]);
   });
 
@@ -2604,6 +2608,235 @@ describe("the worker's follow-ups job", () => {
     const malformed = send({ ...FOLLOW_UPS_JOB, pr: 0 });
     expect(malformed.status).toBe(400);
     expect(JSON.parse(malformed.body)).toEqual({ refusal: "`pr` is not a positive integer" });
+  });
+});
+
+const MERGE_JOB: MergeJob = {
+  ...JOB,
+  workflow: "merge",
+  draft: false,
+  action: "labeled",
+  sender: "maintainer",
+};
+
+/** The gate's decision, as `merge:gate` writes it. */
+const decided = (decision: string): Readonly<Partial<Record<Subcommand, Canned>>> => ({ "merge:gate": { files: { "gate.json": { decision, head: HEAD } } } });
+
+/**
+ * A merge job (#591), run as `merge.yml`'s one job runs it (spec §12):
+ * `merge:gate`, `merge:publish` on `merge`, and `merge:conclude` however it
+ * went, with `write`, `push` and `write` tokens. No checkout, no setup and no
+ * runner.
+ */
+describe("the worker's merge job", () => {
+  it("runs gate, publish on merge, and conclude, in that order, with write, push and write tokens, and checks nothing out, runs no setup and no runner", async () => {
+    const s = setup(decided("merge"));
+    await runJob(MERGE_JOB, s.edges);
+
+    expect(s.events).toEqual(["write token", "merge:gate", "push token", "merge:publish", "write token", "merge:conclude"]);
+    expect(s.checkouts).toEqual([]);
+    expect(s.sandboxed).toEqual([]);
+    expect(s.launched.every((launch) => launch.cwd === s.runDir)).toBe(true);
+    expect(s.env("merge:gate")["GH_TOKEN"]).toBe("write-token-1");
+    expect(s.env("merge:publish")["GH_TOKEN"]).toBe("push-token-2");
+    expect(s.env("merge:conclude")["GH_TOKEN"]).toBe("write-token-3");
+  });
+
+  it.each(["wait", "behind", "red", "disarmed", "refused"])("does not publish on %s, and holds no push token", async (decision) => {
+    const s = setup(decided(decision));
+    await runJob(MERGE_JOB, s.edges);
+
+    expect(s.events).toEqual(["write token", "merge:gate", "write token", "merge:conclude"]);
+    expect(s.asked).not.toContain("push");
+    expect(s.env("merge:conclude")).toMatchObject({ JOB_STATUS: "success", TIMED_OUT: "false" });
+  });
+
+  it("hands the gate what merge.yml hands it, the App as the loop's account, and a wait bound of 0", async () => {
+    const s = setup(decided("wait"));
+    await runJob({ ...MERGE_JOB, action: "synchronize", sender: "pusher", draft: true }, s.edges);
+
+    expect(MERGE_WAIT_SECONDS).toBe(0);
+    expect(s.env("merge:gate")).toEqual({
+      ...HOST,
+      GH_REPO: "owner/repo",
+      GH_TOKEN: "write-token-1",
+      LOOP_TOKEN: "write-token-1",
+      LOOP_TOKEN_SOURCE: "app",
+      LOOP_LOGIN: "loop-app[bot]",
+      AGENT_LOOP_LOGINS: "loop-app[bot]",
+      PR_NUMBER: "7",
+      BASE_REF: "main",
+      ACTION: "synchronize",
+      SENDER: "pusher",
+      HEAD_SHA: HEAD,
+      HEAD_REPO: "owner/repo",
+      PR_STATE: "open",
+      PR_MERGED: "false",
+      PR_DRAFT: "true",
+      CHECK_WAIT_SECONDS: "0",
+      OUTPUT_DIR: s.env("merge:gate")["OUTPUT_DIR"],
+    });
+  });
+
+  it("hands publish the push token as the loop's, pointed at the gate's directory, and conclude every directory", async () => {
+    const s = setup(decided("merge"));
+    await runJob(MERGE_JOB, s.edges);
+
+    expect(s.env("merge:publish")).toEqual({
+      ...HOST,
+      GH_REPO: "owner/repo",
+      GH_TOKEN: "push-token-2",
+      LOOP_TOKEN: "push-token-2",
+      LOOP_TOKEN_SOURCE: "app",
+      LOOP_LOGIN: "loop-app[bot]",
+      AGENT_LOOP_LOGINS: "loop-app[bot]",
+      PR_NUMBER: "7",
+      BASE_REF: "main",
+      GATE_DIR: s.env("merge:gate")["OUTPUT_DIR"],
+      OUTPUT_DIR: s.env("merge:publish")["OUTPUT_DIR"],
+    });
+    expect(s.env("merge:conclude")).toEqual({
+      ...HOST,
+      GH_REPO: "owner/repo",
+      GH_TOKEN: "write-token-3",
+      PR_NUMBER: "7",
+      JOB_STATUS: "success",
+      TIMED_OUT: "false",
+      TIMEOUT_MINUTES: String(MERGE_MINUTES),
+      GATE_DIR: s.env("merge:gate")["OUTPUT_DIR"],
+      PUBLISH_DIR: s.env("merge:publish")["OUTPUT_DIR"],
+      OUTPUT_DIR: s.env("merge:conclude")["OUTPUT_DIR"],
+    });
+    for (const subcommand of ["merge:gate", "merge:publish", "merge:conclude"] as const) {
+      for (const name of Object.keys(s.env(subcommand))) expect([...Object.keys(declared(subcommand)), ...Object.keys(HOST)], name).toContain(name);
+    }
+  });
+
+  it("concludes a gate that failed as a failure, and publishes nothing", async () => {
+    const s = setup({ "merge:gate": { exit: 1, files: { "failure_reason.txt": "Couldn't arm it." } } });
+    await runJob(MERGE_JOB, s.edges);
+
+    expect(s.events).toEqual(["write token", "merge:gate", "write token", "merge:conclude"]);
+    expect(s.env("merge:conclude")).toMatchObject({ JOB_STATUS: "failure", TIMED_OUT: "false" });
+  });
+
+  it("concludes a publish that failed as a failure", async () => {
+    const s = setup({ ...decided("merge"), "merge:publish": { exit: 1, files: { "failure_reason.txt": "GitHub refused the merge." } } });
+    await runJob(MERGE_JOB, s.edges);
+
+    expect(s.env("merge:conclude")).toMatchObject({ JOB_STATUS: "failure" });
+  });
+
+  it("publishes nothing where no push token is granted, and concludes with the reason in publish's directory", async () => {
+    const s = setup(decided("merge"), { refused: [2] });
+    await runJob(MERGE_JOB, s.edges);
+
+    expect(s.events).toEqual(["write token", "merge:gate", "push token", "write token", "merge:conclude"]);
+    expect(s.env("merge:conclude")).toMatchObject({ JOB_STATUS: "failure", GH_TOKEN: "write-token-3" });
+    expect(fs.readFileSync(path.join(s.env("merge:conclude")["PUBLISH_DIR"]!, "failure_reason.txt"), "utf8")).toContain("no `push` token");
+  });
+
+  it("concludes with the gate's token where a fresh one is refused", async () => {
+    const s = setup(decided("wait"), { refused: [2] });
+    await runJob(MERGE_JOB, s.edges);
+
+    expect(s.env("merge:conclude")["GH_TOKEN"]).toBe("write-token-1");
+  });
+
+  it("ends a gate still running at merge.yml's time limit, and concludes it as a timeout", async () => {
+    const s = setup({ "merge:gate": { hangs: true } }, { minuteMs: 5 });
+    await runJob(MERGE_JOB, s.edges);
+
+    expect(s.events.at(-1)).toBe("merge:conclude");
+    expect(s.env("merge:conclude")).toMatchObject({ JOB_STATUS: "cancelled", TIMED_OUT: "true", TIMEOUT_MINUTES: "20" });
+  });
+
+  it("logs why nothing ran where no token was granted, since nothing can say so on the pull request", async () => {
+    const s = setup({}, { refused: [1] });
+    const phases = await runJob(MERGE_JOB, s.edges);
+
+    expect(s.launched).toEqual([]);
+    expect(phases.at(-1)).toEqual({
+      name: "merge:gate",
+      outcome: "not run: the dispatcher granted no token to decide with, so neither it nor merge:conclude ran, and nothing was written",
+    });
+  });
+
+  it("queues a merge job at the door, and refuses one with no action, naming the field", () => {
+    const accepted: Job[] = [];
+    const handle = jobDoor({ secret: "s", version: "9.9.9", accept: (job) => accepted.push(job) });
+    const send = (job: unknown) => {
+      const body = Buffer.from(JSON.stringify(job));
+      return handle({ headers: { [SIGNATURE_HEADER]: sign("s", body) }, body });
+    };
+
+    expect(send(MERGE_JOB).status).toBe(202);
+    expect(accepted).toEqual([MERGE_JOB]);
+    expect(JSON.parse(send({ ...MERGE_JOB, action: "opened" }).body)).toEqual({ refusal: "`action` is not one of `labeled`, `synchronize`" });
+    expect(JSON.parse(send({ ...MERGE_JOB, draft: "no" }).body)).toEqual({ refusal: "`draft` is not a boolean" });
+    expect(JSON.parse(send({ ...MERGE_JOB, sender: "" }).body)).toEqual({ refusal: "`sender` is not a non-empty string" });
+  });
+});
+
+/**
+ * What the job door queues (#591): a merge job is coalesced per pull request,
+ * at most one running and one waiting; every other kind is queued as it comes.
+ */
+describe("admitting a job to the queue", () => {
+  const settle = () => new Promise((resolve) => setImmediate(resolve));
+  const queued = () => {
+    const releases: (() => void)[] = [];
+    const queue = oneAtATime<Job>(() => new Promise<void>((resolve) => releases.push(resolve)), () => {});
+    return { queue, releases };
+  };
+  const pushed = (id: string, pr = 7): MergeJob => ({ ...MERGE_JOB, id, pr, action: "synchronize", sender: "pusher" });
+
+  it("absorbs five merge jobs for a pull request whose merge job waits, and queues every other kind", async () => {
+    const { queue } = queued();
+    admit(queue, JOB);
+    admit(queue, pushed("m-1"));
+    await settle();
+
+    const lines = ["m-2", "m-3", "m-4", "m-5", "m-6"].map((id) => admit(queue, pushed(id)));
+
+    expect(queue.held().map((job) => job.id)).toEqual(["job-1", "m-1"]);
+    expect(lines.every((line) => line?.includes("absorbed by merge job m-1"))).toBe(true);
+    expect(admit(queue, { ...JOB, id: "job-2" })).toBeUndefined();
+    expect(queue.held().map((job) => job.id)).toEqual(["job-1", "m-1", "job-2"]);
+  });
+
+  it("queues one successor behind a running merge job, which the rest are absorbed by", async () => {
+    const { queue, releases } = queued();
+    admit(queue, pushed("m-1"));
+    await settle();
+
+    for (const id of ["m-2", "m-3", "m-4", "m-5", "m-6"]) admit(queue, pushed(id));
+
+    expect(queue.running()?.id).toBe("m-1");
+    expect(queue.held().map((job) => job.id)).toEqual(["m-1", "m-2"]);
+    releases[0]?.();
+    await settle();
+    expect(queue.running()?.id).toBe("m-2");
+  });
+
+  it("absorbs nothing for another pull request", () => {
+    const { queue } = queued();
+    admit(queue, JOB);
+    admit(queue, pushed("m-1"));
+
+    expect(admit(queue, pushed("m-2", 8))).toBeUndefined();
+    expect(queue.held().map((job) => job.id)).toEqual(["job-1", "m-1", "m-2"]);
+  });
+
+  it("lets a person's agent:merge replace the one queued, and absorbs the App's own as any", () => {
+    const { queue } = queued();
+    admit(queue, JOB);
+    admit(queue, pushed("m-1"));
+
+    expect(admit(queue, { ...MERGE_JOB, id: "m-2", sender: "loop-app[bot]" })).toContain("absorbed by merge job m-1");
+    expect(admit(queue, { ...MERGE_JOB, id: "m-3" })).toContain("replaced merge job m-1");
+    expect(queue.held().map((job) => job.id)).toEqual(["job-1", "m-3"]);
+    expect(admit(queue, pushed("m-4"))).toContain("absorbed by merge job m-3");
   });
 });
 

@@ -1,12 +1,13 @@
 import { createSign } from "node:crypto";
-import { READER_PERMISSIONS, SCAN_PERMISSIONS, type AppGitHub, type AppRecord, type Labelled } from "./dispatcher.js";
+import { READER_PERMISSIONS, SCAN_PERMISSIONS, type AppGitHub, type AppRecord, type HeadPull, type Labelled } from "./dispatcher.js";
 import type { TokenGrant } from "./job.js";
 
 /**
  * The dispatcher's GitHub, live: GitHub's REST API, authenticated as the App
  * with a JWT signed by its key, and as one installation with a token minted
- * from it. Its own reads, a repository's variables and a sender's permission,
- * go through a token that can read metadata and variables and nothing else,
+ * from it. Its own reads, a repository's variables, a sender's permission
+ * and the pull requests a commit is the head of (#591), go through a token
+ * that can read metadata, variables and pull requests and nothing else,
  * minted per repository and reused while it has a while to run. The scan's
  * reads (#581) go through one that can read issues and pull requests besides,
  * minted and reused the same way, but for listing an installation's
@@ -130,6 +131,29 @@ export const liveAppGitHub = (appId: string, privateKey: string): AppGitHub => {
 
   const record = (value: unknown): Record<string, unknown> => (typeof value === "object" && value !== null ? (value as Record<string, unknown>) : {});
 
+  /** A pull request's record as GitHub gives it, read into what the dispatcher compares, or `undefined` where a field is missing. */
+  const pullOf = (value: unknown): HeadPull | undefined => {
+    const { number, state, merged, merged_at: mergedAt, draft, head, base, labels } = record(value);
+    const { ref: branch, sha: headSha, repo: headRepo } = record(head);
+    const baseRef = record(base)["ref"];
+    if (typeof number !== "number" || typeof state !== "string" || typeof branch !== "string" || typeof headSha !== "string" || typeof baseRef !== "string") {
+      return undefined;
+    }
+    const headName = record(headRepo)["full_name"];
+    return {
+      number,
+      state,
+      // A pull request's own record says `merged`; a list's carries `merged_at` alone.
+      merged: merged === true || (typeof mergedAt === "string" && mergedAt !== ""),
+      draft: draft === true,
+      branch,
+      headSha,
+      headRepo: typeof headName === "string" ? headName : undefined,
+      baseRef,
+      labels: Array.isArray(labels) ? labels.map((label) => record(label)["name"]).filter((name): name is string => typeof name === "string") : [],
+    };
+  };
+
   /** Each installation's id, by its account's login lower-cased, as the last listing read it. */
   const installationIds = new Map<string, number>();
 
@@ -240,23 +264,10 @@ export const liveAppGitHub = (appId: string, privateKey: string): AppGitHub => {
         }
         // The issues list carries no head or base: the pull request's own record does, read now.
         const reply = await api(`/repos/${repo}/pulls/${number}`, await scanner(repo));
-        const { state: pullState, merged, head, base } = record(reply.json);
-        const { ref: branch, sha: headSha, repo: headRepo } = record(head);
-        const baseRef = record(base)["ref"];
-        if (reply.status !== 200 || typeof pullState !== "string" || typeof branch !== "string" || typeof headSha !== "string" || typeof baseRef !== "string") {
-          throw new Error(`reading ${repo}#${number} answered ${reply.status}`);
-        }
-        const headName = record(headRepo)["full_name"];
-        items.push({
-          type: "pull_request",
-          number,
-          state: pullState,
-          merged: merged === true,
-          branch,
-          headSha,
-          headRepo: typeof headName === "string" ? headName : undefined,
-          baseRef,
-        });
+        const read = reply.status === 200 ? pullOf(reply.json) : undefined;
+        if (read === undefined) throw new Error(`reading ${repo}#${number} answered ${reply.status}`);
+        const { labels: _, ...fields } = read;
+        items.push({ type: "pull_request", ...fields, number });
       }
       return items;
     },
@@ -277,6 +288,10 @@ export const liveAppGitHub = (appId: string, privateKey: string): AppGitHub => {
       const branch = field(reply, "default_branch");
       if (reply.status !== 200 || typeof branch !== "string") throw new Error(`reading ${repo}'s default branch answered ${reply.status}`);
       return branch;
+    },
+    pullsAt: async (repo, sha) => {
+      const listed = await pages(`/repos/${repo}/commits/${sha}/pulls`, () => reader(repo), (reply) => reply.json, `the pull requests of ${repo}'s commit ${sha}`);
+      return listed.map(pullOf).filter((pull): pull is HeadPull => pull !== undefined);
     },
     comment: async (repo, number, body, token) => {
       const reply = await api(`/repos/${repo}/issues/${number}/comments`, token, { method: "POST", body: { body } });

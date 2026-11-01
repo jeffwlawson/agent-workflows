@@ -1,5 +1,16 @@
 import { randomUUID } from "node:crypto";
-import { FIX_LABEL, FOLLOW_UPS_LABEL, IMPLEMENT_LABEL, ORCHESTRATOR_VARIABLE, REVIEW_LABEL, SERVICE_ORCHESTRATOR, UPDATE_BRANCH_LABEL } from "../shared/record.js";
+import { isLoopStatus } from "../shared/loop-checks.js";
+import {
+  FIX_LABEL,
+  FIX_ROUND_STATUS,
+  FOLLOW_UPS_LABEL,
+  IMPLEMENT_LABEL,
+  MERGE_LABEL,
+  ORCHESTRATOR_VARIABLE,
+  REVIEW_LABEL,
+  SERVICE_ORCHESTRATOR,
+  UPDATE_BRANCH_LABEL,
+} from "../shared/record.js";
 import {
   parseHeld,
   parseTokenRequest,
@@ -58,12 +69,21 @@ export type Labelled =
       readonly number: number;
       readonly state: string;
       readonly merged: boolean;
+      /** Whether it is a draft, which a merge job tells `merge:gate`. */
+      readonly draft: boolean;
       readonly branch: string;
       readonly headSha: string;
       /** The head's repository, `owner/name`, or `undefined` where it was deleted. */
       readonly headRepo: string | undefined;
       readonly baseRef: string;
     };
+
+/**
+ * A pull request whose head is a commit a check suite's or a status's
+ * delivery names (#591), as it reads now: what a `pull_request` delivery
+ * would have carried of it, its labels among them.
+ */
+export type HeadPull = Omit<Extract<Labelled, { readonly type: "pull_request" }>, "type"> & { readonly labels: readonly string[] };
 
 /** What the dispatcher asks of GitHub, as its App. */
 export interface AppGitHub {
@@ -97,6 +117,11 @@ export interface AppGitHub {
   labeller(repo: string, number: number, label: string): Promise<string | undefined>;
   /** `repo`'s default branch. */
   defaultBranch(repo: string): Promise<string>;
+  /**
+   * The pull requests on `repo` the commit `sha` belongs to, open or not, each
+   * as it reads now, read with the dispatcher's reader (#591).
+   */
+  pullsAt(repo: string, sha: string): Promise<readonly HeadPull[]>;
   /** Posts `body` as a comment on `repo`'s issue or pull request `number`, with `token`. */
   comment(repo: string, number: number, body: string, token: string): Promise<void>;
 }
@@ -189,11 +214,12 @@ export const TOKEN_PERMISSIONS: Readonly<Record<TokenKind, Readonly<Record<strin
 
 /**
  * The permissions the dispatcher's own reads mint with, a repository's
- * variables and a sender's permission. `actions_variables` is GitHub's name
- * for the App's "Variables" permission; a token asking for `variables` is
- * refused, 422.
+ * variables, a sender's permission, and the pull requests a check suite's or
+ * a status's commit is the head of, with their labels (#591).
+ * `actions_variables` is GitHub's name for the App's "Variables" permission; a
+ * token asking for `variables` is refused, 422.
  */
-export const READER_PERMISSIONS: Readonly<Record<string, string>> = { metadata: "read", actions_variables: "read" };
+export const READER_PERMISSIONS: Readonly<Record<string, string>> = { metadata: "read", actions_variables: "read", pull_requests: "read" };
 
 /**
  * The permissions the scan's reads mint with (#581): the dispatcher's own
@@ -236,9 +262,12 @@ export const SERVICE_APP_PERMISSIONS: Readonly<Record<string, string>> = MINTS.r
  * the event it is answered on: a label is answered on the event type it
  * belongs to, and on no other. `agent:implement` on a pull request starts
  * nothing, and neither does `agent:review` on an issue. Every trigger label
- * the loop has is here: `agent:follow-ups` is the last (#519), answered on a
- * closed pull request, where every other pull request label is answered on an
- * open one, and as the label a merge is filtered on.
+ * the loop has is here: `agent:follow-ups` (#519), answered on a closed pull
+ * request, where every other pull request label is answered on an open one,
+ * and as the label a merge is filtered on; and `agent:merge` (#591), the
+ * maintainer's merge decision, whose `merge` job is started besides by a
+ * push, a check suite's completion and a status on the head of a pull
+ * request carrying it.
  *
  * An issue's label starts a list of kinds: `agent:implement` starts both
  * `implement` and `implement-prd`, as Actions starts both workflows on it.
@@ -254,6 +283,7 @@ export const LABEL_KINDS: {
     [FIX_LABEL]: "fix",
     [UPDATE_BRANCH_LABEL]: "update-branch",
     [FOLLOW_UPS_LABEL]: "follow-ups",
+    [MERGE_LABEL]: "merge",
   },
   issues: {
     [IMPLEMENT_LABEL]: ["implement", "implement-prd"],
@@ -272,7 +302,8 @@ export const SERVICE_LABELS: readonly string[] = Object.values(LABEL_KINDS).flat
  * The trigger labels a scan lists (#581): every one but `agent:follow-ups`,
  * a marker that stays on until the pull request is merged and filed, not a
  * label that says a run is working; a merge's follow-ups job comes from the
- * merge's own delivery.
+ * merge's own delivery. `agent:merge` is listed, but is not a run's label
+ * either, so the scan's limit is not applied to it (`rescan`).
  */
 const SCAN_LABELS: readonly string[] = SERVICE_LABELS.filter((label) => label !== FOLLOW_UPS_LABEL);
 
@@ -281,10 +312,27 @@ const kindOf = <K>(kinds: Readonly<Record<string, K>>, label: string): K | undef
   Object.hasOwn(kinds, label) ? kinds[label] : undefined;
 
 /**
- * The webhook events the App must be subscribed to: the ones a trigger label
- * is answered on, which the deployment guide's event list is held equal to.
+ * The webhook events the App must be subscribed to, which the deployment
+ * guide's event list is held equal to: the ones a trigger label is answered
+ * on, and the two that start a merge job on an armed head (#591), a check
+ * suite's completion and a status.
  */
-export const SERVICE_APP_EVENTS: readonly string[] = Object.keys(LABEL_KINDS);
+export const SERVICE_APP_EVENTS: readonly string[] = ["pull_request", "issues", "check_suite", "status"];
+
+/**
+ * The states a `status` delivery starts a merge job on: a final one. A
+ * `pending` status changes nothing the gate could decide on.
+ */
+const FINAL_STATUSES = ["success", "failure", "error"];
+
+/**
+ * Whether a status is one of the loop's own, which starts no job whoever sent
+ * it (#591): the verdict and the arm (`isLoopStatus`), and the fix-round
+ * record. Each lands beside an event that already starts the gate: the arm
+ * and its carry beside a push, and an approval with `review:conclude`'s
+ * re-add of `agent:merge`.
+ */
+const loopStatus = (context: string): boolean => isLoopStatus(context) || context === FIX_ROUND_STATUS.context;
 
 /**
  * Each way the App's own record falls short of what the service needs, one
@@ -326,10 +374,24 @@ interface LabelEvent {
     readonly number?: unknown;
     readonly state?: unknown;
     readonly merged?: unknown;
+    readonly draft?: unknown;
     readonly labels?: readonly ({ readonly name?: unknown } | null)[];
     readonly head?: { readonly ref?: unknown; readonly sha?: unknown; readonly repo?: { readonly full_name?: unknown } | null };
     readonly base?: { readonly ref?: unknown };
   };
+}
+
+/** The parts of a `check_suite` or a `status` delivery the dispatcher reads. */
+interface HeadEvent {
+  readonly action?: unknown;
+  readonly sender?: { readonly login?: unknown };
+  readonly repository?: { readonly full_name?: unknown };
+  /** A check suite's: the commit it ran on. */
+  readonly check_suite?: { readonly head_sha?: unknown };
+  /** A status's: the commit it was posted on, its context and its state. */
+  readonly sha?: unknown;
+  readonly context?: unknown;
+  readonly state?: unknown;
 }
 
 /** The parts of an `issues` delivery the dispatcher reads. */
@@ -599,23 +661,8 @@ export const createDispatcher = (edges: DispatcherEdges) => {
     return dispatch({ workflow: "follow-ups", repo, pr }, login, where, " on its merge", origin);
   };
 
-  /**
-   * **A pull request's route**: whether a `pull_request` delivery is a job,
-   * and the job where it is; otherwise the reason it is not, which is logged.
-   * What there is nothing to answer, a label no job starts on or a close
-   * without a merge, is ignored first, before anything of the
-   * repository is read. The cheap refusals, the fork and the state, are left
-   * until after the opt-in, so a repository that has not opted in is logged
-   * as that rather than as one of them.
-   * A label is answered on an open pull request, but for `agent:follow-ups`,
-   * which is answered on a closed one, merged or not, as `follow-ups.yml`'s
-   * condition answers it, author gate and all; a close is a merge's route.
-   */
-  const pullRequest = async (payload: unknown, origin: Origin): Promise<string> => {
-    const p = (payload ?? {}) as LabelEvent;
-    if (p.action === "closed") return merge(p, origin);
-    if (p.action !== "labeled") return `ignored: a pull request \`${String(p.action)}\`, not labelled or closed`;
-    const label = p.label?.name;
+  /** A pull request delivery's head and base, as the event carried them, or `undefined` where one is missing. */
+  const pullOf = (p: LabelEvent) => {
     const repo = p.repository?.full_name;
     const pr = p.pull_request?.number;
     const branch = p.pull_request?.head?.ref;
@@ -624,7 +671,6 @@ export const createDispatcher = (edges: DispatcherEdges) => {
     const state = p.pull_request?.state;
     const sender = p.sender?.login;
     if (
-      typeof label !== "string" ||
       typeof repo !== "string" ||
       typeof pr !== "number" ||
       typeof branch !== "string" ||
@@ -633,8 +679,58 @@ export const createDispatcher = (edges: DispatcherEdges) => {
       typeof state !== "string" ||
       typeof sender !== "string"
     ) {
-      return "refused: the delivery is missing a field a job needs";
+      return undefined;
     }
+    return { repo, pr, branch, headSha, baseRef, state, sender, merged: p.pull_request?.merged === true, draft: p.pull_request?.draft === true };
+  };
+
+  /**
+   * **A push's route** (#591): a `synchronize` delivery on a pull request
+   * carrying `agent:merge`, by the labels its payload carries, starts a merge
+   * job, as `merge.yml`'s condition starts its job, so a disarm is said when
+   * the head moves rather than at the next event. A push to a pull request
+   * without it is ignored before anything of the repository is read. **No
+   * author gate**: a push is not a request, Actions' job checks no pusher
+   * either, and the gate arms nothing on one.
+   */
+  const pushed = async (p: LabelEvent, origin: Origin): Promise<string> => {
+    const pull = pullOf(p);
+    if (pull === undefined) return "refused: the delivery is missing a field a job needs";
+    const where = `${pull.repo}#${pull.pr}`;
+    const labels = (p.pull_request?.labels ?? []).map((label) => label?.name);
+    if (!labels.includes(MERGE_LABEL)) return `ignored on ${where}: a push to a pull request not carrying \`${MERGE_LABEL}\``;
+    const why = await unserved(pull.repo);
+    if (why !== undefined) return `refused on ${where}: ${why}`;
+    const refusal = pullRefusal(pull.repo, "merge", pull.state, p.pull_request?.head?.repo?.full_name);
+    if (refusal !== undefined) return `refused on ${where}: ${refusal}`;
+    const login = appLogin((await edges.github.app()).slug);
+    const { sender, ...fields } = pull;
+    return dispatch({ workflow: "merge", ...fields, action: "synchronize", sender }, login, where, ` at ${pull.headSha} on its push`, origin);
+  };
+
+  /**
+   * **A pull request's route**: whether a `pull_request` delivery is a job,
+   * and the job where it is; otherwise the reason it is not, which is logged.
+   * What there is nothing to answer, a label no job starts on, a close
+   * without a merge or a push to a pull request not carrying `agent:merge`,
+   * is ignored first, before anything of the repository is read. The cheap
+   * refusals, the fork and the state, are left until after the opt-in, so a
+   * repository that has not opted in is logged as that rather than as one of
+   * them.
+   * A label is answered on an open pull request, but for `agent:follow-ups`,
+   * which is answered on a closed one, merged or not, as `follow-ups.yml`'s
+   * condition answers it, author gate and all; a close is a merge's route,
+   * and a push a merge job's.
+   */
+  const pullRequest = async (payload: unknown, origin: Origin): Promise<string> => {
+    const p = (payload ?? {}) as LabelEvent;
+    if (p.action === "closed") return merge(p, origin);
+    if (p.action === "synchronize") return pushed(p, origin);
+    if (p.action !== "labeled") return `ignored: a pull request \`${String(p.action)}\`, not labelled, pushed to or closed`;
+    const label = p.label?.name;
+    const pull = pullOf(p);
+    if (typeof label !== "string" || pull === undefined) return "refused: the delivery is missing a field a job needs";
+    const { repo, pr, branch, headSha, baseRef, state, sender, merged, draft } = pull;
     const where = `${repo}#${pr}`;
     const kind = kindOf(LABEL_KINDS.pull_request, label);
     if (kind === undefined) return `ignored on ${where}: \`${label}\` is not a label this release's service answers on a pull request`;
@@ -648,13 +744,61 @@ export const createDispatcher = (edges: DispatcherEdges) => {
     // A fresh ask, so the scan answers the label again up to its limit (#596).
     asks.delete(askedKey(repo, pr, label));
     if (kind === "follow-ups") return dispatch({ workflow: kind, repo, pr }, login, where, " on its label", origin);
-    return dispatch(
-      { workflow: kind, repo, pr, branch, headSha, baseRef, state, merged: p.pull_request?.merged === true },
-      login,
-      where,
-      ` at ${headSha}`,
-      origin,
-    );
+    const fields = { repo, pr, branch, headSha, baseRef, state, merged };
+    // The one delivery that may arm: the gate reads whether the sender can write, and arms the head this names.
+    if (kind === "merge") return dispatch({ workflow: kind, ...fields, draft, action: "labeled", sender }, login, where, ` at ${headSha}`, origin);
+    return dispatch({ workflow: kind, ...fields }, login, where, ` at ${headSha}`, origin);
+  };
+
+  /**
+   * **A head's route** (#591): a check suite's completion, or a final status,
+   * on the head of an open pull request carrying `agent:merge` starts a merge
+   * job there, so the wait for CI holds no worker slot: the gate on the
+   * service waits for nothing, and each of these starts it again.
+   *
+   * What changes nothing the gate decides on is ignored first, before
+   * anything of the repository is read: a check suite not `completed`, a
+   * `pending` status, and a status of the loop's own (`loopStatus`), whoever
+   * sent it, since each lands beside an event that starts the gate already.
+   *
+   * Neither payload carries a pull request's labels, and a status's carries no
+   * pull request at all, so both are routed the one way: the pull requests
+   * the commit belongs to, read with the dispatcher's reader, each with its
+   * labels, draft and head. A check suite's own list of pull requests would
+   * still need each one read for its labels. A commit that is no open pull
+   * request's head starts nothing; nor does one on a pull request not
+   * carrying the label, or from a fork. No author gate, as for a push: the
+   * gate arms nothing on one.
+   */
+  const head = async (event: "check_suite" | "status", payload: unknown, origin: Origin): Promise<string> => {
+    const p = (payload ?? {}) as HeadEvent;
+    let sha: unknown;
+    if (event === "check_suite") {
+      if (p.action !== "completed") return `ignored: a check suite \`${String(p.action)}\`, not completed`;
+      sha = p.check_suite?.head_sha;
+    } else {
+      if (typeof p.context === "string" && loopStatus(p.context)) return `ignored: a status for \`${p.context}\`, one of the loop's own`;
+      if (typeof p.state !== "string" || !FINAL_STATUSES.includes(p.state)) return `ignored: a \`${String(p.state)}\` status, not a final one`;
+      sha = p.sha;
+    }
+    const repo = p.repository?.full_name;
+    const sender = p.sender?.login;
+    if (typeof repo !== "string" || typeof sha !== "string" || typeof sender !== "string") return "refused: the delivery is missing a field a job needs";
+    const what = event === "check_suite" ? "a check suite's completion" : "a status";
+    const where = `${repo}@${sha}`;
+    const why = await unserved(repo);
+    if (why !== undefined) return `refused on ${where}: ${why}`;
+    const pulls = (await edges.github.pullsAt(repo, sha)).filter((pull) => pull.state === "open" && pull.headSha === sha);
+    if (pulls.length === 0) return `ignored on ${where}: ${what} on a commit that is no open pull request's head`;
+    const login = appLogin((await edges.github.app()).slug);
+    const outcomes: string[] = [];
+    for (const { labels, headRepo, number: pr, ...pull } of pulls) {
+      const at = `${repo}#${pr}`;
+      if (!labels.includes(MERGE_LABEL)) outcomes.push(`ignored on ${at}: ${what} on a pull request not carrying \`${MERGE_LABEL}\``);
+      else if (headRepo !== repo) outcomes.push(`refused on ${at}: the head is on a fork`);
+      else outcomes.push(await dispatch({ workflow: "merge", repo, pr, ...pull, action: "synchronize", sender }, login, at, ` at ${sha} on ${what}`, origin));
+    }
+    return outcomes.join("; ");
   };
 
   /**
@@ -710,7 +854,8 @@ export const createDispatcher = (edges: DispatcherEdges) => {
     if (event === "ping") return "ping: answered";
     if (event === "pull_request") return pullRequest(payload, origin);
     if (event === "issues") return issue(payload, origin);
-    return `ignored: \`${event ?? "unnamed"}\` is neither a pull request's nor an issue's event`;
+    if (event === "check_suite" || event === "status") return head(event, payload, origin);
+    return `ignored: \`${event ?? "unnamed"}\` is not an event this release's service answers`;
   };
 
   /**
@@ -814,17 +959,23 @@ export const createDispatcher = (edges: DispatcherEdges) => {
   };
 
   /**
-   * Why a scanned item's label is not answered, or `undefined` where it is.
+   * Why a scanned item's label is not answered, or who added it where it is.
    * The actor of the item's latest `labeled` event for it stands in for a
    * delivery's sender, held to `untrusted` as a sender is, and refused as one
    * is; with no such event the item is skipped, since a scan never dispatches
-   * on a guess. The line is the whole outcome, `where` and all.
+   * on a guess. A refusal's line is the whole outcome, `where` and all.
    */
-  const unasked = async (repo: string, number: number, label: string, login: string, where: string): Promise<string | undefined> => {
+  const unasked = async (
+    repo: string,
+    number: number,
+    label: string,
+    login: string,
+    where: string,
+  ): Promise<{ readonly refusal: string } | { readonly sender: string }> => {
     const sender = await edges.github.labeller(repo, number, label);
-    if (sender === undefined) return `skipped on ${where}: no \`labeled\` event for \`${label}\` was found, so there is no one it was asked by to check`;
+    if (sender === undefined) return { refusal: `skipped on ${where}: no \`labeled\` event for \`${label}\` was found, so there is no one it was asked by to check` };
     const distrust = await untrusted(repo, sender, login);
-    return distrust === undefined ? undefined : `refused on ${where}: ${distrust}, and added \`${label}\` last`;
+    return distrust === undefined ? { sender } : { refusal: `refused on ${where}: ${distrust}, and added \`${label}\` last` };
   };
 
   /**
@@ -874,6 +1025,17 @@ export const createDispatcher = (edges: DispatcherEdges) => {
    * opt-in, which its repository passed, and built into the same job. An item
    * the system already holds a job for, of a kind its label starts, is skipped,
    * and so is one a scan has dispatched for its label the limit's number of times.
+   *
+   * **`agent:merge` is the exception** (#591). It is a standing authorisation,
+   * not a label that says a run is working, so a gate that ends with it on is
+   * the normal case, not a job that ended before its run: the scan's limit is
+   * not applied to it, its dispatches are never counted, and no comment says
+   * it was left for a person. The scan still dispatches a merge job for an
+   * armed pull request nothing holds one for, so a restart that dropped a
+   * queued gate, or missed a check's completion while down, does not strand
+   * it. That job arms nothing (`synchronize`): the head now may not be the one
+   * the label was added at, and a label whose arm never landed is disarmed by
+   * the gate, which asks for it again.
    */
   const rescan = async (repo: string, label: string, item: Labelled, held: readonly HeldJob[], login: string, baseRef: () => Promise<string>): Promise<string> => {
     const where = `${repo}#${item.number}`;
@@ -884,8 +1046,8 @@ export const createDispatcher = (edges: DispatcherEdges) => {
       if (skip !== undefined) return `skipped on ${where}: ${skip}`;
       const stopped = await countedOut(repo, item.number, label, where);
       if (stopped !== undefined) return stopped;
-      const refusal = await unasked(repo, item.number, label, login, where);
-      if (refusal !== undefined) return refusal;
+      const asker = await unasked(repo, item.number, label, login, where);
+      if ("refusal" in asker) return asker.refusal;
       const fields = { repo, issue: item.number, title: item.title, state: item.state, baseRef: await baseRef() };
       return dispatchIssue(kinds, fields, login, where, scanFor(repo, item.number, label));
     }
@@ -893,14 +1055,18 @@ export const createDispatcher = (edges: DispatcherEdges) => {
     if (kind === undefined || kind === "follow-ups") return `ignored on ${where}: \`${label}\` is not a label a scan answers on a pull request`;
     const skip = heldFor(repo, item.number, [kind], held);
     if (skip !== undefined) return `skipped on ${where}: ${skip}`;
-    const stopped = await countedOut(repo, item.number, label, where);
+    const standing = kind === "merge";
+    const stopped = standing ? undefined : await countedOut(repo, item.number, label, where);
     if (stopped !== undefined) return stopped;
     const refusal = pullRefusal(repo, kind, item.state, item.headRepo);
     if (refusal !== undefined) return `refused on ${where}: ${refusal}`;
-    const unanswered = await unasked(repo, item.number, label, login, where);
-    if (unanswered !== undefined) return unanswered;
-    const { number: pr, branch, headSha, baseRef: base, state, merged } = item;
-    return dispatch({ workflow: kind, repo, pr, branch, headSha, baseRef: base, state, merged }, login, where, ` at ${headSha}`, scanFor(repo, pr, label));
+    const asker = await unasked(repo, item.number, label, login, where);
+    if ("refusal" in asker) return asker.refusal;
+    const { number: pr, branch, headSha, baseRef: base, state, merged, draft } = item;
+    const fields = { repo, pr, branch, headSha, baseRef: base, state, merged };
+    // A scan's origin that counts nothing, for the label the limit is not applied to.
+    if (standing) return dispatch({ workflow: kind, ...fields, draft, action: "synchronize", sender: asker.sender }, login, where, ` at ${headSha}`, { taken: () => {} });
+    return dispatch({ workflow: kind, ...fields }, login, where, ` at ${headSha}`, scanFor(repo, pr, label));
   };
 
   /** One repository's part of a scan: refused where it is not served, and each labelled item decided otherwise. */

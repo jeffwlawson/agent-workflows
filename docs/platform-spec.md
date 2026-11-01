@@ -21,9 +21,10 @@ sentence. How one orchestrator does a thing is description, and sits in a quoted
 > it owns: the `dispatcher` and `worker` subcommands of this package, whose code is
 > [`service/`](../service/) and whose deployment is
 > [deploying-the-service.md](./deploying-the-service.md). It answers every trigger label the loop
-> has but `agent:merge`: `agent:review`, `agent:fix`, `agent:update-branch` and `agent:follow-ups`
-> on a pull request, `agent:implement` on an issue, a regular one or a PRD, and every merge, for
-> `follow-ups`. At this release it does not serve `agent:merge` (§12). A block for it appears only where it differs from the Actions orchestrator in a way a
+> has: `agent:review`, `agent:fix`, `agent:update-branch`, `agent:follow-ups` and `agent:merge` on a
+> pull request, `agent:implement` on an issue, a regular one or a PRD, and every merge, for
+> `follow-ups`. `agent:merge` it answers from #591, with a `merge` job started besides by a push, a
+> check suite's completion and a final status on an armed head (§12). A block for it appears only where it differs from the Actions orchestrator in a way a
 > reader would trip on.
 
 Neither block binds anyone. Where they disagree with a bold sentence, the bold sentence is right.
@@ -412,17 +413,19 @@ answer a label on such a repository unless it would answer one with the variable
 falls back to the orchestrator the repository already had rather than to two. A service
 orchestrator answers only the labels `SERVICE_LABELS` in `service/dispatcher.ts` lists, the keys
 of its map from trigger label to job kind, per event type: `agent:review`, `agent:fix`,
-`agent:update-branch` and `agent:follow-ups` on a pull request's delivery and `agent:implement` on
-an issue's, which is every trigger label the loop has but `agent:merge`. That one is not in
-`SERVICE_LABELS` at this release (§12). A label is answered on its own event type only, and on a
-service-served repository every other label, `agent:merge` included, is answered by nothing. A merge is the
-one trigger that is not a label: a `follow-ups` job is started as well on the `closed` delivery of
-every pull request merged, whatever its labels (§11).
+`agent:update-branch`, `agent:follow-ups` and `agent:merge` on a pull request's delivery and
+`agent:implement` on an issue's, which is every trigger label the loop has. A label is answered on
+its own event type only, and on a service-served repository every other label is answered by
+nothing. A merge is the one trigger that is not a label: a `follow-ups` job is started as well on
+the `closed` delivery of every pull request merged, whatever its labels (§11). And a `merge` job is
+started as well, never arming, by the events that can change its gate's answer on the head of an
+open pull request carrying `agent:merge`: a push (`synchronize`), a check suite's completion, and a
+final status from a context not the loop's own (§12).
 
 `doctor` reads the variable. It reports any value but unset or `service` as an error, and one it
 could not read as unknown. With `service`, it checks that the labels the service answers exist,
-and names, as a warning, each trigger label nothing answers there. At this release that is
-`agent:merge`, which it names whether or not the `merge` caller is installed.
+and names, as a warning, each trigger label nothing answers there. At this release that is none:
+`agent:merge`, the last to be served (#591), is among the labels it checks exist.
 
 **`doctor` cannot check this.** It reads which orchestrator a repository asks for, not which one
 listens: a caller left installed listens and skips, and a service listens from outside the
@@ -3843,9 +3846,67 @@ a fourth: it disarms, saying the base moved past it three times while it waited,
 `agent:merge` again re-arms the head as it is, which a human's re-add does at count 0. It asks for
 no fresh merge-check, since the head is the armed commit plus clean merges of the base.
 
-> **Service orchestrator:** does not serve `agent:merge` at this release. The label is not in
-> `SERVICE_LABELS`, so on a service-served repository it is answered by nothing, and `doctor` names
-> it as such (§4.2). The service's `merge` job kind is a later release's.
+> **Service orchestrator:** serves `agent:merge` with a `merge` job (`MergeJob`, #591), in a job
+> that checks nothing out and runs no setup, no sandbox and no runner, so Contents: write with
+> Workflows: write is never where an agent runs.
+>
+> **What starts it.** `agent:merge` added, with the author gate every label has and the App's own
+> login trusted as a sender (ADR 0008): the one start that may arm, told the gate as `ACTION`
+> `labeled`. And, each only for an open, same-repository pull request carrying `agent:merge`, with
+> no author gate and told the gate as `synchronize`, which arms nothing: a `pull_request`
+> `synchronize`, by the labels its payload carries; a `check_suite` `completed`; and a `status`
+> whose state is final (`success`, `failure` or `error`). Neither of the last two payloads carries
+> a pull request's labels, and a status's carries no pull request, so both are routed the one way:
+> the pull requests the commit belongs to (`GET /repos/{owner}/{repo}/commits/{sha}/pulls`), read
+> with the dispatcher's reader, which so holds Pull requests: read, each with its labels, draft and
+> head; one whose head is not that commit, or that is not open, is passed over, and a commit no open
+> pull request has as its head starts nothing. A check suite not `completed`, a `pending` status,
+> and a status for one of the loop's own contexts (`agent-merge`, `agent-review`,
+> `agent-fix-round`), whoever sent it, start nothing and are ignored before anything is read: each
+> of the loop's lands beside an event that already starts the gate, the arm and its carry beside a
+> push, and an approval with `review:conclude`'s re-add of `agent:merge`. The App is subscribed to
+> `check_suite` and `status` for these, and the dispatcher's start-up check names either where it is
+> not.
+>
+> **The run** follows the `Actions orchestrator:` blocks below, with these differences. The worker
+> asks for a `write` token and runs `merge:gate` with it as both `GH_TOKEN` and `LOOP_TOKEN`,
+> `LOOP_TOKEN_SOURCE` `app`, and the App's login as `LOOP_LOGIN` and `AGENT_LOOP_LOGINS`: the loop
+> token's account, the one an arm is read back by. `HEAD_REPO` is the repository, since a fork's
+> delivery is refused before a job is made, and `CHECK_WAIT_SECONDS` is **0**: the gate decides once
+> and ends, `wait` included, since a polling gate would hold the worker's one slot, and the events
+> above start it again. Where the gate succeeded and decided `merge`, it asks for a `push` token and
+> runs `merge:publish` with it, the only phase holding one: a merge of a pull request changing
+> `.github/workflows/` needs Workflows: write. Then, however the run went, a fresh `write` token, or
+> the gate's where that is refused, and `merge:conclude`, told `JOB_STATUS` from how the gate and
+> publish ended, `TIMED_OUT`, and `TIMEOUT_MINUTES` 20. A `push` token refused is a failure, with
+> its reason in publish's directory. No `MINT_OUTCOME`, since there is no mint of Actions' kind, and
+> no run link: `merge:conclude` declares none the service has. The gate and publish share the job's
+> time limit, `merge.yml`'s `timeout-minutes`, 20, and conclude gets as many of its own. Where no
+> first token is granted nothing runs, the label stays on, and the worker's log says why. Every
+> write is the App's, so the refusal, disarm and waiting comments, which Actions posts with the
+> workflow token, are posted as the App's bot.
+>
+> **Coalescing.** Per pull request at most one `merge` job runs and at most one waits. The worker's
+> job door holds the rule, since it is what knows a job has started: a merge job for a pull request
+> with one queued and not yet started is absorbed by it and logged so, and one for a pull request
+> whose merge job is running queues one successor, which later ones are absorbed by. This departs,
+> for `merge` only, from the dispatcher's rule that a delivery is never deduplicated against
+> another: a gate decides from the record, read when it starts, so two queued gates on one pull
+> request decide the same thing. The one exception is the start that may arm: a person's
+> `agent:merge` replaces the job queued rather than being absorbed by it, since the head its
+> delivery named is the one fact a delivery carries. A delivery is never absorbed into the running
+> job: a gate that read a pending check just before the check completed ends `wait`, and the
+> absorbed delivery was the one that would have started it again.
+>
+> **The scan.** `agent:merge` is a standing decision, not a run's label, so the scan's limit
+> (`SCAN_DISPATCH_LIMIT`) is not applied to it: a gate ending with the arm on is the normal case.
+> The scan dispatches a `merge` job, told `synchronize`, for an armed pull request nothing holds one
+> for, so a restart that dropped a queued gate, or missed a check's completion while down, does not
+> strand it; it never counts that dispatch and never comments that the label was left for a person.
+>
+> **Concurrency relies on one worker**, as for follow-ups (§11): Actions holds the job in the pull
+> request's own group, and the service's one serial queue is what keeps two gates on one pull
+> request from racing to the merge.
 
 ### `merge:gate`
 

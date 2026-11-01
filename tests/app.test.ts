@@ -213,7 +213,7 @@ describe("the manifest flow creates the loop's App", () => {
     );
 
     expect(seen["hook_attributes"]).toEqual({ url: "https://hooks.example.test/github", active: true });
-    expect(seen["default_events"]).toEqual(["pull_request", "issues"]);
+    expect(seen["default_events"]).toEqual(["pull_request", "issues", "check_suite", "status"]);
     expect(seen["public"]).toBe(false);
     expect(outcome).toEqual({ id: 4242, slug: "acme-loop-bot", name: "Acme Loop Bot", pem: conversion.pem, webhookSecret: "s3cret" });
   });

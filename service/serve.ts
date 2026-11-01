@@ -8,7 +8,7 @@ import { appGaps, createDispatcher, parseOwners, type AppRecord, type DoorReques
 import { liveAppGitHub } from "./github-app.js";
 import type { Job } from "./job.js";
 import type { DISPATCHER, WORKER } from "./settings.js";
-import { heldDoor, jobDoor, oneAtATime, runJob, SUMMARY_FILE } from "./worker.js";
+import { admit, heldDoor, jobDoor, oneAtATime, runJob, SUMMARY_FILE } from "./worker.js";
 import { announceStart, installCli, liveGit, liveLauncher, liveSandbox, liveTokens, routeThroughProxy } from "./worker-live.js";
 
 /**
@@ -226,7 +226,15 @@ export const serveWorker = async (settings: InputValues<typeof WORKER>, stdout: 
     log(`job ${job.id}: ended. ${phases.map(({ name, outcome }) => `${name}: ${outcome}`).join("; ")}. Its summary: ${path.join(runDir, SUMMARY_FILE)}`);
   };
   const queue = oneAtATime(work, (error) => log(`a job failed: ${error instanceof Error ? error.message : String(error)}`));
-  const accept = jobDoor({ secret: settings.WORKER_SECRET, version: VERSION, accept: queue.add });
+  const accept = jobDoor({
+    secret: settings.WORKER_SECRET,
+    version: VERSION,
+    // A merge job is coalesced per pull request (#591), and the line says so.
+    accept: (job) => {
+      const coalesced = admit(queue, job);
+      if (coalesced !== undefined) log(coalesced);
+    },
+  });
   const held = heldDoor({
     secret: settings.WORKER_SECRET,
     held: queue.held,

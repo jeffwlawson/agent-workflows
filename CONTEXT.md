@@ -654,8 +654,12 @@ workflows on Actions, and each gate defers the other's issue shape without a wor
 dispatcher never reads the shape. The last kind, `follow-ups` (`FollowUpsJob`, #519), is the one
 not started by a label alone: every merge of a same-repository pull request starts it, whatever its
 labels (#544), with no author gate, as does `agent:follow-ups` added to a closed pull request, with
-one. Every trigger label the
-loop has is served.
+one. And `merge` (`MergeJob`, #591), from `agent:merge`, runs `merge.yml`'s three commands with no
+checkout and no agent; it is started as well, with no author gate and never arming, by a push, a
+check suite's completion and a final status on the head of an open pull request carrying the label,
+since the service's gate waits for nothing and those are what change its answer. Per pull request at
+most one merge job runs and one waits in the worker's queue: one more is absorbed by the one waiting,
+which reads the record when it starts. Every trigger label the loop has is served.
 The map is keyed by event, so a label is answered on the event type it belongs to and on no other,
 and each event has a route of its own reading its own payload: an implement or implement-prd job carries an issue,
 with no head, and the repository's default branch as its base. A job's deadline is its kind's own time limit plus the dispatcher's margin. The labels the service
@@ -671,6 +675,8 @@ at the worker's: since a trigger label is on while its run works, one on an open
 held for it, by the worker or the dispatcher, is a run that never reached its ending, and is
 dispatched as its delivery would have been, the actor of the label's latest `labeled` event
 standing in for the sender. `agent:follow-ups` is a marker, not a run, and is never scanned.
+`agent:merge` is not a run's label either, but a standing decision: it is scanned, so a dropped gate
+is started again, and never counted against the limit below.
 A job carries its dispatcher's **instance**, an id fresh at each start (#597), which the scan's
 question at the worker names: the worker drops every job it holds queued from another instance,
 whose id no dispatcher running now knows, so a dispatcher's restart alone loses only the running

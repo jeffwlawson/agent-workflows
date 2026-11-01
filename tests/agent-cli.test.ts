@@ -2775,7 +2775,7 @@ describe("init --service registers a service-ready App", () => {
           statuses: "write",
         },
         hook_attributes: { url: URL_GIVEN, active: true },
-        default_events: ["pull_request", "issues"],
+        default_events: ["pull_request", "issues", "check_suite", "status"],
       },
     ]);
     // The service's whole need, from the one declaration the dispatcher checks against.
@@ -4697,6 +4697,7 @@ describe("doctor names the failures that otherwise look like something else", ()
         record.FIX_LABEL,
         record.UPDATE_BRANCH_LABEL,
         record.FOLLOW_UPS_LABEL,
+        record.MERGE_LABEL,
         record.IMPLEMENT_LABEL,
       ]);
     });
@@ -4715,13 +4716,13 @@ describe("doctor names the failures that otherwise look like something else", ()
      * The trigger labels this release's service does not answer: read off the
      * one list the dispatcher reads, so a release that teaches the service a
      * label moves this without an edit. `agent:merge` (#588) arrived on
-     * Actions first.
+     * Actions first, and the service answers it from #591.
      */
     const unansweredLabels = (): readonly string[] =>
       [...TRIGGER_LABELS.map((label) => label.name), record.FOLLOW_UPS_LABEL].filter((name) => !SERVICE_LABELS.includes(name));
 
     it("passes a service-served repository with no callers and its labels", () => {
-      const findings = rule(empty(), service({ labels: ["agent:implement", "agent:review", "agent:fix", "agent:update-branch", "agent:blocked"] }));
+      const findings = rule(empty(), service({ labels: ["agent:implement", "agent:review", "agent:fix", "agent:update-branch", "agent:merge", "agent:blocked"] }));
 
       expect(checks(findings)).toEqual([
         "note orchestrator",
@@ -4755,9 +4756,9 @@ describe("doctor names the failures that otherwise look like something else", ()
       expect(app?.problem).toContain("`doctor` cannot check this.");
     });
 
-    // #519 served the last of the run labels, and `agent:merge` (#588)
-    // arrived on Actions before the service answers it: the check names
-    // exactly what the one list leaves out, and nothing else.
+    // #519 served the last of the run labels, and #591 `agent:merge`, which
+    // arrived on Actions first (#588): the check names exactly what the one
+    // list leaves out, which at this release is nothing.
     it("names as unanswered exactly the trigger labels the service does not answer", () => {
       const said = rule(empty(), service()).filter((finding) => finding.check === "unanswered labels");
       const unanswered = unansweredLabels();
@@ -4893,7 +4894,7 @@ describe("doctor names the failures that otherwise look like something else", ()
     it("checks the labels the service needs exist, and no others", () => {
       const missing = rule(empty(), service({ labels: ["agent:blocked"] })).find((finding) => finding.check === "labels");
       expect(missing?.severity).toBe("error");
-      expect(missing?.problem).toMatch(/^agent:implement, agent:review, agent:fix, agent:update-branch do not exist/);
+      expect(missing?.problem).toMatch(/^agent:implement, agent:review, agent:fix, agent:update-branch, agent:merge do not exist/);
 
       const unread = rule(empty(), service({ labels: undefined })).find((finding) => finding.check === "labels");
       expect(unread?.severity).toBe("warning");

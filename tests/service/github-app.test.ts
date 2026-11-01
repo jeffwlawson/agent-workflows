@@ -217,11 +217,11 @@ describe("liveAppGitHub: the App and its installation, as GitHub records them", 
 });
 
 describe("liveAppGitHub: the tokens it mints, by the names GitHub gives permissions", () => {
-  it("reads a variable with a token asking for metadata and the repository's variables alone", async () => {
+  it("reads a variable with a token asking for metadata, the repository's variables and its pull requests alone", async () => {
     world.repository = { AGENT_ORCHESTRATOR: "service" };
 
     expect(await liveAppGitHub("1", KEY).variable(REPO, "AGENT_ORCHESTRATOR")).toBe("service");
-    expect(minted).toEqual([{ metadata: "read", actions_variables: "read" }]);
+    expect(minted).toEqual([{ metadata: "read", actions_variables: "read", pull_requests: "read" }]);
   });
 
   it.each(Object.entries(TOKEN_PERMISSIONS))("mints a worker's `%s` token", async (_, permissions) => {
@@ -269,7 +269,7 @@ describe("liveAppGitHub: what the scan reads (#581)", () => {
 
     expect(await liveAppGitHub("1", KEY).labelled(REPO, "agent:review")).toEqual([
       { type: "issues", number: 12, title: "Add a thing", state: "open" },
-      { type: "pull_request", number: 7, state: "open", merged: false, branch: PULL.head.ref, headSha: PULL.head.sha, headRepo: REPO, baseRef: "main" },
+      { type: "pull_request", number: 7, state: "open", merged: false, draft: false, branch: PULL.head.ref, headSha: PULL.head.sha, headRepo: REPO, baseRef: "main" },
     ]);
     expect(queried).toContain(`/repos/${REPO}/issues?state=open&labels=agent%3Areview&per_page=100&page=1`);
     expect(minted).toEqual([SCAN_PERMISSIONS]);

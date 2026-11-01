@@ -9,6 +9,7 @@ import type { DoorRequest, DoorResponse } from "./dispatcher.js";
 import {
   FOLLOW_UPS_MINUTES,
   fixTimeLimit,
+  MERGE_MINUTES,
   HELD_REQUEST_MAX_AGE_MINUTES,
   HELD_REQUEST_MAX_SKEW_MINUTES,
   heldOf,
@@ -22,6 +23,7 @@ import {
   type ImplementJob,
   type ImplementPrdJob,
   type Job,
+  type MergeJob,
   type ReviewJob,
   type TokenKind,
   type UpdateBranchJob,
@@ -576,7 +578,8 @@ export const startRun = (job: Job, edges: JobEdges): Run => {
  * **One job**: its kind's run function, which follows that workflow's
  * `Actions orchestrator:` blocks in the spec, §6 for implement, §7 for
  * implement-prd, §8 for
- * review, §9 for fix, §10 for update-branch and §11 for follow-ups.
+ * review, §9 for fix, §10 for update-branch, §11 for follow-ups and §12 for
+ * merge.
  * Never throws: how each phase ended is in what this returns, for the
  * worker's log.
  */
@@ -594,6 +597,8 @@ export const runJob = async (job: Job, edges: JobEdges): Promise<readonly Phase[
       return runImplementPrd(job, edges);
     case "follow-ups":
       return runFollowUps(job, edges);
+    case "merge":
+      return runMerge(job, edges);
   }
 };
 
@@ -2237,6 +2242,103 @@ const runFollowUps = async (job: FollowUpsJob, edges: JobEdges): Promise<readonl
   return done();
 };
 
+/**
+ * `merge:gate`'s wait bound on the service, `CHECK_WAIT_SECONDS`: none. On
+ * Actions the gate polls for up to the review's CI wait; here a polling gate
+ * would hold the worker's one slot, and the dispatcher's deliveries, a push, a
+ * check suite's completion and a final status, start it again instead (#591).
+ */
+export const MERGE_WAIT_SECONDS = 0;
+
+/**
+ * **A merge job** (#591): one start of the gate on a pull request carrying
+ * `agent:merge`, as `merge.yml`'s one job runs it, which the `Actions
+ * orchestrator:` blocks of spec §12 describe.
+ *
+ * 1. A `write` token, then `merge:gate`, with the loop's token the same one,
+ *    the App's login as the account an arm is read back by, and a wait bound
+ *    of `MERGE_WAIT_SECONDS`.
+ * 2. Where the gate succeeded and decided `merge`, a `push` token, then
+ *    `merge:publish` with it: a pull request changing `.github/workflows/`
+ *    merges only with Workflows: write. The only phase that holds one.
+ * 3. A fresh `write` token, or the gate's where it is refused, then
+ *    `merge:conclude`, however the run went, told how.
+ *
+ * No checkout, no setup, no sandbox and no runner: nothing here reads the
+ * pull request's code, so Contents: write with Workflows: write is never
+ * where an agent runs. Each command runs in the run's own directory. The gate
+ * and publish share the job's `MERGE_MINUTES`, and conclude gets as many of
+ * its own.
+ */
+const runMerge = async (job: MergeJob, edges: JobEdges): Promise<readonly Phase[]> => {
+  const { note, limit, outputDir, ask, run, notStarted, done } = startRun(job, edges);
+  const common = { GH_REPO: job.repo, PR_NUMBER: String(job.pr), AGENT_LOOP_LOGINS: job.appLogin };
+  const loop = (token: string) => ({ GH_TOKEN: token, LOOP_TOKEN: token, LOOP_TOKEN_SOURCE: TOKEN_SOURCE, LOOP_LOGIN: job.appLogin });
+
+  const write = await ask("write");
+  if (write === undefined) {
+    // Nothing can say so on the pull request, so the worker's log says it.
+    // The label stays on, so the next delivery, or adding it again, is the retry.
+    note("merge:gate", "not run: the dispatcher granted no token to decide with, so neither it nor merge:conclude ran, and nothing was written");
+    return done();
+  }
+
+  const jobLimit = limit(MERGE_MINUTES);
+  const gated = await run(
+    "merge:gate",
+    {
+      ...common,
+      ...loop(write),
+      BASE_REF: job.baseRef,
+      ACTION: job.action,
+      SENDER: job.sender,
+      HEAD_SHA: job.headSha,
+      // The dispatcher refuses a fork's delivery, so the head is the repository's.
+      HEAD_REPO: job.repo,
+      PR_STATE: job.state,
+      PR_MERGED: String(job.merged),
+      PR_DRAFT: String(job.draft),
+      CHECK_WAIT_SECONDS: String(MERGE_WAIT_SECONDS),
+    },
+    edges.runDir,
+    jobLimit.signal,
+  );
+  let ended = gated;
+  if (gated.ok && decisions(gated.dir, "gate.json")["decision"] === "merge") {
+    const push = await ask("push");
+    if (push === undefined) {
+      notStarted("merge:publish", "The dispatcher granted no `push` token to merge with, so nothing was merged. The worker's log has the reason.");
+      ended = { ok: false, timedOut: false, dir: gated.dir };
+    } else {
+      ended = await run("merge:publish", { ...common, ...loop(push), BASE_REF: job.baseRef, GATE_DIR: gated.dir }, edges.runDir, jobLimit.signal);
+    }
+  }
+  jobLimit.clear();
+
+  // `always()` on Actions, cancel and timeout included: conclude gets a limit
+  // of its own, as a step after a timed-out one still runs there.
+  const concluding = (await ask("write")) ?? write;
+  const concludeLimit = limit(MERGE_MINUTES);
+  await run(
+    "merge:conclude",
+    {
+      ...common,
+      GH_TOKEN: concluding,
+      // A time limit ends a job on Actions as a cancel, which the measuring
+      // step then reads as a timeout.
+      JOB_STATUS: ended.timedOut ? "cancelled" : ended.ok ? "success" : "failure",
+      TIMED_OUT: String(ended.timedOut),
+      TIMEOUT_MINUTES: String(MERGE_MINUTES),
+      GATE_DIR: gated.dir,
+      PUBLISH_DIR: outputDir("merge:publish"),
+    },
+    edges.runDir,
+    concludeLimit.signal,
+  );
+  concludeLimit.clear();
+  return done();
+};
+
 /** What the job door needs: the shared secret, the worker's own release, and where an accepted job goes. */
 export interface WorkerDoorEdges {
   readonly secret: string;
@@ -2337,6 +2439,8 @@ export interface Queue<T> {
    * item is never taken: its work has started.
    */
   readonly drop: (dropped: (item: T) => boolean) => readonly T[];
+  /** The item whose work is running, or `undefined` where none is. */
+  readonly running: () => T | undefined;
 }
 
 /**
@@ -2370,5 +2474,50 @@ export const oneAtATime = <T>(work: (item: T) => Promise<void>, onError: (error:
       for (const item of taken) items.splice(items.indexOf(item), 1);
       return taken;
     },
+    running: () => running,
   };
+};
+
+/** Whether a merge job is the one that may arm: `agent:merge` added by a person, not the App. */
+const arms = (job: MergeJob): boolean => job.action === "labeled" && job.sender.toLowerCase() !== job.appLogin.toLowerCase();
+
+/**
+ * **What the job door queues** (#591): every job, but a `merge` job is
+ * coalesced, so merge jobs cannot pile up in the one serial queue. Per pull
+ * request at most one runs and at most one waits: a merge job for a pull
+ * request with one queued and not yet started is **absorbed** by it, and
+ * queues nothing; one for a pull request whose merge job is running queues
+ * the one successor, which later ones are absorbed by. A gate decides from
+ * the record, read fresh when it starts, never from the delivery, so two
+ * queued gates on one pull request decide the same thing.
+ *
+ * But one: the gate arms only on a person's `agent:merge`, at the head its
+ * delivery named, so that job is the one fact a delivery carries. A job that
+ * arms **replaces** the one queued, rather than being absorbed by it, and
+ * goes to the back; one that does not is absorbed by a queued one that arms
+ * as by any. Absorbing into the running job is never done: a gate that read
+ * a pending check just before the check completed ends `wait`, and the
+ * absorbed delivery was the one that would have started it again.
+ *
+ * Answers the line to log where a job was absorbed or replaced, and
+ * `undefined` where it was queued as it came.
+ */
+export const admit = (queue: Queue<Job>, job: Job): string | undefined => {
+  if (job.workflow !== "merge") {
+    queue.add(job);
+    return undefined;
+  }
+  const running = queue.running();
+  const waiting = queue
+    .held()
+    .find((held): held is MergeJob => held !== running && held.workflow === "merge" && held.repo === job.repo && held.pr === job.pr);
+  if (waiting === undefined) {
+    queue.add(job);
+    return undefined;
+  }
+  const where = `${job.repo}#${job.pr}`;
+  if (!arms(job)) return `job ${job.id}: absorbed by merge job ${waiting.id}, queued for ${where} and not yet started, which reads the record fresh when it starts`;
+  queue.drop((held) => held === waiting);
+  queue.add(job);
+  return `job ${job.id}: replaced merge job ${waiting.id}, queued for ${where} and not yet started, since it is a person's \`agent:merge\` and arms the head its delivery named`;
 };

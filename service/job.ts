@@ -98,13 +98,25 @@ export const implementPrdTimeLimit = (variable: string): number => IMPLEMENT_PRD
 export const FOLLOW_UPS_MINUTES = 10;
 
 /**
+ * A merge job's time limit, in minutes: the one job's `timeout-minutes` in
+ * `merge.yml`, which the worker holds `merge:gate` and `merge:publish` to
+ * together, and names to `merge:conclude` as the limit a timeout ran out.
+ * Actions sizes it for the gate's bound of the review's CI wait; the
+ * service's gate waits for nothing (`MERGE_WAIT_SECONDS` in
+ * `service/worker.ts`), so the limit only bounds a hang.
+ */
+export const MERGE_MINUTES = 20;
+
+/**
  * The workflows the service runs, one job kind each (ADR 0008): the field a
  * job names its workflow in, and the worker's run function for it, follow
  * from the kind. The dispatcher routes a trigger label to one, or, for
- * `agent:implement`, to two, as Actions starts two workflows on it; and a
- * merge, the one trigger that is not a label, to `follow-ups`.
+ * `agent:implement`, to two, as Actions starts two workflows on it; a
+ * merge, the one trigger that is not a label, to `follow-ups`; and a push,
+ * a check suite's completion or a status on an armed head to `merge`, as
+ * `agent:merge` itself is (#591).
  */
-export const JOB_KINDS = ["review", "fix", "update-branch", "implement", "implement-prd", "follow-ups"] as const;
+export const JOB_KINDS = ["review", "fix", "update-branch", "implement", "implement-prd", "follow-ups", "merge"] as const;
 
 export type JobKind = (typeof JOB_KINDS)[number];
 
@@ -208,8 +220,33 @@ export interface FollowUpsJob extends JobBase {
   readonly variables: Readonly<Record<RepositoryVariable, string>>;
 }
 
+/**
+ * What a merge job hands `merge:gate` as `ACTION`: `labeled` where
+ * `agent:merge`'s own delivery started it, the one that may arm, and
+ * `synchronize`, which arms nothing, for every other start: a push, a check
+ * suite's completion, a status, and a scan.
+ */
+export const MERGE_ACTIONS = ["labeled", "synchronize"] as const;
+
+export type MergeAction = (typeof MERGE_ACTIONS)[number];
+
+/**
+ * One start of `merge:gate` on a pull request carrying `agent:merge` (#591),
+ * as a job for the worker: what a pull request job carries, and what the
+ * gate is told of the event besides, whether the pull request is a draft,
+ * what started it, and who sent it. Nothing is checked out, so the head and
+ * base are told to the gate rather than fetched.
+ */
+export interface MergeJob extends PullRequestJob {
+  readonly workflow: "merge";
+  readonly draft: boolean;
+  readonly action: MergeAction;
+  /** The delivery's sender: the labeller, the pusher, or whoever a check's event names; a scan's is the labeller. */
+  readonly sender: string;
+}
+
 /** A job the dispatcher posts and the worker runs: one member per workflow the service serves. */
-export type Job = ReviewJob | FixJob | UpdateBranchJob | ImplementJob | ImplementPrdJob | FollowUpsJob;
+export type Job = ReviewJob | FixJob | UpdateBranchJob | ImplementJob | ImplementPrdJob | FollowUpsJob | MergeJob;
 
 /**
  * Each kind's time limit, in minutes, from the repository's variables: the
@@ -222,6 +259,7 @@ export const TIME_LIMITS: Readonly<Record<JobKind, (variables: Readonly<Record<R
   implement: (variables) => fixTimeLimit(variables.AGENT_TIMEOUT_MINUTES),
   "implement-prd": (variables) => implementPrdTimeLimit(variables.AGENT_TIMEOUT_MINUTES),
   "follow-ups": () => FOLLOW_UPS_MINUTES,
+  merge: () => MERGE_MINUTES,
 };
 
 /**
@@ -329,6 +367,17 @@ const parseFollowUps = (base: Omit<JobBase, "workflow">, value: Fields): FollowU
   return { workflow: "follow-ups", ...base, pr, variables };
 };
 
+/** A merge job's own fields, past the common ones, or the reason they are not. */
+const parseMerge = (base: Omit<JobBase, "workflow">, value: Fields): MergeJob | string => {
+  const pull = parsePullRequest("merge", base, value);
+  if (typeof pull === "string") return pull;
+  const { draft, action, sender } = value;
+  if (typeof draft !== "boolean") return "`draft` is not a boolean";
+  if (!MERGE_ACTIONS.some((known) => known === action)) return `\`action\` is not one of ${MERGE_ACTIONS.map((a) => `\`${a}\``).join(", ")}`;
+  if (typeof sender !== "string" || sender === "") return "`sender` is not a non-empty string";
+  return { ...pull, draft, action: action as MergeAction, sender };
+};
+
 /** Each kind's own fields, read once the common ones are. */
 const PARSERS: Readonly<Record<JobKind, (base: Omit<JobBase, "workflow">, value: Fields) => Job | string>> = {
   review: (base, value) => parsePullRequest("review", base, value),
@@ -337,6 +386,7 @@ const PARSERS: Readonly<Record<JobKind, (base: Omit<JobBase, "workflow">, value:
   implement: (base, value) => parseIssue("implement", base, value),
   "implement-prd": (base, value) => parseIssue("implement-prd", base, value),
   "follow-ups": parseFollowUps,
+  merge: parseMerge,
 };
 
 /**

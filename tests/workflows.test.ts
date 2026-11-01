@@ -8087,9 +8087,9 @@ describe("every gh call reaches argv, never a shell", () => {
  * in it may name this repo's toolchain.
  *
  * The seam that replaces both already exists and is load-bearing: every prompt
- * reads `CONTEXT.md` and `CLAUDE.md` first, so what is specific to a repo lives
- * with the adopter rather than with the template. The prompts point at those two
- * files; the files answer.
+ * reads `CONTEXT.md` first and already has `CLAUDE.md` in its context (#638),
+ * so what is specific to a repo lives with the adopter rather than with the
+ * template. The prompts point at those two files; the files answer.
  *
  * These are deliberately mechanical. De-domaining is a one-off edit anyone can
  * do; *staying* de-domained is a habit, and the next prompt written under

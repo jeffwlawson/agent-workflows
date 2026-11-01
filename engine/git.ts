@@ -406,8 +406,11 @@ export interface GitMerger {
    * than at the one checked out: resolved after the fetch, so the base's
    * remote-tracking name is the base as fetched. With `message`, a merge
    * commit is made with that message, and always made, never a fast-forward,
-   * so a mark the message carries is never lost; without it, git writes its
-   * own.
+   * so a mark the message carries is never lost; without it, the merge is
+   * made under the subject a person's `git merge origin/<base>` makes,
+   * `Merge remote-tracking branch 'origin/<base>' into <into>`, spelled here
+   * rather than left to git, so config such as `merge.suppressDest` does not
+   * change it.
    */
   merge(options: {
     readonly base: string;
@@ -480,10 +483,13 @@ export const gitMerger = (repository: GitRepository, fetcher: GitFetcher): GitMe
         }
       }
       try {
-        // By its remote-tracking name, so the message is the one a person's
-        // `git merge origin/<base>` makes.
-        const own = message === undefined ? [] : ["--no-ff", "-m", message];
-        await run("git", ["merge", "--no-edit", "--no-verify", ...own, `origin/${base}`], { cwd: repository.dir, env, encoding: "utf8" });
+        // By its full remote-tracking ref, where a tag named `origin/<base>`
+        // would win over the short name (#569), and with the message a
+        // person's `git merge origin/<base>` makes, which git would otherwise
+        // spell with the full ref.
+        const own =
+          message === undefined ? ["-m", `Merge remote-tracking branch 'origin/${base}' into ${into}`] : ["--no-ff", "-m", message];
+        await run("git", ["merge", "--no-edit", "--no-verify", ...own, tracking], { cwd: repository.dir, env, encoding: "utf8" });
       } catch (error) {
         const conflicts = (await git(["diff", "--name-only", "-z", "--diff-filter=U"])).split("\0").filter((p) => p !== "");
         if (conflicts.length > 0) return { status: "conflicts", base: commit, conflicts };

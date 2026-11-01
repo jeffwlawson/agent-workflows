@@ -396,7 +396,8 @@ Before writing a brief, `/triage` checks other issues, open PRs and work in flig
 
 The five canonical triage roles at their default strings, kept as a **second vocabulary** beside
 `agent:*` workflow state rather than merged into it; the one join, `ready-for-agent` →
-`agent:implement`, stays a human hand. Also the only definition of the `wayfinder:*` planning
+`agent:implement`, stays a human hand, and `agent:merge`, the merge decision, is the second human
+hand into `agent:*` (ADR 0009). Also the only definition of the `wayfinder:*` planning
 labels, which two workflows refuse and nothing else describes. See
 [`docs/agents/triage-labels.md`](./docs/agents/triage-labels.md).
 

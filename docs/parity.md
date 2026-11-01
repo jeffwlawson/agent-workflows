@@ -116,7 +116,7 @@ jeffwlawson/winget-manifest-lint#92.
 
 Labelling a **parent** issue `agent:implement` implements its sub-issues one at a time — one per
 run — each as commits straight onto a single **PRD branch**, reviewed on the one **PRD PR** from
-the PRD branch into the base branch, which is what a human merges. Every slice gets a **slice
+the PRD branch into the base branch, which is the one a human decides to merge. Every slice gets a **slice
 round** on the PRD PR, and the chain builds the next slice only once that round ends on an
 approval. No slice has a branch or a pull request of its own (PRD #222). Rewritten twice: until
 PRD #171 every slice accumulated onto one branch and one PR, and review was requested once, at the
@@ -207,7 +207,7 @@ died after its last slice once landed on the finished-PRD refusal, and both that
 failure comment asked a human to add `agent:review` to the PR by hand — a second owner of the one
 handoff. Finished is now read off what the handover leaves, never off the draft state alone, so the
 same re-label that retries everything else resumes the handover, and nothing in the chain is left
-for a human to finish except the merge.
+for a human to finish except the merge decision.
 
 ### The trade: the slice round is the unit of review, the PRD PR the unit of merge
 
@@ -230,9 +230,11 @@ its findings anchored across work built at different times. So:
   commits and the sub-issue's acceptance criteria, and allowed to raise only what those commits
   cause. The stale-anchor objection does not return, because nothing moves under an open round: the
   next slice is not built until the round ends on an approval.
-- **The PRD PR is the unit of merge.** One per PRD, merged by a human, never by the loop, and never
-  approved by it. It ends with the **final review**, asked for once by the finishing run and only
-  when more than one slice landed: a review of the whole PRD PR with no slice range, which rules on
+- **The PRD PR is the unit of merge.** One per PRD, the one a human decides to merge, and never
+  approved by the loop. The loop never decides the merge; it carries out a maintainer's decision
+  only where they armed the PRD PR for it
+  ([ADR 0009](./adr/0009-agent-merge-executes-the-human-decision.md)). It ends with the **final
+  review**, asked for once by the finishing run and only when more than one slice landed: a review of the whole PRD PR with no slice range, which rules on
   every finding still open, honours every decline, looks for what spans slices — contracts between
   them, duplication, scaffolding one slice left dead for a later one — and marks the PRD PR ready on
   approval. A one-slice PRD skips it, because its slice round already read the same diff.
@@ -554,7 +556,7 @@ because whichever workflow owns the shape always acts and always says so.
 **Two further vocabularies sit alongside this table**, neither of which any workflow triggers on:
 the five canonical triage roles (`ready-for-agent`, …) and `wayfinder:*`.
 `docs/agents/triage-labels.md` (jeffwlawson/winget-manifest-lint#89) maps all three and records why
-`ready-for-agent` → `agent:implement` stays a human hand.
+`ready-for-agent` → `agent:implement` stays a human hand, and why `agent:merge` is a second one.
 
 **No ticket a skill publishes carries a label from this table.** `/to-tickets` gives every ticket in
 a batch `ready-for-agent` and nothing else, parent and slices alike (`docs/agents/ticket-shape.md`,

@@ -6120,9 +6120,9 @@ describe("the filing invariant is amended where it is written, not only where it
 
 /**
  * PRD #171 changed what a PRD chain's pull requests are — a **slice PR** per
- * sub-issue, each with its own review round, and one **PRD PR** a human merges
- * — and four docs stated the old shape as a rule: `docs/parity.md` §2a and §10
- * ("review is once per PR, never once per slice"), `CONTEXT.md` ("review adds a
+ * sub-issue, each with its own review round, and one **PRD PR** a human decides
+ * to merge — and four docs stated the old shape as a rule: `docs/parity.md` §2a
+ * and §10 ("review is once per PR, never once per slice"), `CONTEXT.md` ("review adds a
  * trigger label in exactly one case"), `docs/agents/ticket-shape.md` ("one PR
  * per PRD"), and `docs/ADOPTING.md`, which had no word on what a verdict does
  * to a chain.

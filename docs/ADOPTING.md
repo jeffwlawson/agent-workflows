@@ -187,7 +187,8 @@ lasting fix is pushing under an identity that is not the Actions bot: the loop's
 (markPullRequestReadyForReview)` **even with `pull-requests: write` granted**. The Actions bot is an
 App installation, and this mutation is not in its permission set regardless of the permissions block.
 
-So every agent PR stays a draft — and a draft cannot be merged — until a human runs `gh pr ready`.
+So every agent PR stays a draft — and a draft cannot be merged, by you or by the loop carrying out
+your merge decision — until a human runs `gh pr ready`.
 The permission being granted and the operation being refused is what makes this one hard to spot.
 
 ### A label added with `GITHUB_TOKEN` is a silent no-op
@@ -785,7 +786,9 @@ default. A repository that sets nothing now gets **3 automatic rounds** on every
 request, from the first review after the pin bump. That is deliberate: measured over 40 pull requests in this loop, 17
 needed a human to add `agent:fix`, and most of the hours they were open were spent waiting on one. If you want your verdicts read first, set
 `AGENT_MAX_FIX_ROUNDS` to `0` before you bump, and raise it once you trust them. A regular pull
-request is still never merged automatically, whatever the budget.
+request is still never merged on the loop's own say-so, whatever the budget: the merge is your
+decision, and the loop carries it out only where you armed the pull request for it ([ADR
+0009](./adr/0009-agent-merge-executes-the-human-decision.md)).
 
 It needs the loop's App or `AGENT_PAT` (a label added with `GITHUB_TOKEN` fires no event, so nothing
 would start). `doctor` warns where the budget is above 0, the default included, and neither is set; it
@@ -868,7 +871,9 @@ hands it over: for a PRD of more than one slice it asks for the **final review**
 the PRD PR that rules on every finding still open, never re-raises one you declined, looks for what
 spans slices, and writes the PR's title and body; its approval marks the PRD PR ready, and any
 other ending parks like a slice round. For a one-slice PRD, whose diff the slice round already
-read, it marks the PRD PR ready directly. Either way, you merge the PRD PR; the loop never does.
+read, it marks the PRD PR ready directly. Either way, you decide the PRD PR's merge; the loop never
+decides it, and carries it out only where you arm it to ([ADR
+0009](./adr/0009-agent-merge-executes-the-human-decision.md)).
 Its base is your default branch, so the CI you already run on pull requests into it runs on every
 slice round, and nothing more needs configuring.
 
@@ -1068,7 +1073,10 @@ Three consequences to weigh before switching it on rather than after:
   you, not pass anything. What it
   is not safe for is a merge gate, where the effect is the gate satisfying itself. So read the
   verdict alongside the diff that produced it — which on a branch that edits `.github/workflows/`
-  you were going to do anyway.
+  you were going to do anyway. The loop's own merge does not rest on it either: `agent:merge` is
+  your decision for the head you added it at, recorded as a status only the loop token's account
+  posts and read back from that account alone, and the loop merges that commit or clean merges of
+  the base onto it, nothing else ([ADR 0009](./adr/0009-agent-merge-executes-the-human-decision.md)).
 - **The loop goes round until it stops, then waits for you.** A fix round that pushed gets a
   verification review, and that review may start another round while the budget lasts and each
   round closes at least one of the findings it was given. It stops on approval, on a spent budget,

@@ -66,7 +66,7 @@ One message:
 - each PRD parent to label, with its members in order;
 - each plain issue to label, and any that waits for a blocker;
 - each issue left out, and why;
-- before merging each PR the loop hands back (a PRD PR or a plain issue's), `/merge-check <PR>`.
+- before deciding the merge of each PR the loop hands back (a PRD PR or a plain issue's), `/merge-check <PR>`; on merge-ready, the maintainer merges it at the checked head with the `sha` guard, or adds `agent:merge` at that head for the loop to merge.
 
 ## Stop and ask the maintainer
 

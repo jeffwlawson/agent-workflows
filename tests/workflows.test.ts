@@ -6892,14 +6892,15 @@ describe("Dependabot watches the caller pins no test here can reach", () => {
 /**
  * §3 of `docs/ADOPTING.md` is the only place a label's **lifecycle** is written
  * down, and until #51 it was written as a rule with an exception after it. Two
- * exceptions is not a rule with exceptions any more — it is a three-valued
- * property, and prose reading "the rule is X, except here, and also except
- * here" is read as "the rule is X" by everyone who is not currently editing it.
+ * exceptions is not a rule with exceptions any more — it is a property with a
+ * value per label, and prose reading "the rule is X, except here, and also
+ * except here" is read as "the rule is X" by everyone who is not currently
+ * editing it.
  *
  * So the lifecycle is a column, and this is what makes it one: a row that names
- * a label and leaves the column blank — or fills it with a fourth lifecycle
- * nobody has written the rules for — fails here rather than in whichever repo
- * copied the loop and waited for the label to be cleared by something.
+ * a label and leaves the column blank — or fills it with a lifecycle
+ * `LIFECYCLES` does not list, one nobody has written the rules for — fails
+ * here rather than in whichever repo copied the loop and waited for the label to be cleared by something.
  *
  * The second check is the other direction. A label the workflows *write* and
  * §3 never names is a label an adopter never creates, and a label that does not

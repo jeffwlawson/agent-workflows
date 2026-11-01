@@ -1050,6 +1050,41 @@ describe("workflow files", () => {
  * its old self only where the rest of it is one operand of the `&&`: a `||`
  * outside parentheses would bind the skip to its first half alone.
  */
+describe("every reusable job skips on a service-served repository", () => {
+  const reusables = [...new Set(callers.map(targetOf))].sort();
+  const jobs = reusables.flatMap((file) =>
+    Object.entries(workflowOf(file).jobs).map(([id, job]) => [`${file} ${id}`, job] as const),
+  );
+
+  /** Whether `||` appears outside every parenthesis. */
+  const topLevelOr = (condition: string): boolean => {
+    let depth = 0;
+    for (let i = 0; i < condition.length; i += 1) {
+      if (condition[i] === "(") depth += 1;
+      if (condition[i] === ")") depth -= 1;
+      if (depth === 0 && condition.startsWith("||", i)) return true;
+    }
+    return false;
+  };
+
+  it("finds every reusable", () => {
+    expect(reusables).toHaveLength(7);
+  });
+
+  it.each(jobs)("%s: opens its condition with the skip, as one operand of an `&&`", (_, job) => {
+    const condition = (job.if ?? "").replace(/\s+/g, " ").trim();
+
+    expect(condition.startsWith(`${SKIP} && `), condition).toBe(true);
+    expect(topLevelOr(unskipped(condition) ?? "")).toBe(false);
+  });
+
+  it("refuses a condition that does not open with it, or whose rest is a bare `||`", () => {
+    expect(unskipped("github.event.label.name == 'agent:review'")).toBe("github.event.label.name == 'agent:review'");
+    expect(topLevelOr("a && ( b || c )")).toBe(false);
+    expect(topLevelOr("a && b || c")).toBe(true);
+  });
+});
+
 /**
  * The agent's own runtime, pinned (#638): an unpinned install takes whatever
  * Claude Code released last, so its default effort for the model, and so a
@@ -1085,41 +1120,6 @@ describe("every reusable that starts the agent installs one pinned Claude Code",
         expect(step.env?.[name], name).toBe(`\${{ vars.${name} }}`);
       }
     }
-  });
-});
-
-describe("every reusable job skips on a service-served repository", () => {
-  const reusables = [...new Set(callers.map(targetOf))].sort();
-  const jobs = reusables.flatMap((file) =>
-    Object.entries(workflowOf(file).jobs).map(([id, job]) => [`${file} ${id}`, job] as const),
-  );
-
-  /** Whether `||` appears outside every parenthesis. */
-  const topLevelOr = (condition: string): boolean => {
-    let depth = 0;
-    for (let i = 0; i < condition.length; i += 1) {
-      if (condition[i] === "(") depth += 1;
-      if (condition[i] === ")") depth -= 1;
-      if (depth === 0 && condition.startsWith("||", i)) return true;
-    }
-    return false;
-  };
-
-  it("finds every reusable", () => {
-    expect(reusables).toHaveLength(7);
-  });
-
-  it.each(jobs)("%s: opens its condition with the skip, as one operand of an `&&`", (_, job) => {
-    const condition = (job.if ?? "").replace(/\s+/g, " ").trim();
-
-    expect(condition.startsWith(`${SKIP} && `), condition).toBe(true);
-    expect(topLevelOr(unskipped(condition) ?? "")).toBe(false);
-  });
-
-  it("refuses a condition that does not open with it, or whose rest is a bare `||`", () => {
-    expect(unskipped("github.event.label.name == 'agent:review'")).toBe("github.event.label.name == 'agent:review'");
-    expect(topLevelOr("a && ( b || c )")).toBe(false);
-    expect(topLevelOr("a && b || c")).toBe(true);
   });
 });
 

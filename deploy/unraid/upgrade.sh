@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# upgrade.sh <version>: move both machines of the Unraid deployment, the
+# upgrade.sh [--now] <version>: move both machines of the Unraid deployment, the
 # dispatcher on Unraid and the worker on the agent box, to <version>, then
 # check both and compare them. Uses no registry and no token: the release's
 # tarball is downloaded once, here, checked against its .sha256 and copied to
@@ -11,10 +11,23 @@
 #   1. stage: download and check the tarball, copy it and the box's scripts to
 #      the box. No service is touched; a failure leaves both machines as they were.
 #   2. install on the box, then on Unraid. Services are still untouched.
-#   3. restart the worker, then straight after it the dispatcher, each waited for.
+#   3. wait for the worker to hold nothing: no job running, none queued. Its
+#      queue is in memory, so a restart drops what it holds, and a running job
+#      starts again from the beginning. The worker's held door is asked from
+#      inside the dispatcher's container, signed with the shared secret the
+#      dispatcher already has there, so the secret is never printed, written or
+#      put on a command line. While it waits it prints what it waits for. The
+#      wait is bounded by IDLE_WAIT_MINUTES (agent-service.conf): past it, or
+#      where the worker cannot be asked, it stops with both machines installed
+#      and neither restarted. A worker with no held door (a release before it)
+#      cannot tell, so it goes on. --now skips the wait and drops what is held.
+#      One window stays open: a webhook landing between the idle answer and the
+#      restart queues a job the restart drops; the dispatcher's scan dispatches
+#      it again.
+#   4. restart the worker, then straight after it the dispatcher, each waited for.
 #      Where the worker's fails, the dispatcher is left alone. A step that
 #      stops prints the commands that finish the job, or the way back.
-#   4. run both check scripts and compare their versions and fingerprints.
+#   5. run both check scripts and compare their versions and fingerprints.
 #
 # The box is reached as BOX_SSH_USER@BOX_IP, with the key the operator has set
 # up for it (BOX_SSH_KEY, or ssh's default). Host keys are kept beside this
@@ -22,6 +35,7 @@
 # runs sudo on the box asks for its password: the only prompt left.
 #
 # Run as root on Unraid:  bash /boot/config/agent-service/upgrade.sh 0.8.6
+# Or, to restart at once: bash /boot/config/agent-service/upgrade.sh --now 0.8.6
 set -euo pipefail
 
 here=$(cd "$(dirname "$0")" && pwd)
@@ -38,6 +52,12 @@ BOX_SSH_KEY=${BOX_SSH_KEY:-}
 BOX_IP=${BOX_IP:-}
 PACKAGE_SOURCE=${PACKAGE_SOURCE:-}
 PACKAGE_NAME=${PACKAGE_NAME:-}
+CONTAINER=${CONTAINER:-agent-dispatcher}
+IDLE_WAIT_MINUTES=${IDLE_WAIT_MINUTES:-90}
+# How often the worker is asked while it holds a job, and how often a line says
+# the wait goes on where nothing held has changed.
+POLL_SECONDS=30
+HEARTBEAT_SECONDS=300
 
 refuse() {
   echo "$*" >&2
@@ -45,11 +65,19 @@ refuse() {
   exit 2
 }
 
-version=${1:-}
-if [ $# -ne 1 ] || ! [[ $version =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
-  echo "Usage: bash $0 <version>, for example: bash $0 0.8.6" >&2
+now='' version=''
+usage() {
+  echo "Usage: bash $0 [--now] <version>, for example: bash $0 0.8.6" >&2
   exit 2
-fi
+}
+for arg in "$@"; do
+  case "$arg" in
+    --now) now=1 ;;
+    -*) usage ;;
+    *) if [ -n "$version" ]; then usage; fi; version=$arg ;;
+  esac
+done
+if ! [[ $version =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then usage; fi
 if [ "$(id -u)" -ne 0 ]; then refuse "Run this as root on Unraid."; fi
 for script in upgrade-unraid.sh upgrade-box.sh check-unraid.sh check-box.sh; do
   if [ ! -f "$here/$script" ]; then refuse "$script is not beside this script, in $here: copy it there first."; fi
@@ -57,6 +85,7 @@ done
 if [ -z "$BOX_SSH_USER" ]; then refuse "Set BOX_SSH_USER in $conf: the box's admin account, which ssh logs in as and which may sudo."; fi
 if [ -z "$BOX_IP" ]; then refuse "Set BOX_IP in $conf: the box's address on agentnet, which ssh reaches it at."; fi
 if [ -n "$BOX_SSH_KEY" ] && [ ! -f "$BOX_SSH_KEY" ]; then refuse "BOX_SSH_KEY names $BOX_SSH_KEY, which is not there."; fi
+if ! [[ $IDLE_WAIT_MINUTES =~ ^[0-9]+$ ]]; then refuse "IDLE_WAIT_MINUTES in $conf is $IDLE_WAIT_MINUTES: set it to a whole number of minutes."; fi
 
 # The installed package is the one the dispatcher's install prefix depends on,
 # unless PACKAGE_NAME names it.
@@ -165,9 +194,122 @@ if ! bash "$here/upgrade-unraid.sh" --install "$version" "$stage/$tarball"; then
 fi
 on_box "rm -f ~/$tarball ~/$tarball.sha256" || true
 
+# The worker's answer to which jobs it holds, asked at its held door from
+# inside the dispatcher's container, where WORKER_URL and WORKER_SECRET already
+# are: the secret stays there. The question is a read only: it names no
+# dispatcher instance, so the worker drops nothing for it. It prints one line,
+# "jobs", "no-door" or "failed <reason>", then each held job on a line.
+read -r -d '' ask_script <<'EOF' || true
+import { createHmac } from "node:crypto";
+const out = (...lines) => { process.stdout.write(lines.join("\n") + "\n"); };
+const { WORKER_URL: jobs, WORKER_SECRET: secret } = process.env;
+if (!jobs || !secret) {
+  out("failed the dispatcher's container has no WORKER_URL or no WORKER_SECRET to ask with");
+} else {
+  const url = new URL("held", jobs);
+  const body = JSON.stringify({ asked: new Date().toISOString() });
+  const signature = `sha256=${createHmac("sha256", secret).update(body).digest("hex")}`;
+  let reply;
+  try {
+    reply = await fetch(url, {
+      method: "POST",
+      headers: { "content-type": "application/json", "x-signature-256": signature },
+      body,
+      signal: AbortSignal.timeout(10_000),
+    });
+  } catch (error) {
+    reply = undefined;
+    out(`failed the worker could not be reached at ${url}: ${error?.cause?.message ?? error?.message ?? error}`);
+  }
+  if (reply !== undefined) {
+    const text = await reply.text().catch(() => "");
+    let said;
+    try { said = JSON.parse(text); } catch { said = undefined; }
+    const refusal = typeof said?.refusal === "string" ? `: ${said.refusal}` : "";
+    const list = said?.jobs;
+    const fine = (job) => typeof job?.workflow === "string" && typeof job?.repo === "string" && Number.isInteger(job?.number);
+    if (reply.status === 404) out("no-door");
+    else if (reply.status === 401) out(`failed the worker refused the question's signature (401${refusal}): the dispatcher's WORKER_SECRET is not the worker's`);
+    else if (reply.status !== 200) out(`failed the worker answered ${reply.status}${refusal}`);
+    else if (!Array.isArray(list) || !list.every(fine)) out("failed the worker's answer is not a list of jobs");
+    else out("jobs", ...list.map((job) => `${job.workflow} on ${job.repo}#${job.number}`));
+  }
+}
+EOF
+# Sets asked to jobs, no-door or failed, and held to the jobs, or the reason.
+ask_worker() {
+  local answer
+  if ! answer=$(docker exec -i "$CONTAINER" node --input-type=module - <<<"$ask_script" 2>&1); then
+    asked=failed held="the dispatcher's container, $CONTAINER, could not be asked to ask it: ${answer:-docker exec failed}"
+    return
+  fi
+  case "$answer" in
+    jobs*) asked=jobs held=$(tail -n +2 <<<"$answer") ;;
+    no-door) asked=no-door held= ;;
+    "failed "*) asked=failed held=${answer#failed } ;;
+    *) asked=failed held="the answer was not one this script reads: $answer" ;;
+  esac
+}
+count() { if [ -z "$1" ]; then echo 0; else wc -l <<<"$1" | tr -d ' '; fi; }
+list() { sed 's/^/  /' <<<"$1"; }
+
+echo
+echo "== Waiting for the worker to hold no job"
+asked=
+if [ -n "$now" ]; then
+  echo "--now: not asking the worker, so whatever it holds is dropped by its restart."
+else
+  ask_worker
+  if [ "$asked" = no-door ]; then
+    echo "The worker has no held door (its release is older than the door), so whether it holds a job cannot be told. Going on without waiting."
+  elif [ "$asked" = failed ]; then
+    echo "Could not tell which jobs the worker holds: $held." >&2
+    echo "Both machines have $version installed, and neither service was restarted." >&2
+    echo "Fix the cause and run upgrade.sh $version again, or run upgrade.sh --now $version to restart without asking, dropping any job the worker holds." >&2
+    exit 1
+  elif [ -n "$held" ]; then
+    limit=$((IDLE_WAIT_MINUTES * 60)) waited=0
+    echo "The worker holds $(count "$held") job(s); waiting up to $IDLE_WAIT_MINUTES minutes for it to hold none:"
+    list "$held"
+    while [ -n "$held" ]; do
+      if [ "$waited" -ge "$limit" ]; then
+        echo "The worker still holds $(count "$held") job(s) after $IDLE_WAIT_MINUTES minutes:" >&2
+        list "$held" >&2
+        echo "Both machines have $version installed, and neither service was restarted." >&2
+        echo "Run upgrade.sh $version again later, or run upgrade.sh --now $version to restart now, dropping those jobs." >&2
+        exit 1
+      fi
+      sleep "$POLL_SECONDS"
+      waited=$((waited + POLL_SECONDS))
+      before=$held
+      ask_worker
+      if [ "$asked" != jobs ]; then
+        echo "Could not tell which jobs the worker holds, after waiting $((waited / 60)) minutes: $held." >&2
+        echo "Both machines have $version installed, and neither service was restarted." >&2
+        echo "Fix the cause and run upgrade.sh $version again, or run upgrade.sh --now $version to restart without asking, dropping any job the worker holds." >&2
+        exit 1
+      fi
+      if [ -z "$held" ]; then
+        echo "The worker holds no job now, after about $((waited / 60)) minutes."
+      elif [ "$held" != "$before" ]; then
+        echo "The worker now holds $(count "$held") job(s):"
+        list "$held"
+      elif [ $((waited % HEARTBEAT_SECONDS)) -eq 0 ]; then
+        echo "Still waiting, $((waited / 60)) of $IDLE_WAIT_MINUTES minutes: the worker holds the same $(count "$held") job(s)."
+      fi
+    done
+  else
+    echo "The worker holds no job."
+  fi
+fi
+
 echo
 echo "== Restarting: the worker, then the dispatcher"
-echo "Restarting the worker drops any job queued in it: its queue is in memory."
+if [ -n "$now" ] || [ "$asked" = no-door ]; then
+  echo "Restarting the worker drops any job queued in it: its queue is in memory."
+else
+  echo "A job queued on the worker since it held none is dropped by its restart; the dispatcher's scan dispatches it again."
+fi
 status=0
 if ! on_box "sudo bash ~/upgrade-box.sh --restart $version"; then
   # Restarting the dispatcher now would leave the two on different versions

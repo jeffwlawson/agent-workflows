@@ -733,17 +733,36 @@ the Funnel.
 **Upgrading both** is one command, run as root on Unraid, and needs no registry token:
 
 ```bash
-bash /boot/config/agent-service/upgrade.sh <version>
+bash /boot/config/agent-service/upgrade.sh [--now] <version>
 ```
 
 It downloads the release's tarball and its `.sha256` once, on Unraid (the tokenless install,
 above, from the repository `PACKAGE_SOURCE` names in `agent-service.conf`), checks it, and copies
 it to the box over ssh as `BOX_SSH_USER`, with the box's `upgrade-box.sh`, `check-box.sh` and the
 conf, where the digest is checked again. Then it installs on both with neither service touched,
-restarts the worker and straight after it the dispatcher, and runs both check scripts, failing
-where their versions or the shared secret's fingerprints differ. Restarting the worker drops any
-job queued in it, since its queue is in memory, and between the two restarts the dispatcher gets
-409 from the worker, its scan's dispatches included; the script says for how many seconds. The
+waits for the worker to hold no job, restarts the worker and straight after it the dispatcher, and
+runs both check scripts, failing where their versions or the shared secret's fingerprints differ.
+
+The wait is there because the worker's queue is in memory (*The worker's queue is in memory too*,
+above): a restart drops every job it holds, and a running one, which may have run for most of its
+time limit, starts again from the beginning. So the script asks the worker's held door which jobs
+it holds, from inside the dispatcher's container with the `WORKER_SECRET` already set there, so
+the secret is never printed, written or put on a command line. The question names no dispatcher
+instance, so it is a read only and the worker drops nothing for it. Nothing held, it goes on;
+anything held, it waits, printing the jobs (workflow, repository and number), a line when they
+change and a line every five minutes, for up to `IDLE_WAIT_MINUTES` in `agent-service.conf`, 90 by
+default: one job reaching the longest default time limit, implement-prd's 65 minutes, with room to
+spare. Past the bound it restarts nothing, says both machines have the version installed, names
+what is still held, and names the two ways on: run it again later, or run it with `--now`, which
+restarts without asking and drops what the worker holds. A worker it cannot ask (unreachable, a
+refused signature, an answer that is not a list of jobs) is not read as idle: it stops the same
+way, naming `--now`. The one exception is a `404`, from a worker of a release before the held door,
+where it says it cannot tell and goes on. One window stays open: a webhook that lands between the
+worker's empty answer and its restart queues a job the restart drops, and the dispatcher's scan
+dispatches it again.
+
+Between the two restarts the dispatcher gets 409 from the worker, its scan's dispatches included;
+the script says for how many seconds. The
 restarted dispatcher's own scan dispatches the dropped jobs again. Where the worker's restart fails, it
 stops before restarting the dispatcher, and where any step stops it prints the commands that
 finish the job, or the way back: `upgrade.sh` at the earlier version, which installs it on the box

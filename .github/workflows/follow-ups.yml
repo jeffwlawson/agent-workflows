@@ -218,7 +218,7 @@ jobs:
         # version: `npx pkg@version` would reuse this repository's own checkout
         # as the package, which has no `dist/`, and the step would die
         # `command not found` before any runner code ran (#8).
-        run: npm exec --prefix "$RUNNER_TEMP" --yes --package=@jeffwlawson/agent-workflows@0.9.4 -- agent-workflows follow-ups:file
+        run: npm exec --prefix "$RUNNER_TEMP" --yes --package=@jeffwlawson/agent-workflows@0.9.5 -- agent-workflows follow-ups:file
 
       # How the job ended, measured here because only this job's clock knows
       # (#220): a job that reaches its `timeout-minutes` is cancelled, not
@@ -273,7 +273,7 @@ jobs:
           JOB_STATUS: ${{ job.status }}
           TIMED_OUT: ${{ steps.outcome.outputs.timed-out }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
-        run: npm exec --prefix "$RUNNER_TEMP" --yes --package=@jeffwlawson/agent-workflows@0.9.4 -- agent-workflows follow-ups:conclude
+        run: npm exec --prefix "$RUNNER_TEMP" --yes --package=@jeffwlawson/agent-workflows@0.9.5 -- agent-workflows follow-ups:conclude
 
       # Every write each command made, one line each as it landed, and a last
       # line for how it ended (ADR 0005), kept for whoever audits the run: the

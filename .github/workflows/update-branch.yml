@@ -214,7 +214,7 @@ jobs:
           # `GITHUB_TOKEN`, carrying the `packages: read` the caller granted:
           # there is no anonymous install.
           NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: npm install --prefix "$RUNNER_TEMP" --no-save @jeffwlawson/agent-workflows@0.9.4
+        run: npm install --prefix "$RUNNER_TEMP" --no-save @jeffwlawson/agent-workflows@0.9.5
 
       # Everything this job settles before the checkout, as one command
       # (#481): the pre-flight, which refuses a closed or merged pull request
@@ -233,7 +233,7 @@ jobs:
         # `npm exec --prefix` rather than a bare `npx`: see the long note on
         # the runner step below. From the install above, so it asks the
         # registry nothing.
-        run: npm exec --prefix "$RUNNER_TEMP" --yes --package=@jeffwlawson/agent-workflows@0.9.4 -- agent-workflows update-branch:gate
+        run: npm exec --prefix "$RUNNER_TEMP" --yes --package=@jeffwlawson/agent-workflows@0.9.5 -- agent-workflows update-branch:gate
 
       # Glue only Actions can do (ADR 0003): the gate's decision, copied into
       # the step output `proceed`, which the job's `refused` and every later
@@ -293,7 +293,7 @@ jobs:
         env:
           OUTPUT_DIR: ${{ runner.temp }}/merge
           CHECKOUT: ${{ github.workspace }}
-        run: npm exec --prefix "$RUNNER_TEMP" --yes --package=@jeffwlawson/agent-workflows@0.9.4 -- agent-workflows update-branch:merge
+        run: npm exec --prefix "$RUNNER_TEMP" --yes --package=@jeffwlawson/agent-workflows@0.9.5 -- agent-workflows update-branch:merge
 
       # Glue only Actions can do (ADR 0003): what the merge came to, copied
       # into the step outputs the job's `status`, `base` and `conflicts`
@@ -416,7 +416,7 @@ jobs:
         env:
           NPM_CONFIG_USERCONFIG: ${{ steps.npmrc.outputs.userconfig }}
           NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: npm install --prefix "$RUNNER_TEMP" --no-save @jeffwlawson/agent-workflows@0.9.4
+        run: npm install --prefix "$RUNNER_TEMP" --no-save @jeffwlawson/agent-workflows@0.9.5
 
       # The gate's merge, made again (#482), so the agent starts from the
       # conflicted tree the gate found: `update-branch:prepare` fetches
@@ -438,7 +438,7 @@ jobs:
           NPM_CONFIG_USERCONFIG: ${{ steps.npmrc.outputs.userconfig }}
           OUTPUT_DIR: ${{ runner.temp }}/prepare
           CHECKOUT: ${{ github.workspace }}
-        run: npm exec --prefix "$RUNNER_TEMP" --yes --package=@jeffwlawson/agent-workflows@0.9.4 -- agent-workflows update-branch:prepare
+        run: npm exec --prefix "$RUNNER_TEMP" --yes --package=@jeffwlawson/agent-workflows@0.9.5 -- agent-workflows update-branch:prepare
 
       # Node and the dependency install are only needed to resolve conflicts,
       # which is the only path this job runs on; and both are the adopter's
@@ -600,7 +600,7 @@ jobs:
           OUTPUT_DIR: ${{ runner.temp }}/bundle
           CHECKOUT: ${{ github.workspace }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
-        run: npm exec --prefix "$RUNNER_TEMP" --yes --package=@jeffwlawson/agent-workflows@0.9.4 -- agent-workflows update-branch:bundle
+        run: npm exec --prefix "$RUNNER_TEMP" --yes --package=@jeffwlawson/agent-workflows@0.9.5 -- agent-workflows update-branch:bundle
 
       # The bundle, the comment the runner wrote and the reason file on a
       # failure: the runner's at `runner.temp`, `update-branch:prepare`'s
@@ -713,7 +713,7 @@ jobs:
       - name: Resolve the loop's token
         id: token
         if: always()
-        uses: jeffwlawson/agent-workflows/.github/actions/loop-token@v0.9.4
+        uses: jeffwlawson/agent-workflows/.github/actions/loop-token@v0.9.5
         with:
           app-id: ${{ secrets.AGENT_APP_ID }}
           private-key: ${{ secrets.AGENT_APP_PRIVATE_KEY }}
@@ -811,7 +811,7 @@ jobs:
           STATUS: ${{ needs.gate.outputs.status }}
           BASE_SHA: ${{ needs.gate.outputs.base }}
           AGENT_RESULT: ${{ needs.update-branch.result }}
-        run: npm exec --prefix "$RUNNER_TEMP" --yes --package=@jeffwlawson/agent-workflows@0.9.4 -- agent-workflows update-branch:publish
+        run: npm exec --prefix "$RUNNER_TEMP" --yes --package=@jeffwlawson/agent-workflows@0.9.5 -- agent-workflows update-branch:publish
 
       # Every other ending, and the label however the run ended (#485): the
       # failure comment with the reason and the retry the ending calls for
@@ -860,7 +860,7 @@ jobs:
           MINT_OUTCOME: ${{ steps.token.outcome }}
           DOWNLOAD_OUTCOME: ${{ steps.fetch.outcome }}
           PUBLISH_OUTCOME: ${{ steps.publish.outcome }}
-        run: npm exec --prefix "$RUNNER_TEMP" --yes --package=@jeffwlawson/agent-workflows@0.9.4 -- agent-workflows update-branch:conclude
+        run: npm exec --prefix "$RUNNER_TEMP" --yes --package=@jeffwlawson/agent-workflows@0.9.5 -- agent-workflows update-branch:conclude
 
       # Every write the two commands made, one line each as it landed, and a
       # last line for how each ended (ADR 0005), kept for whoever audits the

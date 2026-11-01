@@ -314,7 +314,7 @@ jobs:
           OUTPUT_DIR: ${{ runner.temp }}
         # `npm exec --prefix` rather than a bare `npx`: see the note on the
         # runner step below.
-        run: npm exec --prefix "$RUNNER_TEMP" --yes --package=@jeffwlawson/agent-workflows@0.9.4 -- agent-workflows implement-prd:gate
+        run: npm exec --prefix "$RUNNER_TEMP" --yes --package=@jeffwlawson/agent-workflows@0.9.5 -- agent-workflows implement-prd:gate
 
       # Glue only Actions can do (ADR 0003): the gate's decision and facts,
       # copied into step outputs under the names the later jobs have always
@@ -431,7 +431,7 @@ jobs:
       # first write, and handed to no other.
       - name: Resolve the loop's token
         id: token
-        uses: jeffwlawson/agent-workflows/.github/actions/loop-token@v0.9.4
+        uses: jeffwlawson/agent-workflows/.github/actions/loop-token@v0.9.5
         with:
           app-id: ${{ secrets.AGENT_APP_ID }}
           private-key: ${{ secrets.AGENT_APP_PRIVATE_KEY }}
@@ -491,7 +491,7 @@ jobs:
           SUB: ${{ needs.gate.outputs.sub }}
           CHECKOUT: ${{ github.workspace }}
           OUTPUT_DIR: ${{ runner.temp }}
-        run: npm exec --prefix "$RUNNER_TEMP" --yes --package=@jeffwlawson/agent-workflows@0.9.4 -- agent-workflows implement-prd:catch-up
+        run: npm exec --prefix "$RUNNER_TEMP" --yes --package=@jeffwlawson/agent-workflows@0.9.5 -- agent-workflows implement-prd:catch-up
 
       # Glue only Actions can do (ADR 0003): what the catch-up came to, copied
       # into step outputs under the names the later jobs have always read.
@@ -615,7 +615,7 @@ jobs:
         env:
           NPM_CONFIG_USERCONFIG: ${{ steps.npmrc.outputs.userconfig }}
           NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: npm install --prefix "$RUNNER_TEMP" --no-save @jeffwlawson/agent-workflows@0.9.4
+        run: npm install --prefix "$RUNNER_TEMP" --no-save @jeffwlawson/agent-workflows@0.9.5
 
       # The PRD branch again, as `catch_up` left it: checked out at the tip
       # that job left it at, with the default branch merged in where it had
@@ -943,7 +943,7 @@ jobs:
       - name: Resolve the loop's token
         id: token
         if: always()
-        uses: jeffwlawson/agent-workflows/.github/actions/loop-token@v0.9.4
+        uses: jeffwlawson/agent-workflows/.github/actions/loop-token@v0.9.5
         with:
           app-id: ${{ secrets.AGENT_APP_ID }}
           private-key: ${{ secrets.AGENT_APP_PRIVATE_KEY }}
@@ -1036,7 +1036,7 @@ jobs:
           LANDED: ${{ needs.gate.outputs.landed }}
           BASE_SHA: ${{ needs.catch_up.outputs.head }}
           SUB: ${{ needs.gate.outputs.sub }}
-        run: npm exec --prefix "$RUNNER_TEMP" --yes --package=@jeffwlawson/agent-workflows@0.9.4 -- agent-workflows implement-prd:publish
+        run: npm exec --prefix "$RUNNER_TEMP" --yes --package=@jeffwlawson/agent-workflows@0.9.5 -- agent-workflows implement-prd:publish
 
       # **Every ending, success included** (#505): the rescue the runner set
       # aside, said on the PRD (#303); a stopped build's commits rescued to
@@ -1099,7 +1099,7 @@ jobs:
           MINT_OUTCOME: ${{ steps.token.outcome }}
           DOWNLOAD_OUTCOME: ${{ steps.fetch.outcome }}
           PUBLISH_OUTCOME: ${{ steps.publish.outcome }}
-        run: npm exec --prefix "$RUNNER_TEMP" --yes --package=@jeffwlawson/agent-workflows@0.9.4 -- agent-workflows implement-prd:conclude
+        run: npm exec --prefix "$RUNNER_TEMP" --yes --package=@jeffwlawson/agent-workflows@0.9.5 -- agent-workflows implement-prd:conclude
 
       # Every write the two commands made, one line each as it landed, and a
       # last line for how each ended (ADR 0005), kept for whoever audits the

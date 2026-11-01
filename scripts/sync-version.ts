@@ -114,7 +114,7 @@ const pinned = (rel: string, text: string, forms: readonly PinForm[], pinning: P
 /**
  * The reusable workflows the release `ref` holds, by repo-relative path: what
  * tells a reusable the local callers do not call **yet** from one they left
- * out. A local caller runs against the release it pins (`CLAUDE.md`, *This
+ * out. A local caller runs against the release it pins (ADR 0010, *This
  * repo runs its own loop*), and a caller naming a workflow that release does
  * not have is refused by GitHub, every job in its file. So the release that
  * first ships a reusable is cut with the local set one caller short, and the

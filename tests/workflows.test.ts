@@ -778,7 +778,7 @@ const TYPES_OF_JOB: Readonly<Record<string, readonly string[]>> = { merge: ["syn
  * **The reusables the local callers wait for** (#588): those the release the
  * local callers pin does not have yet. A local caller runs against the
  * released reusable its pin names, and a caller naming a workflow that release
- * lacks is refused by GitHub, every job in its file (`CLAUDE.md`, *This repo
+ * lacks is refused by GitHub, every job in its file (ADR 0010, *This repo
  * runs its own loop*). So the release that first ships a reusable is cut with
  * the local set one caller short, and `scripts/sync-version.ts` allows exactly
  * that; once the local pin is a release that has it, this is empty again and
@@ -4274,7 +4274,7 @@ describe("every workflow in the loop is called rather than copied", () => {
 
 /**
  * This repository's own callers run on `main`, but the reusable each one calls
- * is the one at its pinned tag — the last release (`CLAUDE.md`, *This repo runs
+ * is the one at its pinned tag — the last release (ADR 0010, *This repo runs
  * its own loop*). So a local caller can name a secret or an input its own
  * branch declares and the release does not, and GitHub refuses the whole caller
  * file before a job starts: `startup_failure`, no log, every job in the file.

@@ -200,13 +200,13 @@ Why this shape and not the alternatives the issue lists:
 The `self-check` input is unaffected: it names the review job's check by job id, not by runner.
 
 **Two-step landing.** A new input lands in the reusable first, and in this repository's own callers
-only once a release declares it (`CLAUDE.md`, *This repo runs its own loop*;
+only once a release declares it (ADR 0010, *This repo runs its own loop*;
 `tests/workflows.test.ts` reads the pinned release with `git show`).
 
 ### What `doctor` should say
 
 `doctor` cannot see a runner, and should say so rather than pass. Ruled on the caller and facts, as
-`diagnose` is (`CLAUDE.md` *Changing the install path*, 4–5): a new `InstalledCaller` field, read from
+`diagnose` is (`docs/agents/changing-the-install-path.md`, 4–5): a new `InstalledCaller` field, read from
 `with:`, and a rule in the same commit.
 
 | When the caller sets `agent-runs-on` to a non-GitHub label | `doctor` says |

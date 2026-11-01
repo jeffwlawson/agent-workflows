@@ -399,9 +399,11 @@ Jobs run in two lanes, each one job at a time, beneath a chain per pull request 
   first job that arrived whose item is free.
 - **An update-branch job whose merge conflicts is handed off** at the point it would start its
   agent: it leaves the light lane, and its agent's job, publish and conclude run in the agent lane,
-  never beside another agent job. It holds its place in the agent lane from its arrival, so an
-  agent job that arrived after it waits until its merge is known, and then for its agent if it
-  conflicted, and none that arrived before it waits behind it. Its phases still run in their one
+  never beside another agent job. It holds its place in the agent lane from its arrival until it
+  ends, or asks for the lane, so an agent job that arrived after it waits for the whole of it: its
+  gate and merge, then its agent if it conflicted, or its publish and conclude
+  (`UPDATE_BRANCH_POSTING_MINUTES`) if it was clean. That is no longer than a single queue held it,
+  and none that arrived before it waits behind it. Its phases still run in their one
   order; the hand-off only waits between the merge and the agent's job, whose time limit starts once
   it has the lane.
 - **Per item**, a job starts only once every job for the same pull request or issue that arrived
@@ -424,8 +426,8 @@ conflicted, before its runner, and not by a review, as on Actions.
 The fix-round budget is the repository's `AGENT_MAX_FIX_ROUNDS`, read as on Actions: a review
 asking for changes under a budget with a round left adds `agent:fix`, which the dispatcher answers
 as the App's own label, and a spent budget leaves the round to a human, with the comment Actions
-posts. Since the worker runs one job at a time, a fix round starts only once the review that asked
-for it has finished, and the `agent-fix-round` status the budget counts stops the cycle.
+posts. A review and the fix round it asks for are both agent jobs for one pull request, so the fix
+round starts only once the review has finished, through the agent lane and the item's chain alike, and the `agent-fix-round` status the budget counts stops the cycle.
 
 A fix job runs `fix:gate`, then the agent's job: the checkout of the head the label's event named,
 with the base, `fix:prepare`, which fetches a stopped round's rescue branch into it, the setup, the

@@ -3569,8 +3569,8 @@ PR of the parent's and every sub-issue's, each under its issue. Then, only where
 >
 > **Concurrency relies on one worker.** Actions holds this job in the pull request's concurrency
 > group, so a label added while a merge's run files cannot file twice. The service has no lock of
-> its own: the worker's queue runs one job at a time, so a second run starts only once the first
-> has ended, finds the checklist it posted and the marker it took off, and ends silently. A deployment with more than one
+> its own: the worker's queue runs one job at a time for each pull request, whatever lane each
+> runs in, so a second run starts only once the first has ended, finds the checklist it posted and the marker it took off, and ends silently. A deployment with more than one
 > worker would lose that guarantee.
 
 ### `follow-ups:file`

@@ -263,6 +263,10 @@ export interface CommandContract {
  *
  * And the files each writes:
  *
+ * - `usage.json`, every runner's, is what its agent spent (#637): each
+ *   pass's tokens by kind, turns, models and estimated cost, the effort, and
+ *   the line the run's summary shows, written as each pass ends, or each
+ *   pass's reason where its usage could not be read.
  * - `implement-prd`'s `rescue_ignored.json` is the rescue it set aside, as
  *   `fix`'s is: data, which `implement-prd:conclude` writes the note from.
  *   `implement`'s is the same, for `implement:conclude` (#270).
@@ -291,7 +295,7 @@ export const RUNNERS = {
       BASE_REF: REQUIRED,
       RESCUE_BRANCH: REQUIRED,
     },
-    outputs: [...EVERY_SUBCOMMAND_OUTPUTS, "rescue_ignored.json"],
+    outputs: [...EVERY_SUBCOMMAND_OUTPUTS, "usage.json", "rescue_ignored.json"],
   },
   "implement-prd": {
     inputs: {
@@ -307,7 +311,7 @@ export const RUNNERS = {
       BASE_REF: REQUIRED,
       RESCUE_BRANCH: REQUIRED,
     },
-    outputs: [...EVERY_SUBCOMMAND_OUTPUTS, "rescue_ignored.json"],
+    outputs: [...EVERY_SUBCOMMAND_OUTPUTS, "usage.json", "rescue_ignored.json"],
   },
   review: {
     inputs: {
@@ -329,6 +333,7 @@ export const RUNNERS = {
     },
     outputs: [
       ...EVERY_SUBCOMMAND_OUTPUTS,
+      "usage.json",
       "park.json",
       "progress.json",
       "findings.json",
@@ -351,6 +356,7 @@ export const RUNNERS = {
     },
     outputs: [
       ...EVERY_SUBCOMMAND_OUTPUTS,
+      "usage.json",
       "nothing_to_do.txt",
       "rescue_ignored.json",
       "round_header.txt",
@@ -369,7 +375,7 @@ export const RUNNERS = {
       BRANCH: REQUIRED,
       BASE_REF: REQUIRED,
     },
-    outputs: [...EVERY_SUBCOMMAND_OUTPUTS, "update_comment.md"],
+    outputs: [...EVERY_SUBCOMMAND_OUTPUTS, "usage.json", "update_comment.md"],
   },
 } as const satisfies Readonly<Record<string, RunnerContract>>;
 

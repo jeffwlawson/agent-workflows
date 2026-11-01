@@ -5,8 +5,10 @@ import * as path from "node:path";
 import * as sandcastle from "@ai-hero/sandcastle";
 import { afterEach, beforeEach, describe, expect, it, vi, type MockInstance } from "vitest";
 import { bwrap, CARRY_HOOKS } from "../engine/bwrap.js";
-import { agentSandbox, concludingMerge, type AgentSandbox, type SandboxInputs } from "../shared/agent.js";
+import { noSandbox } from "@ai-hero/sandcastle/sandboxes/no-sandbox";
+import { agentSandbox, concludingMerge, usageLedger, type AgentSandbox, type SandboxInputs } from "../shared/agent.js";
 import { SANDBOX } from "../shared/contract.js";
+import type { RunUsage } from "../shared/usage.js";
 import { SUBPROCESS_TIMEOUT } from "../vitest.config.js";
 
 /**
@@ -320,5 +322,161 @@ describe("concludingMerge: the merge in progress, through the agent's sandbox", 
       merge.conclude();
       expectMerged("resolved", "Took both sides.");
     });
+  });
+});
+
+/**
+ * The usage ledger (#637), through Sandcastle with no sandbox and Claude
+ * Code's own provider, whose command prints a recorded stream rather than
+ * starting the agent. The transcript is where Claude Code keeps it, under a
+ * home directory of the test's own.
+ */
+describe("usageLedger: what each pass of the agent spent, however it ended", () => {
+  const FIXTURES = path.resolve("tests", "fixtures", "usage");
+  const SESSION = "5f1c2a9e-3b7d-4c11-9a0e-2d6f8b4e7a10";
+  let scratch: string;
+  let repo: string;
+  let transcript: string;
+  let written: RunUsage[];
+  let logged: MockInstance<typeof console.log>;
+
+  const git = (...args: string[]): string => execFileSync("git", args, { cwd: repo, encoding: "utf8", timeout: SUBPROCESS_TIMEOUT });
+
+  beforeEach(() => {
+    scratch = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "usage-ledger-")));
+    repo = path.join(scratch, "repo");
+    fs.mkdirSync(repo);
+    git("init", "--quiet", "--initial-branch=main");
+    git("config", "user.name", "loop");
+    git("config", "user.email", "loop@example.com");
+    git("commit", "--quiet", "--allow-empty", "-m", "base");
+    vi.stubEnv("HOME", path.join(scratch, "home"));
+    transcript = path.join(scratch, "home", ".claude", "projects", "-work-repo", `${SESSION}.jsonl`);
+    fs.mkdirSync(path.dirname(transcript), { recursive: true });
+    written = [];
+    logged = vi.spyOn(console, "log").mockImplementation(() => {});
+  });
+  afterEach(() => {
+    logged.mockRestore();
+    vi.unstubAllEnvs();
+    fs.rmSync(scratch, { recursive: true, force: true });
+  });
+
+  /** Claude Code's provider, printing the recorded `stream` where it would start the agent. */
+  const agent = (stream: string): sandcastle.AgentProvider => ({
+    ...sandcastle.claudeCode("claude-opus-5-5"),
+    buildPrintCommand: () => ({ command: `cat '${path.join(FIXTURES, stream)}'` }),
+  });
+  const start = (watched: sandcastle.AgentProvider) =>
+    sandcastle.run({
+      agent: watched,
+      sandbox: noSandbox(),
+      cwd: repo,
+      prompt: "Implement the issue.",
+      maxIterations: 1,
+      logging: { type: "file", path: path.join(scratch, "sandcastle.log") },
+    });
+  /** The recorded session as it stood when the work pass ended: everything before the extraction's prompt. */
+  const workTranscript = (): string => {
+    const all = fs.readFileSync(path.join(FIXTURES, "session.jsonl"), "utf8").split("\n");
+    return all.slice(0, all.findIndex((line) => line.includes("Emit the output block."))).join("\n");
+  };
+
+  it("records each pass from its transcript and its result event, and the run's result is Sandcastle's", async () => {
+    const ledger = usageLedger((usage) => written.push(usage));
+    fs.writeFileSync(transcript, workTranscript());
+    // A subagent's transcript, beside the session's: the result event's haiku figures are its.
+    const subagents = path.join(path.dirname(transcript), SESSION, "subagents");
+    fs.mkdirSync(subagents, { recursive: true });
+    fs.copyFileSync(path.join(FIXTURES, "subagents", "agent-a1b2c3.jsonl"), path.join(subagents, "agent-a1b2c3.jsonl"));
+
+    const result = await ledger.pass("work", agent("work-stream.jsonl"), start);
+    expect(result.iterations[0]?.sessionId).toBe(SESSION);
+    expect(written.at(-1)?.passes).toEqual([
+      {
+        pass: "work",
+        available: true,
+        turns: 3,
+        models: ["claude-opus-5-5", "claude-haiku-4-5-20251001"],
+        // The subagent's 50 with the session's 4, as the result event's output counts both.
+        inputTokens: 4 + 50,
+        cacheReadTokens: 5000,
+        cacheWrite5mTokens: 300,
+        cacheWrite1hTokens: 5000,
+        // The result event's, not the transcripts' placeholders (2, 1 and 1).
+        outputTokens: 987,
+        costUsd: 0.4321,
+      },
+    ]);
+
+    fs.copyFileSync(path.join(FIXTURES, "session.jsonl"), transcript);
+    await ledger.pass("extract", agent("extract-stream.jsonl"), start);
+    const usage = written.at(-1);
+    expect(usage?.effort).toBe("default");
+    expect(usage?.passes[1]).toEqual({
+      pass: "extract",
+      available: true,
+      turns: 1,
+      models: ["claude-opus-5-5"],
+      inputTokens: 2,
+      cacheReadTokens: 5300,
+      cacheWrite5mTokens: 120,
+      cacheWrite1hTokens: 0,
+      outputTokens: 55,
+      costUsd: null,
+    });
+    expect(usage?.summary).toMatch(/^Agent usage \(effort default\): work: 3 turns .*output 987, about \$0\.43; extract: 1 turn .*output 55, cost unavailable\.$/);
+    expect(logged).toHaveBeenCalledWith(usage?.summary);
+  });
+
+  it("reads the effort off the command the agent is started with", async () => {
+    const ledger = usageLedger((usage) => written.push(usage));
+    fs.writeFileSync(transcript, workTranscript());
+    // Claude Code's command with an effort set, behind the recording's.
+    const real = sandcastle.claudeCode("claude-opus-5-5", { effort: "high" });
+    const effortful: sandcastle.AgentProvider = {
+      ...agent("work-stream.jsonl"),
+      buildPrintCommand: (options) => ({ command: `cat '${path.join(FIXTURES, "work-stream.jsonl")}' # ${real.buildPrintCommand(options).command}` }),
+    };
+
+    await ledger.pass("work", effortful, start);
+    expect(written.at(-1)?.effort).toBe("high");
+  });
+
+  it("writes usage unavailable where the transcript cannot be read, and the run ends as it would have", async () => {
+    const ledger = usageLedger((usage) => written.push(usage));
+
+    const result = await ledger.pass("work", agent("work-stream.jsonl"), start);
+    expect(result.iterations[0]?.sessionId).toBe(SESSION);
+    expect(written.at(-1)?.passes).toEqual([{ pass: "work", available: false, reason: `no transcript of session ${SESSION} was found` }]);
+    expect(written.at(-1)?.summary).toMatch(/^Agent usage unavailable: work: usage unavailable \(/);
+
+    // The pass resuming that session cannot be told apart from it, so it is not counted as its own.
+    fs.copyFileSync(path.join(FIXTURES, "session.jsonl"), transcript);
+    await ledger.pass("extract", agent("extract-stream.jsonl"), start);
+    expect(written.at(-1)?.passes[1]).toEqual({ pass: "extract", available: false, reason: `an earlier pass in session ${SESSION} could not be read` });
+  });
+
+  it("writes usage unavailable where the transcript holds nothing to count", async () => {
+    const ledger = usageLedger((usage) => written.push(usage));
+    fs.writeFileSync(transcript, "not json\n");
+
+    await ledger.pass("work", agent("work-stream.jsonl"), start);
+    expect(written.at(-1)?.passes).toEqual([{ pass: "work", available: false, reason: "the transcript holds no assistant message for this pass" }]);
+  });
+
+  it("records a pass that threw, and throws what it threw; a write that fails fails nothing", async () => {
+    const ledger = usageLedger(() => {
+      throw new Error("disk full");
+    });
+    fs.writeFileSync(transcript, workTranscript());
+    const failing = (watched: sandcastle.AgentProvider) =>
+      start(watched).then(() => {
+        throw new Error("The agent finished without making any changes.");
+      });
+
+    await expect(ledger.pass("work", agent("work-stream.jsonl"), failing)).rejects.toThrow("The agent finished without making any changes.");
+    expect(logged).toHaveBeenCalledWith(expect.stringMatching(/^Agent usage \(effort default\): work: 2 turns/));
+    expect(logged).toHaveBeenCalledWith("::warning::The agent's usage was not written: disk full");
   });
 });

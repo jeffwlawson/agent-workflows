@@ -13,13 +13,15 @@ import {
   standardSchema,
   writers,
 } from "../shared/common.js";
-import { agentSandbox, claudeAgent, concludingMerge, runWithExtraction } from "../shared/agent.js";
+import { agentSandbox, claudeAgent, concludingMerge, runWithExtraction, usageLedger } from "../shared/agent.js";
 import { RUNNERS } from "../shared/contract.js";
 
 const INPUTS = readInputs(RUNNERS["update-branch"].inputs);
 /** Chosen at start, so a sandbox that cannot run the agent stops the run before any of its work. */
 const SANDBOX = agentSandbox(INPUTS);
-const { writeText } = writers(RUNNERS["update-branch"].outputs);
+const { writeJson, writeText } = writers(RUNNERS["update-branch"].outputs);
+/** What the agent spent, pass by pass (#637). */
+const USAGE = usageLedger((usage) => writeJson("usage.json", usage));
 
 const PR_NUMBER = INPUTS.PR_NUMBER;
 const BRANCH = INPUTS.BRANCH;
@@ -66,6 +68,7 @@ try {
   const result = await runWithExtraction({
     name,
     agent: claudeAgent("update-branch", INPUTS),
+    usage: USAGE,
     ...merge.options,
     logging: { type: "stdout" },
     promptFile: path.join(import.meta.dirname, "prompt.md"),

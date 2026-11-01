@@ -10,7 +10,7 @@ import {
   scrubGitHubTokens,
   writers,
 } from "../shared/common.js";
-import { agentSandbox, claudeAgent } from "../shared/agent.js";
+import { agentSandbox, claudeAgent, usageLedger } from "../shared/agent.js";
 import { RUNNERS } from "../shared/contract.js";
 import { staleFailure, staleReason } from "../shared/stale.js";
 import { rescueRef, resumeFromRescue, resumeSection } from "../shared/rescue.js";
@@ -20,6 +20,8 @@ const INPUTS = readInputs(RUNNERS["implement-prd"].inputs);
 const SANDBOX = agentSandbox(INPUTS);
 const LOOP_ACCOUNTS = readLoopAccounts(INPUTS.AGENT_LOOP_LOGINS);
 const { writeJson } = writers(RUNNERS["implement-prd"].outputs);
+/** What the agent spent, pass by pass (#637). */
+const USAGE = usageLedger((usage) => writeJson("usage.json", usage));
 
 /** The parent PRD. Context only — the work is the sub-issue below. */
 const ISSUE_NUMBER = INPUTS.ISSUE_NUMBER;
@@ -105,25 +107,27 @@ try {
     writeJson("rescue_ignored.json", { branch: RESCUE_BRANCH, movedPast: git(["rev-parse", rescueRef(RESCUE_BRANCH)]).trim() });
   }
 
-  const result = await sandcastle.run({
-    name: `implement-prd-#${ISSUE_NUMBER}-sub-#${SUB_NUMBER}`,
-    agent: claudeAgent("implement-prd", INPUTS),
-    ...SANDBOX,
-    logging: { type: "stdout" },
-    promptFile: path.join(import.meta.dirname, "prompt.md"),
-    promptArgs: {
-      ISSUE_NUMBER,
-      ISSUE_TITLE,
-      SUB_NUMBER,
-      SUB_TITLE,
-      BRANCH,
-      BASE_REF,
-      PRD_CONTEXT: prdContext,
-      SUB_CONTEXT: subContext,
-      RESUME: resumeSection(resume, RESCUE_BRANCH),
-    },
-    maxIterations: 1,
-  });
+  const result = await USAGE.pass("work", claudeAgent("implement-prd", INPUTS), (agent) =>
+    sandcastle.run({
+      name: `implement-prd-#${ISSUE_NUMBER}-sub-#${SUB_NUMBER}`,
+      agent,
+      ...SANDBOX,
+      logging: { type: "stdout" },
+      promptFile: path.join(import.meta.dirname, "prompt.md"),
+      promptArgs: {
+        ISSUE_NUMBER,
+        ISSUE_TITLE,
+        SUB_NUMBER,
+        SUB_TITLE,
+        BRANCH,
+        BASE_REF,
+        PRD_CONTEXT: prdContext,
+        SUB_CONTEXT: subContext,
+        RESUME: resumeSection(resume, RESCUE_BRANCH),
+      },
+      maxIterations: 1,
+    }),
+  );
 
   // Before the commit count, and whatever it finds; see implement.ts.
   const stale = staleReason(result.stdout);

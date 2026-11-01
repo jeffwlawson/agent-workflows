@@ -10,7 +10,7 @@ import {
   scrubGitHubTokens,
   writers,
 } from "../shared/common.js";
-import { agentSandbox, claudeAgent } from "../shared/agent.js";
+import { agentSandbox, claudeAgent, usageLedger } from "../shared/agent.js";
 import { RUNNERS } from "../shared/contract.js";
 import { rescueRef, resumeFromRescue, resumeSection } from "../shared/rescue.js";
 import { staleFailure, staleReason } from "../shared/stale.js";
@@ -20,6 +20,8 @@ const INPUTS = readInputs(RUNNERS["implement"].inputs);
 const SANDBOX = agentSandbox(INPUTS);
 const LOOP_ACCOUNTS = readLoopAccounts(INPUTS.AGENT_LOOP_LOGINS);
 const { writeJson } = writers(RUNNERS["implement"].outputs);
+/** What the agent spent, pass by pass (#637). */
+const USAGE = usageLedger((usage) => writeJson("usage.json", usage));
 
 const ISSUE_NUMBER = INPUTS.ISSUE_NUMBER;
 const ISSUE_TITLE = INPUTS.ISSUE_TITLE;
@@ -78,22 +80,24 @@ try {
     writeJson("rescue_ignored.json", { branch: RESCUE_BRANCH, movedPast: git(["rev-parse", rescueRef(RESCUE_BRANCH)]).trim() });
   }
 
-  const result = await sandcastle.run({
-    name: `implement-#${ISSUE_NUMBER}`,
-    agent: claudeAgent("implement", INPUTS),
-    ...SANDBOX,
-    logging: { type: "stdout" },
-    promptFile: path.join(import.meta.dirname, "prompt.md"),
-    promptArgs: {
-      ISSUE_NUMBER,
-      ISSUE_TITLE,
-      BRANCH,
-      BASE_REF,
-      ISSUE_CONTEXT: issueContext,
-      RESUME: resumeSection(resume, RESCUE_BRANCH),
-    },
-    maxIterations: 1,
-  });
+  const result = await USAGE.pass("work", claudeAgent("implement", INPUTS), (agent) =>
+    sandcastle.run({
+      name: `implement-#${ISSUE_NUMBER}`,
+      agent,
+      ...SANDBOX,
+      logging: { type: "stdout" },
+      promptFile: path.join(import.meta.dirname, "prompt.md"),
+      promptArgs: {
+        ISSUE_NUMBER,
+        ISSUE_TITLE,
+        BRANCH,
+        BASE_REF,
+        ISSUE_CONTEXT: issueContext,
+        RESUME: resumeSection(resume, RESCUE_BRANCH),
+      },
+      maxIterations: 1,
+    }),
+  );
 
   // Before the commit count, and whatever it finds: an agent that says the
   // issue no longer matches the code has said no pull request should open.

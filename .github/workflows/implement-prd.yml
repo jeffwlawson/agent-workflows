@@ -784,6 +784,26 @@ jobs:
           retention-days: ${{ inputs.transcript-retention-days }}
           overwrite: true
 
+      # What the agent spent (#637), in the job's summary: the line the
+      # runner's ledger wrote into `usage.json` as each pass ended, or that
+      # usage is unavailable where it wrote none, as on a run that never
+      # reached the agent. `always()`, so a failed run says what it spent too,
+      # and `continue-on-error`, so the line never fails the run it describes.
+      # After the agent, so with no token: the file is the agent's to rewrite,
+      # and the summary is all it reaches.
+      - name: Summarise the agent's usage
+        if: always()
+        continue-on-error: true
+        env:
+          GH_TOKEN: ""
+          USAGE: ${{ runner.temp }}/usage.json
+        run: |
+          if [ -f "$USAGE" ] && line="$(jq -er .summary "$USAGE")"; then
+            echo "$line" >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "Agent usage unavailable: the runner wrote no usage.json." >> "$GITHUB_STEP_SUMMARY"
+          fi
+
       # The agent's commits, as the one thing `publish` pushes:
       # `implement-prd:bundle` bundles the PRD branch, thin, the tip `catch_up`
       # left being its prerequisite, which `publish` has from its own

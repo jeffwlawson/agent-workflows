@@ -1,0 +1,2 @@
+{"type":"system","subtype":"init","cwd":"/work/repo","session_id":"5f1c2a9e-3b7d-4c11-9a0e-2d6f8b4e7a10","tools":["Read"],"model":"claude-opus-5-5","permissionMode":"bypassPermissions"}
+{"type":"result","subtype":"success","is_error":false,"num_turns":1,"result":"<output>{}</output>","session_id":"5f1c2a9e-3b7d-4c11-9a0e-2d6f8b4e7a10","usage":{"input_tokens":2,"cache_creation_input_tokens":120,"cache_read_input_tokens":5300,"output_tokens":55}}

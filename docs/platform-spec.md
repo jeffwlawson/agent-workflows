@@ -177,11 +177,26 @@ A runner returns three things.
   handed and push nothing; publishing the commits is the orchestrator's.
 - **The exit code** (§2.4).
 
+**What the agent spent** (#637). Every runner writes `usage.json` as each pass of its agent ends,
+however it ended, rewriting it with every pass so far: the work pass, and `extract`, the
+format-only pass that resumes its session, where the runner has one. Each pass gives its assistant
+turns, counted once per message, the models that answered, and its input, cache read and cache
+write tokens, the write split by its 5-minute and 1-hour TTL, all summed from the session
+transcript and its subagents' beside it, the scope the result event counts too; and its output
+tokens and estimated cost, from the stream's result event, since the transcript's output counts are
+placeholders. Beside them, the effort the agent was started with,
+`default` where none was set, and `summary`, the one line the run is shown as. A pass whose usage
+cannot be read is recorded as unavailable, with the reason, and the line says *usage unavailable*;
+the run goes on as it would have. The cost is an estimate, not a bill.
+
 **`doctor` cannot check this.** A fresh directory is a property of each run, not of anything in the
 repository.
 
 > **Actions orchestrator:** `OUTPUT_DIR` is `runner.temp`, which is fresh for every job. The agent
 > job hands its files and a bundle of its commits to a publish job, which pushes, posts and labels.
+> `usage.json` stays in the agent's job: its step after the transcript's upload, `always()`, with no
+> token and never failing the job, writes the file's `summary` to the job's step summary, or that
+> usage is unavailable where the runner wrote none.
 
 ### 2.4 Failure
 
@@ -636,6 +651,7 @@ runner requires.
 
 | Output | When it is written |
 |---|---|
+| `usage.json` | On every run whose agent started: what it spent, pass by pass (§2.3). |
 | `rescue_ignored.json` | Where a rescue branch was found and set aside because the base moved since it was saved: `branch`, the rescue branch, and `movedPast`, its tip. `implement:conclude` says so. |
 
 The result is the commits on `BRANCH`.
@@ -669,6 +685,7 @@ build, and an orchestrator other than Actions sets its environment in its own co
 > note, a stopped run's commits rescued to the rescue branch where nothing was pushed, the failure
 > comment and `agent:blocked` where the run stopped, and `agent:implement` off wherever the gate
 > decided the run was its own.
+> The agent's job writes `usage.json`'s line to its step summary, however it ended (§2.3).
 
 > **Service orchestrator:** the worker runs the gate job's, the agent's job's and the publish job's
 > subcommands, in the order above and under each job's and step's `if:` in `implement.yml`, not
@@ -1172,6 +1189,7 @@ earlier run of this PRD left commits on `RESCUE_BRANCH`, that branch fetched to
 
 | Output | When it is written |
 |---|---|
+| `usage.json` | On every run whose agent started: what it spent, pass by pass (§2.3). |
 | `rescue_ignored.json` | Where a rescue branch was found and set aside because the PRD branch moved since it was saved: `branch`, the rescue branch, and `movedPast`, its tip. `implement-prd:conclude` says so. |
 
 **`doctor` cannot check this.** These tables are the runner's, for the reason §6 gives.
@@ -1205,6 +1223,7 @@ earlier run of this PRD left commits on `RESCUE_BRANCH`, that branch fetched to
 > `implement-prd:conclude`: a run that stopped has its commits pushed to `RESCUE_BRANCH`, its
 > failure comment and `agent:blocked`, and, on a build, the stopped slice's row written back from
 > the PRD branch; every run the gate decided has `agent:implement` taken off.
+> The agent's job writes `usage.json`'s line to its step summary, however it ended (§2.3).
 
 > **Service orchestrator:** the worker runs the gate job's, the catch-up job's, the agent's job's
 > and the publish job's subcommands, in the order above and under each job's and step's `if:` in
@@ -1912,6 +1931,7 @@ so a review asks with or without a header.
 
 | Output | When it is written |
 |---|---|
+| `usage.json` | On every run whose agent started: what it spent, pass by pass (§2.3). |
 | `findings.json` | The findings to open a thread for: where each goes, its severity and title, the agent's text, and whether an earlier review had read its code. |
 | `review_body.json` | What the body is written from: the verdict, the agent's assessment, the record's entries, the criteria and, except on a PRD PR's final review, why there are none where there are none (`criteria found`, `none in the issue`, `no linked issue` or `untrusted issue`), where criteria were handed what merged since the brief (#541: the commits since its read-at commit that touched the files it names, or why the check could not run) with the review's ruling, what the review's own test run left unrun (#543: whether it ran tests, and each test or suite exercising the change it skipped for want of something in the environment, with the reason, at most 20 and how many more; absent where the review did not say), the follow-ups, on a PRD PR the carried follow-ups this review ruled resolved, each with its reason, and the ids of every one ruled resolved on the pull request so far (#495), both absent where there are none, and the data behind the header, the round note and the red tests, and, where a PRD PR's review with no header asked for no round it would have, that it withheld one (`unnumbered`). |
 | `thread_resolutions.json` | The earlier findings this review verified: each thread, why it closes, and the agent's note or the maintainer's reply to quote. Written on every run. |
@@ -1968,6 +1988,7 @@ text, and `review:publish` and `review:advance` write every final string from th
 > `review:advance`: the progress list for how the round ended, then `agent:implement` back on the
 > PRD's parent on a slice round's approval, or the park comment there on any ending but an approval
 > or a fix round starting.
+> The agent's job writes `usage.json`'s line to its step summary, however it ended (§2.3).
 
 > **Service orchestrator:** the worker runs the review job's and the posting job's subcommands, in
 > the order and under the conditions above, each a child process with a fresh `OUTPUT_DIR` of its
@@ -2593,6 +2614,7 @@ diffing, which the orchestrator prepares, and `RESCUE_BRANCH` fetched to
 
 | Output | When it is written |
 |---|---|
+| `usage.json` | On every run whose agent started: what it spent, pass by pass (§2.3). |
 | `nothing_to_do.txt` | Signals by existing: there was no feedback to act on. |
 | `rescue_ignored.json` | Where a rescue branch was found and set aside: the branch, `branch`, and its tip, `movedPast`. |
 | `round_header.txt` | Where the rounds could be read: the round header its comments open with, as plain text. |
@@ -2630,6 +2652,7 @@ diffing, which the orchestrator prepares, and `RESCUE_BRANCH` fetched to
 > to `RESCUE_BRANCH` where nothing was pushed, posts the failure comment, and takes `agent:fix`
 > off, then adds `agent:blocked` where the run stopped. The publish job holds no shell step that
 > writes, and no job runs inline shell that decides.
+> The agent's job writes `usage.json`'s line to its step summary, however it ended (§2.3).
 
 > **Service orchestrator:** the re-review request is `fix:publish`'s, package code every
 > orchestrator runs, as `review:conclude`'s fix round is: an orchestrator that runs the command has
@@ -3066,6 +3089,7 @@ copy-out that did not finish, fails the run, and nothing is pushed.
 
 | Output | When it is written |
 |---|---|
+| `usage.json` | On every run whose agent started: what it spent, pass by pass (§2.3). |
 | `update_comment.md` | The comment saying how the conflicts were resolved. |
 
 **`doctor` cannot check this.** These tables are the runner's, for the reason §6 gives.
@@ -3086,6 +3110,7 @@ neither.
 > `update-branch:conclude`, `always()`, which ends every run: the failure comment,
 > `agent:update-branch` off, `agent:blocked`, and the re-request where the head moved. No step of
 > the workflow decides anything in inline shell: what is left is glue and what only Actions can do.
+> The agent's job writes `usage.json`'s line to its step summary, however it ended (§2.3).
 
 > **Service orchestrator:** the worker runs the gate job's, the agent's job's and the publish job's
 > subcommands, in the order and under the conditions above, each a child process with a fresh

@@ -10,7 +10,7 @@ import {
   sh,
   writers,
 } from "../shared/common.js";
-import { agentSandbox, claudeAgent, runWithExtraction } from "../shared/agent.js";
+import { agentSandbox, claudeAgent, runWithExtraction, usageLedger } from "../shared/agent.js";
 import { RUNNERS } from "../shared/contract.js";
 import { filterOutOfScopeNotes } from "../shared/fix-notes.js";
 import { filterConversationOutcomes, filterOutcomes, filterTopLevelComments, fixOutputSchema } from "../shared/fix-output.js";
@@ -31,6 +31,8 @@ const INPUTS = readInputs(RUNNERS["fix"].inputs);
 const SANDBOX = agentSandbox(INPUTS);
 const LOOP_ACCOUNTS = readLoopAccounts(INPUTS.AGENT_LOOP_LOGINS);
 const { writeJson, writeText } = writers(RUNNERS["fix"].outputs);
+/** What the agent spent, pass by pass (#637). */
+const USAGE = usageLedger((usage) => writeJson("usage.json", usage));
 
 const PR_NUMBER = INPUTS.PR_NUMBER;
 const BRANCH = INPUTS.BRANCH;
@@ -126,6 +128,7 @@ try {
   const result = await runWithExtraction({
     name: `fix-${PR_NUMBER}`,
     agent: claudeAgent("fix", INPUTS),
+    usage: USAGE,
     ...SANDBOX,
     logging: { type: "stdout" },
     promptFile: path.join(import.meta.dirname, "prompt.md"),

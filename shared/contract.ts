@@ -836,7 +836,10 @@ const MERGE_PUBLISH = {
   inputs: {
     ...EVERY_SUBCOMMAND,
     ...LOOP,
+    ...LOOP_ACCOUNTS,
+    LOOP_LOGIN: REQUIRED,
     PR_NUMBER: REQUIRED,
+    BASE_REF: REQUIRED,
     GATE_DIR: readsFromCommand("merge:gate", MERGE_GATE, {
       "gate.json": "always",
     }),
@@ -1090,7 +1093,9 @@ const MERGE_PUBLISH = {
  *   a push, or the loop's own label, arms nothing. A head with no arm
  *   disarms, but waits while `agent:update-branch` is on. A behind head gets
  *   `agent:update-branch` with the loop's token, or is disarmed after its
- *   arm's third clean refresh.
+ *   arm's third clean refresh. A refusal, a disarm or the first red of a head
+ *   asks for the next armed pull request's refresh, as `merge:publish` does
+ *   after a merge (#590).
  *   Then it waits, bounded by `CHECK_WAIT_SECONDS` and polled every
  *   `CHECK_POLL_SECONDS`, while a required check or the verdict is pending or
  *   another trigger label is on. It reads the labeller's permission with the
@@ -1102,8 +1107,11 @@ const MERGE_PUBLISH = {
  * - `merge:publish` squash-merges the pull request on `merge`, the gate's
  *   decision read through `GATE_DIR`, guarded on the head the gate checked,
  *   titled with the pull request's title and ` (#<n>)`, with the loop's
- *   token, and then takes `agent:merge` off. On any other decision it does
- *   nothing.
+ *   token, and then takes `agent:merge` off. Then (#590) it asks for
+ *   `agent:update-branch`, with the loop's token, on the next armed pull
+ *   request into `BASE_REF`: the oldest arm by `LOOP_LOGIN` that is behind,
+ *   not red by the verdicts of `AGENT_LOOP_LOGINS`, and has no trigger label
+ *   on. On any other decision it does nothing.
  * - `merge:conclude` ends every merge run: on one that stopped
  *   (`JOB_STATUS` `failure` or `cancelled`), the failure comment, with the
  *   time limit where `TIMED_OUT` is `true`, a cancel, the mint's failure

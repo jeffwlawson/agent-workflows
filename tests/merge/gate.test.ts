@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { CommitCheck } from "../../engine/read.js";
 import type { Limits } from "../../engine/writer.js";
 import { gate, MAX_REFRESHES } from "../../merge/gate.js";
+import { NEXT_TRIES } from "../../merge/queue.js";
 import { CI_WAIT_SECONDS, POLL_SECONDS } from "../../review/collect-checks.js";
 import type { LoopReadingIo, Token } from "../../shared/command-io.js";
 import { COMMANDS } from "../../shared/contract.js";
@@ -184,7 +185,7 @@ describe("merge:gate arms", () => {
     expect(comments()).toEqual([]);
     expect(labels()).toContain(MERGE_LABEL);
     expect(decided).toEqual({ decision: "merge", head: HEAD });
-    expect(asked).toEqual({ comment: 1, removeLabel: 1, addLabel: 1, setCommitStatus: 1 });
+    expect(asked).toEqual({ comment: 1, removeLabel: 1 + NEXT_TRIES, addLabel: NEXT_TRIES, setCommitStatus: 1 });
   });
 
   it.each(["admin", "maintain"] as const)("takes %s as able to write", async (permission) => {
@@ -572,5 +573,89 @@ describe("merge:gate reads the checks the base requires, or else every check but
     await run();
 
     expect(decided).toEqual({ decision: "merge", head: HEAD });
+  });
+});
+
+/**
+ * The queue moves on where an arm leaves it without a merge (#590): each of
+ * these may have been the one the last merge refreshed, and the rest would
+ * otherwise wait on a merge that is not coming. By the rule `merge:publish`
+ * uses, whose own tests hold the choosing row by row.
+ */
+describe("merge:gate moves the queue on", () => {
+  const NEXT = 20;
+  const NEXT_HEAD = "c".repeat(40);
+
+  beforeEach(() => {
+    github.pullRequests.set(NEXT, { number: NEXT, nodeId: `PR_${NEXT}`, state: "open", draft: false, headSha: NEXT_HEAD, title: "", body: "", labels: [MERGE_LABEL], baseRef: "main" });
+    github.statuses.set(NEXT_HEAD, [
+      { context: MERGE_CONTEXT, state: "success", targetUrl: null, description: ARMED, creator: LOOP },
+      verdict("success"),
+    ]);
+    github.comparisons.set(`main...${NEXT_HEAD}`, "behind");
+    github.checks.set(NEXT_HEAD, [check("CI / verify", "SUCCESS")]);
+  });
+
+  const asked = () => github.pullRequests.get(NEXT)?.labels.includes(UPDATE_BRANCH_LABEL) ?? false;
+  const nextWrites = () => (made?.writes ?? []).filter((w) => w.args[0] === NEXT).map((w) => `${w.token} ${w.type}`);
+
+  it("on a disarm: a push that left the head unarmed", async () => {
+    await run(INPUTS({ ACTION: "synchronize", SENDER: "bob" }));
+
+    expect(decided).toEqual({ decision: "disarmed", head: HEAD });
+    expect(nextWrites()).toEqual(["loop removeLabel", "loop addLabel"]);
+    expect(asked()).toBe(true);
+  });
+
+  it("on a disarm: the refresh cap", async () => {
+    github.comparisons.set(`main...${HEAD}`, "diverged");
+    armed(HEAD, MAX_REFRESHES);
+    await run(INPUTS({ SENDER: LOOP }));
+
+    expect(decided).toEqual({ decision: "disarmed", head: HEAD });
+    expect(asked()).toBe(true);
+  });
+
+  it("on the first gate to say a head is red, and not on a second on the same head", async () => {
+    github.checks.set(HEAD, [check("CI / verify", "FAILURE")]);
+    await run();
+
+    expect(decided).toEqual({ decision: "red", head: HEAD });
+    expect(nextWrites()).toEqual(["loop removeLabel", "loop addLabel"]);
+
+    github.pullRequests.get(NEXT)!.labels = [MERGE_LABEL];
+    await run(INPUTS({ SENDER: LOOP }));
+    expect(decided).toEqual({ decision: "red", head: HEAD });
+    expect(nextWrites()).toEqual([]);
+    expect(asked()).toBe(false);
+  });
+
+  it("on a refusal of a pull request carrying agent:merge", async () => {
+    await run(INPUTS({ PR_DRAFT: "true" }));
+
+    expect(decided).toEqual({ decision: "refused" });
+    expect(asked()).toBe(true);
+  });
+
+  it("not on a refusal for want of the loop's token, since a label added with the workflow token starts nothing", async () => {
+    await run(INPUTS({ LOOP_TOKEN_SOURCE: "workflow" }));
+
+    expect(decided).toEqual({ decision: "refused" });
+    expect(asked()).toBe(false);
+  });
+
+  it("not on a behind head, which asks for its own refresh", async () => {
+    github.comparisons.set(`main...${HEAD}`, "diverged");
+    await run();
+
+    expect(decided).toEqual({ decision: "behind", head: HEAD });
+    expect(asked()).toBe(false);
+  });
+
+  it("not on a merge, which merge:publish moves on after it lands", async () => {
+    await run();
+
+    expect(decided).toEqual({ decision: "merge", head: HEAD });
+    expect(asked()).toBe(false);
   });
 });

@@ -21,6 +21,9 @@ name: Agent Merge (reusable)
 # - `merge:publish` squash-merges on `merge` alone, guarded on the head the
 #   gate checked, with the loop's token: a merge made with the workflow token
 #   starts no workflow, so neither CI on the base nor the follow-ups would run.
+#   Then it asks for `agent:update-branch` on the next armed pull request into
+#   the same base, the oldest that is behind and not red (#590), as the gate
+#   does where an arm leaves the queue without a merge.
 # - `merge:conclude` says a run that stopped, takes `agent:merge` off and adds
 #   `agent:blocked`.
 on:
@@ -179,7 +182,9 @@ jobs:
           echo "decision=$(jq -r '.decision // ""' "$file")" >> "$GITHUB_OUTPUT"
 
       # On `merge` alone. The head to guard on is the gate's, read from its
-      # `gate.json`, never the event's.
+      # `gate.json`, never the event's. After the merge it refreshes the next
+      # armed pull request into the same base (#590), whose arm it reads only
+      # where the loop token's account posted it.
       - name: Merge
         if: steps.decision.outputs.decision == 'merge'
         env:
@@ -187,6 +192,8 @@ jobs:
           OUTPUT_DIR: ${{ runner.temp }}/publish
           LOOP_TOKEN: ${{ steps.token.outputs.token }}
           LOOP_TOKEN_SOURCE: ${{ steps.token.outputs.source }}
+          LOOP_LOGIN: ${{ steps.token.outputs.login }}
+          BASE_REF: ${{ github.event.pull_request.base.ref }}
           GATE_DIR: ${{ runner.temp }}/gate
         run: npm exec --prefix "$RUNNER_TEMP" --yes --package=@jeffwlawson/agent-workflows@0.9.3 -- agent-workflows merge:publish
 

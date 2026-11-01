@@ -1,16 +1,14 @@
-import type { CommitCheck, CommitStatus, GitHubReader, PullRequest } from "../engine/read.js";
+import type { CommitStatus, GitHubReader, PullRequest } from "../engine/read.js";
 import { WriteFailed, type Limits, type Writer } from "../engine/writer.js";
 import { describe, pullRequestNumber, seconds, tolerated } from "../shared/command-helpers.js";
 import type { LoopReadingIo } from "../shared/command-io.js";
 import type { COMMANDS } from "../shared/contract.js";
 import type { InputValues } from "../shared/env.js";
-import { AGENT_CHECKS, isLoopStatus } from "../shared/loop-checks.js";
 import { isWorkflowBot, loopAccounts, type LoopAccounts } from "../shared/loop-accounts.js";
 import { armOn, sameAccount } from "../shared/merge-arm.js";
 import {
   armDescription,
   disarmComment,
-  FIX_LABEL,
   MERGE_CONTEXT,
   MERGE_LABEL,
   mergeBehindComment,
@@ -19,10 +17,10 @@ import {
   mergeRedMark,
   mergeRefreshCapComment,
   mergeRefusal,
-  REVIEW_LABEL,
   UPDATE_BRANCH_LABEL,
 } from "../shared/record.js";
 import { newestVerdict } from "../shared/verdict-status.js";
+import { NEXT_TRIES, readHead, refreshNext, TRIGGERS } from "./queue.js";
 
 type Declared = (typeof COMMANDS)["merge:gate"];
 type Inputs = InputValues<Declared["inputs"]>;
@@ -62,6 +60,12 @@ export type Decision = "merge" | "wait" | "behind" | "red" | "disarmed" | "refus
  *   `disarmed` once the arm has survived `MAX_REFRESHES` clean refreshes; and
  *   `merge` otherwise.
  *
+ * **The queue moves on** where an arm leaves it without a merge (#590): a
+ * refusal, a disarm, and the first gate to say a head is red each ask for the
+ * next armed pull request's refresh, as `merge:publish` does after a merge
+ * (`refreshNext` in `merge/queue.ts`). A second gate on the same red head
+ * asks for nothing.
+ *
  * `gate.json` is the decision and the head it checked, written as soon as it
  * is decided and again however this ends, as `fix:gate`'s is: a cancel
  * reaches Node as a signal, which runs no `finally`.
@@ -85,9 +89,17 @@ export const gate = async (inputs: Inputs, io: Io): Promise<void> => {
   };
   try {
     const { workflow, loop } = io.writers(LIMITS);
+    // An arm that leaves the queue without a merge moves it on (#590): it may
+    // have been the one the last merge refreshed, and the rest would wait on
+    // a merge that is not coming.
+    const next = async (): Promise<void> => {
+      await refreshNext({ pr, base: inputs.BASE_REF, github: io.github, loop, loopLogin: inputs.LOOP_LOGIN, accounts });
+    };
     const refusal = refusalOf(inputs);
     if (refusal !== undefined) {
       await refuse(pr, workflow, refusal);
+      // Without the loop's token, a label added starts nothing.
+      if (canStart(inputs)) await next();
       decide("refused");
       return;
     }
@@ -108,6 +120,7 @@ export const gate = async (inputs: Inputs, io: Io): Promise<void> => {
             ? `@${inputs.SENDER} added it, and whether they can write to this repository could not be established, so it was not taken as a merge decision. Someone who can write has to add it.`
             : `@${inputs.SENDER} added it, and can only ${permission === "none" ? "read" : permission} here, so it was not taken as a merge decision: it is worth exactly what the merge button is. Someone who can write has to add it.`,
         );
+        await next();
         decide("refused");
         return;
       }
@@ -120,6 +133,7 @@ export const gate = async (inputs: Inputs, io: Io): Promise<void> => {
       const live = await io.github.pullRequest(pr);
       if (live.headSha !== eventHead) {
         await disarm(pr, workflow, live.headSha, { commit: eventHead, login: inputs.SENDER });
+        await next();
         decide("disarmed", live.headSha);
         return;
       }
@@ -172,13 +186,16 @@ export const gate = async (inputs: Inputs, io: Io): Promise<void> => {
           (head === eventHead ? undefined : armedOn(eventHead, await io.github.commitStatuses(eventHead), inputs.LOOP_LOGIN)) ??
           (await earlierArm(io.github, pr, head, inputs.LOOP_LOGIN));
         await disarm(pr, workflow, head, earlier, byLoop ? inputs.SENDER : undefined);
+        await next();
         decide("disarmed", head);
         return;
       }
       armedAt = arm.login === undefined ? { commit: head } : { commit: head, login: arm.login };
       const state = await stateOf(io.github, { pr, live, statuses, base: inputs.BASE_REF, accounts });
       if (state.kind === "red") {
-        await sayOnce(io.github, workflow, pr, accounts, mergeRedMark(head), mergeRedComment(head, state.reasons));
+        // Only the first gate to say it moves the queue on: a second on the
+        // same red head asks for nothing.
+        if (await sayOnce(io.github, workflow, pr, accounts, mergeRedMark(head), mergeRedComment(head, state.reasons))) await next();
         decide("red", head);
         return;
       }
@@ -189,6 +206,7 @@ export const gate = async (inputs: Inputs, io: Io): Promise<void> => {
             workflow.comment(pr, mergeRefreshCapComment(head, inputs.BASE_REF, arm.login, MAX_REFRESHES)),
           );
           await tolerated(undefined, () => workflow.removeLabel(pr, MERGE_LABEL));
+          await next();
           decide("disarmed", head);
           return;
         }
@@ -285,9 +303,6 @@ interface Armed {
 /** The permissions that can merge, as GitHub's merge button reads them. */
 const WRITERS: ReadonlySet<string> = new Set(["admin", "maintain", "write"]);
 
-/** The trigger labels whose runs move or read the head: while one is on, nothing merges. */
-const TRIGGERS = [REVIEW_LABEL, FIX_LABEL, UPDATE_BRANCH_LABEL];
-
 /**
  * The refusal the event's own facts settle, before anything is read, in
  * order: closed, draft, fork, then a token that cannot arm.
@@ -296,11 +311,14 @@ const refusalOf = (inputs: Inputs): string | undefined => {
   if (inputs.PR_STATE !== "open" || inputs.PR_MERGED === "true") return "This PR is closed.";
   if (inputs.PR_DRAFT === "true") return `This PR is a draft. Mark it ready for review, then add \`${MERGE_LABEL}\` again.`;
   if (inputs.HEAD_REPO !== inputs.GH_REPO) return "This PR is from a fork, and the loop merges only pull requests from this repository's own branches.";
-  if (inputs.LOOP_TOKEN_SOURCE !== "app" && inputs.LOOP_TOKEN_SOURCE !== "pat") {
+  if (!canStart(inputs)) {
     return `Neither the loop's App nor \`AGENT_PAT\` is set, so nothing was armed or merged. An arm posted with \`GITHUB_TOKEN\` is one any workflow in this PR's branch could post too, and a merge made with it starts no workflow, so neither CI on the base nor the follow-ups would run. Set up the loop's App, or \`AGENT_PAT\`, and add \`${MERGE_LABEL}\` again.`;
   }
   return undefined;
 };
+
+/** Whether the loop's token is one whose label starts a run: the App's or `AGENT_PAT`, never the workflow token. */
+const canStart = (inputs: Inputs): boolean => inputs.LOOP_TOKEN_SOURCE === "app" || inputs.LOOP_TOKEN_SOURCE === "pat";
 
 /** Where an armed head stands, and why it is waiting or red. */
 type State =
@@ -315,9 +333,8 @@ type State =
  * that is not an approval, red; then the base, behind where its tip is not in
  * the head's history; then anything pending; and otherwise a merge.
  *
- * The checks are the ones the base requires, by GitHub's own `isRequired`,
- * rulesets and branch protection alike. Where it requires none, every check on
- * the head but the loop's own (`shared/loop-checks.ts`) has to pass instead.
+ * The checks and the verdict are read as `readHead` in `merge/queue.ts`
+ * reads them, the one rule the queue's "not red" is read by too.
  */
 const stateOf = async (
   github: GitHubReader,
@@ -327,61 +344,34 @@ const stateOf = async (
   if (busy.length > 0) return { kind: "pending", reasons: [`It carries ${busy.map((l) => `\`${l}\``).join(", ")}, whose run is not done.`] };
 
   const head = live.headSha;
-  const checks = await github.commitChecks(head, pr);
-  const required = checks.filter((check) => check.required);
-  const counted = required.length > 0 ? required : checks.filter((check) => !isLoops(check));
-  const failed = counted.filter((check) => outcomeOf(check) === "failed").map(nameOf);
-  const pending = counted.filter((check) => outcomeOf(check) === "pending").map(nameOf);
-  const verdict = newestVerdict(statuses, accounts);
-
-  const red: string[] = [];
-  if (failed.length > 0) red.push(`${required.length > 0 ? "A required check failed" : "A check failed"}: ${failed.join(", ")}.`);
-  if (verdict !== undefined && verdict.state !== "success" && verdict.state !== "pending") {
-    red.push(`The newest review verdict on it is \`${verdict.state}\`, not an approval.`);
-  }
+  const { red, pending } = readHead(await github.commitChecks(head, pr), newestVerdict(statuses, accounts));
   if (red.length > 0) return { kind: "red", reasons: red };
 
   const currency = await github.behindBase(base, head);
   if (currency === "behind") return { kind: "behind" };
 
-  const waiting: string[] = [];
-  if (pending.length > 0) waiting.push(`${required.length > 0 ? "A required check is" : "A check is"} still running: ${pending.join(", ")}.`);
-  if (verdict === undefined || verdict.state === "pending") waiting.push("No review has approved it yet.");
-  if (currency === "unknown") waiting.push(`Whether it is current with \`${base}\` could not be told yet.`);
+  const waiting = currency === "unknown" ? [...pending, `Whether it is current with \`${base}\` could not be told yet.`] : pending;
   return waiting.length > 0 ? { kind: "pending", reasons: waiting } : { kind: "merge" };
-};
-
-/** A check the loop posts or runs, which is not CI. */
-const isLoops = (check: CommitCheck): boolean => (check.kind === "checkRun" ? AGENT_CHECKS.test(check.name) : isLoopStatus(check.context));
-
-const nameOf = (check: CommitCheck): string => `\`${check.kind === "checkRun" ? check.name : check.context}\``;
-
-/** A check as passed, failed or still pending, in GraphQL's spelling of each state. */
-const outcomeOf = (check: CommitCheck): "passed" | "failed" | "pending" => {
-  if (check.kind === "status") {
-    if (check.state === "SUCCESS") return "passed";
-    return check.state === "PENDING" || check.state === "EXPECTED" ? "pending" : "failed";
-  }
-  if (check.status !== "COMPLETED") return "pending";
-  return check.conclusion === "SUCCESS" || check.conclusion === "NEUTRAL" || check.conclusion === "SKIPPED" ? "passed" : "failed";
 };
 
 /**
  * A comment said once per head: posted only where no comment by the loop's
  * accounts already carries `mark`. A read that fails says it again rather
- * than staying quiet.
+ * than staying quiet. Whether it was said this time, which a comment that
+ * failed to post counts as: it was not said before.
  */
-const sayOnce = async (github: GitHubReader, workflow: Writer, pr: number, accounts: LoopAccounts, mark: string, body: string): Promise<void> => {
+const sayOnce = async (github: GitHubReader, workflow: Writer, pr: number, accounts: LoopAccounts, mark: string, body: string): Promise<boolean> => {
   try {
     const said = (await github.authoredComments(pr)).some((c) => isWorkflowBot(c.author, accounts) && c.body.includes(mark));
     if (said) {
       console.log(`PR #${pr} was already told this about its head, so it is not said again.`);
-      return;
+      return false;
     }
   } catch (error) {
     console.log(`::warning::Could not read PR #${pr}'s comments (${describe(error)}), so this is said again rather than not at all.`);
   }
   await tolerated(`Could not post the comment on PR #${pr}.`, () => workflow.comment(pr, body));
+  return true;
 };
 
 /**
@@ -405,9 +395,12 @@ const disarm = async (pr: number, workflow: Writer, head: string, armed: Armed |
  * What the gate may write, and how many of each (ADR 0005): one comment (a
  * refusal, a disarm, a red head or a behind one; never two), one label off
  * (`agent:merge`, or `agent:update-branch` before it is added), the refresh
- * asked for, and the arm.
+ * asked for, and the arm. A refusal, a disarm or a first red moves the queue
+ * on as well (#590), with up to `NEXT_TRIES` of `agent:update-branch` removed
+ * and added on other pull requests; a behind head, which asks for its own
+ * refresh, does not.
  */
-const LIMITS: Limits = { comment: 1, removeLabel: 1, addLabel: 1, setCommitStatus: 1 };
+const LIMITS: Limits = { comment: 1, removeLabel: 1 + NEXT_TRIES, addLabel: NEXT_TRIES, setCommitStatus: 1 };
 
 const commit = (value: string, name: string): string => {
   if (!/^[0-9a-f]{40}$/.test(value)) throw new Error(`${name} is ${JSON.stringify(value)}, which is not a full commit id.`);

@@ -5,7 +5,9 @@ import type { CommandIo } from "../shared/command-io.js";
 import { COMMANDS } from "../shared/contract.js";
 import type { InputValues } from "../shared/env.js";
 import { choice, json, matching, object, optional, readDirectory } from "../shared/hand-over.js";
+import { loopAccounts } from "../shared/loop-accounts.js";
 import { MERGE_LABEL } from "../shared/record.js";
+import { NEXT_TRIES, refreshNext } from "./queue.js";
 
 type Declared = (typeof COMMANDS)["merge:publish"];
 type Inputs = InputValues<Declared["inputs"]>;
@@ -25,6 +27,13 @@ type Io = CommandIo<Declared["outputs"]>;
  * run. Then `agent:merge` off, tolerated: a merged pull request's label is
  * history, not a decision still standing.
  *
+ * Then the queue drains (#590): the next armed pull request into the same
+ * base, the one whose arm is oldest that is behind and not red, gets
+ * `agent:update-branch` with the loop's token (`refreshNext` in
+ * `merge/queue.ts`). Only that one: its merge refreshes the next. A listing
+ * that fails is said with the way to do it by hand, and the run, which has
+ * merged, does not fail.
+ *
  * A merge GitHub refuses is thrown, with GitHub's reason, for
  * `merge:conclude` to say on the pull request. Nothing is retried: whether to
  * try again is a decision, and a decision is the maintainer's.
@@ -33,6 +42,7 @@ type Io = CommandIo<Declared["outputs"]>;
  */
 export const publish = async (inputs: Inputs, io: Io): Promise<void> => {
   const pr = pullRequestNumber(inputs.PR_NUMBER);
+  const accounts = loopAccounts(inputs.AGENT_LOOP_LOGINS);
   // Read and checked before the first write.
   const gate = readDirectory(COMMANDS["merge:publish"].inputs.GATE_DIR, inputs.GATE_DIR, {
     "gate.json": json(object({ decision: choice(DECISIONS), head: optional(matching(/[0-9a-f]{40}/, "a full commit id")) })),
@@ -57,9 +67,14 @@ export const publish = async (inputs: Inputs, io: Io): Promise<void> => {
     );
   }
   await tolerated(`PR #${pr} merged, but \`${MERGE_LABEL}\` could not be taken off it.`, () => workflow.removeLabel(pr, MERGE_LABEL));
+  await refreshNext({ pr, base: inputs.BASE_REF, github: io.github, loop, loopLogin: inputs.LOOP_LOGIN, accounts });
 };
 
 const DECISIONS = ["merge", "wait", "behind", "red", "disarmed", "refused"] as const;
 
-/** What publish may write, and how many of each (ADR 0005): the merge, and `agent:merge` off. */
-const LIMITS: Limits = { mergePullRequest: 1, removeLabel: 1 };
+/**
+ * What publish may write, and how many of each (ADR 0005): the merge,
+ * `agent:merge` off, and the next armed pull request's refresh, up to
+ * `NEXT_TRIES` of `agent:update-branch` removed and added.
+ */
+const LIMITS: Limits = { mergePullRequest: 1, removeLabel: 1 + NEXT_TRIES, addLabel: NEXT_TRIES };

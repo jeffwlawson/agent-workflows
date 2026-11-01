@@ -11750,8 +11750,17 @@ describe("the merge workflow arms, merges and disarms in one job that runs nothi
       PR_MERGED: "${{ github.event.pull_request.merged }}",
       PR_DRAFT: "${{ github.event.pull_request.draft }}",
     });
-    expect(step("Merge")?.env?.["GATE_DIR"]).toBe("${{ runner.temp }}/gate");
-    expect(step("Merge")?.env?.["LOOP_TOKEN"]).toBe("${{ steps.token.outputs.token }}");
+    expect(step("Merge")?.env).toEqual({
+      NODE_AUTH_TOKEN: "${{ secrets.GITHUB_TOKEN }}",
+      OUTPUT_DIR: "${{ runner.temp }}/publish",
+      LOOP_TOKEN: "${{ steps.token.outputs.token }}",
+      LOOP_TOKEN_SOURCE: "${{ steps.token.outputs.source }}",
+      // The next armed pull request's refresh (#590): its base, and the
+      // account whose arm alone is read.
+      LOOP_LOGIN: "${{ steps.token.outputs.login }}",
+      BASE_REF: "${{ github.event.pull_request.base.ref }}",
+      GATE_DIR: "${{ runner.temp }}/gate",
+    });
     expect(step("Conclude the run")?.env).toMatchObject({
       GATE_DIR: "${{ runner.temp }}/gate",
       PUBLISH_DIR: "${{ runner.temp }}/publish",
@@ -11764,6 +11773,10 @@ describe("the merge workflow arms, merges and disarms in one job that runs nothi
     const handed = { ...job().env, ...step("Decide")?.env };
     for (const [name, input] of Object.entries(COMMANDS["merge:gate"].inputs)) {
       if (input.required && name !== "GH_TOKEN") expect(handed, name).toHaveProperty(name);
+    }
+    const publishing = { ...job().env, ...step("Merge")?.env };
+    for (const [name, input] of Object.entries(COMMANDS["merge:publish"].inputs)) {
+      if (input.required && name !== "GH_TOKEN") expect(publishing, name).toHaveProperty(name);
     }
   });
 

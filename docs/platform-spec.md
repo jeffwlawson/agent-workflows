@@ -3800,6 +3800,39 @@ when what it waited on lands (#589):
   (§8): the review waits for CI, so its approval is usually the last thing to land.
 - A push, which is not a label but GitHub's `synchronize`: the disarm is said when the head moves.
 
+**The queue drains one pull request at a time** (#590). Where an armed pull request leaves the
+queue, the **next** armed pull request into the same base is refreshed: of the other open pull
+requests into that base carrying `agent:merge`, the one whose arm is oldest that is behind its
+base, is not red, and has no trigger label on (`agent:review`, `agent:fix`, `agent:update-branch`)
+gets `agent:update-branch` with the loop's token, removed first. Its clean refresh carries its arm
+(§10), and its own gate decides from there. It leaves the queue by `merge:publish`'s merge, and by
+`merge:gate`'s refusal, disarm, or first saying its head is red: each of those may have been the
+one the last merge refreshed, and without the request the rest would wait on a merge that is not
+coming. A second gate on the same red head asks for nothing, and neither does a behind head, which
+asks for its own refresh. A refresh that stops (`agent:blocked`) leaves the chain for the human,
+whose retry moves it on. Only one is refreshed, never every one: each later merge puts the rest
+behind again, so refreshing all N costs about N²/2 refreshes on a serial worker, and one at a time
+about N. `refreshNext` in `merge/queue.ts` does the choosing for both commands:
+
+- **The arm's time** orders them: the one the arm's description gives, else its status's own (§4.3),
+  read only off an arm `LOOP_LOGIN` posted. The number breaks a tie, and orders the arms with no
+  time after the rest. A pull request whose head carries no such arm is passed over: its own gate
+  disarms it.
+- **Not red** is read as the gate reads it: no counted check failed on the head, and the newest
+  `agent-review` of the loop's accounts is not a state other than `success` or `pending`. A pending
+  one is not red: the head is behind, and the refresh is what it needs first.
+- **Behind** is the compare of the base with the head reporting `behind_by` one or more; a compare
+  that gave no count passes it over.
+- **Its reads stop** at the first one chosen. The statuses of each listed pull request without a
+  trigger label on are read first, for the arm's time, at most 10 of them, lowest number first,
+  and a warning names any past that; then each one's compare and checks, in arm order.
+- **Its writes are capped**: one `agent:update-branch` removed and one added per pull request asked,
+  and at most 3 asked. A label GitHub refuses on the one chosen warns and asks the next; past the
+  third, a warning names the rest and the way on by hand.
+- Each one passed over is named in the run's log. A listing that fails is said as a warning, that
+  the refresh was not done and that `agent:update-branch` on the next armed pull request does it by
+  hand, and fails nothing: what made the request has already happened.
+
 **An arm survives at most three clean refreshes** (`MAX_REFRESHES` in `merge/gate.ts`, a constant
 rather than a setting: a setting is a caller input, which lands in two releases, and this bounds a
 pathology rather than expressing a preference). Its count is in its description (§4.3), raised by
@@ -3829,7 +3862,9 @@ Refuses, arms, or decides the head. It runs no model and needs no checkout. In o
 - **A refusal** is said in the loop's one order: the comment, `` **`agent:merge` didn't run:** ``
   and the sentence, as `mergeRefusal` in `shared/record.ts` spells it; then `agent:merge` off. Both
   are tolerated, so a comment that fails still takes the label off. It never adds `agent:blocked`:
-  a refusal is a decision, and the command succeeds.
+  a refusal is a decision, and the command succeeds. Then the next armed pull request's refresh is
+  asked for (the queue, above), except on the refusal for want of the loop's token, whose label
+  would start nothing.
 - **The arm.** On a label `SENDER` added who is not the loop token's account, the live head is read
   first. Where it is still `HEAD_SHA`, the arm is posted on `HEAD_SHA` with `LOOP_TOKEN`:
   `agent-merge`, `success`, its description naming `SENDER`, the time and a refresh count of 0
@@ -3851,13 +3886,16 @@ Refuses, arms, or decides the head. It runs no model and needs no checkout. In o
     one on `HEAD_SHA`, else the newest on the pull request's commits before the head, newest first
     and at most 20, a read that fails naming no one), the head, and the retry, `/merge-check` on
     the head and `agent:merge` added again, as `disarmComment` spells it; then `agent:merge` off,
-    both tolerated. It never says what kind of push moved the head: the record cannot tell a
-    human's from an agent's.
+    both tolerated, and the next armed pull request's refresh asked for (the queue, above). It
+    never says what kind of push moved the head: the record cannot tell a human's from an
+    agent's.
   - **Another trigger label** on the pull request, `agent:review`, `agent:fix` or
     `agent:update-branch`: pending, since that run moves or reads the head.
   - **Red**: a counted check failed, or the newest `agent-review` status of the loop's accounts
     (§4.1) is a state other than `success` or `pending`. Said once per head, the comment ending in
-    `<!-- agent:merge-red <sha> -->` (§4.3), the arm and the label left on: `red`.
+    `<!-- agent:merge-red <sha> -->` (§4.3), the arm and the label left on: `red`. Where this gate
+    is the first to say it of the head, the next armed pull request's refresh is asked for (the
+    queue, above); a gate that finds it already said asks for nothing.
   - **Behind**: the compare of `BASE_REF` with the head reports the head `behind_by` one commit or
     more. Where the arm's refresh count is under three, said once per head, the comment ending in
     `<!-- agent:merge-behind <sha> -->`, then `agent:update-branch` removed and added with
@@ -3866,7 +3904,8 @@ Refuses, arms, or decides the head. It runs no model and needs no checkout. In o
     the count is three or more, **disarmed** instead: the comment `` **`agent:merge` disarmed:** ``
     naming who armed it, that the base moved past it three times while it waited, and that adding
     `agent:merge` again re-arms the head as it is, as `mergeRefreshCapComment` spells it; then
-    `agent:merge` off, both tolerated, and no `agent:update-branch`.
+    `agent:merge` off, both tolerated, and no `agent:update-branch` on it; the next armed pull
+    request's refresh is asked for instead (the queue, above).
   - **Pending**: a counted check unfinished (a check run not completed, a status `pending` or
     `expected`), no verdict of the loop's accounts or a `pending` one, or a compare that gave no
     count. At the bound, `wait`, nothing said, the label left on.
@@ -3882,9 +3921,10 @@ statuses. A check run passes on `SUCCESS`, `NEUTRAL` or `SKIPPED`, and a status 
 by anyone else does not count, and a comment read that fails says it again rather than not at all.
 
 The arm, the labeller's permission and the refresh asked for are the loop token's; every other
-write is made with `GH_TOKEN`, since none of them has to start a run. It writes at most one
-comment, one label off (`agent:merge`, or `agent:update-branch` before it is added), one label
-added, and one status. `gate.json` is written the moment it decides and again however the command
+write is made with `GH_TOKEN`, since none of them has to start a run; so is the next armed pull
+request's refresh. It writes at most one comment, one label off (`agent:merge`, or
+`agent:update-branch` before it is added), one label added, and one status, and besides, on a
+refusal, a disarm or a first red, the queue's: up to three `agent:update-branch` removed and added. `gate.json` is written the moment it decides and again however the command
 ends; one that failed before deciding writes `{}`, and one whose inputs could not be read writes
 none.
 
@@ -3929,6 +3969,9 @@ none.
   pull request.
 - The compare of `BASE_REF` with the head, for `behind_by`.
 - The comments on the pull request, for the red and behind marks of the loop's accounts.
+- On a refusal, a disarm or a first red, what the queue reads (above): the open pull requests into
+  `BASE_REF` carrying `agent:merge`, every page; the statuses on each one's head, for its arm and
+  its verdict; and each one's compare with `BASE_REF` and its checks, until one is chosen.
 
 **`doctor` cannot check this.** The record is written by the orchestrator's posting code, for the reason §4.3 gives.
 
@@ -3964,6 +4007,12 @@ is not a full commit id, fails it.
   pull request of more than one commit, passed so a one-commit pull request gets the same. The
   message is left to the repository's squash setting. Then `agent:merge` off with `GH_TOKEN`,
   tolerated: a merged pull request's label is history, not a decision still standing.
+- **After the merge**, the next armed pull request into `BASE_REF` gets `agent:update-branch`
+  with `LOOP_TOKEN`, removed first (the queue, above): the oldest arm by `LOOP_LOGIN` that is behind
+  and not red, by the verdicts of the loop's accounts. Only that one. A listing that cannot be read
+  still counts as merged: a warning says the refresh was not done, and that `agent:update-branch`
+  on the next armed pull request does it by hand. It writes at most the merge, `agent:merge` off,
+  and the queue's three `agent:update-branch` removed and added.
 - **A merge GitHub refuses** fails the command with GitHub's reason, for `merge:conclude` to say.
   Nothing is retried: whether to try again is the maintainer's decision. A `merge` with no `head`
   fails it too, and nothing is merged.
@@ -3975,7 +4024,10 @@ is not a full commit id, fails it.
 |---|---|---|---|
 | `LOOP_TOKEN` | required | | The loop's token, the App's or `AGENT_PAT`, which the merge is made with: a merge made with the workflow token starts no workflow, so neither CI on the base nor the follow-ups would run. |
 | `LOOP_TOKEN_SOURCE` | required | | Where `LOOP_TOKEN` came from: `app`, `pat` or `workflow`. |
+| `AGENT_LOOP_LOGINS` | optional | `""` | The loop's accounts, a comma-separated list, recognised beside `github-actions[bot]` (§4.1): whose verdicts it reads as the loop's, for whether the next armed pull request is red. Empty is that one alone. This is trust. |
+| `LOOP_LOGIN` | required | | The account `LOOP_TOKEN` writes as, in REST's spelling: the next armed pull request's arm is read only where this account posted it. |
 | `PR_NUMBER` | required | | The pull request. |
+| `BASE_REF` | required | | Its base branch, which the next armed pull request is chosen from. |
 | `GATE_DIR` | directory | | `merge:gate`'s `OUTPUT_DIR`. Reads `gate.json`. |
 
 #### Outputs
@@ -3989,6 +4041,9 @@ is not a full commit id, fails it.
 #### What it reads from the record
 
 - The pull request's title, for the merge commit's.
+- After the merge, what the queue reads (above): the open pull requests into `BASE_REF` carrying
+  `agent:merge`, every page; the statuses on each one's head, for its arm and its verdict; and
+  each one's compare with `BASE_REF` and its checks, until one is chosen.
 
 **`doctor` cannot check this.** The record is written by the orchestrator's posting code, for the reason §4.3 gives.
 
@@ -3996,7 +4051,8 @@ is not a full commit id, fails it.
 > `decision` is `merge`, from `RUNNER_TEMP`. The head it guards on is the gate's, read from
 > `gate.json`, never the event's. `GATE_DIR` is the gate's `gate/` directory, and its own
 > `OUTPUT_DIR` a `publish/` directory, which `merge:conclude` reads. It is handed the loop's token
-> and the job's own.
+> and the job's own, `LOOP_LOGIN` from the same token step as the gate's, and `BASE_REF` from the
+> event.
 
 ### `merge:conclude`
 

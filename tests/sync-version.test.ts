@@ -139,9 +139,8 @@ const git = (root: string, args: readonly string[]): string => {
 
 /**
  * The reusable workflows each release holds, asked of **this** checkout's git,
- * once a release: the fixture is a copy of the tree with no history, and its
- * local callers leave out `merge.yml` exactly as the real ones do, until the
- * release that ships it (#588). Needs the tag, as `tests/workflows.test.ts`
+ * once a release: the fixture is a copy of the tree with no history. Asked only
+ * where a local caller file leaves out a reusable (#588). Needs the tag, as `tests/workflows.test.ts`
  * does: `ci.yml` checks out with `fetch-depth: 0` for it.
  */
 const releasedHere = new Map<string, ReadonlySet<string>>();
@@ -198,13 +197,11 @@ const EVERY_SITE = [
 /**
  * The callers each caller file holds, and so the `ref` pins it carries: the
  * five that run on a pull request, and the two that run on an issue, in the
- * reference set. The local set is one short on the pull request's side until
- * the release that ships `merge.yml` (#588): its callers run on the release
- * they pin, which has no `merge.yml` yet.
+ * reference set. The local set matches it: v0.9.5 shipped `merge.yml`, and
+ * the local caller gained its job once it pinned that release (#588).
  */
 const CALLERS_PER_FILE: Readonly<Record<string, number>> = { pr: 5, issue: 2 };
-const AWAITING_LOCAL = 1;
-const REF_COUNT = 2 * Object.values(CALLERS_PER_FILE).reduce((sum, n) => sum + n, 0) - AWAITING_LOCAL;
+const REF_COUNT = 2 * Object.values(CALLERS_PER_FILE).reduce((sum, n) => sum + n, 0);
 
 /**
  * The pins that are not one a file (#257): a reusable workflow's step naming
@@ -299,7 +296,7 @@ describe("the version propagator rewrites every pin", () => {
     for (const [name, count] of Object.entries(CALLERS_PER_FILE)) {
       expect(sites.filter((s) => s.file === `examples/callers/${name}.yml` && s.form === "ref"), name).toHaveLength(count);
       const local = `.github/workflows/agent-${name}.yml`;
-      expect(sites.filter((s) => s.file === local && s.form === "ref"), local).toHaveLength(count - (name === "pr" ? AWAITING_LOCAL : 0));
+      expect(sites.filter((s) => s.file === local && s.form === "ref"), local).toHaveLength(count);
     }
   });
 
@@ -570,19 +567,22 @@ describe("the version propagator refuses an unexpected set of pins", () => {
     expect(() => sync(TARGET, root)).toThrow(/\.github\/workflows call \[.*fix.*fix/);
   });
 
+  /** The local pull-request caller file without its merge job, as it stood before v0.9.5. */
+  const withoutLocalMerge = (root: string): string => {
+    const pr = read(root, ".github/workflows/agent-pr.yml");
+    write(root, ".github/workflows/agent-pr.yml", pr.slice(0, pr.indexOf("\n  # **This job is the opt-in**")) + "\n");
+    return root;
+  };
+
   /**
    * The local set one caller short (#588): allowed for a reusable the release
    * its callers pin does not have, which is how the release that first ships
    * one is cut, and refused for one that release has, naming it.
    */
   it("lets the local set leave out only a reusable the release it pins lacks", () => {
-    const root = fixture();
-    expect(read(root, ".github/workflows/agent-pr.yml")).not.toContain("/merge.yml@");
-    expect(() => sync(TARGET, fixture())).not.toThrow();
-
-    const pr = read(root, ".github/workflows/agent-pr.yml");
-    write(root, ".github/workflows/agent-pr.yml", pr.slice(0, pr.indexOf("\n  # **This job is the off switch**")) + "\n");
-    expect(() => sync(TARGET, root)).toThrow(/has follow-ups: add its caller to the local caller file/);
+    const lacking: ReleasedWorkflows = (ref) => new Set([...RELEASED(ref)].filter((file) => !file.endsWith("/merge.yml")));
+    expect(() => syncVersion(TARGET, withoutLocalMerge(fixture()), lacking)).not.toThrow();
+    expect(() => sync(TARGET, withoutLocalMerge(fixture()))).toThrow(/has merge: add its caller to the local caller file/);
   });
 
   it("asks which workflows a release has only where the local set leaves one out", () => {
@@ -600,7 +600,7 @@ describe("the version propagator refuses an unexpected set of pins", () => {
   });
 
   it("refuses where the release the local callers pin cannot be listed", () => {
-    const root = fixture();
+    const root = withoutLocalMerge(fixture());
 
     expect(() => syncVersion(TARGET, root)).toThrow(/git could not list v\d+\.\d+\.\d+'s workflows/);
   });
@@ -921,7 +921,7 @@ describe("the release is one command", () => {
     const root = committed();
     const result = runHook(root);
     expect(result.status, result.stderr).toBe(0);
-    expect(result.stdout).toContain(`Synced ${PIN_COUNT + AWAITING_LOCAL} version pin(s) to ${TARGET}.`);
+    expect(result.stdout).toContain(`Synced ${PIN_COUNT} version pin(s) to ${TARGET}.`);
 
     return root;
   };

@@ -37,7 +37,7 @@ name: Agent PR
 # `synchronize` event, so they spend nothing on one.
 on:
   pull_request_target:
-    types: [labeled, closed]
+    types: [labeled, closed, synchronize]
 
 # Nothing at the top level: every grant is on the job that spends it, so a job
 # added here later starts with nothing rather than with its neighbours' scopes.
@@ -240,3 +240,48 @@ jobs:
     # toolchain to describe and no command to run — and no secrets, because it
     # runs no model and creates its issues with the workflow token. A repository
     # without `AGENT_PAT` files exactly as much as one with it.
+
+  # **This job is the opt-in** to the loop carrying out a merge decision
+  # (ADR 0009, #588). Adding `agent:merge` to a ready pull request is the
+  # maintainer's decision for the head they labelled, and the called job
+  # squash-merges that head once it is current with its base, green and
+  # approved, refreshes it with `agent:update-branch` when it falls behind,
+  # or takes the label off and says why. It needs `synchronize` in the
+  # trigger above: without it a push disarms nothing until the next label. Delete this job and the
+  # label does nothing: the loop never merges a pull request no human armed.
+  #
+  # Needs the loop's App, which must hold Commit statuses: write, or
+  # `AGENT_PAT`: the arm and the merge are made with that token, and without
+  # either the called job refuses rather than arming with `GITHUB_TOKEN`.
+  merge:
+    uses: jeffwlawson/agent-workflows/.github/workflows/merge.yml@v0.9.5
+    # Granted here, bounded there. No `contents: write` and no
+    # `statuses: write`: the arm and the merge are the loop token's, never
+    # this job's.
+    permissions:
+      # Reading the head's checks, and which of them the base requires. The
+      # called job declares it, so omitting it here is refused before any job
+      # starts.
+      checks: read
+      # Comparing the head with its base.
+      contents: read
+      # Installing the runner package, which the called job does with `npx` from
+      # GitHub Packages. Granted here because a called workflow can only
+      # *downgrade* the token it is handed, so the scope has to start in the
+      # caller — and unconditional because GitHub Packages has no anonymous
+      # install even for a public package. Omit it and there is no run to install
+      # in: a caller granting less than a job it calls declares is refused before
+      # any job starts (docs/ADOPTING.md §4).
+      packages: read
+      # The comments it posts, and `agent:merge` and `agent:blocked`.
+      pull-requests: write
+      # Reading the arm and the review's verdict off the head.
+      statuses: read
+    # No `with:`: nothing is checked out, so there is no toolchain to
+    # describe. No model credential: it runs no model. The loop's App's two
+    # secrets beside the PAT, all three optional, though with none of them
+    # the called job refuses.
+    secrets:
+      AGENT_PAT: ${{ secrets.AGENT_PAT }}
+      AGENT_APP_ID: ${{ secrets.AGENT_APP_ID }}
+      AGENT_APP_PRIVATE_KEY: ${{ secrets.AGENT_APP_PRIVATE_KEY }}

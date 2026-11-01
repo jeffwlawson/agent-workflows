@@ -1,6 +1,0 @@
-schema_version: "1.1"
-name: clean-service-checkout-tags
-context:
-  scaffold_script: place-files.sh
-expected_outcome: |
-  Recommends approval and raises no finding to fix before merge: the change fetches the repository's tags into every service checkout, with tests, and nothing in it needs changing.

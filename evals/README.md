@@ -18,15 +18,19 @@ and touches no network.
 | `review/persisted-checkout-token` | #572 | `3586dd7` | the checkout persists a token the job can now push with; a re-run skips the install check |
 | `review/restart-order` | #577 | `edb772f` | a failed worker restart still restarts the dispatcher; the recovery advice cannot run; `curl -L` can drop to http |
 | `review/rescue-deleted-before-open` | #570 | `4d56bbc` | publish deletes the rescue before the pull request opens; a set-aside rescue is overwritten (#578) |
-| `review/clean-service-checkout-tags` | #568 | `999ecd0` | **clean**: no finding to fix before merge, and approval |
+| `review/clean-doctor-service-guard` | #566 | `85a04f0` | **clean**: no finding to fix before merge, and approval |
 | `fix/rescue-deleted-before-open` | #570 | `b41cecd` | the fix moves the deletion, adds or updates a test, and changes nothing else |
 
 Each head is found from the `agent-review` status history: the commit where the verdict turned
 success, before the merge-check (or a later round) found what it missed. **Not the merged head**,
 which already holds the fix. Each case's `replay.yaml` says how its head was chosen.
 
-The clean case is #568 because its one review found nothing, it recorded no follow-up, no
-maintainer review or merge-check finding is on it, and its diff is code and tests, not only docs.
+The clean case is #566 because its approved head left no finding open and recorded no follow-up,
+no maintainer review or merge-check finding is on it, its diff is code and tests, not only docs,
+and **nothing merged since has had to fix it**: no later commit on `main` changes
+`setup/doctor.ts` or `docs/ADOPTING.md`. A clean case needs all of these; a later fix means a
+review that caught the defect is correct, and would be scored as a false finding. #568 was the
+clean case first and was dropped for that reason (#584 fixed what it shipped).
 
 ## What a case is
 
@@ -128,5 +132,6 @@ Make a folder beside the others with a `case.yaml`, a `replay.yaml` (the pull re
 the full `base` and `head` SHAs, `brief`, and its short `inputs`), its long inputs under `inputs/`,
 and one grader per outcome. Choose the head from the verdict status history, as above, and write
 each grader as something a reader could check in the output, "however it is worded". A clean case
-says `clean: true`, and its graders all hold false findings. Run it with `--stage-only` first and
-read the staged prompt.
+says `clean: true`, is a pull request nothing merged later had to fix (search `main`'s log for
+its number and its files), and its graders all hold false findings. Run it with `--stage-only`
+first and read the staged prompt.

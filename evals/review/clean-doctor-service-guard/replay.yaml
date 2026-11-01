@@ -1,0 +1,29 @@
+# PR #566, the clean case: a change that must not draw a false finding.
+#
+# The head is 85a04f0, where the second review recommended approval
+# (2026-10-31T21:43Z) with no finding open and no follow-up. The first review,
+# on cb3ff88, raised one Low finding, which 85a04f0 fixed; replayed as a first
+# review, the diff holds both commits. No merge-check finding is on it, and the
+# squash, 44cbf2c, holds 85a04f0's three files exactly. Nothing on main since
+# has changed setup/doctor.ts or docs/ADOPTING.md, so a finding raised here is
+# a false one. Its diff is code and tests (setup/doctor.ts,
+# tests/agent-cli.test.ts) as well as docs. The base is the merge-base the
+# review's three-dot diff was taken from.
+#
+# #568 was the clean case first, and was dropped: #584 later fixed a defect
+# it shipped (a fetched tag could shadow a branch), so a review that found it
+# would have been scored as a false finding.
+pr: 566
+repository: https://github.com/jeffwlawson/agent-workflows.git
+base_ref: main
+base: a3a39c2f4573419a4969bd93640a54a9cf686230
+head: 85a04f029f4b200b95eac24c96a57299c18a2ade
+clean: true
+# Issue #563's body, as it stands since; it has no brief comment.
+brief: inputs/LINKED_ISSUE.md
+inputs:
+  PR_NUMBER: "566"
+  BRANCH: agent/issue-563-doctor-fails-a-service-repository-s-callers-pinned
+  PR_TITLE: "feat(doctor): fail a service repository's callers pinned before v0.8.3, the first guarded release"
+  ISSUE_NUMBER: "563"
+  ISSUE_TITLE: doctor fails a service repository's callers pinned before the reusables skip on the service

@@ -6,7 +6,8 @@
  *
  * Two sources, because neither has all of it:
  *
- * - **The transcript** has every assistant message, each with its `usage`:
+ * - **The transcript**, the session's and each of its subagents' at
+ *   `<session>/subagents/*.jsonl`, has every assistant message, each with its `usage`:
  *   input, cache read and cache write split by its 5-minute and 1-hour TTL.
  *   Claude Code writes one line per content block, each carrying the
  *   message's usage, so a message is counted once, by its id. Its

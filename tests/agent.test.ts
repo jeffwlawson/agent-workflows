@@ -385,6 +385,10 @@ describe("usageLedger: what each pass of the agent spent, however it ended", () 
   it("records each pass from its transcript and its result event, and the run's result is Sandcastle's", async () => {
     const ledger = usageLedger((usage) => written.push(usage));
     fs.writeFileSync(transcript, workTranscript());
+    // A subagent's transcript, beside the session's: the result event's haiku figures are its.
+    const subagents = path.join(path.dirname(transcript), SESSION, "subagents");
+    fs.mkdirSync(subagents, { recursive: true });
+    fs.copyFileSync(path.join(FIXTURES, "subagents", "agent-a1b2c3.jsonl"), path.join(subagents, "agent-a1b2c3.jsonl"));
 
     const result = await ledger.pass("work", agent("work-stream.jsonl"), start);
     expect(result.iterations[0]?.sessionId).toBe(SESSION);
@@ -392,13 +396,14 @@ describe("usageLedger: what each pass of the agent spent, however it ended", () 
       {
         pass: "work",
         available: true,
-        turns: 2,
-        models: ["claude-opus-5-5"],
-        inputTokens: 4,
+        turns: 3,
+        models: ["claude-opus-5-5", "claude-haiku-4-5-20251001"],
+        // The subagent's 50 with the session's 4, as the result event's output counts both.
+        inputTokens: 4 + 50,
         cacheReadTokens: 5000,
         cacheWrite5mTokens: 300,
         cacheWrite1hTokens: 5000,
-        // The result event's, not the transcript's placeholders (2 and 1).
+        // The result event's, not the transcripts' placeholders (2, 1 and 1).
         outputTokens: 987,
         costUsd: 0.4321,
       },
@@ -420,7 +425,7 @@ describe("usageLedger: what each pass of the agent spent, however it ended", () 
       outputTokens: 55,
       costUsd: null,
     });
-    expect(usage?.summary).toMatch(/^Agent usage \(effort default\): work: 2 turns .*output 987, about \$0\.43; extract: 1 turn .*output 55, cost unavailable\.$/);
+    expect(usage?.summary).toMatch(/^Agent usage \(effort default\): work: 3 turns .*output 987, about \$0\.43; extract: 1 turn .*output 55, cost unavailable\.$/);
     expect(logged).toHaveBeenCalledWith(usage?.summary);
   });
 

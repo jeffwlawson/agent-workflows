@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import * as path from "node:path";
 import * as sandcastle from "@ai-hero/sandcastle";
@@ -287,6 +287,20 @@ const effortOf = (agent: AgentProvider): string => {
   }
 };
 
+/**
+ * The transcripts of a session's subagents, beside its own at
+ * `<session>/subagents/*.jsonl`: their turns are the pass's too, and the
+ * result event's output and cost already count them.
+ */
+const subagentTranscripts = (session: string): string[] => {
+  const dir = path.join(path.dirname(session), path.basename(session, ".jsonl"), "subagents");
+  if (!existsSync(dir)) return [];
+  return readdirSync(dir)
+    .filter((name) => name.endsWith(".jsonl"))
+    .sort()
+    .map((name) => path.join(dir, name));
+};
+
 const reasonOf = (error: unknown): string => (error instanceof Error ? error.message : String(error));
 
 export const usageLedger = (write: (usage: RunUsage) => void): UsageLedger => {
@@ -305,6 +319,7 @@ export const usageLedger = (write: (usage: RunUsage) => void): UsageLedger => {
       const found = (await sandcastle.findClaudeSessionOnHost(id)).path;
       if (found === undefined) return { pass, available: false, reason: `no transcript of session ${id} was found` };
       transcript += `${readFileSync(found, "utf8")}\n`;
+      for (const file of subagentTranscripts(found)) transcript += `${readFileSync(file, "utf8")}\n`;
     }
     const { messages, ...totals } = sumTranscript(transcript, counted);
     for (const id of messages) counted.add(id);

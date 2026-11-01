@@ -180,8 +180,9 @@ however it ended, rewriting it with every pass so far: the work pass, and `extra
 format-only pass that resumes its session, where the runner has one. Each pass gives its assistant
 turns, counted once per message, the models that answered, and its input, cache read and cache
 write tokens, the write split by its 5-minute and 1-hour TTL, all summed from the session
-transcript; and its output tokens and estimated cost, from the stream's result event, since the
-transcript's output counts are placeholders. Beside them, the effort the agent was started with,
+transcript and its subagents' beside it, the scope the result event counts too; and its output
+tokens and estimated cost, from the stream's result event, since the transcript's output counts are
+placeholders. Beside them, the effort the agent was started with,
 `default` where none was set, and `summary`, the one line the run is shown as. A pass whose usage
 cannot be read is recorded as unavailable, with the reason, and the line says *usage unavailable*;
 the run goes on as it would have. The cost is an estimate, not a bill.

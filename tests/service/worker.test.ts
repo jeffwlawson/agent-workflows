@@ -268,8 +268,9 @@ describe("the worker's job, on an ordinary pull request", () => {
       "review:collect-checks",
       "read token",
       "review",
-      "write token",
+      "resolve token",
       "review:publish",
+      "write token",
       "review:conclude",
     ]);
   });
@@ -351,9 +352,34 @@ describe("the worker's job, on an ordinary pull request", () => {
     for (const subcommand of READ_ONLY) {
       expect(Object.values(s.env(subcommand)).filter((value) => value.includes("write-token")), subcommand).toEqual([]);
     }
-    expect(s.env("review:publish")).toMatchObject({ GH_TOKEN: "write-token-3", LOOP_TOKEN: "write-token-3", LOOP_TOKEN_SOURCE: "app" });
-    expect(s.env("review:conclude")).toMatchObject({ GH_TOKEN: "write-token-3", LOOP_TOKEN: "write-token-3", LOOP_TOKEN_SOURCE: "app" });
-    expect(s.asked).toEqual(["read", "read", "write"]);
+    for (const subcommand of READ_ONLY) {
+      expect(Object.values(s.env(subcommand)).filter((value) => value.includes("resolve-token")), subcommand).toEqual([]);
+    }
+    expect(s.env("review:publish")).toMatchObject({ GH_TOKEN: "resolve-token-3", LOOP_TOKEN: "resolve-token-3", LOOP_TOKEN_SOURCE: "app" });
+    expect(s.env("review:conclude")).toMatchObject({ GH_TOKEN: "write-token-4", LOOP_TOKEN: "write-token-4", LOOP_TOKEN_SOURCE: "app" });
+    expect(s.asked).toEqual(["read", "read", "resolve", "write"]);
+  });
+
+  it("hands the resolve token to review:publish alone: not conclude, not advance", async () => {
+    const s = setup({ ...ORDINARY, "review:conclude": { files: { "ended.json": { moved: false } } } });
+    await runJob({ ...JOB, branch: "agent/prd-453-the-service" }, s.edges);
+
+    expect(s.asked).toEqual(["read", "read", "resolve", "write", "write"]);
+    const holders = s.launched.filter(({ env }) => Object.values(env).some((value) => value.includes("resolve-token"))).map(({ subcommand }) => subcommand);
+    expect(holders).toEqual(["review:publish"]);
+  });
+
+  it("publishes with a write token where the resolve token is refused, reuses it for conclude, and logs that threads stay open", async () => {
+    const s = setup(ORDINARY, { refused: [3] });
+    const phases = await runJob(JOB, s.edges);
+
+    expect(s.asked).toEqual(["read", "read", "resolve", "write"]);
+    expect(s.env("review:publish")).toMatchObject({ GH_TOKEN: "write-token-4", LOOP_TOKEN: "write-token-4" });
+    expect(s.env("review:conclude")).toMatchObject({ GH_TOKEN: "write-token-4", MINT_OUTCOME: "success", PUBLISH_OUTCOME: "success" });
+    expect(phases).toContainEqual({ name: "resolve token", outcome: "failure: the dispatcher answered 403: the job is past its deadline" });
+    const resolution = phases.find(({ name }) => name === "thread resolution");
+    expect(resolution?.outcome).toContain("`resolve` token was refused");
+    expect(resolution?.outcome).toContain("stays open");
   });
 
   it("hands review:budget the budget the gate settled from AGENT_MAX_FIX_ROUNDS, as review.yml does", async () => {
@@ -540,15 +566,16 @@ describe("the worker's job, where a phase fails", () => {
   });
 
   it("tells conclude the posting token's mint failed, and publishes nothing", async () => {
-    const s = setup(ORDINARY, { refused: [3] });
+    const s = setup(ORDINARY, { refused: [3, 4] });
     await runJob(JOB, s.edges);
 
+    expect(s.asked).toEqual(["read", "read", "resolve", "write", "write"]);
     expect(s.events).not.toContain("review:publish");
     expect(s.env("review:conclude")).toMatchObject({
       REVIEW_RESULT: "success",
       VERDICT: "approve",
       MINT_OUTCOME: "failure",
-      GH_TOKEN: "write-token-4",
+      GH_TOKEN: "write-token-5",
     });
     expect(s.env("review:conclude")).not.toHaveProperty("PUBLISH_OUTCOME");
   });
@@ -583,10 +610,10 @@ describe("the worker's job, on a PRD pull request", () => {
     const s = setup(reviewed);
     await runJob(PRD, s.edges);
 
-    expect(s.events.slice(-4)).toEqual(["review:publish", "review:conclude", "write token", "review:advance"]);
+    expect(s.events.slice(-5)).toEqual(["review:publish", "write token", "review:conclude", "write token", "review:advance"]);
     expect(s.env("review:advance")).toMatchObject({
-      GH_TOKEN: "write-token-4",
-      LOOP_TOKEN: "write-token-4",
+      GH_TOKEN: "write-token-5",
+      LOOP_TOKEN: "write-token-5",
       LOOP_TOKEN_SOURCE: "app",
       PR_NUMBER: "7",
       BRANCH: "agent/prd-453-the-service",
@@ -649,7 +676,7 @@ describe("the worker's job, on a PRD pull request", () => {
   });
 
   it("logs that the chain was not advanced where no token to advance it with was granted", async () => {
-    const s = setup(reviewed, { refused: [4] });
+    const s = setup(reviewed, { refused: [5] });
     const phases = await runJob(PRD, s.edges);
 
     expect(s.events).not.toContain("review:advance");
@@ -1509,7 +1536,7 @@ describe("the run's directory", () => {
       "review:conclude",
       "review:advance",
     ]);
-    expect(s.asked).toHaveLength(4);
+    expect(s.asked).toHaveLength(5);
     for (const token of [...s.asked.map((kind, at) => `${kind}-token-${at + 1}`), AGENT.CLAUDE_CODE_OAUTH_TOKEN]) {
       expect(text).not.toContain(token);
     }

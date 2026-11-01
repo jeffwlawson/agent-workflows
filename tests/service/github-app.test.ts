@@ -1,6 +1,6 @@
 import { generateKeyPairSync } from "node:crypto";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { SCAN_PERMISSIONS, TOKEN_PERMISSIONS } from "../../service/dispatcher.js";
+import { COMMENT_PERMISSIONS, SCAN_PERMISSIONS, TOKEN_PERMISSIONS } from "../../service/dispatcher.js";
 import { liveAppGitHub } from "../../service/github-app.js";
 
 /**
@@ -57,6 +57,8 @@ const minted: Record<string, string>[] = [];
 const mintedFor: (string[] | undefined)[] = [];
 /** Each request's path and query. */
 const queried: string[] = [];
+/** Each comment posted: its path, its body and the token it was posted with. */
+const commented: { path: string; body: unknown; authorization: string | null }[] = [];
 
 const reply = (status: number, body: unknown): Response => new Response(JSON.stringify(body), { status });
 
@@ -102,6 +104,10 @@ const answer = (url: string, init?: RequestInit): Response => {
     const record = world.pulls[Number(pull[1])];
     return record === undefined ? reply(404, { message: "Not Found" }) : reply(200, record);
   }
+  if (/^\/repos\/owner\/repo\/issues\/\d+\/comments$/.test(pathname) && init?.method === "POST") {
+    commented.push({ path: pathname, body: JSON.parse(typeof init.body === "string" ? init.body : "{}"), authorization: new Headers(init.headers).get("authorization") });
+    return reply(201, { id: 1 });
+  }
   const events = /^\/repos\/owner\/repo\/issues\/(\d+)\/events$/.exec(pathname);
   if (events !== null) return reply(200, paged(world.events[Number(events[1])] ?? []));
   const own = /^\/repos\/owner\/repo\/actions\/variables\/(.+)$/.exec(pathname);
@@ -122,6 +128,7 @@ beforeEach(() => {
   minted.length = 0;
   mintedFor.length = 0;
   queried.length = 0;
+  commented.length = 0;
   vi.stubGlobal("fetch", async (url: string, init?: RequestInit) => answer(url, init));
 });
 afterEach(() => {
@@ -312,5 +319,21 @@ describe("liveAppGitHub: what the scan reads (#581)", () => {
 
   it("reads the repository's default branch", async () => {
     expect(await liveAppGitHub("1", KEY).defaultBranch(REPO)).toBe("trunk");
+  });
+
+  // #596: the comment a scan leaves on an item it stops dispatching.
+  it("posts a comment on an issue or pull request with the token it is handed, one the installation can mint", async () => {
+    const github = liveAppGitHub("1", KEY);
+    const { token } = await github.mint(REPO, COMMENT_PERMISSIONS);
+
+    await github.comment(REPO, 7, "a comment", token);
+
+    expect(commented).toEqual([{ path: `/repos/${REPO}/issues/7/comments`, body: { body: "a comment" }, authorization: `Bearer ${token}` }]);
+  });
+
+  it("throws where the comment is refused", async () => {
+    world.failing = { path: /\/comments$/, status: 403 };
+
+    await expect(liveAppGitHub("1", KEY).comment(REPO, 7, "a comment", "ghs_writer")).rejects.toThrow("commenting on owner/repo#7 answered 403");
   });
 });

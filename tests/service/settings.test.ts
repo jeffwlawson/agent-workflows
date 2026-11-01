@@ -2,6 +2,7 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import { describe, expect, it } from "vitest";
 import { SERVICE_APP_EVENTS, SERVICE_APP_PERMISSIONS } from "../../service/dispatcher.js";
+import { TOKEN_KINDS } from "../../service/job.js";
 import { DISPATCHER, WORKER } from "../../service/settings.js";
 import type { Inputs } from "../../shared/contract.js";
 
@@ -102,5 +103,14 @@ describe("the deployment guide's App permissions and events", () => {
 
   it("lists every event the service needs, and no other", () => {
     expect([...events].sort()).toEqual([...SERVICE_APP_EVENTS].sort());
+  });
+
+  // #571: the paragraph under the table names each kind of token the worker
+  // asks for, in the order the code declares them.
+  it("names every token kind the code declares, and no other, in the paragraph on the kinds", () => {
+    const paragraph = /^The worker asks for one of (\w+) kinds of token at each phase:([\s\S]*?)\n\n/m.exec(app.get("Permissions") ?? "");
+    const named = [...(paragraph?.[2] ?? "").matchAll(/(?:^|; (?:and )?)\s*`([a-z]+)`, which/g)].map((match) => match[1]);
+    expect(named).toEqual([...TOKEN_KINDS]);
+    expect(paragraph?.[1]).toBe(["one", "two", "three", "four", "five"][TOKEN_KINDS.length - 1]);
   });
 });

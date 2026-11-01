@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import { CI_WAIT_SECONDS } from "../../review/collect-checks.js";
 import {
   appGaps,
+  COMMENT_PERMISSIONS,
   createDispatcher,
   LABEL_KINDS,
   parseOwners,
@@ -24,6 +25,7 @@ import {
   parseJob,
   sign,
   SIGNATURE_HEADER,
+  TOKEN_KINDS,
   verifySignature,
   type Job,
 } from "../../service/job.js";
@@ -81,7 +83,9 @@ interface Installations {
 /** The App's owner, which is the repository's owner too, unless a test says otherwise. */
 const APP_OWNER = "owner";
 
-const setup = (options: { workerStatus?: number; owners?: readonly string[]; holdPosts?: boolean; holdLabeller?: boolean; holdPermission?: boolean } = {}) => {
+const setup = (
+  options: { workerStatus?: number; owners?: readonly string[]; holdPosts?: boolean; holdLabeller?: boolean; holdPermission?: boolean; scanLimit?: number } = {},
+) => {
   const repository: Repository = {
     installed: true,
     account: APP_OWNER,
@@ -103,6 +107,9 @@ const setup = (options: { workerStatus?: number; owners?: readonly string[]; hol
   const posted: { body: string; headers: Readonly<Record<string, string>> }[] = [];
   /** Each login whose permission was looked up. */
   const looked: string[] = [];
+  /** Each comment posted, and whether posting one fails, as a GitHub outage does. */
+  const comments: { repo: string; number: number; body: string; token: string }[] = [];
+  const commenting = { fails: false };
   let clock = START;
   let ids = 0;
   const github: AppGitHub = {
@@ -141,6 +148,10 @@ const setup = (options: { workerStatus?: number; owners?: readonly string[]; hol
       return repo === REPO ? repository.items.find((item) => item.number === number)?.labellers[label] : undefined;
     },
     defaultBranch: async () => "main",
+    comment: async (repo, number, body, token) => {
+      if (commenting.fails) throw new Error("GitHub answered 502");
+      comments.push({ repo, number, body, token });
+    },
   };
   const dispatcher = createDispatcher({
     github,
@@ -162,6 +173,7 @@ const setup = (options: { workerStatus?: number; owners?: readonly string[]; hol
     workerSecret: WORKER_SECRET,
     owners: options.owners ?? [APP_OWNER],
     deadlineMarginMinutes: MARGIN,
+    scanLimit: options.scanLimit ?? 2,
     version: "9.9.9",
     now: () => clock,
     newId: () => `job-${(ids += 1)}`,
@@ -178,6 +190,8 @@ const setup = (options: { workerStatus?: number; owners?: readonly string[]; hol
     minted,
     posted,
     looked,
+    comments,
+    commenting,
     advance: (minutes: number) => {
       clock = new Date(clock.getTime() + minutes * MINUTE_MS);
     },
@@ -534,7 +548,7 @@ describe("the accounts the dispatcher serves", () => {
 });
 
 describe("the token door", () => {
-  it.each(["read", "write", "push"] as const)("mints a %s token for a dispatched job, for its repository, with that kind's permissions", async (kind) => {
+  it.each(TOKEN_KINDS)("mints a %s token for a dispatched job, for its repository, with that kind's permissions", async (kind) => {
     const s = setup();
     const job = await dispatched(s);
     const response = await s.dispatcher.token(tokenRequest({ jobId: job.id, kind }));
@@ -547,6 +561,15 @@ describe("the token door", () => {
   it("gives a read token no write, and a write token only what review's posting writes", () => {
     expect(TOKEN_PERMISSIONS.read).toEqual({ contents: "read", pull_requests: "read", issues: "read", checks: "read", statuses: "read" });
     expect(TOKEN_PERMISSIONS.write).toEqual({ contents: "read", pull_requests: "write", issues: "write", checks: "read", statuses: "write" });
+  });
+
+  it("gives a resolve token exactly write's permissions, with contents written and no workflows", () => {
+    expect(TOKEN_PERMISSIONS.resolve).toEqual({ ...TOKEN_PERMISSIONS.write, contents: "write" });
+    expect(TOKEN_PERMISSIONS.resolve).not.toHaveProperty("workflows");
+  });
+
+  it("declares a permission set for each token kind, and no other", () => {
+    expect(Object.keys(TOKEN_PERMISSIONS)).toEqual([...TOKEN_KINDS]);
   });
 
   it("gives a push token exactly write's permissions, with contents and workflows written", () => {
@@ -591,6 +614,18 @@ describe("the token door", () => {
 
     expect(response.status).toBe(403);
     expect(JSON.parse(response.body)).toEqual({ refusal: `job ${job.id} is past its deadline, ${job.deadline}` });
+    expect(s.minted).toEqual([]);
+  });
+
+  it("holds a resolve token to the rules every kind is held to: a job it dispatched, before its deadline, on a repository still opted in", async () => {
+    const s = setup();
+    const job = await dispatched(s);
+    expect((await s.dispatcher.token(tokenRequest({ jobId: "job-99", kind: "resolve" }))).status).toBe(404);
+    s.repository.variables[ORCHESTRATOR_VARIABLE] = "actions";
+    expect((await s.dispatcher.token(tokenRequest({ jobId: job.id, kind: "resolve" }))).status).toBe(403);
+    s.repository.variables[ORCHESTRATOR_VARIABLE] = SERVICE_ORCHESTRATOR;
+    s.advance(CI_WAIT_SECONDS / 60 + DEFAULT_REVIEW_MINUTES + MARGIN);
+    expect((await s.dispatcher.token(tokenRequest({ jobId: job.id, kind: "resolve" }))).status).toBe(403);
     expect(s.minted).toEqual([]);
   });
 
@@ -1045,7 +1080,13 @@ describe("the App's permissions and events, checked at start (#560)", () => {
 
   it("names a permission granted below the access needed, and only the tokens that ask for more", () => {
     expect(appGaps({ ...FULL, permissions: { ...FULL.permissions, statuses: "read" } })).toEqual([
-      "the App's `statuses` permission needs write, holds read: `write` tokens, `push` tokens will be refused, 422",
+      "the App's `statuses` permission needs write, holds read: `write` tokens, `resolve` tokens, `push` tokens will be refused, 422",
+    ]);
+  });
+
+  it("names the resolve and push tokens where Contents is granted read only", () => {
+    expect(appGaps({ ...FULL, permissions: { ...FULL.permissions, contents: "read" } })).toEqual([
+      "the App's `contents` permission needs write, holds read: `resolve` tokens, `push` tokens will be refused, 422",
     ]);
   });
 
@@ -1429,5 +1470,189 @@ describe("the scan after a restart", () => {
   it("reads with the dispatcher's reads and issues and pull requests read, which the App already needs", () => {
     expect(SCAN_PERMISSIONS).toEqual({ ...READER_PERMISSIONS, issues: "read", pull_requests: "read" });
     for (const name of Object.keys(SCAN_PERMISSIONS)) expect(SERVICE_APP_PERMISSIONS).toHaveProperty(name);
+  });
+});
+
+/** A worker's process ended by its job: it holds nothing, and its restart announces its start and is scanned for. */
+const crash = async (s: ReturnType<typeof setup>) => {
+  s.worker.holds = [];
+  await announce(s);
+};
+
+const STOPPED = (where: string, label: string) =>
+  `scan: skipped on ${where}: a scan has dispatched it for \`${label}\` 2 times, SCAN_DISPATCH_LIMIT's 2, so it is left for a person to add \`${label}\` again`;
+
+/**
+ * The scan's limit (#596): a job that ends the worker's process keeps its
+ * label, and every restart's scan would dispatch it again, so the scan counts
+ * its dispatches per item and label and stops at the limit.
+ */
+describe("the scan's limit", () => {
+  it("dispatches an item whose label stays on the limit's number of times, then skips it with a line naming the item, the label and the limit", async () => {
+    const s = setup();
+    s.repository.items = [pullItem([REVIEW_LABEL])];
+
+    await s.dispatcher.scan();
+    await crash(s);
+    await crash(s);
+    await crash(s);
+
+    expect(s.posted).toHaveLength(2);
+    expect(linesOn(s, "owner/repo#7").slice(2)).toEqual([`${STOPPED("owner/repo#7", REVIEW_LABEL)}; commented on it`, STOPPED("owner/repo#7", REVIEW_LABEL)]);
+    expect(s.lines.at(-1)).toBe("scan: done");
+  });
+
+  it("comments once when it first stops, naming the label to add again by hand, with a token minted for the comment alone", async () => {
+    const s = setup();
+    s.repository.items = [pullItem([REVIEW_LABEL])];
+
+    await s.dispatcher.scan();
+    for (let restart = 0; restart < 4; restart += 1) await crash(s);
+
+    expect(s.comments).toHaveLength(1);
+    const [comment] = s.comments;
+    expect(comment?.repo).toBe(REPO);
+    expect(comment?.number).toBe(7);
+    expect(comment?.body).toContain(`remove \`${REVIEW_LABEL}\` and add it again by hand`);
+    const commentMints = s.minted.filter(({ permissions }) => permissions === COMMENT_PERMISSIONS);
+    expect(commentMints).toEqual([{ repo: REPO, permissions: COMMENT_PERMISSIONS }]);
+    expect(comment?.token).toBe(`minted-token-${s.minted.findIndex(({ permissions }) => permissions === COMMENT_PERMISSIONS) + 1}`);
+    expect(COMMENT_PERMISSIONS).toEqual({ issues: "write", pull_requests: "write" });
+    for (const [name, access] of Object.entries(COMMENT_PERMISSIONS)) expect(SERVICE_APP_PERMISSIONS[name]).toBe(access);
+  });
+
+  it("dispatches a person's delivery for a counted-out label, and the scan answers the item again from zero, up to the limit", async () => {
+    const s = setup();
+    s.repository.items = [pullItem([REVIEW_LABEL])];
+    await s.dispatcher.scan();
+    await crash(s);
+    await crash(s);
+    expect(s.posted).toHaveLength(2);
+
+    expect((await deliver(s, labelled())).outcome).toMatch(/^dispatched owner\/repo#7/);
+    await crash(s);
+    await crash(s);
+    await crash(s);
+
+    expect(s.posted).toHaveLength(5);
+    expect(s.lines.at(-2)).toBe(`${STOPPED("owner/repo#7", REVIEW_LABEL)}; commented on it`);
+    expect(s.comments).toHaveLength(2);
+  });
+
+  it("does not reset the count for a delivery that fails the author gate", async () => {
+    const s = setup();
+    s.repository.items = [pullItem([REVIEW_LABEL])];
+    await s.dispatcher.scan();
+    await crash(s);
+
+    await deliver(s, labelled({ sender: "triager" }));
+    await crash(s);
+
+    expect(s.posted).toHaveLength(2);
+    expect(s.lines.at(-2)).toBe(`${STOPPED("owner/repo#7", REVIEW_LABEL)}; commented on it`);
+  });
+
+  it("counts each item and each label on an item apart, and an issue's label once however many kinds it starts", async () => {
+    const s = setup();
+    s.repository.items = [pullItem([REVIEW_LABEL, FIX_LABEL]), issueItem([IMPLEMENT_LABEL])];
+    await s.dispatcher.scan();
+    s.repository.items.push(pullItem([REVIEW_LABEL], { number: 8 }));
+    await crash(s);
+    await crash(s);
+
+    expect(jobsPosted(s).slice(9).map((job) => `${job.workflow} ${"issue" in job ? job.issue : job.pr}`)).toEqual(["review 8"]);
+    expect(s.lines).toContain(STOPPED("owner/repo#7", REVIEW_LABEL) + "; commented on it");
+    expect(s.lines).toContain(STOPPED("owner/repo#7", FIX_LABEL) + "; commented on it");
+    expect(s.lines).toContain(STOPPED("owner/repo#12", IMPLEMENT_LABEL) + "; commented on it");
+    expect(s.comments.map(({ number, body }) => [number, body.includes(`\`${FIX_LABEL}\``)])).toEqual([
+      [7, false],
+      [7, true],
+      [12, false],
+    ]);
+
+    await crash(s);
+
+    expect(s.posted).toHaveLength(10);
+    expect(s.lines).toContain(`${STOPPED("owner/repo#8", REVIEW_LABEL)}; commented on it`);
+  });
+
+  it("forgets a label a later scan no longer lists, so a fresh label on the same item is answered from zero", async () => {
+    const s = setup();
+    s.repository.items = [pullItem([REVIEW_LABEL])];
+    await s.dispatcher.scan();
+    await crash(s);
+    await crash(s);
+    expect(s.posted).toHaveLength(2);
+
+    s.repository.items = [];
+    await crash(s);
+    s.repository.items = [pullItem([REVIEW_LABEL])];
+    await crash(s);
+    await crash(s);
+    await crash(s);
+
+    expect(s.posted).toHaveLength(4);
+    expect(s.comments).toHaveLength(2);
+    expect(linesOn(s, "owner/repo#7").at(-1)).toBe(`${STOPPED("owner/repo#7", REVIEW_LABEL)}; commented on it`);
+  });
+
+  it("keeps the count of a label whose items could not be listed", async () => {
+    const s = setup();
+    s.repository.items = [pullItem([REVIEW_LABEL])];
+    await s.dispatcher.scan();
+    await crash(s);
+
+    s.installations.unlistable = [REPO];
+    await crash(s);
+    s.installations.unlistable = [];
+    await crash(s);
+
+    expect(s.posted).toHaveLength(2);
+    expect(s.lines.at(-2)).toBe(`${STOPPED("owner/repo#7", REVIEW_LABEL)}; commented on it`);
+  });
+
+  it("logs a comment that cannot be posted, goes on with the pass, and tries the comment again at the next scan", async () => {
+    const s = setup();
+    s.repository.items = [pullItem([REVIEW_LABEL])];
+    await s.dispatcher.scan();
+    await crash(s);
+
+    s.commenting.fails = true;
+    s.repository.items.push(pullItem([REVIEW_LABEL], { number: 8 }));
+    await crash(s);
+
+    expect(s.lines).toContain(
+      `${STOPPED("owner/repo#7", REVIEW_LABEL)}; the comment saying so could not be posted, and is tried again at the next scan: GitHub answered 502`,
+    );
+    expect(jobsPosted(s).map((job) => ("pr" in job ? job.pr : 0))).toEqual([7, 7, 8]);
+    expect(s.lines.at(-1)).toBe("scan: done");
+
+    s.commenting.fails = false;
+    await crash(s);
+    await crash(s);
+
+    expect(s.comments.map(({ number }) => number)).toEqual([7, 8]);
+  });
+
+  it("dispatches once and stops where the limit is 1, and says so on the item", async () => {
+    const s = setup({ scanLimit: 1 });
+    s.repository.items = [pullItem([REVIEW_LABEL])];
+    await s.dispatcher.scan();
+    await crash(s);
+
+    expect(s.posted).toHaveLength(1);
+    expect(s.comments[0]?.body).toContain(`for \`${REVIEW_LABEL}\` once`);
+  });
+
+  it("counts no delivery's dispatch", async () => {
+    const s = setup();
+    s.repository.items = [pullItem([REVIEW_LABEL])];
+    await deliver(s, labelled());
+    await crash(s);
+    await crash(s);
+    await crash(s);
+
+    expect(s.posted).toHaveLength(3);
+    expect(s.comments).toHaveLength(1);
   });
 });

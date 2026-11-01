@@ -65,7 +65,7 @@ refuse() {
   exit 2
 }
 
-now= version=
+now='' version=''
 usage() {
   echo "Usage: bash $0 [--now] <version>, for example: bash $0 0.8.6" >&2
   exit 2

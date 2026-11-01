@@ -6,7 +6,7 @@ import { describe, expect, it } from "vitest";
 import { parse } from "yaml";
 import { APP_PERMISSIONS } from "../setup/app.js";
 import { isWorkflowBot, loopAccounts } from "../shared/loop-accounts.js";
-import { COMMANDS, type DirectoryInput, readsFrom, RUNNERS, SANDBOX } from "../shared/contract.js";
+import { COMMANDS, type DirectoryInput, readsFrom, type Runner, RUNNERS, SANDBOX } from "../shared/contract.js";
 import {
   FIX_BEFORE_MERGE_LABEL,
   type Finding,
@@ -478,6 +478,13 @@ const artifactFiles = (step: Step | undefined): readonly string[] =>
     .map((line) => line.trim())
     .filter((line) => line !== "")
     .map((line) => line.replace(/^\$\{\{ runner\.temp \}\}\/(?=[^/]+$)/, ""));
+
+/**
+ * A runner's declared outputs less `usage.json` (#637), which stays in the
+ * agent's job: what it is for there is the job's summary line, and nothing
+ * after the job reads it yet.
+ */
+const handedOver = (runner: Runner): readonly string[] => RUNNERS[runner].outputs.filter((file) => file !== "usage.json");
 
 /**
  * Holds an artifact step's paths equal to the files a directory input
@@ -4935,6 +4942,7 @@ describe("implement's agent job runs implement:prepare and implement:bundle from
       ["Run implementation agent", '"$RUNNER_TEMP/node_modules/.bin/agent-workflows" implement'],
       ["Redact the session transcript", "glue"],
       ["Upload the session transcript", undefined],
+      ["Summarise the agent's usage", "glue"],
       ["Bundle the branch", COMMAND("implement:bundle")],
       ["Hand the branch to the publish job", undefined],
       ["Measure how the agent's job ended", "glue"],
@@ -5057,7 +5065,7 @@ describe("implement's agent job runs implement:prepare and implement:bundle from
       files: Object.fromEntries(outputs.map((file) => [file, "sometimes" as const])),
     });
 
-    expectHandsOver(step("Hand the branch to the publish job"), declared("implement", RUNNERS["implement"].outputs), {
+    expectHandsOver(step("Hand the branch to the publish job"), declared("implement", handedOver("implement")), {
       prepare: declared("implement:prepare", COMMANDS["implement:prepare"].outputs),
       bundle: declared("implement:bundle", COMMANDS["implement:bundle"].outputs),
     });
@@ -5131,6 +5139,7 @@ describe("implement-prd's agent job runs implement-prd:prepare and implement-prd
       ["Run implementation agent", BY_PATH("implement-prd")],
       ["Redact the session transcript", "glue"],
       ["Upload the session transcript", undefined],
+      ["Summarise the agent's usage", "glue"],
       ["Bundle the branch", BY_PATH("implement-prd:bundle")],
       ["Hand the branch to the publish job", undefined],
       ["Measure how the agent's job ended", "glue"],
@@ -5215,7 +5224,7 @@ describe("implement-prd's agent job runs implement-prd:prepare and implement-prd
 
     expect(bundle?.if).toBe("always()");
     expect(index("Bundle the branch")).toBeGreaterThan(runner);
-    expect(index("Bundle the branch")).toBe(index("Upload the session transcript") + 1);
+    expect(index("Bundle the branch")).toBe(index("Summarise the agent's usage") + 1);
     expect(index("Bundle the branch")).toBe(index("Hand the branch to the publish job") - 1);
     expect(bundle?.["working-directory"]).toBe("${{ runner.temp }}");
     expect(bundle?.env).toEqual({
@@ -5242,7 +5251,7 @@ describe("implement-prd's agent job runs implement-prd:prepare and implement-prd
       files: Object.fromEntries(outputs.map((file) => [file, "sometimes" as const])),
     });
 
-    expectHandsOver(step("Hand the branch to the publish job"), declared("implement-prd", RUNNERS["implement-prd"].outputs), {
+    expectHandsOver(step("Hand the branch to the publish job"), declared("implement-prd", handedOver("implement-prd")), {
       prepare: declared("implement-prd:prepare", COMMANDS["implement-prd:prepare"].outputs),
       bundle: declared("implement-prd:bundle", COMMANDS["implement-prd:bundle"].outputs),
     });
@@ -10146,6 +10155,28 @@ describe("every agent run keeps its session transcript, redacted, for a few days
     });
   });
 
+  /**
+   * What the agent spent (#637), in the job's summary, from the line the
+   * runner wrote into `usage.json`, or that it is unavailable. After the
+   * transcript, however the run ended, never failing it, and with no token.
+   */
+  it.each(Object.keys(AGENT_STEPS))("%s: puts the agent's usage in the job's summary, however it ended", (command) => {
+    const names = stepsOf(fileOf(command)).map((s) => s.name);
+    const summarise = stepNamed(command, "Summarise the agent's usage");
+
+    expect(RUNNERS[command as Runner].outputs).toContain("usage.json");
+    expect(names.indexOf("Summarise the agent's usage")).toBe(names.indexOf(UPLOAD) + 1);
+    expect(summarise.if).toBe("always()");
+    expect(summarise["continue-on-error"]).toBe(true);
+    expect(summarise.env).toEqual({ GH_TOKEN: "", USAGE: "${{ runner.temp }}/usage.json" });
+    expect(stepNamed(command, AGENT_STEPS[command] ?? "").env?.["OUTPUT_DIR"]).toBe("${{ runner.temp }}");
+    expect(summarise.run ?? "").toContain('jq -er .summary "$USAGE"');
+    expect(summarise.run ?? "").toContain('>> "$GITHUB_STEP_SUMMARY"');
+    expect(summarise.run ?? "").toContain("Agent usage unavailable");
+    // One step, word for word, in every workflow that runs an agent.
+    expect(summarise.run).toBe(stepNamed("implement", "Summarise the agent's usage").run);
+  });
+
   it("starts no upload where no agent runs", () => {
     const follow = workflowOf(FOLLOW_UPS);
 
@@ -10801,6 +10832,7 @@ describe("update-branch.yml decides nothing in inline shell", () => {
       ["Resolve conflicts", '"$RUNNER_TEMP/node_modules/.bin/agent-workflows" update-branch'],
       ["Redact the session transcript", "glue"],
       ["Upload the session transcript", undefined],
+      ["Summarise the agent's usage", "glue"],
       ["Bundle the branch", COMMAND("update-branch:bundle")],
       ["Hand the branch to the publish job", undefined],
       ["Measure how the agent's job ended", "glue"],
@@ -10966,7 +10998,7 @@ describe("update-branch's agent job repeats the conflicted merge with update-bra
       files: Object.fromEntries(outputs.map((file) => [file, "sometimes" as const])),
     });
 
-    expectHandsOver(upload, declared("update-branch", RUNNERS["update-branch"].outputs), {
+    expectHandsOver(upload, declared("update-branch", handedOver("update-branch")), {
       prepare: declared("update-branch:prepare", COMMANDS["update-branch:prepare"].outputs),
       bundle: declared("update-branch:bundle", COMMANDS["update-branch:bundle"].outputs),
     });

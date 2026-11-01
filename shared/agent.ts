@@ -3,12 +3,13 @@ import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import * as path from "node:path";
 import * as sandcastle from "@ai-hero/sandcastle";
-import type { OutputObjectDefinition, RunOptions, RunResult } from "@ai-hero/sandcastle";
+import type { AgentProvider, OutputObjectDefinition, RunOptions, RunResult } from "@ai-hero/sandcastle";
 import { noSandbox } from "@ai-hero/sandcastle/sandboxes/no-sandbox";
 import { bwrap, CARRY_HOOKS } from "../engine/bwrap.js";
 import type { SANDBOX } from "./contract.js";
 import { fail, type InputValues } from "./env.js";
 import { sandboxRefusal } from "./sandbox.js";
+import { sumResults, sumTranscript, usageSummary, type Pass, type PassUsage, type RunUsage } from "./usage.js";
 
 /**
  * The agent driver: everything that loads the agent SDK, and the one module
@@ -261,8 +262,98 @@ export const concludingMerge = (chosen: AgentSandbox, repoDir: string, name: str
   return { options, conclude };
 };
 
+/**
+ * A run's usage ledger (#637): each pass of the agent is started through
+ * `pass`, which reads what it spent once it ends, however it ends, and hands
+ * the run's usage so far, every pass's, to `write`, which a runner points at
+ * its `usage.json`. A pass whose usage cannot be read is recorded as
+ * unavailable, with the reason; nothing here throws into the run.
+ */
+export interface UsageLedger {
+  /**
+   * Starts one pass with `agent`, through `start`, and records it. `start`
+   * runs Sandcastle with the agent it is handed, which is `agent` with the
+   * stream's session ids and result events kept for the ledger.
+   */
+  pass<R>(pass: Pass, agent: AgentProvider, start: (agent: AgentProvider) => Promise<R>): Promise<R>;
+}
+
+/** The effort an agent is started with, read off the command it runs: `default` where it names none. */
+const effortOf = (agent: AgentProvider): string => {
+  try {
+    return /\s--effort\s+(\S+)/.exec(agent.buildPrintCommand({ prompt: "", dangerouslySkipPermissions: true }).command)?.[1] ?? "default";
+  } catch {
+    return "default";
+  }
+};
+
+const reasonOf = (error: unknown): string => (error instanceof Error ? error.message : String(error));
+
+export const usageLedger = (write: (usage: RunUsage) => void): UsageLedger => {
+  const passes: PassUsage[] = [];
+  const counted = new Set<string>();
+  /** Sessions a pass could not be read from: a later pass resuming one cannot be told apart from it. */
+  const unread = new Set<string>();
+  let effort = "default";
+
+  const measure = async (pass: Pass, sessions: readonly string[], results: readonly string[]): Promise<PassUsage> => {
+    if (sessions.length === 0) return { pass, available: false, reason: "the agent's stream named no session" };
+    const earlier = sessions.find((id) => unread.has(id));
+    if (earlier !== undefined) return { pass, available: false, reason: `an earlier pass in session ${earlier} could not be read` };
+    let transcript = "";
+    for (const id of sessions) {
+      const found = (await sandcastle.findClaudeSessionOnHost(id)).path;
+      if (found === undefined) return { pass, available: false, reason: `no transcript of session ${id} was found` };
+      transcript += `${readFileSync(found, "utf8")}\n`;
+    }
+    const { messages, ...totals } = sumTranscript(transcript, counted);
+    for (const id of messages) counted.add(id);
+    return { pass, available: true, ...totals, ...sumResults(results) };
+  };
+
+  return {
+    async pass(pass, agent, start) {
+      const sessions: string[] = [];
+      const results: string[] = [];
+      effort = effortOf(agent);
+      const watched: AgentProvider = {
+        ...agent,
+        parseStreamLine: (line) => {
+          const parsed = agent.parseStreamLine(line);
+          for (const event of parsed) {
+            if (event.type === "session_id" && !sessions.includes(event.sessionId)) sessions.push(event.sessionId);
+          }
+          if (line.includes('"type":"result"')) results.push(line);
+          return parsed;
+        },
+      };
+      try {
+        return await start(watched);
+      } finally {
+        let usage: PassUsage;
+        try {
+          usage = await measure(pass, sessions, results);
+        } catch (error) {
+          usage = { pass, available: false, reason: reasonOf(error) };
+        }
+        if (!usage.available) for (const id of sessions) unread.add(id);
+        passes.push(usage);
+        const summary = usageSummary(effort, passes);
+        console.log(summary);
+        try {
+          write({ effort, passes, summary });
+        } catch (error) {
+          console.log(`::warning::The agent's usage was not written: ${reasonOf(error)}`);
+        }
+      }
+    },
+  };
+};
+
 export interface RunWithExtractionOptions<T> extends Omit<RunOptions, "output"> {
   readonly output: OutputObjectDefinition<T>;
+  /** The run's ledger, which records both passes. */
+  readonly usage: UsageLedger;
   readonly extractionPrompt: string;
   /**
    * Extra attempts after the first if extraction or validation fails. Forwarded
@@ -282,8 +373,8 @@ export interface RunWithExtractionOptions<T> extends Omit<RunOptions, "output"> 
 export async function runWithExtraction<T>(
   options: RunWithExtractionOptions<T>,
 ): Promise<RunResult & { output: T }> {
-  const { output, extractionPrompt, maxRetries = 2, ...produceOptions } = options;
-  const produce = await sandcastle.run(produceOptions);
+  const { output, extractionPrompt, maxRetries = 2, usage, ...produceOptions } = options;
+  const produce = await usage.pass("work", produceOptions.agent, (agent) => sandcastle.run({ ...produceOptions, agent }));
   const sessionId = produce.iterations.at(-1)?.sessionId;
 
   if (!sessionId) {
@@ -295,13 +386,16 @@ export async function runWithExtraction<T>(
   // assigning `undefined` to an optional property, so they must be omitted.
   const { promptArgs: _promptArgs, promptFile: _promptFile, name: _name, ...extractionOptions } =
     produceOptions;
-  const extraction = await sandcastle.run({
-    ...extractionOptions,
-    ...(produceOptions.name ? { name: `${produceOptions.name} (extract)` } : {}),
-    prompt: extractionPrompt,
-    resumeSession: sessionId,
-    output: { ...output, maxRetries },
-  });
+  const extraction = await usage.pass("extract", extractionOptions.agent, (agent) =>
+    sandcastle.run({
+      ...extractionOptions,
+      agent,
+      ...(produceOptions.name ? { name: `${produceOptions.name} (extract)` } : {}),
+      prompt: extractionPrompt,
+      resumeSession: sessionId,
+      output: { ...output, maxRetries },
+    }),
+  );
 
   return { ...produce, output: extraction.output };
 }

@@ -10,7 +10,7 @@ import {
   sh,
   writers,
 } from "../shared/common.js";
-import { agentSandbox, claudeAgent, runWithExtraction } from "../shared/agent.js";
+import { agentSandbox, claudeAgent, runWithExtraction, usageLedger } from "../shared/agent.js";
 import { RUNNERS } from "../shared/contract.js";
 import { applyCriteriaRulings, renderCriteriaForReview } from "./acceptance-criteria.js";
 import { applyNoteRulings, renderNotesForReview } from "../shared/fix-notes.js";
@@ -102,6 +102,8 @@ const INPUTS = readInputs(RUNNERS["review"].inputs);
 const SANDBOX = agentSandbox(INPUTS);
 const LOOP_ACCOUNTS = readLoopAccounts(INPUTS.AGENT_LOOP_LOGINS);
 const { writeJson, writeText } = writers(RUNNERS["review"].outputs);
+/** What the agent spent, pass by pass (#637). */
+const USAGE = usageLedger((usage) => writeJson("usage.json", usage));
 
 const PR_NUMBER = INPUTS.PR_NUMBER;
 const BRANCH = INPUTS.BRANCH;
@@ -452,6 +454,7 @@ try {
   const result = await runWithExtraction({
     name: `review-pr-${PR_NUMBER}`,
     agent: claudeAgent("review", INPUTS),
+    usage: USAGE,
     ...SANDBOX,
     logging: { type: "stdout" },
     promptFile: path.join(import.meta.dirname, "prompt.md"),

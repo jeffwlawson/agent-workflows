@@ -55,8 +55,13 @@ inside the parent's `Agent` call that waited on it, not again beside it. From th
 - **tool calls**: each `tool_use` block and its matching `tool_result` (by `tool_use_id`), the
   difference being the tool's own time. Group by tool name, and for `Bash` by what was run;
 - **thinking**: the `thinking` blocks, counted and sized, since a long one is a long turn;
-- **token usage**: each assistant message's `usage`, input, output, and cache read and creation
-  separately. Cache reads are cheap and fast; a run that keeps missing the cache is a finding.
+- **token usage**: read it off the ledger rather than summing the transcript by hand. Every run
+  records what its agent spent (#637), pass by pass: the line in the agent job's step summary, and
+  the same with every figure in `usage.json` (`docs/platform-spec.md` §2.3), with input, cache
+  read, cache write by TTL, output, turns, the model, the effort and an estimated cost. Do not sum
+  the transcript's `output_tokens` yourself: each is a placeholder written while the message
+  streams, and the real count is the stream's result event, which the ledger reads. Cache reads
+  are cheap and fast; a run that keeps missing the cache is a finding.
 
 The agent step's duration from the jobs API, minus the span the transcript covers, is the runner's
 overhead around the agent (starting it, collecting its output). Check that it is small rather than

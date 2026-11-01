@@ -74,9 +74,10 @@ Do red-green-refactor where a test seam already exists:
 Do not improvise new test seams: for example, extracting a function purely so it can be
 tested in isolation. That creates spaghetti tests.
 
-Run the verify command `CLAUDE.md` names before committing. It must pass. It covers the earlier
-slices too, so a failure may be yours or may be an interaction with what is already on the
-branch; read the failure before assuming which.
+While iterating, run the test files that cover your change, not the whole suite. Run the verify
+command `CLAUDE.md` names once, before committing. It must pass. Run it again only if anything
+changed after it passed. It covers the earlier slices too, so a failure may be yours or may be an
+interaction with what is already on the branch; read the failure before assuming which.
 
 A verify failure after your change is yours unless it also fails without your change. To show that,
 run the failing tests, not the whole suite, on `{{BASE_REF}}` in a separate worktree
@@ -101,10 +102,13 @@ Make one or more commits on `{{BRANCH}}` with conventional commit messages. Name
 the PRD: `feat: ... (#{{SUB_NUMBER}})`.
 Commit as soon as the work first passes the verify command `CLAUDE.md` names, and make later changes
 as further commits. A run can be stopped at its time limit, and only committed work survives that.
+A later commit is a change after that pass, so run the verify command again before making it.
 Do not use em dashes in anything you write; use a comma, colon, semicolon, parentheses, or a new sentence instead.
 
 Do not push. Do not edit labels. Do not create GitHub comments.
 Do not close #{{SUB_NUMBER}} or #{{ISSUE_NUMBER}}. Do not create or edit PRs.
 The workflow does all of that after you exit.
 
-When complete, output `<promise>COMPLETE</promise>`.
+When complete, after committing, output only `<promise>COMPLETE</promise>`, with no summary of what
+you did: nothing reads one. A run you stopped as stale ends with its `<stale>` tag instead (see
+*Check the slice against the code*).

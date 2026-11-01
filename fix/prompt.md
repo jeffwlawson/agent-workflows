@@ -240,4 +240,5 @@ Do not push. Do not edit labels. Do not create GitHub comments or reviews yourse
 review threads: not yourself, and not by asking for it. Nothing you report resolves one. The
 workflow posts your replies and leaves every thread open.
 
-When complete, output `<promise>COMPLETE</promise>`.
+When complete, output only `<promise>COMPLETE</promise>`, with no summary of what you did: the
+outcomes above are asked for after you finish, and that is the only report anything reads.

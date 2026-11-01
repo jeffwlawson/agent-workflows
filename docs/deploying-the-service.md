@@ -608,7 +608,10 @@ conf, where the digest is checked again. Then it installs on both with neither s
 restarts the worker and straight after it the dispatcher, and runs both check scripts, failing
 where their versions or the shared secret's fingerprints differ. Restarting the worker drops any
 job queued in it, since its queue is in memory, and between the two restarts the dispatcher gets
-409 from the worker; the script says for how many seconds. Its halves, `upgrade-unraid.sh` and
+409 from the worker; the script says for how many seconds. Where the worker's restart fails, it
+stops before restarting the dispatcher, and where any step stops it prints the commands that
+finish the job, or the way back: `upgrade.sh` at the earlier version, which installs it on the box
+first. Its halves, `upgrade-unraid.sh` and
 `upgrade-box.sh`, each install a tarball they are handed and can still be run alone, to recover or
 roll back one machine. None of the three uses the registry route any more.
 

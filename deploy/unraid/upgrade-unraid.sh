@@ -58,7 +58,7 @@ if [ "$phase" = all ] && [ ! -f "$check_script" ]; then
   echo "check-unraid.sh is not beside this script ($check_script): copy it here first. Nothing was changed." >&2
   exit 2
 fi
-installed() { grep -m1 '"version"' "$PKG_JSON" 2>/dev/null | sed 's/.*"version": *"\([^"]*\)".*/\1/'; }
+installed() { grep -m1 '"version"' "$PKG_JSON" 2>/dev/null | sed 's/.*"version": *"\([^"]*\)".*/\1/' || true; }
 
 if [ "$phase" != restart ]; then
   tarball_dir=$(cd "$(dirname "$tarball")" && pwd)
@@ -75,14 +75,19 @@ if [ "$phase" != restart ]; then
     exit 1
   fi
 
-  echo "Installed now: $(installed). Moving to $version."
+  now=$(installed)
+  echo "Installed now: ${now:-none}. Moving to $version."
   echo "Installing $tarball_name into $APPDATA/pkg ..."
   docker run --rm -v "$APPDATA/pkg:/pkg" -v "$tarball_dir:/release:ro" "$IMAGE" \
     npm install --prefix /pkg --no-fund --no-audit --no-update-notifier "/release/$tarball_name"
 fi
 
-if [ "$(installed)" != "$version" ]; then
-  echo "$PKG_JSON says $(installed), not $version. Stopping before the restart." >&2
+now=$(installed)
+if [ -z "$now" ]; then
+  echo "Nothing is installed at $PKG_JSON, where $version should be. Stopping before the restart." >&2
+  exit 1
+elif [ "$now" != "$version" ]; then
+  echo "$PKG_JSON says $now, not $version. Stopping before the restart." >&2
   exit 1
 fi
 if [ "$phase" = install ]; then

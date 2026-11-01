@@ -12,6 +12,8 @@
 #      the box. No service is touched; a failure leaves both machines as they were.
 #   2. install on the box, then on Unraid. Services are still untouched.
 #   3. restart the worker, then straight after it the dispatcher, each waited for.
+#      Where the worker's fails, the dispatcher is left alone. A step that
+#      stops prints the commands that finish the job, or the way back.
 #   4. run both check scripts and compare their versions and fingerprints.
 #
 # The box is reached as BOX_SSH_USER@BOX_IP, with the key the operator has set
@@ -58,14 +60,22 @@ if [ -n "$BOX_SSH_KEY" ] && [ ! -f "$BOX_SSH_KEY" ]; then refuse "BOX_SSH_KEY na
 
 # The installed package is the one the dispatcher's install prefix depends on,
 # unless PACKAGE_NAME names it.
-if [ -z "$PACKAGE_NAME" ]; then
-  PACKAGE_NAME=$(tr -d '\n' <"$APPDATA/pkg/package.json" 2>/dev/null | sed -n 's/.*"dependencies": *{ *"\([^"]*\)".*/\1/p' || true)
+# Neither file is there before the first install, which is not an error here:
+# the refusals below say what to set instead.
+if [ -z "$PACKAGE_NAME" ] && [ -f "$APPDATA/pkg/package.json" ]; then
+  PACKAGE_NAME=$(tr -d '\n' <"$APPDATA/pkg/package.json" | sed -n 's/.*"dependencies": *{ *"\([^"]*\)".*/\1/p' || true)
 fi
 PKG_JSON=${PKG_JSON:-$APPDATA/pkg/node_modules/$PACKAGE_NAME/package.json}
 
 # Where the release comes from: PACKAGE_SOURCE, or else the installed package's
 # repository field, a string or {"url": ...}, in a github.com form only.
-installed_json=$(tr -d '\n' <"$PKG_JSON" 2>/dev/null || true)
+installed_json= previous=
+if [ -f "$PKG_JSON" ]; then
+  installed_json=$(tr -d '\n' <"$PKG_JSON")
+  # What the dispatcher has installed now: the way back, if this stops partway.
+  # Read as the halves read it.
+  previous=$(grep -m1 '"version"' "$PKG_JSON" | sed 's/.*"version": *"\([^"]*\)".*/\1/' || true)
+fi
 source=$PACKAGE_SOURCE
 if [ -z "$source" ]; then
   repository=$(sed -n 's/.*"repository": *"\([^"]*\)".*/\1/p' <<<"$installed_json")
@@ -82,7 +92,7 @@ if [ -z "$source" ]; then
   esac
 fi
 if ! [[ $source =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]]; then
-  refuse "Cannot tell which repository the release is downloaded from: set PACKAGE_SOURCE=<owner>/<repo> in $conf (the installed package at $PKG_JSON names no github.com repository)."
+  refuse "Cannot tell which repository the release is downloaded from: set PACKAGE_SOURCE=<owner>/<repo> in $conf (no package is installed at $PKG_JSON, or it names no github.com repository)."
 fi
 name=$PACKAGE_NAME
 if ! [[ $name =~ ^(@[a-z0-9._~-]+/)?[a-z0-9._~-]+$ ]]; then
@@ -100,6 +110,11 @@ ssh_opts=(-o "UserKnownHostsFile=$here/known_hosts" -o StrictHostKeyChecking=acc
 if [ -n "$BOX_SSH_KEY" ]; then ssh_opts+=(-i "$BOX_SSH_KEY"); fi
 # The command is run by the box's shell, so its home's ~ is left to it.
 on_box() { ssh "${ssh_opts[@]}" -t "$box" "$1"; }
+# The same ssh, spelt out for an operator to paste when a step stops.
+box_ssh=$(printf '%q ' ssh "${ssh_opts[@]}" -t "$box")
+# The way back, should a step stop partway: this script at the version the
+# dispatcher had, which installs it on the box first.
+back="bash $here/upgrade.sh ${previous:-<the version the dispatcher runs>}"
 
 echo "Moving both machines to $version, from $url"
 
@@ -107,7 +122,9 @@ echo
 echo "== Staging: no service is touched"
 stage=$(mktemp -d "$STAGE_DIR/agent-workflows-upgrade.XXXXXX")
 trap 'rm -rf "$stage"' EXIT
-if ! curl -fsSL -o "$stage/$tarball" "$url" || ! curl -fsSL -o "$stage/$tarball.sha256" "$url.sha256"; then
+# https only, redirects too: the .sha256 comes over the same connection.
+download() { curl -fsSL --proto '=https' --proto-redir '=https' -o "$1" "$2"; }
+if ! download "$stage/$tarball" "$url" || ! download "$stage/$tarball.sha256" "$url.sha256"; then
   refuse "Could not download $url and its .sha256: is v$version released, with its tarball attached?"
 fi
 read -r _ named <"$stage/$tarball.sha256" || true
@@ -117,19 +134,25 @@ fi
 echo "Downloaded $tarball; it matches its .sha256."
 to_copy=("$stage/$tarball" "$stage/$tarball.sha256" "$here/upgrade-box.sh" "$here/check-box.sh")
 if [ -f "$conf" ]; then to_copy+=("$conf"); fi
+copied=$(for file in "${to_copy[@]}"; do basename "$file"; done | paste -sd ' ')
 if ! scp "${ssh_opts[@]}" "${to_copy[@]}" "$box:"; then
-  refuse "Could not copy the tarball and the box's scripts to $box."
+  # scp copies one file at a time, so a failure can come after some of them.
+  echo "Could not copy all of $copied to $box's home: read scp's output above." >&2
+  echo "Some may already be there, replacing the copies the box had. Nothing was installed and no service was touched on either machine." >&2
+  exit 2
 fi
-echo "Copied the tarball, upgrade-box.sh, check-box.sh and agent-service.conf to $box's home."
+echo "Copied $copied to $box's home."
 
 echo
 echo "== Installing: both machines keep running what they started with"
 if ! on_box "sudo bash ~/upgrade-box.sh --install $version ~/$tarball"; then
-  echo "The install on the box stopped: read its output above. Unraid was not changed, and the box's worker was not restarted." >&2
+  echo "The install on the box stopped: read its output above. Unraid was not changed, and neither service was restarted." >&2
+  echo "The box's install may have stopped partway. Fix the cause and run upgrade.sh $version again, or put the box back with: $back" >&2
   exit 1
 fi
 if ! bash "$here/upgrade-unraid.sh" --install "$version" "$stage/$tarball"; then
-  echo "The install on Unraid stopped: read its output above. The box has $version installed but its worker was not restarted; restart it onto the version Unraid runs with upgrade-box.sh." >&2
+  echo "The install on Unraid stopped: read its output above. Neither service was restarted, so both still run what they ran." >&2
+  echo "The box has $version installed, which its worker would start on its next restart. Fix the cause and run upgrade.sh $version again, or put the box back with: $back" >&2
   exit 1
 fi
 on_box "rm -f ~/$tarball ~/$tarball.sha256" || true
@@ -138,11 +161,26 @@ echo
 echo "== Restarting: the worker, then the dispatcher"
 echo "Restarting the worker drops any job queued in it: its queue is in memory."
 status=0
-on_box "sudo bash ~/upgrade-box.sh --restart $version" || status=1
+if ! on_box "sudo bash ~/upgrade-box.sh --restart $version"; then
+  # Restarting the dispatcher now would leave the two on different versions
+  # for as long as the worker is not fixed, with every job refused.
+  echo "The worker's restart did not finish, so the dispatcher was not restarted: read its output above (a mistyped sudo password is enough)." >&2
+  echo "Both machines have $version installed. The dispatcher still runs what it ran; the worker may run either, and if it runs $version it refuses the dispatcher's jobs with 409." >&2
+  echo "Fix the cause, then finish on each side, in this order, both run on Unraid:" >&2
+  echo "  ${box_ssh}'sudo bash ~/upgrade-box.sh --restart $version'" >&2
+  echo "  bash $here/upgrade-unraid.sh --restart $version" >&2
+  echo "Then check both: bash $here/check-unraid.sh, and ${box_ssh}'sudo bash ~/check-box.sh'. Or run upgrade.sh $version again, which does all of it." >&2
+  exit 1
+fi
 worker_up=$SECONDS
-bash "$here/upgrade-unraid.sh" --restart "$version" || status=1
-window=$((SECONDS - worker_up))
-echo "Between the two restarts the dispatcher got 409 from the worker, for about $window seconds: the two ran different versions."
+if bash "$here/upgrade-unraid.sh" --restart "$version"; then
+  window=$((SECONDS - worker_up))
+  echo "Between the two restarts the dispatcher got 409 from the worker, for about $window seconds: the two ran different versions."
+else
+  status=1
+  echo "The dispatcher's restart did not finish: read its output above. The worker runs $version, so until the dispatcher does too it refuses the dispatcher's jobs with 409." >&2
+  echo "Fix the cause, then finish on Unraid: bash $here/upgrade-unraid.sh --restart $version" >&2
+fi
 
 echo
 echo "== Checking both"

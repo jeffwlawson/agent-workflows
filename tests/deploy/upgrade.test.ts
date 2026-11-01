@@ -32,7 +32,7 @@ const STUBS: Record<string, string> = {
   curl: `
 out= url=
 while [ $# -gt 0 ]; do
-  case "$1" in -o) out=$2; shift 2 ;; -*) shift ;; *) url=$1; shift ;; esac
+  case "$1" in -o|--proto|--proto-redir) [ "$1" = -o ] && out=$2; shift 2 ;; -*) shift ;; *) url=$1; shift ;; esac
 done
 src="$FAKE/release/$(basename "$url")"
 [ -f "$src" ] || exit 22
@@ -43,6 +43,7 @@ while [ $# -gt 1 ]; do
   case "$1" in -o|-i) shift 2 ;; *) files+=("$1"); shift ;; esac
 done
 for f in "\${files[@]}"; do
+  if [ -n "\${FAKE_SCP_FAIL_AT:-}" ] && [ "$(basename "$f")" = "$FAKE_SCP_FAIL_AT" ]; then exit 1; fi
   cp "$f" "$FAKE/box-home/"
   case "$f" in *.tgz) if [ -n "\${FAKE_CORRUPT_SCP:-}" ]; then echo x >>"$FAKE/box-home/$(basename "$f")"; fi ;; esac
 done`,
@@ -66,15 +67,20 @@ case "$1" in
         *) shift ;;
       esac
     done
+    if [ -n "\${FAKE_UNRAID_INSTALL_FAIL:-}" ]; then exit 1; fi
     name=$(sed -n 's/.*"name": *"\\([^"]*\\)".*/\\1/p' "$tgz")
     mkdir -p "$pkg/node_modules/$name" && cp "$tgz" "$pkg/node_modules/$name/package.json" ;;
-  restart) installed >"$FAKE/state/dispatcher-running" ;;
+  restart)
+    if [ -n "\${FAKE_DISPATCHER_RESTART_FAIL:-}" ]; then exit 1; fi
+    installed >"$FAKE/state/dispatcher-running" ;;
   inspect) echo 2026-10-31T00:00:00Z ;;
   logs) echo "dispatcher $(cat "$FAKE/state/dispatcher-running") listening" ;;
 esac`,
   systemctl: `
 case "$1" in
-  restart) sed -n 's/.*"version": *"\\([^"]*\\)".*/\\1/p' "$FAKE/opt/${INSTALLED_PATH}" >"$FAKE/state/worker-running" ;;
+  restart)
+    if [ -n "\${FAKE_WORKER_RESTART_FAIL:-}" ]; then exit 1; fi
+    sed -n 's/.*"version": *"\\([^"]*\\)".*/\\1/p' "$FAKE/opt/${INSTALLED_PATH}" >"$FAKE/state/worker-running" ;;
   show) echo invocation ;;
 esac`,
   journalctl: `echo "worker $(cat "$FAKE/state/worker-running") listening"`,
@@ -98,6 +104,8 @@ interface Setup {
   readonly conf?: string;
   readonly installedExtra?: string;
   readonly digest?: string;
+  /** No package installed on either machine yet, as before a first install. */
+  readonly fresh?: boolean;
 }
 
 const scratches: string[] = [];
@@ -136,10 +144,12 @@ const setUp = (setup: Setup = {}): string => {
   for (const prefix of ["appdata/pkg", "opt"]) {
     const installed = path.join(root, prefix, INSTALLED_PATH);
     fs.mkdirSync(path.dirname(installed), { recursive: true });
-    fs.writeFileSync(installed, pkgJson("1.2.2", setup.installedExtra ?? ""));
+    if (setup.fresh !== true) fs.writeFileSync(installed, pkgJson("1.2.2", setup.installedExtra ?? ""));
   }
   // The dispatcher's install prefix, whose one dependency is the package.
-  fs.writeFileSync(path.join(root, "appdata", "pkg", "package.json"), `{\n  "dependencies": {\n    "${NAME}": "1.2.2"\n  }\n}\n`);
+  if (setup.fresh !== true) {
+    fs.writeFileSync(path.join(root, "appdata", "pkg", "package.json"), `{\n  "dependencies": {\n    "${NAME}": "1.2.2"\n  }\n}\n`);
+  }
   fs.writeFileSync(path.join(root, "state", "dispatcher-running"), "1.2.2\n");
   fs.writeFileSync(path.join(root, "state", "worker-running"), "1.2.2\n");
   const tarball = pkgJson("1.2.3");
@@ -199,6 +209,77 @@ describe("upgrade.sh", () => {
     ]);
     // The staging directory under STAGE_DIR is removed however the run ends.
     expect(fs.readdirSync(path.join(root, "stage"))).toEqual([]);
+  });
+
+  it("downloads over https only, redirects included", () => {
+    const { status, calls } = run(setUp());
+
+    expect(status).toBe(0);
+    const downloads = calls.filter((call) => call.startsWith("curl "));
+    expect(downloads).toHaveLength(2);
+    for (const call of downloads) expect(call).toContain("--proto =https --proto-redir =https");
+  });
+
+  it("stops before restarting the dispatcher when the worker's restart fails, and names the commands that finish", () => {
+    const root = setUp();
+    const { status, output, calls } = run(root, { FAKE_WORKER_RESTART_FAIL: "1" });
+
+    expect(status).toBe(1);
+    expect(calls.filter((call) => call.startsWith("docker restart"))).toEqual([]);
+    expect(running(root, "dispatcher")).toBe("1.2.2");
+    expect(output).toContain("the dispatcher was not restarted");
+    expect(output).toMatch(/ssh -o UserKnownHostsFile=\S+\/unraid\/known_hosts -o StrictHostKeyChecking=accept-new -t admin@box\.example 'sudo bash ~\/upgrade-box\.sh --restart 1\.2\.3'/);
+    expect(output).toContain(`bash ${root}/unraid/upgrade-unraid.sh --restart 1.2.3`);
+    expect(output).not.toContain("got 409 from the worker, for about");
+  });
+
+  it("names the command that finishes when the dispatcher's restart fails after the worker's", () => {
+    const root = setUp();
+    const { status, output } = run(root, { FAKE_DISPATCHER_RESTART_FAIL: "1" });
+
+    expect(status).toBe(1);
+    expect(running(root, "worker")).toBe("1.2.3");
+    expect(output).toContain(`Fix the cause, then finish on Unraid: bash ${root}/unraid/upgrade-unraid.sh --restart 1.2.3`);
+    expect(output).not.toContain("got 409 from the worker, for about");
+  });
+
+  it("names the earlier version as the way back when the install on Unraid fails", () => {
+    const root = setUp();
+    const { status, output, calls } = run(root, { FAKE_UNRAID_INSTALL_FAIL: "1" });
+
+    expect(status).toBe(1);
+    expect(calls.filter((call) => /^(systemctl|docker) restart/.test(call))).toEqual([]);
+    expect(installed(root, "opt")).toBe("1.2.3");
+    expect(output).toContain(`put the box back with: bash ${root}/unraid/upgrade.sh 1.2.2`);
+  });
+
+  it("says which files may already be on the box when the copy fails partway", () => {
+    const root = setUp();
+    const { status, output, calls } = run(root, { FAKE_SCP_FAIL_AT: "check-box.sh" });
+
+    expect(status).toBe(2);
+    expect(output).toContain(`Could not copy all of ${TARBALL} ${TARBALL}.sha256 upgrade-box.sh check-box.sh agent-service.conf`);
+    expect(output).toContain("Some may already be there");
+    expect(output).not.toContain("Nothing was changed");
+    expect(touches(calls)).toEqual([]);
+  });
+
+  it("upgrades onto machines with no package installed yet, printing no stray error", () => {
+    const root = setUp({ fresh: true, conf: `PACKAGE_SOURCE=owner/repo\nPACKAGE_NAME=${NAME}` });
+    const { status, output } = run(root);
+
+    expect(output).not.toMatch(/no such file/i);
+    expect(output).toContain("Installed now: none. Moving to 1.2.3.");
+    expect(status).toBe(0);
+    expect([installed(root, "appdata/pkg"), installed(root, "opt")]).toEqual(["1.2.3", "1.2.3"]);
+  });
+
+  it("refuses with no package installed and no PACKAGE_NAME, printing no stray error", () => {
+    const { status, output } = run(setUp({ fresh: true }));
+
+    expect(status).toBe(2);
+    expect(output).not.toMatch(/no such file/i);
+    expect(output).toContain("set PACKAGE_NAME");
   });
 
   it("says the worker's restart drops its queue, and how long the 409 window lasted", () => {

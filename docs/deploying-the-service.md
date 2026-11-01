@@ -90,12 +90,13 @@ the first.
 loop's App (ADOPTING §2), run from a checkout of a repository the App's owner owns. It asks, at a
 terminal, for:
 
-- the **webhook URL**, which must end `/github` and is never defaulted;
+- the **webhook URL**, whose path must end `/github`, with no query or fragment, and which is never
+  defaulted;
 - the **dispatcher settings file** to write, which must not exist yet;
 - the **private key file** to write, `app.pem` beside the settings file unless you name another,
   which must not exist yet either.
 
-An answer it refuses (a URL not ending `/github`, a file that exists, a path inside the checkout)
+An answer it refuses (a URL whose path does not end `/github`, a file that exists, a path inside the checkout)
 stops it before anything is registered, and an existing file is never written over. Without a
 terminal it asks nothing and registers nothing. The manifest is the loop's App's with the
 permissions below added, the webhook, **Active**, at the URL as given, the events under *The

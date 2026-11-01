@@ -758,8 +758,19 @@ const setUpServiceApp = async (app: AppSurface, dir: string): Promise<readonly I
   } catch {
     parsed = undefined;
   }
-  if (parsed === undefined || !["https:", "http:"].includes(parsed.protocol) || !url.endsWith(WEBHOOK_PATH)) {
-    return kept(`the webhook URL ${JSON.stringify(url)} is not an http(s) URL ending ${WEBHOOK_PATH}, where the dispatcher's webhook door answers; no App was created`);
+  // The path is what the door answers on, so the path is what must end
+  // `/github`: in a query or a fragment, or as a host, the string would end it
+  // while every delivery went somewhere else. And the URL is registered as
+  // given, so the string must end it too, with no bare `?` or `#` after.
+  if (
+    parsed === undefined ||
+    !["https:", "http:"].includes(parsed.protocol) ||
+    !parsed.pathname.endsWith(WEBHOOK_PATH) ||
+    parsed.search !== "" ||
+    parsed.hash !== "" ||
+    !url.endsWith(WEBHOOK_PATH)
+  ) {
+    return kept(`the webhook URL ${JSON.stringify(url)} is not an http(s) URL whose path ends ${WEBHOOK_PATH}, with no query or fragment, where the dispatcher's webhook door answers; no App was created`);
   }
 
   const settingsAnswer = (await app.ask(`  The dispatcher settings file to write, which must not exist yet: `))?.trim();

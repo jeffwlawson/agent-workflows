@@ -2762,6 +2762,11 @@ describe("init --service registers a service-ready App", () => {
     ["not ending /github", "https://hooks.example.test/agent"],
     ["ending /github/ instead", "https://hooks.example.test/github/"],
     ["not a URL", "hooks.example.test/github"],
+    ["ending /github only in its query", "https://hooks.example.test/hook?to=/github"],
+    ["ending /github only in its fragment", "https://hooks.example.test/hook#/github"],
+    ["ending /github only in its host", "https://github"],
+    ["with a query after a /github path", "https://hooks.example.test/github?to=/github"],
+    ["with a bare query mark", "https://hooks.example.test/github?"],
     ["empty", ""],
   ])("refuses a webhook URL %s before anything is registered", async (_why, url) => {
     const away = temp("agent-service-files-");
@@ -2771,7 +2776,7 @@ describe("init --service registers a service-ready App", () => {
 
     const change = changes.find((c) => c.file === APP_CHANGE);
     expect(change?.action).toBe("kept");
-    expect(change?.note).toContain("ending /github");
+    expect(change?.note).toContain("whose path ends /github, with no query or fragment");
     expect(manifests).toEqual([]);
     expect(questions).toHaveLength(1);
     expect(fs.readdirSync(away)).toEqual([]);

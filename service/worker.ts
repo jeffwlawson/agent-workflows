@@ -2404,7 +2404,9 @@ interface Held {
  *   from its arrival, so the lane waits at that place until the job either
  *   asks for the lane (`agentLane`, handed to its work) or ends without one.
  *   So two agent jobs never run at once, and no agent job waits behind one
- *   that arrived after it, nor longer than it would have in one queue.
+ *   that arrived after it. One wait is added to a single queue's: a `hand-off`
+ *   job whose item is busy when the light lane comes free lets a later light
+ *   job start first, and it and the agent jobs after it wait for that one.
  * - **The light lane** runs `light` jobs and a `hand-off` job until it asks
  *   for the agent lane, which frees the light lane for the next. It takes the
  *   first that arrived whose item is free, so a light job waiting on its item

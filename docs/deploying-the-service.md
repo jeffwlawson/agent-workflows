@@ -402,8 +402,10 @@ Jobs run in two lanes, each one job at a time, beneath a chain per pull request 
   never beside another agent job. It holds its place in the agent lane from its arrival until it
   ends, or asks for the lane, so an agent job that arrived after it waits for the whole of it: its
   gate and merge, then its agent if it conflicted, or its publish and conclude
-  (`UPDATE_BRANCH_POSTING_MINUTES`) if it was clean. That is no longer than a single queue held it,
-  and none that arrived before it waits behind it. Its phases still run in their one
+  (`UPDATE_BRANCH_POSTING_MINUTES`) if it was clean. None that arrived before it waits behind it.
+  One wait is added to a single queue's: where its item is still busy when the light lane comes
+  free, the light lane starts a later light job, and the hand-off, with the agent jobs after it,
+  waits for that one job to end. Its phases still run in their one
   order; the hand-off only waits between the merge and the agent's job, whose time limit starts once
   it has the lane.
 - **Per item**, a job starts only once every job for the same pull request or issue that arrived

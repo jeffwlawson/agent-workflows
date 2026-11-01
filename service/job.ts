@@ -217,8 +217,12 @@ export const TIME_LIMITS: Readonly<Record<JobKind, (variables: Readonly<Record<R
   "follow-ups": () => FOLLOW_UPS_MINUTES,
 };
 
-/** What a token is for: reading only, the posting phases' writes as well, or those and a push. */
-export const TOKEN_KINDS = ["read", "write", "push"] as const;
+/**
+ * What a token is for: reading only, the posting phases' writes as well,
+ * those and resolving a review thread on a pull request the App did not open,
+ * or those and a push.
+ */
+export const TOKEN_KINDS = ["read", "write", "resolve", "push"] as const;
 
 export type TokenKind = (typeof TOKEN_KINDS)[number];
 

@@ -603,8 +603,13 @@ export const runJob = async (job: Job, edges: JobEdges): Promise<readonly Phase[
  * 3. `review:budget`, with the budget the gate settled from `AGENT_MAX_FIX_ROUNDS`.
  * 4. `review:collect-checks`, whose failure the review reads as checks unknown.
  * 5. A fresh `read` token, then the runner, with it as `GH_TOKEN`.
- * 6. A `write` token, then `review:publish`, where the review finished.
- * 7. `review:conclude`, however the phases before it ended, told how each did.
+ * 6. A `resolve` token, then `review:publish`, where the review finished:
+ *    `write`'s permissions and Contents: write, without which a thread on a
+ *    pull request a person opened cannot be resolved (#571). Where it is
+ *    refused, a `write` token instead: the review posts, and the threads it
+ *    found fixed stay open and are listed so.
+ * 7. A `write` token, or publish's where that was `write`, then
+ *    `review:conclude`, however the phases before it ended, told how each did.
  * 8. On a PRD pull request, where the gate went ahead and the head did not
  *    move, a `write` token and `review:advance`, told how the review and the
  *    posting ended.
@@ -781,19 +786,32 @@ const runReview = async (job: ReviewJob, edges: JobEdges): Promise<readonly Phas
   // 6. The posting phase's token, then publish, only where the review
   // finished. There is nothing to download: the hand-over is on this disk,
   // so the download the reusable's posting job makes is always a success.
+  // Publish alone is handed `resolve`, the one phase that resolves threads;
+  // where it is refused, the `write` token publish falls back to is the one
+  // conclude reuses, and a `resolve` token never is.
   const finished = proceeds && review.result === "success";
   let write: string | undefined;
   let mintOutcome = "";
   let publishOutcome = "";
   const publishDir = outputDir("review:publish");
   if (finished) {
-    write = await ask("write");
-    mintOutcome = write === undefined ? "failure" : "success";
-    if (write !== undefined) {
+    const resolving = await ask("resolve");
+    if (resolving === undefined) {
+      write = await ask("write");
+      if (write !== undefined) {
+        note(
+          "thread resolution",
+          "not possible: the `resolve` token was refused, so publish posts with a `write` token, and a thread on a pull request the App did not open stays open, listed as still open, until a review with Contents: write resolves it",
+        );
+      }
+    }
+    const publishing = resolving ?? write;
+    mintOutcome = publishing === undefined ? "failure" : "success";
+    if (publishing !== undefined) {
       const publishLimit = limit(POSTING_MINUTES);
       const published = await run(
         "review:publish",
-        { ...common, GH_TOKEN: write, LOOP_TOKEN: write, LOOP_TOKEN_SOURCE: TOKEN_SOURCE, REVIEWED_SHA: sha, REVIEW_DIR: reviewDir },
+        { ...common, GH_TOKEN: publishing, LOOP_TOKEN: publishing, LOOP_TOKEN_SOURCE: TOKEN_SOURCE, REVIEWED_SHA: sha, REVIEW_DIR: reviewDir },
         edges.runDir,
         publishLimit.signal,
       );

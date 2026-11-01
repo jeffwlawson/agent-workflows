@@ -112,14 +112,20 @@ export interface Delivery {
  * the code, the pull request or the issue and its conversation, checks and
  * statuses.
  * `write` adds what review's posting commands write: the review and the ready
- * mark, comments and labels, and the verdict's statuses. `push` adds a push to
- * `write`: the branch's contents, and `workflows`, without which GitHub refuses
- * a push touching `.github/workflows/**`. It is for the phases that push and
- * run no agent; the runner only ever gets `read`.
+ * mark, comments and labels, and the verdict's statuses. `resolve` adds
+ * Contents: write to `write` and nothing else: GitHub lets a review thread be
+ * resolved by the pull request's author or by a holder of repository write
+ * access, so without it the App resolves threads on its own pull requests
+ * only (#571). It is `review:publish`'s, the one phase that resolves threads,
+ * and kept from `write` so no other posting phase holds Contents: write.
+ * `push` adds a push to `write`: the branch's contents, and `workflows`,
+ * without which GitHub refuses a push touching `.github/workflows/**`. It is
+ * for the phases that push and run no agent; the runner only ever gets `read`.
  */
 export const TOKEN_PERMISSIONS: Readonly<Record<TokenKind, Readonly<Record<string, string>>>> = {
   read: { contents: "read", pull_requests: "read", issues: "read", checks: "read", statuses: "read" },
   write: { contents: "read", pull_requests: "write", issues: "write", checks: "read", statuses: "write" },
+  resolve: { contents: "write", pull_requests: "write", issues: "write", checks: "read", statuses: "write" },
   push: { contents: "write", pull_requests: "write", issues: "write", checks: "read", statuses: "write", workflows: "write" },
 };
 

@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { CI_WAIT_SECONDS } from "../../review/collect-checks.js";
 import { appGaps, createDispatcher, LABEL_KINDS, SERVICE_APP_EVENTS, SERVICE_APP_PERMISSIONS, parseOwners, SERVICE_LABELS, TOKEN_PERMISSIONS, type AppGitHub } from "../../service/dispatcher.js";
-import { DEFAULT_FIX_MINUTES, DEFAULT_REVIEW_MINUTES, FOLLOW_UPS_MINUTES, IMPLEMENT_PRD_OTHER_MINUTES, JOB_KINDS, parseJob, sign, SIGNATURE_HEADER, verifySignature, type Job } from "../../service/job.js";
+import { DEFAULT_FIX_MINUTES, DEFAULT_REVIEW_MINUTES, FOLLOW_UPS_MINUTES, IMPLEMENT_PRD_OTHER_MINUTES, JOB_KINDS, parseJob, TOKEN_KINDS, sign, SIGNATURE_HEADER, verifySignature, type Job } from "../../service/job.js";
 import { STUB_LABELS } from "../../shared/follow-up-plan.js";
 import {
   FIX_LABEL,
@@ -448,7 +448,7 @@ describe("the accounts the dispatcher serves", () => {
 });
 
 describe("the token door", () => {
-  it.each(["read", "write", "push"] as const)("mints a %s token for a dispatched job, for its repository, with that kind's permissions", async (kind) => {
+  it.each(TOKEN_KINDS)("mints a %s token for a dispatched job, for its repository, with that kind's permissions", async (kind) => {
     const s = setup();
     const job = await dispatched(s);
     const response = await s.dispatcher.token(tokenRequest({ jobId: job.id, kind }));
@@ -461,6 +461,15 @@ describe("the token door", () => {
   it("gives a read token no write, and a write token only what review's posting writes", () => {
     expect(TOKEN_PERMISSIONS.read).toEqual({ contents: "read", pull_requests: "read", issues: "read", checks: "read", statuses: "read" });
     expect(TOKEN_PERMISSIONS.write).toEqual({ contents: "read", pull_requests: "write", issues: "write", checks: "read", statuses: "write" });
+  });
+
+  it("gives a resolve token exactly write's permissions, with contents written and no workflows", () => {
+    expect(TOKEN_PERMISSIONS.resolve).toEqual({ ...TOKEN_PERMISSIONS.write, contents: "write" });
+    expect(TOKEN_PERMISSIONS.resolve).not.toHaveProperty("workflows");
+  });
+
+  it("declares a permission set for each token kind, and no other", () => {
+    expect(Object.keys(TOKEN_PERMISSIONS)).toEqual([...TOKEN_KINDS]);
   });
 
   it("gives a push token exactly write's permissions, with contents and workflows written", () => {
@@ -505,6 +514,18 @@ describe("the token door", () => {
 
     expect(response.status).toBe(403);
     expect(JSON.parse(response.body)).toEqual({ refusal: `job ${job.id} is past its deadline, ${job.deadline}` });
+    expect(s.minted).toEqual([]);
+  });
+
+  it("holds a resolve token to the rules every kind is held to: a job it dispatched, before its deadline, on a repository still opted in", async () => {
+    const s = setup();
+    const job = await dispatched(s);
+    expect((await s.dispatcher.token(tokenRequest({ jobId: "job-99", kind: "resolve" }))).status).toBe(404);
+    s.repository.variables[ORCHESTRATOR_VARIABLE] = "actions";
+    expect((await s.dispatcher.token(tokenRequest({ jobId: job.id, kind: "resolve" }))).status).toBe(403);
+    s.repository.variables[ORCHESTRATOR_VARIABLE] = SERVICE_ORCHESTRATOR;
+    s.advance(CI_WAIT_SECONDS / 60 + DEFAULT_REVIEW_MINUTES + MARGIN);
+    expect((await s.dispatcher.token(tokenRequest({ jobId: job.id, kind: "resolve" }))).status).toBe(403);
     expect(s.minted).toEqual([]);
   });
 
@@ -959,7 +980,13 @@ describe("the App's permissions and events, checked at start (#560)", () => {
 
   it("names a permission granted below the access needed, and only the tokens that ask for more", () => {
     expect(appGaps({ ...FULL, permissions: { ...FULL.permissions, statuses: "read" } })).toEqual([
-      "the App's `statuses` permission needs write, holds read: `write` tokens, `push` tokens will be refused, 422",
+      "the App's `statuses` permission needs write, holds read: `write` tokens, `resolve` tokens, `push` tokens will be refused, 422",
+    ]);
+  });
+
+  it("names the resolve and push tokens where Contents is granted read only", () => {
+    expect(appGaps({ ...FULL, permissions: { ...FULL.permissions, contents: "read" } })).toEqual([
+      "the App's `contents` permission needs write, holds read: `resolve` tokens, `push` tokens will be refused, 422",
     ]);
   });
 

@@ -1,5 +1,5 @@
 import { spawnSync } from "node:child_process";
-import { createHash } from "node:crypto";
+import { createHash, createHmac } from "node:crypto";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
@@ -18,12 +18,22 @@ import { SUBPROCESS_TIMEOUT } from "../../vitest.config.js";
  * `docker`, `npm`, `systemctl` and `journalctl` keep the two machines'
  * installed and running versions in files. Every stub logs its argv to one
  * calls file, which is what "neither machine was touched" is read from.
+ *
+ * `docker exec` runs the script upgrade.sh hands the dispatcher's container
+ * with the real `node`, the container's `WORKER_URL` and `WORKER_SECRET` set
+ * as `--env-file` sets them, and `fetch` replaced by one that answers the
+ * worker's held door (#602): each question in turn takes the next answer in
+ * `held-answers.json`, the last one again once they run out, and is recorded,
+ * URL, headers and body, in `state/held-requests`.
  */
 
 const DEPLOY = path.join(import.meta.dirname, "..", "..", "deploy", "unraid");
 const NAME = "@jeffwlawson/agent-workflows";
 const TARBALL = "jeffwlawson-agent-workflows-1.2.3.tgz";
 const INSTALLED_PATH = path.join("node_modules", ...NAME.split("/"), "package.json");
+
+/** The dispatcher container's WORKER_SECRET, which no output or command line may carry. */
+const SECRET = "the-shared-secret-0123456789";
 
 const STUBS: Record<string, string> = {
   id: `echo 0`,
@@ -73,6 +83,9 @@ case "$1" in
   restart)
     if [ -n "\${FAKE_DISPATCHER_RESTART_FAIL:-}" ]; then exit 1; fi
     installed >"$FAKE/state/dispatcher-running" ;;
+  exec)
+    shift 3
+    WORKER_URL=http://box.example:8787/jobs WORKER_SECRET='${SECRET}' exec "$1" --import "file://$FAKE/fetch.mjs" "\${@:2}" ;;
   inspect) echo 2026-10-31T00:00:00Z ;;
   logs) echo "dispatcher $(cat "$FAKE/state/dispatcher-running") listening" ;;
 esac`,
@@ -97,6 +110,26 @@ printf '  INFO  worker version: %s (check-unraid.sh prints the other)\\r\\n' "\$
 printf '  INFO  shared secret fingerprint: %s (check-unraid.sh prints its own: they must match)\\r\\n' "\${FAKE_FP_BOX:-0123456789abcdef}"
 `;
 
+const FAKE_FETCH = `import * as fs from "node:fs";
+const state = process.env.FAKE + "/state";
+const file = process.env.FAKE + "/held-answers.json";
+const answers = fs.existsSync(file) ? JSON.parse(fs.readFileSync(file, "utf8")) : [{ status: 200, body: { jobs: [] } }];
+globalThis.fetch = async (url, init) => {
+  const asked = fs.existsSync(state + "/held-requests") ? fs.readFileSync(state + "/held-requests", "utf8").split("\\n").filter(Boolean).length : 0;
+  fs.appendFileSync(state + "/held-requests", JSON.stringify({ url: String(url), method: init.method, headers: init.headers, body: init.body }) + "\\n");
+  const answer = answers[Math.min(asked, answers.length - 1)];
+  if (answer === "unreachable") throw new TypeError("fetch failed", { cause: new Error("connect ECONNREFUSED") });
+  return new Response(typeof answer.body === "string" ? answer.body : JSON.stringify(answer.body), { status: answer.status });
+};
+`;
+
+type HeldAnswer = { readonly status: number; readonly body: unknown } | "unreachable";
+
+const heldJobs = (...jobs: readonly [string, string, number][]): HeldAnswer => ({
+  status: 200,
+  body: { jobs: jobs.map(([workflow, repo, number], index) => ({ id: `job-${index}`, workflow, repo, number })) },
+});
+
 const pkgJson = (version: string, extra = ""): string =>
   `{\n  "name": "${NAME}",\n  "version": "${version}",${extra}\n  "type": "module"\n}\n`;
 
@@ -106,6 +139,8 @@ interface Setup {
   readonly digest?: string;
   /** No package installed on either machine yet, as before a first install. */
   readonly fresh?: boolean;
+  /** What the worker's held door answers, question by question; unset, it holds nothing. */
+  readonly held?: readonly HeldAnswer[];
 }
 
 const scratches: string[] = [];
@@ -124,6 +159,8 @@ const setUp = (setup: Setup = {}): string => {
   }
   fs.writeFileSync(path.join(root, "unraid", "check-unraid.sh"), CHECK_UNRAID);
   fs.writeFileSync(path.join(root, "unraid", "check-box.sh"), CHECK_BOX);
+  fs.writeFileSync(path.join(root, "fetch.mjs"), FAKE_FETCH);
+  if (setup.held !== undefined) fs.writeFileSync(path.join(root, "held-answers.json"), JSON.stringify(setup.held));
   fs.writeFileSync(
     path.join(root, "unraid", "agent-service.conf"),
     [
@@ -159,8 +196,8 @@ const setUp = (setup: Setup = {}): string => {
   return root;
 };
 
-const run = (root: string, env: Record<string, string> = {}) => {
-  const result = spawnSync("bash", [path.join(root, "unraid", "upgrade.sh"), "1.2.3"], {
+const run = (root: string, env: Record<string, string> = {}, args: readonly string[] = ["1.2.3"]) => {
+  const result = spawnSync("bash", [path.join(root, "unraid", "upgrade.sh"), ...args], {
     encoding: "utf8",
     input: "",
     timeout: SUBPROCESS_TIMEOUT,
@@ -296,11 +333,184 @@ describe("upgrade.sh", () => {
     expect(output).toContain("set PACKAGE_NAME");
   });
 
-  it("says the worker's restart drops its queue, and how long the 409 window lasted", () => {
-    const { output } = run(setUp());
+  it("says, with --now, that the worker's restart drops its queue, and how long the 409 window lasted", () => {
+    const { output } = run(setUp(), {}, ["--now", "1.2.3"]);
 
     expect(output).toContain("Restarting the worker drops any job queued in it: its queue is in memory.");
     expect(output).toMatch(/the dispatcher got 409 from the worker, for about \d+ seconds/);
+  });
+
+  describe("waiting for the worker to hold no job (#602)", () => {
+    const held = (root: string) => {
+      const file = path.join(root, "state", "held-requests");
+      return fs.existsSync(file)
+        ? fs.readFileSync(file, "utf8").trim().split("\n").map((line) => JSON.parse(line) as { url: string; method: string; headers: Record<string, string>; body: string })
+        : [];
+    };
+    const restarts = (calls: readonly string[]) => calls.filter((call) => /^(systemctl|docker) restart/.test(call));
+    const sleeps = (calls: readonly string[]) => calls.filter((call) => call.startsWith("sleep "));
+
+    it("restarts at once where the worker holds no job, having asked once", () => {
+      const root = setUp();
+      const { status, output, calls } = run(root);
+
+      expect(status).toBe(0);
+      expect(output).toContain("The worker holds no job.");
+      expect(held(root)).toHaveLength(1);
+      expect(sleeps(calls)).toEqual([]);
+      expect(restarts(calls).map((call) => call.split(" ").slice(0, 2).join(" "))).toEqual(["systemctl restart", "docker restart"]);
+      // After the installs, before either restart.
+      const asked = calls.findIndex((call) => call.startsWith("docker exec"));
+      expect(asked).toBeGreaterThan(calls.findIndex((call) => call.startsWith("docker run")));
+      expect(asked).toBeLessThan(calls.findIndex((call) => call.startsWith("systemctl restart")));
+      expect(output).toContain("dispatcher's scan dispatches it again");
+    });
+
+    it("asks the held door a signed read that names no instance, with the secret on no command line and in no output", () => {
+      const root = setUp();
+      const { status, output, calls } = run(root);
+
+      expect(status).toBe(0);
+      const [request] = held(root);
+      expect(request?.url).toBe("http://box.example:8787/held");
+      expect(request?.method).toBe("POST");
+      const body = JSON.parse(request?.body ?? "{}") as Record<string, unknown>;
+      expect(Object.keys(body)).toEqual(["asked"]);
+      expect(Number.isNaN(Date.parse(String(body["asked"])))).toBe(false);
+      expect(request?.headers["x-signature-256"]).toBe(`sha256=${createHmac("sha256", SECRET).update(request?.body ?? "").digest("hex")}`);
+      expect(calls.find((call) => call.startsWith("docker exec"))).toBe("docker exec -i agent-dispatcher node --input-type=module -");
+      expect(calls.join("\n")).not.toContain(SECRET);
+      expect(output).not.toContain(SECRET);
+    });
+
+    it("waits while the worker holds a job, printing it and each change, and restarts once it holds none", () => {
+      const root = setUp({
+        held: [
+          heldJobs(["implement", "owner/repo", 12], ["review", "owner/repo", 14]),
+          heldJobs(["implement", "owner/repo", 12], ["review", "owner/repo", 14]),
+          heldJobs(["review", "owner/repo", 14]),
+          heldJobs(),
+        ],
+      });
+      const { status, output, calls } = run(root);
+
+      expect(status).toBe(0);
+      expect(output).toContain("The worker holds 2 job(s); waiting up to 90 minutes for it to hold none:\n  implement on owner/repo#12\n  review on owner/repo#14\n");
+      expect(output).toContain("The worker now holds 1 job(s):\n  review on owner/repo#14\n");
+      expect(output.match(/implement on owner\/repo#12/g)).toHaveLength(1);
+      expect(output).toContain("The worker holds no job now, after about 1 minutes.");
+      expect(held(root)).toHaveLength(4);
+      expect(sleeps(calls)).toEqual(["sleep 30", "sleep 30", "sleep 30"]);
+      const lastAsked = calls.findLastIndex((call) => call.startsWith("docker exec"));
+      expect(restarts(calls)).toHaveLength(2);
+      expect(calls.findIndex((call) => call.startsWith("systemctl restart"))).toBeGreaterThan(lastAsked);
+      expect([running(root, "dispatcher"), running(root, "worker")]).toEqual(["1.2.3", "1.2.3"]);
+    });
+
+    it("prints a heartbeat at a fixed interval while nothing held changes", () => {
+      const same = heldJobs(["fix", "owner/repo", 7]);
+      const root = setUp({ held: [...Array.from({ length: 11 }, () => same), heldJobs()] });
+      const { status, output } = run(root);
+
+      expect(status).toBe(0);
+      expect(output.match(/Still waiting/g)).toHaveLength(1);
+      expect(output).toContain("Still waiting, 5 of 90 minutes: the worker holds the same 1 job(s).");
+    });
+
+    it("restarts nothing past the bound, naming what is held, re-running and --now", () => {
+      const root = setUp({ conf: "PACKAGE_SOURCE=owner/repo\nIDLE_WAIT_MINUTES=1", held: [heldJobs(["implement-prd", "owner/repo", 3])] });
+      const { status, output, calls } = run(root);
+
+      expect(status).toBe(1);
+      expect(restarts(calls)).toEqual([]);
+      expect(sleeps(calls)).toHaveLength(2);
+      expect(output).toContain("The worker still holds 1 job(s) after 1 minutes:\n  implement-prd on owner/repo#3\n");
+      expect(output).toContain("Both machines have 1.2.3 installed, and neither service was restarted.");
+      expect(output).toContain("Run upgrade.sh 1.2.3 again later, or run upgrade.sh --now 1.2.3");
+      expect([installed(root, "appdata/pkg"), installed(root, "opt")]).toEqual(["1.2.3", "1.2.3"]);
+      expect([running(root, "dispatcher"), running(root, "worker")]).toEqual(["1.2.2", "1.2.2"]);
+    });
+
+    it("with --now, restarts without asking the worker", () => {
+      const root = setUp({ held: [heldJobs(["implement", "owner/repo", 12])] });
+      const { status, output, calls } = run(root, {}, ["--now", "1.2.3"]);
+
+      expect(status).toBe(0);
+      expect(calls.filter((call) => call.startsWith("docker exec"))).toEqual([]);
+      expect(held(root)).toEqual([]);
+      expect(output).toContain("--now: not asking the worker");
+      expect(restarts(calls)).toHaveLength(2);
+    });
+
+    it.each([[[]], [["1.2.3", "--later"]], [["--now"]], [["1.2.3", "1.2.4"]]])("refuses %j with the usage line", (args) => {
+      const root = setUp();
+      const { status, output, calls } = run(root, {}, args);
+
+      expect(status).toBe(2);
+      expect(output).toContain("Usage: bash ");
+      expect(output).toContain("[--now] <version>");
+      expect(calls).toEqual([]);
+    });
+
+    it.each<[string, HeldAnswer, string]>([
+      ["an unreachable worker", "unreachable", "the worker could not be reached at http://box.example:8787/held: connect ECONNREFUSED"],
+      ["a refused signature", { status: 401, body: { refusal: "bad signature" } }, "the worker refused the question's signature (401: bad signature): the dispatcher's WORKER_SECRET is not the worker's"],
+      ["a refused question", { status: 400, body: { refusal: "`asked` is not a time" } }, "the worker answered 400: `asked` is not a time"],
+      ["an answer that is not a list", { status: 200, body: { jobs: "none" } }, "the worker's answer is not a list of jobs"],
+      ["an answer that is not JSON", { status: 200, body: "<html>" }, "the worker's answer is not a list of jobs"],
+    ])("stops before either restart on %s, naming --now", (_, answer, reason) => {
+      const root = setUp({ held: [answer] });
+      const { status, output, calls } = run(root);
+
+      expect(status).toBe(1);
+      expect(output).toContain(`Could not tell which jobs the worker holds: ${reason}.`);
+      expect(output).toContain("Both machines have 1.2.3 installed, and neither service was restarted.");
+      expect(output).toContain("run upgrade.sh --now 1.2.3");
+      expect(restarts(calls)).toEqual([]);
+      expect(output).not.toContain(SECRET);
+    });
+
+    it("stops on a worker it cannot ask partway through the wait", () => {
+      const root = setUp({ held: [heldJobs(["fix", "owner/repo", 7]), "unreachable"] });
+      const { status, output, calls } = run(root);
+
+      expect(status).toBe(1);
+      expect(output).toContain("Could not tell which jobs the worker holds, after waiting 0 minutes: the worker could not be reached");
+      expect(output).toContain("--now");
+      expect(restarts(calls)).toEqual([]);
+    });
+
+    it("stops where the dispatcher's container cannot be asked", () => {
+      const root = setUp();
+      fs.writeFileSync(path.join(root, "bin", "docker"), fs.readFileSync(path.join(root, "bin", "docker"), "utf8").replace("  exec)\n", "  exec)\n    echo 'Error: container agent-dispatcher is not running' >&2; exit 1\n"));
+      const { status, output, calls } = run(root);
+
+      expect(status).toBe(1);
+      expect(output).toContain("the dispatcher's container, agent-dispatcher, could not be asked to ask it: Error: container agent-dispatcher is not running.");
+      expect(output).toContain("--now");
+      expect(restarts(calls)).toEqual([]);
+    });
+
+    it("says a worker with no held door cannot tell, and goes on once", () => {
+      const root = setUp({ held: [{ status: 404, body: { refusal: "no such door" } }] });
+      const { status, output, calls } = run(root);
+
+      expect(status).toBe(0);
+      expect(output).toContain("whether it holds a job cannot be told. Going on without waiting.");
+      expect(output).toContain("Restarting the worker drops any job queued in it: its queue is in memory.");
+      expect(held(root)).toHaveLength(1);
+      expect(sleeps(calls)).toEqual([]);
+      expect(restarts(calls)).toHaveLength(2);
+    });
+
+    it("refuses an IDLE_WAIT_MINUTES that is not a whole number", () => {
+      const root = setUp({ conf: "PACKAGE_SOURCE=owner/repo\nIDLE_WAIT_MINUTES=an-hour" });
+      const { status, output, calls } = run(root);
+
+      expect(status).toBe(2);
+      expect(output).toContain("IDLE_WAIT_MINUTES");
+      expect(calls).toEqual(["id -u"]);
+    });
   });
 
   it("reaches the box with host keys beside the conf, accept-new, and nothing under ~/.ssh", () => {

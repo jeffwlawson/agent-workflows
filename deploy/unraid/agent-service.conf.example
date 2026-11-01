@@ -64,6 +64,18 @@
 # Where upgrade.sh stages the tarball on Unraid (/root is in memory there).
 #STAGE_DIR=/root
 
+# How long upgrade.sh waits, in minutes, for the worker to hold no job before
+# it restarts it: the worker's queue is in memory, so a restart drops what it
+# holds. 90 covers one job reaching its own time limit at the defaults, the
+# longest being implement-prd's 65 (its other jobs' 35 and the agent's 30),
+# with room for the job to wind down. Raise it with AGENT_TIMEOUT_MINUTES. Past
+# it, upgrade.sh restarts nothing and stops; --now restarts without waiting.
+#IDLE_WAIT_MINUTES=90
+
+# The dispatcher's container, which upgrade.sh asks the worker's held door
+# from, with the WORKER_SECRET set in it.
+#CONTAINER=agent-dispatcher
+
 # --- The box ------------------------------------------------------------------
 
 # Node (from nodejs.org, linux-x64 only) and the agent's CLI the worker installs.

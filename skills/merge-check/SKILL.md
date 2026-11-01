@@ -5,7 +5,7 @@ description: "Pre-merge check of a pull request the agent loop handed back, a PR
 
 # Merge check
 
-The loop has reviewed this PR. Your review is the one it cannot give: on a real environment, across the whole repo, and against briefs the world moved under. You report; the maintainer decides the merge.
+The loop has reviewed this PR. Your review is the one it cannot give: on a real environment, across the whole repo, and against briefs the world moved under. You report; the maintainer decides the merge, and either carries it out or arms the loop to (`agent:merge`, the loop's ADR 0009).
 
 ## Steps
 
@@ -23,9 +23,10 @@ The loop has reviewed this PR. Your review is the one it cannot give: on a real 
 - the verify line (head, Node, exit) and what the probes showed;
 - each criterion's verdict, per brief;
 - each finding, with its file and line, what is wrong, and a remedy: a comment plus `agent:fix` while the PR has fix rounds left, a small fix pushed to the branch, or a question for the maintainer;
-- the *After merge, by a human* items, and whether the merge makes a release worth cutting.
+- the *After merge, by a human* items, and whether the merge makes a release worth cutting;
+- on **Merge-ready**, the two ways on, both at `<sha>`: the maintainer's own merge, the squash with the `sha` guard set to it, or `agent:merge` added while the PR's head is still `<sha>`, which arms the loop to merge that head once it is current and green, refreshing it from the base on the way and dropping the arm if anything else lands on it (environment.md).
 
-Write nothing to the PR, and merge nothing, until the maintainer says which remedy or says merge. On their merge: the squash with the `sha` guard set to the head you checked (environment.md).
+Write nothing to the PR, add no label, and merge nothing, until the maintainer says which remedy, says merge, or says arm. On their merge: the squash with the `sha` guard set to the head you checked. On their arm: re-read the head first, and add `agent:merge` only while it is still the head you checked, since the label arms whatever head it lands on (environment.md).
 
 ## Stop and ask the maintainer
 

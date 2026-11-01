@@ -7,7 +7,8 @@ the conventions, [README.md](./README.md) is for people installing the package, 
 ## What this is
 
 A **GitHub Actions agent loop**: a labelled issue becomes a reviewed pull request with no human in
-the middle. One workflow per label transition, near enough:
+the middle, and the human is at the end, where the merge is decided. One workflow per label
+transition, near enough:
 
 | Label | Fires | Does |
 |---|---|---|
@@ -16,6 +17,7 @@ the middle. One workflow per label transition, near enough:
 | `agent:review` on a **PR** | `review` | wait for CI, review the diff, verify what earlier rounds found and resolve what landed, mark ready |
 | `agent:fix` on a **PR** | `fix` | act on review feedback, reply to every thread it is asked about and close none, record what it did with the conversation comments, ask for a re-review if it pushed or left an out-of-scope note |
 | `agent:update-branch` on a **PR** | `update-branch` | merge the base branch in, resolve conflicts, carry the verdict over or ask for a re-review |
+| `agent:merge` on a **PR** | `merge` | the maintainer's merge decision for the head it was added at (the **arm**): merge it once that head is current with its base, green and approved; ask for `agent:update-branch` where it is behind; disarm where the head gained anything but a clean merge of the base ([ADR 0009](./docs/adr/0009-agent-merge-executes-the-human-decision.md)) |
 | `agent:follow-ups` on a **merged PR** | `follow-ups` | file the out-of-scope findings its review recorded, as `needs-triage` stubs; on **every** merge, labelled or not, post the linked briefs' *After merge, by a human* checklist |
 
 `implement` and `implement-prd` share one label and partition on **issue shape**: a parent with
@@ -25,7 +27,7 @@ builds the next; review's advance (below) re-adds the label that moves it on.
 
 Every slice is built as commits on one branch, the **PRD branch** (`agent/prd-<parent>-…`), and the
 one pull request from it into the default branch is the **PRD PR**: the only pull request of a
-chain, opened as a draft by the first build run, and the one a human merges. Its base is the
+chain, opened as a draft by the first build run, and the one a human decides to merge. Its base is the
 default branch, so the CI configured for the default branch runs on every slice with nothing more
 to set up. No slice has a branch or a pull request of its own (PRD #222).
 
@@ -86,7 +88,7 @@ A chain an older release started is migrated rather than stranded (#248), by rul
 *Pre-upgrade compatibility* and removable under #224: a closed sub-issue with no slice range landed
 before the upgrade and is not built again, and a pull request from the older release's per-slice
 `agent/slice-` branches still open into the PRD branch refuses the run by name until a human merges
-or closes it.
+or closes it by hand.
 
 **A trigger label is on while its run works** (#236). The run leaves it on as it starts and takes
 it off in its last step, however it ends: success, failure, refusal, timeout or cancel. So the
@@ -218,6 +220,21 @@ the last review read, so it carries that review's verdict on to the merge commit
 commit status belongs to a commit, so without the copy every merge into a base branch would wipe
 the verdict off every open PR that refreshes against it. A **conflict resolution** is the loop
 writing code no review has seen, so it copies nothing and asks.
+
+**The merge is decided by a human and carried out by the loop** (PRD #585, [ADR
+0009](./docs/adr/0009-agent-merge-executes-the-human-decision.md)). Adding `agent:merge` to a pull
+request is the maintainer's merge decision, for the head it was added at: it **arms** that commit,
+recorded as an `agent-merge` commit status on it, posted and read back only as the loop token's
+account and never as `github-actions[bot]`, which a workflow in the pull request's own branch can
+post as too. **The loop never arms.** It re-adds `agent:merge` to re-start the gate, and a label it
+added passes only on a head that already carries an arm. The loop merges the armed commit, or
+clean merges of the base onto it, and nothing else, so what keeps unseen code out is the arm, not
+the verdict. A **clean** `update-branch` merge carries the arm on to the merge commit, as it
+carries the verdict, because it adds only the base's code, which is already on the base. Anything
+else on the head (a resolved conflict, a fix round, a human's push, GitHub's *Update branch*
+button, a force-push) leaves it unarmed, and the next gate **disarms**: it takes `agent:merge` off
+and asks the human who armed it, by name, for a fresh merge-check. The label is a standing
+authorisation rather than a run's label, armed until merged or disarmed.
 
 **The reviewer closes a finding; the fixer never does** (#109, decision 1). A `fix` run replies in
 every thread it is asked about — every open one bar a thread whose close failed, which already
@@ -637,8 +654,12 @@ workflows on Actions, and each gate defers the other's issue shape without a wor
 dispatcher never reads the shape. The last kind, `follow-ups` (`FollowUpsJob`, #519), is the one
 not started by a label alone: every merge of a same-repository pull request starts it, whatever its
 labels (#544), with no author gate, as does `agent:follow-ups` added to a closed pull request, with
-one. Every trigger label the
-loop has is served.
+one. And `merge` (`MergeJob`, #591), from `agent:merge`, runs `merge.yml`'s three commands with no
+checkout and no agent; it is started as well, with no author gate and never arming, by a push, a
+check suite's completion and a final status on the head of an open pull request carrying the label,
+since the service's gate waits for nothing and those are what change its answer. Per pull request at
+most one merge job runs and one waits in the worker's queue: one more is absorbed by the one waiting,
+which reads the record when it starts. Every trigger label the loop has is served.
 The map is keyed by event, so a label is answered on the event type it belongs to and on no other,
 and each event has a route of its own reading its own payload: an implement or implement-prd job carries an issue,
 with no head, and the repository's default branch as its base. A job's deadline is its kind's own time limit plus the dispatcher's margin. The labels the service
@@ -654,6 +675,8 @@ at the worker's: since a trigger label is on while its run works, one on an open
 held for it, by the worker or the dispatcher, is a run that never reached its ending, and is
 dispatched as its delivery would have been, the actor of the label's latest `labeled` event
 standing in for the sender. `agent:follow-ups` is a marker, not a run, and is never scanned.
+`agent:merge` is not a run's label either, but a standing decision: it is scanned, so a dropped gate
+is started again, and never counted against the limit below.
 A job carries its dispatcher's **instance**, an id fresh at each start (#597), which the scan's
 question at the worker names: the worker drops every job it holds queued from another instance,
 whose id no dispatcher running now knows, so a dispatcher's restart alone loses only the jobs

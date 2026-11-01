@@ -1,10 +1,11 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { GitHubError } from "../../engine/github.js";
 import type { CheckRun, GitHubReader, WorkflowRun } from "../../engine/read.js";
-import { AGENT_CHECKS, CI_WAIT_SECONDS, collectChecks, GRACE_SECONDS, POLL_SECONDS } from "../../review/collect-checks.js";
+import { CI_WAIT_SECONDS, collectChecks, GRACE_SECONDS, POLL_SECONDS } from "../../review/collect-checks.js";
+import { AGENT_CHECKS } from "../../shared/loop-checks.js";
 import type { ReadingIo } from "../../shared/command-io.js";
 import type { COMMANDS } from "../../shared/contract.js";
-import { VERDICT_CONTEXT } from "../../shared/record.js";
+import { MERGE_CONTEXT, VERDICT_CONTEXT } from "../../shared/record.js";
 import { fakeGitHub, fakeReader, type FakeGitHub, type ReceivedRead } from "../engine/fakes.js";
 
 /**
@@ -308,6 +309,26 @@ describe("review:collect-checks hands the agent the other checks", () => {
     expect(log).not.toContain("Waiting for");
     expect(evidence).not.toContain("Still running after");
     expect(result).toBe("green");
+  });
+
+  /**
+   * The merge arm (#588) is the loop's record of a decision, not CI: a pending
+   * one is never waited on, and a failing one never counted. A merge gate
+   * polling this head, as `merge / merge`, is no CI either.
+   */
+  it("neither waits on nor counts the merge arm, or the merge gate's own job", async () => {
+    set({
+      checks: [...CHECKS, running("merge / merge", "in_progress")],
+      statuses: [[MERGE_CONTEXT, "pending"], ["ci/build", "success"]],
+    });
+    const pending = await collect();
+
+    expect(pending.log).not.toContain("Waiting for");
+    expect(pending.evidence).not.toContain("Still running after");
+    expect(pending.result).toBe("green");
+
+    set({ statuses: [[MERGE_CONTEXT, "failure"], ["ci/build", "success"]] });
+    expect((await collect()).result).toBe("green");
   });
 
   /**
@@ -627,7 +648,7 @@ describe("review:collect-checks leaves the loop's own jobs out", () => {
   it("does not name follow-ups, and still names every other job of the loop's", () => {
     expect("follow-ups / follow-ups").not.toMatch(AGENT_CHECKS);
     expect("follow-ups").not.toMatch(AGENT_CHECKS);
-    for (const job of ["review", "time-limit", "red-check", "post-review", "advance", "fix", "update-branch", "implement-prd", "implement"]) {
+    for (const job of ["review", "time-limit", "red-check", "post-review", "advance", "fix", "update-branch", "implement-prd", "implement", "merge"]) {
       expect(job).toMatch(AGENT_CHECKS);
       expect(`${job} / ${job}`).toMatch(AGENT_CHECKS);
       expect(`agent-caller / ${job}`).toMatch(AGENT_CHECKS);

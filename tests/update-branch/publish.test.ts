@@ -8,7 +8,7 @@ import type { CommitStatus, GitHubReader } from "../../engine/read.js";
 import type { Limits } from "../../engine/writer.js";
 import type { MergingCheckoutIo, Token } from "../../shared/command-io.js";
 import type { COMMANDS } from "../../shared/contract.js";
-import { LOOP_COMMITTER, REVIEW_LABEL, UPDATE_BRANCH_LABEL, VERDICT_CONTEXT } from "../../shared/record.js";
+import { armDescription, LOOP_COMMITTER, MERGE_CONTEXT, readArmDescription, REVIEW_LABEL, UPDATE_BRANCH_LABEL, VERDICT_CONTEXT } from "../../shared/record.js";
 import { publish } from "../../update-branch/publish.js";
 import { fakeGit, fakeGitHub, fakeReader, fakeWriters, type FakeGitHub } from "../engine/fakes.js";
 
@@ -42,6 +42,9 @@ const BASE_TIP = "c".repeat(40);
 const MERGE = "d".repeat(40);
 const LOOP = "github-actions[bot]";
 const REVIEW_URL = "https://github.com/o/r/pull/7#pullrequestreview-3";
+/** The loop token's account, as the fake writer posts a status made with the loop's token. */
+const ARM_ACCOUNT = "loop";
+const ARMED_AT = "2026-11-01T03:59:35Z";
 
 let root: string;
 let runnerDir: string;
@@ -121,6 +124,7 @@ const INPUTS = (over: Partial<Inputs> = {}): Inputs => ({
   BASE_SHA: BASE,
   AGENT_RESULT: "skipped",
   CHECKOUT: "/checkout",
+  LOOP_LOGIN: ARM_ACCOUNT,
   HEAD_WAIT_SECONDS: "0",
   HEAD_POLL_SECONDS: "0",
   UPDATE_BRANCH_DIR: runnerDir,
@@ -328,6 +332,107 @@ describe("update-branch:publish on a clean merge", () => {
     expect(made).toBeUndefined();
     expect(github.branches.get(BRANCH)).toBe(HEAD);
     expect(files.get("published.json")).toEqual({ pushed: false, requested: false });
+  });
+});
+
+/**
+ * The arm's carry (#589, ADR 0009): a clean refresh adds only the base's code
+ * to the commit the maintainer armed, so the arm the loop token's account
+ * posted on the old head is copied on to the merge commit, with the loop's
+ * token, its refresh count one higher and the human and the time kept.
+ */
+describe("update-branch:publish carries the arm on a clean merge", () => {
+  const arm = (over: Partial<CommitStatus> = {}): CommitStatus => ({
+    context: MERGE_CONTEXT,
+    state: "success",
+    targetUrl: null,
+    description: armDescription({ login: "alice", at: ARMED_AT, refreshes: 1 }),
+    creator: ARM_ACCOUNT,
+    ...over,
+  });
+  const carried = () => (github.statuses.get(MERGE) ?? []).filter((s) => s.context === MERGE_CONTEXT);
+
+  it("copies the arm with the loop's token, its count one higher and the human and the time kept, beside the verdict", async () => {
+    github.statuses.set(HEAD, [arm(), status()]);
+
+    await run();
+
+    expect(writes()).toEqual(["loop pushRef", "workflow setCommitStatus", "loop setCommitStatus", "workflow comment"]);
+    expect(carried()).toEqual([
+      { context: MERGE_CONTEXT, state: "success", targetUrl: null, description: armDescription({ login: "alice", at: ARMED_AT, refreshes: 2 }), creator: ARM_ACCOUNT },
+    ]);
+    expect(readArmDescription(carried()[0]?.description ?? "")).toEqual({ login: "alice", at: ARMED_AT, refreshes: 2 });
+  });
+
+  it("reads an arm #588 wrote, naming the human alone, as count 0 made at its status's own time", async () => {
+    github.statuses.set(HEAD, [arm({ description: "Armed by @alice to merge this commit.", createdAt: "2026-10-31T12:00:00Z" })]);
+
+    await run();
+
+    expect(readArmDescription(carried()[0]?.description ?? "")).toEqual({ login: "alice", at: "2026-10-31T12:00:00Z", refreshes: 1 });
+  });
+
+  it("copies only the newest arm of the loop token's account, never one github-actions[bot] or anyone else posted", async () => {
+    github.statuses.set(HEAD, [
+      arm({ creator: "github-actions[bot]", description: armDescription({ login: "mallory", at: ARMED_AT, refreshes: 0 }) }),
+      arm({ creator: "mallory", description: armDescription({ login: "mallory", at: ARMED_AT, refreshes: 0 }) }),
+      arm(),
+      arm({ description: armDescription({ login: "alice", at: ARMED_AT, refreshes: 0 }) }),
+    ]);
+
+    await run();
+
+    expect(carried().map((s) => readArmDescription(s.description))).toEqual([{ login: "alice", at: ARMED_AT, refreshes: 2 }]);
+  });
+
+  it("copies nothing where no arm of the loop's stands, or the newest is not success", async () => {
+    github.statuses.set(HEAD, [arm({ creator: "github-actions[bot]" }), status()]);
+    await run();
+    expect(carried()).toEqual([]);
+    expect(writes()).not.toContain("loop setCommitStatus");
+
+    github.statuses.set(HEAD, [arm({ state: "failure" }), arm()]);
+    await run();
+    expect(carried()).toEqual([]);
+  });
+
+  it("copies nothing with the workflow token alone, and says so", async () => {
+    github.statuses.set(HEAD, [arm()]);
+
+    await run(INPUTS({ LOOP_TOKEN_SOURCE: "workflow" }));
+
+    expect(carried()).toEqual([]);
+    expect(warnings()).toEqual([expect.stringContaining(`the \`${MERGE_CONTEXT}\` arm was not carried on to ${MERGE}`)]);
+  });
+
+  it("copies nothing where no LOOP_LOGIN says whose an arm is, and says so", async () => {
+    github.statuses.set(HEAD, [arm()]);
+
+    await run(INPUTS({ LOOP_LOGIN: "" }));
+
+    expect(carried()).toEqual([]);
+    expect(logged().join("\n")).toContain("No `LOOP_LOGIN` was given");
+  });
+
+  it("warns where the copy is refused, and goes on", async () => {
+    github.statuses.set(HEAD, [arm()]);
+    github.fails = (write) => write.type === "setCommitStatus" && write.token === "loop";
+
+    await run();
+
+    expect(warnings()).toEqual([expect.stringContaining(`Could not carry the \`${MERGE_CONTEXT}\` arm from ${HEAD} on to ${MERGE}.`)]);
+    expect(files.get("published.json")).toEqual({ pushed: true, head: MERGE, requested: false });
+  });
+
+  it("carries no arm on to a resolution, nor on an up-to-date branch", async () => {
+    github.statuses.set(HEAD, [arm()]);
+    bundle();
+    await run(CONFLICTS());
+    expect(carried()).toEqual([]);
+
+    await run(INPUTS({ STATUS: "uptodate" }));
+    expect(carried()).toEqual([]);
+    expect(github.statuses.get(HEAD)?.filter((s) => s.context === MERGE_CONTEXT)).toHaveLength(1);
   });
 });
 
@@ -543,6 +648,6 @@ describe("update-branch:publish pushes under a lease", () => {
   it("asks for the writes it can make and no more", async () => {
     await run();
 
-    expect(asked).toEqual({ pushRef: 1, setCommitStatus: 1, comment: 2, removeLabel: 2, addLabel: 1 });
+    expect(asked).toEqual({ pushRef: 1, setCommitStatus: 2, comment: 2, removeLabel: 2, addLabel: 1 });
   });
 });

@@ -57,6 +57,16 @@ export interface CommandIo<O extends Outputs> extends ReadingIo<O> {
 }
 
 /**
+ * What a command that reads with the loop's token as well is handed: all of
+ * `CommandIo`, and a second reader over the loop's token. `merge:gate` asks
+ * the labeller's permission with it, since whether the workflow token may ask
+ * is #77's open question. Never limited or logged, as no read is.
+ */
+export interface LoopReadingIo<O extends Outputs> extends CommandIo<O> {
+  readonly loopGithub: GitHubReader;
+}
+
+/**
  * What a command that works in a checkout is handed besides: what git can tell
  * it there, without a token, such as whether a bundle verifies. `fix:publish`
  * checks the agent's bundle with it before it pushes from it.
@@ -126,7 +136,8 @@ export const liveFetchingIo = <O extends Outputs>(
  * handed to `appendLine` as it is made. Each token's backend makes its GitHub
  * writes over the API and its git writes in `checkout`, the repository the
  * command runs in, pushing to the repository's remote on GitHub, and its git
- * reader reads the same checkout. Its fetcher, merger and rewriter work in the same
+ * reader reads the same checkout. A second GitHub reader reads with the loop's
+ * token. Its fetcher, merger and rewriter work in the same
  * checkout and fetch with the workflow's token; a command that asks them for
  * nothing spawns nothing. `end` writes the log's last line, how
  * the command ended, and writes nothing where the command never asked for its
@@ -138,7 +149,7 @@ export const liveCommandIo = <O extends Outputs>(
   outputs: OutputWriters<O>,
   appendLine: (line: string) => void,
   checkout: GitRepository,
-): { readonly io: RewritingCheckoutIo<O>; readonly end: (error?: unknown) => void } => {
+): { readonly io: RewritingCheckoutIo<O> & LoopReadingIo<O>; readonly end: (error?: unknown) => void } => {
   let log: WriteLog | undefined;
   const workflow = fetchTransport(tokens.GH_TOKEN);
   const remote = { ...checkout, remote: githubRemote(tokens.GH_REPO) };
@@ -163,6 +174,7 @@ export const liveCommandIo = <O extends Outputs>(
         return made.writers;
       },
       github: githubReader(tokens.GH_REPO, workflow),
+      loopGithub: githubReader(tokens.GH_REPO, fetchTransport(tokens.LOOP_TOKEN)),
       git: gitReader(checkout),
       fetcher,
       merger: gitMerger(checkout, fetcher),

@@ -48,14 +48,16 @@ Set these as Actions secrets (Settings → Secrets and variables → Actions), w
     `npx --yes {{PACKAGE}}@{{VERSION}} init --app`.
     Install the App on this repository if you have not. Each run mints a token from it that lasts an
     hour and works on this repository alone, so nothing expires, and the loop's writes carry the
-    App's bot login rather than yours. Its permissions are Contents, Pull requests, Issues and
-    Workflows write, and Metadata read, with no webhook. Workflows: write is what lets a branch
+    App's bot login rather than yours. Its permissions are Contents, Pull requests, Issues,
+    Workflows and Commit statuses write, and Metadata read, with no webhook. Commit statuses:
+    write is the `agent-merge` arm's; an App made before it needs it added by hand and accepted
+    on each installation. Workflows: write is what lets a branch
     touching `.github/workflows/` be pushed, and it is acceptable because neither the App's key nor a
     token minted from it is ever on the agent's runner: they are named only in jobs that run no
     agent. Reviews, comments and commit statuses stay with `github-actions[bot]`.
   - **Supported fallback: `AGENT_PAT`**, a **fine-grained** personal access token with Contents:
-    write, Pull requests: write, Issues: write and Workflows: write, and an expiry date rather than
-    none. The loop then writes as you, and stops the day the token expires. Where it is set, `init`
+    write, Pull requests: write, Issues: write and Workflows: write (and Commit statuses: write
+    with a `merge` caller), and an expiry date rather than none. The loop then writes as you, and stops the day the token expires. Where it is set, `init`
     asks before switching to an App (default no), and `init --app` switches without asking; it never
     deletes `AGENT_PAT`, and after a switch says you can delete the secret and revoke the token.
 

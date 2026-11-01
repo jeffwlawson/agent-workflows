@@ -3,7 +3,7 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import { fileURLToPath } from "node:url";
 import { commonWriters } from "./shared/common.js";
-import type { MergingIo, OutputWriters, ReadingIo, RewritingCheckoutIo } from "./shared/command-io.js";
+import type { LoopReadingIo, MergingIo, OutputWriters, ReadingIo, RewritingCheckoutIo } from "./shared/command-io.js";
 import { COMMANDS, type Command, type Runner } from "./shared/contract.js";
 import { fail, gitEnvironment, readInputs, writers, type InputValues } from "./shared/env.js";
 import { VERSION } from "./shared/manifest.js";
@@ -196,7 +196,10 @@ type WritingCommand = {
 const writingCommand = <C extends WritingCommand>(
   name: C,
   load: () => Promise<
-    (inputs: InputValues<(typeof COMMANDS)[C]["inputs"]>, io: RewritingCheckoutIo<(typeof COMMANDS)[C]["outputs"]>) => Promise<unknown>
+    (
+      inputs: InputValues<(typeof COMMANDS)[C]["inputs"]>,
+      io: RewritingCheckoutIo<(typeof COMMANDS)[C]["outputs"]> & LoopReadingIo<(typeof COMMANDS)[C]["outputs"]>,
+    ) => Promise<unknown>
   >,
   summary: string,
 ): Subcommand => ({
@@ -423,6 +426,21 @@ export const SUBCOMMANDS: Readonly<Record<string, Subcommand>> = {
     "End an implement run however it ended: its failure comment and its labels (no model).",
   ),
   "implement-prd": runner("implement-prd", () => import("./implement-prd/implement-prd.js")),
+  "merge:gate": writingCommand(
+    "merge:gate",
+    async () => (await import("./merge/gate.js")).gate,
+    "Refuse, arm, wait on or disarm an agent:merge pull request, and decide whether it merges now (no model).",
+  ),
+  "merge:publish": writingCommand(
+    "merge:publish",
+    async () => (await import("./merge/publish.js")).publish,
+    "Squash-merge an armed pull request at the head the gate checked, then take agent:merge off (no model).",
+  ),
+  "merge:conclude": writingCommand(
+    "merge:conclude",
+    async () => (await import("./merge/conclude.js")).conclude,
+    "End a merge run that stopped: its failure comment, agent:merge off and agent:blocked (no model).",
+  ),
   init: {
     kind: "install",
     summary: "Install the caller workflows into this repo, create the loop's GitHub App, and say what is left.",

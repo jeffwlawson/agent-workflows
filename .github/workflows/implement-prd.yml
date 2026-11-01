@@ -65,8 +65,9 @@ name: Agent Implement PRD (reusable)
 # After the last slice, a **finishing run** builds nothing and runs no model.
 # With one slice landed, its round was the review of the whole PRD PR, so it
 # marks the PRD PR ready. With more than one, it records that the final review
-# is requested in the PRD PR's body and adds `agent:review`. A human merges the
-# PRD PR. The loop never merges it and never approves.
+# is requested in the PRD PR's body and adds `agent:review`. A human decides the
+# PRD PR's merge, and the loop never approves it (ADR 0009: the loop carries
+# out a merge only where the maintainer armed the pull request for it).
 #
 # ## Progress is comments and a table, never labels or closed issues
 #

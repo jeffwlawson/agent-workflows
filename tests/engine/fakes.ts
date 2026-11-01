@@ -14,11 +14,14 @@ import {
   LABELLED_ISSUES_LIMIT,
   type AuthoredText,
   type CheckRun,
+  type CommitCheck,
   type CommitStatus,
   type ConversationComment,
   type GitHubReader,
   type LabelledIssue,
+  type LabelledPullRequest,
   type PullRequest,
+  type RepositoryPermission,
   type ReviewHistoryEntry,
   type SubIssue,
   type WorkflowRun,
@@ -51,6 +54,8 @@ export interface FakePullRequest {
   /** The branch it is from, and the branch it is into, where a test names them. */
   headRef?: string;
   baseRef?: string;
+  /** The commit a merge of it makes, where a test names it. */
+  mergeCommit?: string;
 }
 
 /**
@@ -101,6 +106,14 @@ export interface FakeGitHub {
   readonly ranges: Map<string, string[]>;
   /** Per commit, its check runs. A commit not here has none. */
   readonly checkRuns: Map<string, CheckRun[]>;
+  /**
+   * Per commit, its checks as the status rollup gives them, each already
+   * required or not for the pull request a test reads them for. A commit not
+   * here has none.
+   */
+  readonly checks: Map<string, CommitCheck[]>;
+  /** Each login's permission on the repository. A login not here is not found. */
+  readonly permissions: Map<string, RepositoryPermission>;
   /** Per commit, the workflow runs whose head it is. A commit not here has none. */
   readonly workflowRuns: Map<string, WorkflowRun[]>;
   /** Per workflow run, the log of each of its jobs that failed. A run not here has none. */
@@ -187,6 +200,8 @@ export const fakeGitHub = (pullRequests: readonly Partial<FakePullRequest>[] = [
   comparisons: new Map(),
   ranges: new Map(),
   checkRuns: new Map(),
+  checks: new Map(),
+  permissions: new Map(),
   workflowRuns: new Map(),
   jobLogs: new Map(),
   comments: [],
@@ -392,6 +407,32 @@ export const fakeReader = (github: FakeGitHub): { readonly reader: GitHubReader;
       const status = github.comparisons.get(`${base}...${head}`);
       if (status === undefined) throw new GitHubError(`compare ${base}...${head}: 404 Not Found`, 404);
       return status;
+    },
+    commitChecks: async (sha, pullRequest) => {
+      reads.push({ method: "commitChecks", args: [sha, pullRequest] });
+      return [...(github.checks.get(sha) ?? [])];
+    },
+    behindBase: async (base, head) => {
+      reads.push({ method: "behindBase", args: [base, head] });
+      // Off the same comparisons `compare` reads: the base's tip is in the
+      // head's history exactly where the head is ahead of it or the same.
+      const status = github.comparisons.get(`${base}...${head}`);
+      if (status === undefined) throw new GitHubError(`compare ${base}...${head}: 404 Not Found`, 404);
+      return status === "ahead" || status === "identical" ? "current" : status === "behind" || status === "diverged" ? "behind" : "unknown";
+    },
+    permission: async (login) => {
+      reads.push({ method: "permission", args: [login] });
+      const permission = github.permissions.get(login);
+      if (permission === undefined) throw new GitHubError(`permission of ${login}: 404 Not Found`, 404);
+      return permission;
+    },
+    openPullRequestsLabelled: async (base, label) => {
+      reads.push({ method: "openPullRequestsLabelled", args: [base, label] });
+      // Newest first, as the endpoint lists them.
+      return [...github.pullRequests.values()]
+        .filter((pr) => pr.state === "open" && pr.baseRef === base && pr.labels.includes(label))
+        .sort((a, b) => b.number - a.number)
+        .map((pr) => ({ number: pr.number, headSha: pr.headSha, labels: [...pr.labels], draft: pr.draft }) satisfies LabelledPullRequest);
     },
     checkRuns: async (sha) => {
       reads.push({ method: "checkRuns", args: [sha] });
@@ -633,6 +674,24 @@ const fakeBackend = (github: FakeGitHub, token: string): Backend => {
       });
       return { outcome: "applied" };
     },
+    mergePullRequest: async (call, merge) =>
+      call("PUT merge", async () => {
+        const pr = pullRequestOf(github, merge.pr);
+        // GitHub's refusals, as the merge endpoint answers them.
+        const refuse = (status: number, message: string): never => {
+          const raw = JSON.stringify({ message, documentation_url: "https://docs.github.com/rest" });
+          throw new GitHubError(`PUT merge: ${status} ${raw}`, status, { reason: message, raw });
+        };
+        if (pr.state !== "open" || pr.draft) refuse(405, "Pull Request is not mergeable");
+        if (pr.headSha !== merge.sha) refuse(409, "Head branch was modified. Review and try the merge again.");
+        return attempt("mergePullRequest", "PUT merge", () => {
+          const sha = pr.mergeCommit ?? String(pr.number).padStart(40, "e");
+          pr.state = "closed";
+          pr.merged = true;
+          if (pr.baseRef !== undefined && github.branches.has(pr.baseRef)) github.branches.set(pr.baseRef, sha);
+          return { outcome: "applied" as const, sha };
+        });
+      }),
   };
 };
 

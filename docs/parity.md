@@ -32,7 +32,8 @@ third execution model in §2b.
 | `agent-implement-prd` — work sub-issues in sequence | ✅ | ✅ | **the execution half, shipped** (jeffwlawson/winget-manifest-lint#92). Shares the `agent:implement` label with `agent-implement`; the two partition by issue shape. See §2a |
 | `agent-promote-queued` — auto-promote when blockers close | ✅ | ❌ | **deferred: nothing to sequence between PRDs yet.** jeffwlawson/winget-manifest-lint#91, detached from jeffwlawson/winget-manifest-lint#87 so the chain would not build a slice nobody wanted. Not blocked on missing edges — `/wayfinder` records blockers as native dependencies, and on a `/to-tickets` batch `docs/agents/ticket-shape.md` requires them (upstream's skill writes a prose line, so they are added and verified by hand) — the point is that this tier sequences **top-level** issues, and ordering *within* a PRD is already carried by creation order (§2a). Its label is retired (§8): native "blocked by" links carry the dependency, and `implement` refuses while one is open |
 | `architecture-review` — scheduled survey that files its own issues | ✅ | 📋 | the autonomy tier; revisit once the rest are boring. The only *scheduled agent* in either upstream repo |
-| `agent-follow-ups` — file a merged PR's recorded findings | — | ➕ | #44. The review agent records what it cannot fix in the PR in front of it; this files each finding as a `needs-triage` stub once that PR merges. Since #544 it also posts, on every merge, one checklist of the linked briefs' *After merge, by a human* items; `agent:follow-ups` gates the filing alone. The only workflow here that turns an agent's output into **new issues** — `token-expiry` files a fixed one about the loop itself, and the `implement` pair only label and close — and the only one in the loop that runs **no model**, which is what makes holding `issues: write` while reading issue bodies safe. Optional per adopter: its caller is the off switch, a job in the pull-request side's caller file since #225, deleted to decline it. See §10 |
+| `agent-follow-ups` — file a merged PR's recorded findings | — | ➕ | #44. The review agent records what it cannot fix in the PR in front of it; this files each finding as a `needs-triage` stub once that PR merges. Since #544 it also posts, on every merge, one checklist of the linked briefs' *After merge, by a human* items; `agent:follow-ups` gates the filing alone. The only workflow here that turns an agent's output into **new issues** — `token-expiry` files a fixed one about the loop itself, and the `implement` pair only label and close — and, with `agent-merge`, one of the two in the loop that run **no model**, which is what makes holding `issues: write` while reading issue bodies safe. Optional per adopter: its caller is the off switch, a job in the pull-request side's caller file since #225, deleted to decline it. See §10 |
+| `agent-merge` — carry out the maintainer's merge decision | — | ➕ | #588, ADR 0009. `agent:merge` on a ready pull request **is** the maintainer's merge decision, for the head they labelled; the loop squash-merges that head once it is current with its base, its required checks are green and its verdict is an approval, guarded on that head and with the loop's token. A head that moved is disarmed, never merged. Runs **no model** and checks nothing out. Optional per adopter: its caller job is the opt-in, and with neither the loop's App nor `AGENT_PAT` it refuses. Neither upstream merges |
 | `ci` — typecheck + test | ✅ | ✅ | |
 | `corpus` — lint a pinned winget-pkgs snapshot | — | ➕ | see §7 |
 | `token-expiry` — warn before `AGENT_PAT` lapses | — | ➕ | weekly; jeffwlawson/winget-manifest-lint#70. Checks nothing where the loop's App is set up (#321), since the PAT is then the fallback nothing reaches; kept for the installs still on it |
@@ -116,7 +117,7 @@ jeffwlawson/winget-manifest-lint#92.
 
 Labelling a **parent** issue `agent:implement` implements its sub-issues one at a time — one per
 run — each as commits straight onto a single **PRD branch**, reviewed on the one **PRD PR** from
-the PRD branch into the base branch, which is what a human merges. Every slice gets a **slice
+the PRD branch into the base branch, which is the one a human decides to merge. Every slice gets a **slice
 round** on the PRD PR, and the chain builds the next slice only once that round ends on an
 approval. No slice has a branch or a pull request of its own (PRD #222). Rewritten twice: until
 PRD #171 every slice accumulated onto one branch and one PR, and review was requested once, at the
@@ -207,7 +208,7 @@ died after its last slice once landed on the finished-PRD refusal, and both that
 failure comment asked a human to add `agent:review` to the PR by hand — a second owner of the one
 handoff. Finished is now read off what the handover leaves, never off the draft state alone, so the
 same re-label that retries everything else resumes the handover, and nothing in the chain is left
-for a human to finish except the merge.
+for a human to finish except the merge decision.
 
 ### The trade: the slice round is the unit of review, the PRD PR the unit of merge
 
@@ -230,9 +231,11 @@ its findings anchored across work built at different times. So:
   commits and the sub-issue's acceptance criteria, and allowed to raise only what those commits
   cause. The stale-anchor objection does not return, because nothing moves under an open round: the
   next slice is not built until the round ends on an approval.
-- **The PRD PR is the unit of merge.** One per PRD, merged by a human, never by the loop, and never
-  approved by it. It ends with the **final review**, asked for once by the finishing run and only
-  when more than one slice landed: a review of the whole PRD PR with no slice range, which rules on
+- **The PRD PR is the unit of merge.** One per PRD, the one a human decides to merge, and never
+  approved by the loop. The loop never decides the merge; it carries out a maintainer's decision
+  only where they armed the PRD PR for it
+  ([ADR 0009](./adr/0009-agent-merge-executes-the-human-decision.md)). It ends with the **final
+  review**, asked for once by the finishing run and only when more than one slice landed: a review of the whole PRD PR with no slice range, which rules on
   every finding still open, honours every decline, looks for what spans slices — contracts between
   them, duplication, scaffolding one slice left dead for a later one — and marks the PRD PR ready on
   approval. A one-slice PRD skips it, because its slice round already read the same diff.
@@ -554,7 +557,7 @@ because whichever workflow owns the shape always acts and always says so.
 **Two further vocabularies sit alongside this table**, neither of which any workflow triggers on:
 the five canonical triage roles (`ready-for-agent`, …) and `wayfinder:*`.
 `docs/agents/triage-labels.md` (jeffwlawson/winget-manifest-lint#89) maps all three and records why
-`ready-for-agent` → `agent:implement` stays a human hand.
+`ready-for-agent` → `agent:implement` stays a human hand, and why `agent:merge` is a second one.
 
 **No ticket a skill publishes carries a label from this table.** `/to-tickets` gives every ticket in
 a batch `ready-for-agent` and nothing else, parent and slices alike (`docs/agents/ticket-shape.md`,

@@ -8,7 +8,7 @@ import { appGaps, createDispatcher, parseOwners, type AppRecord, type DoorReques
 import { liveAppGitHub } from "./github-app.js";
 import type { Job } from "./job.js";
 import type { DISPATCHER, WORKER } from "./settings.js";
-import { admit, heldDoor, jobDoor, oneAtATime, runJob, SUMMARY_FILE } from "./worker.js";
+import { admit, heldDoor, jobDoor, lanes, runJob, SUMMARY_FILE } from "./worker.js";
 import { announceStart, installCli, liveGit, liveLauncher, liveSandbox, liveTokens, routeThroughProxy } from "./worker-live.js";
 
 /**
@@ -178,7 +178,7 @@ export const serveDispatcher = async (
 
 /**
  * The worker: the agent's CLI installed at the version its settings require,
- * then the job door, whose jobs run one at a time, each in a directory of its
+ * then the job door, whose jobs run in two lanes (`lanes`), each in a directory of its
  * own under `WORK_DIR/runs`, kept afterwards with each subcommand's output
  * directory and log and the run's summary. Each phase's outcome is logged as the job ends.
  * Where `WORKER_PROXY` names a proxy, everything the worker asks of the
@@ -209,7 +209,7 @@ export const serveWorker = async (settings: InputValues<typeof WORKER>, stdout: 
     AGENT_SANDBOX_PROXY: settings.AGENT_SANDBOX_PROXY,
   };
 
-  const work = async (job: Job): Promise<void> => {
+  const work = async (job: Job, agentLane: () => Promise<void>): Promise<void> => {
     const runDir = path.join(settings.WORK_DIR, "runs", `${new Date().toISOString().replace(/[:.]/g, "-")}-${job.id}`);
     fs.mkdirSync(runDir, { recursive: true });
     log(`job ${job.id}: ${job.workflow} on ${job.repo}#${"issue" in job ? job.issue : "headSha" in job ? `${job.pr} at ${job.headSha}` : job.pr}, in ${runDir}`);
@@ -222,10 +222,15 @@ export const serveWorker = async (settings: InputValues<typeof WORKER>, stdout: 
       agent,
       cliBin,
       runDir,
+      agentLane: async () => {
+        log(`job ${job.id}: waiting for the agent lane, to start its agent`);
+        await agentLane();
+        log(`job ${job.id}: in the agent lane`);
+      },
     });
     log(`job ${job.id}: ended. ${phases.map(({ name, outcome }) => `${name}: ${outcome}`).join("; ")}. Its summary: ${path.join(runDir, SUMMARY_FILE)}`);
   };
-  const queue = oneAtATime(work, (error) => log(`a job failed: ${error instanceof Error ? error.message : String(error)}`));
+  const queue = lanes(work, (error) => log(`a job failed: ${error instanceof Error ? error.message : String(error)}`));
   const accept = jobDoor({
     secret: settings.WORKER_SECRET,
     version: VERSION,

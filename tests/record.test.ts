@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { planFollowUps } from "../shared/follow-up-plan.js";
 import { loopAccounts } from "../shared/loop-accounts.js";
-import { stubMarker } from "../shared/record.js";
+import { branchIssue, issueBranch, prdBranch, stubMarker } from "../shared/record.js";
 import { renderFollowUpsBlock } from "../shared/review-output.js";
 
 /**
@@ -44,5 +44,24 @@ describe("the stub's dedupe marker", () => {
 
   it.each(PINNED)("is spelled in the record in exactly its bytes for $location", ({ location, pr, seq, bytes }) => {
     expect(stubMarker(location, pr, seq)).toBe(bytes);
+  });
+});
+
+/**
+ * The issue a loop branch is built for, read off its name (#582's pre-merge
+ * check): what puts a PRD PR's jobs in line with its parent's, and an issue
+ * branch's PR's with its issue's. Read off the names the loop itself writes.
+ */
+describe("the issue a branch is built for", () => {
+  it("reads the parent of a PRD branch and the issue of an issue branch, as the loop names them", () => {
+    expect(branchIssue(prdBranch(585, "The two-lane worker"))).toBe(585);
+    expect(branchIssue(issueBranch(17, "A thing"))).toBe(17);
+    expect(branchIssue("agent/prd-17-x")).toBe(17);
+  });
+
+  it("reads no issue off any other branch, nor off a loop prefix without a number and its dash", () => {
+    for (const branch of ["main", "feature/prd-5-x", "agent/rescue/prd-5", "agent/prd-", "agent/prd-17", "agent/prd-x-17-y", "agent/issue-017-x", "agent/issue-0-x"]) {
+      expect(branchIssue(branch)).toBeUndefined();
+    }
   });
 });

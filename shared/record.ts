@@ -502,6 +502,21 @@ export const prdRescueBranch = (parent: number): string => `agent/rescue/prd-${p
 export const prdBranchStem = (parent: number): string => `${PRD_BRANCH_PREFIX}${parent}-`;
 
 /**
+ * The issue a loop branch is built for, read off its name: the parent of a
+ * PRD branch, `agent/prd-<parent>-<slug>`, or the issue of an issue branch,
+ * `agent/issue-<n>-<slug>`. Undefined for any other branch. A job on the
+ * branch's pull request and one on that issue push to the same branch.
+ */
+export const branchIssue = (branch: string): number | undefined => {
+  for (const prefix of [PRD_BRANCH_PREFIX, ISSUE_BRANCH_PREFIX]) {
+    if (!branch.startsWith(prefix)) continue;
+    const digits = /^([1-9][0-9]*)-/.exec(branch.slice(prefix.length))?.[1];
+    return digits === undefined ? undefined : Number(digits);
+  }
+  return undefined;
+};
+
+/**
  * The PRD branch a chain's first run names for parent `parent`, its slug from
  * `title` as `issueBranch`'s is. Only ever the name of a branch that does not
  * exist yet: a chain already started is found by `prdBranchStem`.

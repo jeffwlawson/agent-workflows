@@ -267,7 +267,7 @@ so does an App whose own record cannot be read, since that is where the App's ow
 | `WEBHOOK_PORT` | optional | `8790` | the webhook door's port; GitHub's deliveries arrive at `POST /github` |
 | `TOKEN_HOST` | optional | `127.0.0.1` | the address the token door listens on: one the worker reaches |
 | `TOKEN_PORT` | optional | `8791` | the token door's port; the worker asks at `POST /token`, and announces its start at `POST /started` |
-| `JOB_DEADLINE_MARGIN_MINUTES` | optional | `60` | added to a job's own time limit for its deadline, review's (its CI wait and `AGENT_REVIEW_TIMEOUT_MINUTES`) or fix's, update-branch's and implement's (`AGENT_TIMEOUT_MINUTES`), or implement-prd's (35 minutes and `AGENT_TIMEOUT_MINUTES`), or follow-ups' (10 minutes), or merge's (20 minutes), covering the phases around the runner's and the time a job waits in the worker's queue |
+| `JOB_DEADLINE_MARGIN_MINUTES` | optional | `60` | added to a job's own time limit for its deadline, review's (its CI wait and `AGENT_REVIEW_TIMEOUT_MINUTES`) or fix's, update-branch's and implement's (`AGENT_TIMEOUT_MINUTES`), or implement-prd's (35 minutes and `AGENT_TIMEOUT_MINUTES`), or follow-ups' (10 minutes), or merge's (20 minutes), covering the phases around the runner's and the time a job waits in the worker's queue: in its lane, behind an earlier job for its item, and, for an update-branch whose merge conflicted, for the agent lane (*The worker*, below) |
 | `EXTRA_OWNERS` | optional | `""` | accounts, comma-separated, whose installations the dispatcher serves besides the App owner's; empty is none. An installation on any other account is refused |
 | `SCAN_DISPATCH_LIMIT` | optional | `2` | how many times the scan dispatches an item for a label that stays on across scans before it leaves the item for a person, and comments once to say so (*The scan's limit*, below), never applied to `agent:merge`. At least `1`: `0` is refused at start, since it would not turn the scan off |
 
@@ -277,12 +277,13 @@ Each door also answers `GET /health` with `200`.
 
 - **A delivery that arrives while the dispatcher is down is lost.** GitHub does not redeliver on
   its own; redeliver it from the App's *Recent Deliveries*, or remove the label and add it again.
-- **The jobs it dispatched are held in memory, and only the running one is lost to a restart.** Each
+- **The jobs it dispatched are held in memory, and only the started ones are lost to a restart.** Each
   job carries the id of the dispatcher instance that sent it, fresh at each start, and the scan at
   a restarted dispatcher's start names its own at the worker's held door. The worker drops every
   job it holds *queued* from another instance before it answers, so none of them runs, and the
-  scan dispatches their items again, in the order it lists them, behind the running job. The
-  running job is not dropped, since the held door cannot stop it: it ends at its next token
+  scan dispatches their items again, in the order it lists them, behind the running jobs. A
+  running job, one in each lane at most, is not dropped, since the held door cannot stop it, nor is
+  an update-branch job waiting for the agent lane after its merge: each ends at its next token
   request, which the new dispatcher refuses as unknown, and the scan skips its item while the
   worker still holds it. Remove that item's label and add it again.
 - **The scan's counts are held in memory.** A restarted dispatcher forgets how many times its scans
@@ -411,7 +412,39 @@ At start it installs the agent's CLI, `@anthropic-ai/claude-code` at `CLAUDE_COD
 `AGENT_SANDBOX_PATH`, and into `AGENT_SANDBOX_RO_BINDS`. Bind the Node the agent's CLI runs on
 read-only too, through `AGENT_SANDBOX_RO_BINDS`, and put it on `AGENT_SANDBOX_PATH`.
 
-Jobs run one at a time, in the order they arrived. Each runs the subcommands its reusable runs, in
+Jobs run in two lanes, each one job at a time, beneath a chain per pull request or issue (#582):
+
+- **The agent lane** runs every job that can start an agent: review, fix, implement and
+  implement-prd, and an update-branch job's agent part. It runs them strictly in the order they
+  arrived, so two agent jobs never run at once, and a gate that refuses ends its job in this lane.
+- **The light lane** runs, beside it, what starts no agent: follow-ups, and an update-branch job up
+  to its merge. A clean merge's job ends there, publish and conclude included, so a refresh or a
+  filing that takes seconds no longer waits behind a build that takes up to an hour. It takes the
+  first job that arrived whose item is free.
+- **An update-branch job whose merge conflicts is handed off** at the point it would start its
+  agent: it leaves the light lane, and its agent's job, publish and conclude run in the agent lane,
+  never beside another agent job. It holds its place in the agent lane from its arrival until it
+  ends, or asks for the lane, so an agent job that arrived after it waits for the whole of it: its
+  gate and merge, then its agent if it conflicted, or its publish and conclude
+  (`UPDATE_BRANCH_POSTING_MINUTES`) if it was clean. None that arrived before it waits behind it.
+  One wait is added to a single queue's: where its item is still busy when the light lane comes
+  free, the light lane starts a later light job, and the hand-off, with the agent jobs after it,
+  waits for that one job to end. Its phases still run in their one
+  order; the hand-off only waits between the merge and the agent's job, whose time limit starts once
+  it has the lane.
+- **Per item**, a job starts only once every job for the same pull request or issue that arrived
+  before it has ended, whatever the lanes: a merge's follow-ups waits for an earlier run on the pull
+  request, and a refresh and a review on one head never overlap. A pull request whose head is a
+  loop branch is in its issue's chain too, since both push to that branch: a PRD PR's jobs run in
+  line with its parent's implement-prd jobs (`agent/prd-<parent>-…`), and an issue branch's PR's
+  with its issue's (`agent/issue-<n>-…`).
+
+Whether a job starts an agent is often known only once its gate or merge has run, so the lane is
+the kind's, by what it *can* do. The lanes run no more than one agent at a time, so the host's
+capacity is unchanged. A job that fails or throws stops nothing behind it, in its lane or its item's
+chain.
+
+Each runs the subcommands its reusable runs, in
 its order and under its conditions (spec §6 for `implement.yml`, §7 for `implement-prd.yml`, §8 for `review.yml`, §9 for
 `fix.yml`, §10 for `update-branch.yml`, §11 for `follow-ups.yml`), each a child process of the worker's own
 install, with an environment built from its declaration in the contract and the host's `PATH`,
@@ -422,8 +455,8 @@ conflicted, before its runner, and not by a review, as on Actions.
 The fix-round budget is the repository's `AGENT_MAX_FIX_ROUNDS`, read as on Actions: a review
 asking for changes under a budget with a round left adds `agent:fix`, which the dispatcher answers
 as the App's own label, and a spent budget leaves the round to a human, with the comment Actions
-posts. Since the worker runs one job at a time, a fix round starts only once the review that asked
-for it has finished, and the `agent-fix-round` status the budget counts stops the cycle.
+posts. A review and the fix round it asks for are both agent jobs for one pull request, so the fix
+round starts only once the review has finished, through the agent lane and the item's chain alike, and the `agent-fix-round` status the budget counts stops the cycle.
 
 A fix job runs `fix:gate`, then the agent's job: the checkout of the head the label's event named,
 with the base, `fix:prepare`, which fetches a stopped round's rescue branch into it, the setup, the
@@ -550,9 +583,13 @@ commits over for the rescue; publish's checkout and `implement-prd:publish` shar
 `implement-prd:conclude` gets 15. A follow-ups job's `follow-ups:file` gets 10 minutes, the job's
 `timeout-minutes` in `follow-ups.yml`, and `follow-ups:conclude` 10 of its own. A merge job's gate
 and publish share 20 minutes, the job's `timeout-minutes` in `merge.yml`, and `merge:conclude` gets
-20 of its own. A job that waits in the queue for longer
-than the dispatcher's `JOB_DEADLINE_MARGIN_MINUTES` is past its deadline by the time it asks to
-post, and ends with nothing posted, so set the margin above the longest wait you expect.
+20 of its own. A job's deadline is
+set at dispatch and the worker never moves it, whichever lane the job waits in: a hand-off to the
+agent lane neither restarts nor extends it. A job that waits in the queue for longer than the
+dispatcher's `JOB_DEADLINE_MARGIN_MINUTES` is past its deadline by the time it asks for its next
+token, and ends with nothing posted, so set the margin above the longest wait you expect: for an
+agent job, the agent jobs ahead of it; for a light one, the light jobs ahead of it and any earlier
+job for its item.
 
 ### The repository's setup
 
@@ -627,11 +664,13 @@ The job door also answers `GET /health` with `200`.
   to an open item is picked up by the scan at the dispatcher's start (*What it does not keep*,
   above). What a scan does not list stays lost: a merge's follow-ups, above all.
 - **A dispatcher restarted alone** recovers the jobs the worker holds queued from it: its start
-  scan has the worker drop them and dispatches their items again. Only the job running at the time
-  is lost, and keeps its label until a person adds it again (*What it does not keep*, above).
-- **The worker's queue is in memory too**: a worker restarted mid-job loses that job and the ones
-  waiting behind it. Its start announcement makes the dispatcher scan, which dispatches each of
-  them again, the running one and the queued ones alike, since each item keeps its label. Where
+  scan has the worker drop them and dispatches their items again. Only the jobs that had started
+  are lost: the one running in each lane, and every update-branch job waiting for the agent lane
+  after its merge conflicted, of which there can be several. Each keeps its label until a person
+  adds it again (*What it does not keep*, above).
+- **The worker's queue is in memory too**: a worker restarted mid-job loses the jobs running and the ones
+  waiting behind them. Its start announcement makes the dispatcher scan, which dispatches each of
+  them again, the running ones and the queued ones alike, since each item keeps its label. Where
   the dispatcher is down when the worker starts, its own start scans instead. A job that itself
   ends the worker's process is dispatched again by the scan up to `SCAN_DISPATCH_LIMIT`'s number of
   times, and then left for a person, with a comment on its item saying so (*The scan's limit*,

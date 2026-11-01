@@ -135,8 +135,8 @@ status writes of the phases that post; `resolve`, which adds Contents: write and
 `write`, for `review:publish` alone; and `push`, which adds Contents: write and Workflows: write
 to `write`, for the phases that push and run no agent. GitHub lets a review thread be resolved by
 the pull request's author or by a holder of repository write access, so with `write` the App
-resolves threads only on the pull requests it opened (#571): `resolve` is the one phase that
-resolves threads given what that takes, rather than every posting phase given Contents: write
+resolves threads only on the pull requests it opened (#571): with `resolve`, the one phase that
+resolves threads is given what that takes, rather than every posting phase given Contents: write
 through a wider `write`, or Workflows: write through `push`. Like the posting job on Actions, it
 runs no agent, checks nothing out, and reads the agent's output only through the checked
 hand-over readers. Contents: write together with Workflows: write

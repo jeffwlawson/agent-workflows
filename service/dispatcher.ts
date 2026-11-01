@@ -136,6 +136,11 @@ export interface DispatcherEdges {
   readonly scanLimit: number;
   readonly now?: () => Date;
   readonly newId?: () => string;
+  /**
+   * This dispatcher instance's id, which each job it posts carries and its
+   * held-door question names (#597): fresh at each start, a UUID unless given.
+   */
+  readonly instance?: string;
 }
 
 /** A request as either door received it: its headers, lower-cased, and its raw body. */
@@ -343,7 +348,7 @@ interface IssueLabelEvent {
 }
 
 /** A job's own fields, without those every job carries, which the dispatcher fills in. */
-type OwnFields<J> = J extends Job ? Omit<J, "id" | "version" | "deadline" | "appLogin" | "variables"> : never;
+type OwnFields<J> = J extends Job ? Omit<J, "id" | "version" | "instance" | "deadline" | "appLogin" | "variables"> : never;
 type Dispatchable = OwnFields<Job>;
 
 const text = (headers: DoorRequest["headers"], name: string): string | undefined => headers[name];
@@ -431,6 +436,7 @@ export const createDispatcher = (edges: DispatcherEdges) => {
       ? undefined
       : `the App's installation is on ${account}, which is neither the App's owner nor an account EXTRA_OWNERS lists`;
   const newId = edges.newId ?? randomUUID;
+  const instance = edges.instance ?? randomUUID();
   const jobs = new Map<string, Dispatched>();
   /** How many jobs have been reserved so far, which a delivery notes at its arrival. */
   let reservations = 0;
@@ -506,7 +512,7 @@ export const createDispatcher = (edges: DispatcherEdges) => {
     ) as Record<RepositoryVariable, string>;
     const minutes = TIME_LIMITS[fields.workflow](variables) + edges.deadlineMarginMinutes;
     const deadline = new Date(now().getTime() + minutes * 60_000);
-    const job = { ...fields, id: newId(), version: edges.version, deadline: deadline.toISOString(), appLogin: login, variables } as Job;
+    const job = { ...fields, id: newId(), version: edges.version, instance, deadline: deadline.toISOString(), appLogin: login, variables } as Job;
 
     prune();
     const scanned = "taken" in origin;
@@ -765,11 +771,15 @@ export const createDispatcher = (edges: DispatcherEdges) => {
    * the dispatcher's own remembered ones it can forget for it: every job whose
    * post the worker had answered before it was asked and which it no longer
    * holds has ended, or was dropped by a restart, and asks for no token again.
-   * One whose post is still in flight is kept.
+   * One whose post is still in flight is kept. The question names this
+   * instance (#597), and the worker drops every job it holds queued from
+   * another before it answers, so a scan after a dispatcher's restart
+   * dispatches their items again rather than skipping them for jobs no
+   * dispatcher would mint for.
    */
   const askWorker = async (): Promise<readonly HeldJob[]> => {
     const answered = [...jobs].filter(([, job]) => job.posted).map(([id]) => id);
-    const body = JSON.stringify({ asked: now().toISOString() });
+    const body = JSON.stringify({ asked: now().toISOString(), instance });
     const reply = await edges.askHeld(body, { "content-type": "application/json", [SIGNATURE_HEADER]: sign(edges.workerSecret, body) });
     if (reply.status !== 200) throw new Error(`the worker answered ${reply.status}`);
     const held = parseHeld(json(Buffer.from(reply.body)));
@@ -985,7 +995,7 @@ export const createDispatcher = (edges: DispatcherEdges) => {
     return { response: answer(202, { accepted: true }), scanned: scan() };
   };
 
-  return { delivery, token, scan, started };
+  return { delivery, token, scan, started, instance };
 };
 
 export type Dispatcher = ReturnType<typeof createDispatcher>;

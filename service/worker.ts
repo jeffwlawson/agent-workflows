@@ -10,6 +10,7 @@ import {
   FOLLOW_UPS_MINUTES,
   fixTimeLimit,
   heldOf,
+  parseHeldRequest,
   parseJob,
   reviewTimeLimit,
   SIGNATURE_HEADER,
@@ -2269,24 +2270,40 @@ export const jobDoor =
     return answer(202, { accepted: job.id });
   };
 
-/** What the held door needs: the shared secret, and what the worker holds now. */
+/** What the held door needs: the shared secret, what the worker holds now, and how it drops a queued job. */
 export interface HeldDoorEdges {
   readonly secret: string;
   /** Every job queued or running, in the order they arrived. */
   readonly held: () => readonly Job[];
+  /** Takes every queued job `dropped` matches out of the queue, never the running one, so it never runs. */
+  readonly drop: (dropped: (job: Job) => boolean) => readonly Job[];
 }
 
 /**
  * **The held door** (#581). The dispatcher's scan asks, signed with the
  * shared secret as a job is, which jobs the worker has queued or is running,
  * so a label a job is already held for is not dispatched twice. A request
- * whose signature does not verify is refused, `401`; every other is answered
- * `200` with each held job's id, kind, repository and number.
+ * whose signature does not verify is refused, `401`, and one that is not the
+ * question, `400`. The question names the dispatcher instance asking (#597):
+ * every job queued from another is dropped first, since no dispatcher running
+ * now would mint for it, and the scan dispatches its item again. The running
+ * job is not: this door cannot stop it, and it ends at its next token
+ * request. Every other request is answered `200` with each job still held:
+ * its id, kind, repository and number.
  */
 export const heldDoor =
   (edges: HeldDoorEdges) =>
   (request: DoorRequest): DoorResponse => {
     if (!verifySignature(edges.secret, request.body, request.headers[SIGNATURE_HEADER])) return answer(401, { refusal: "bad signature" });
+    let body: unknown;
+    try {
+      body = JSON.parse(request.body.toString("utf8"));
+    } catch {
+      return answer(400, { refusal: "the body is not JSON" });
+    }
+    const asked = parseHeldRequest(body);
+    if (typeof asked === "string") return answer(400, { refusal: asked });
+    edges.drop((job) => job.instance !== asked.instance);
     return answer(200, { jobs: edges.held().map(heldOf) });
   };
 
@@ -2296,26 +2313,44 @@ export interface Queue<T> {
   readonly add: (item: T) => void;
   /** Every item queued or running, in the order they arrived: one leaves once its work has ended. */
   readonly held: () => readonly T[];
+  /**
+   * Takes every queued item `dropped` matches out of the queue, so its work
+   * never starts, and answers them in the order they arrived. The running
+   * item is never taken: its work has started.
+   */
+  readonly drop: (dropped: (item: T) => boolean) => readonly T[];
 }
 
 /**
  * A queue that runs one job at a time, in the order they arrived: one run per
  * pull request, and per box, at this stage. A job that throws does not stop
- * the ones behind it.
+ * the ones behind it, and a job dropped before its turn is passed over.
  */
 export const oneAtATime = <T>(work: (item: T) => Promise<void>, onError: (error: unknown) => void): Queue<T> => {
   let tail: Promise<void> = Promise.resolve();
   const items: T[] = [];
+  let running: T | undefined;
   return {
     add: (item) => {
       items.push(item);
       tail = tail
-        .then(() => work(item))
+        .then(() => {
+          if (!items.includes(item)) return undefined;
+          running = item;
+          return work(item);
+        })
         .catch(onError)
         .finally(() => {
+          if (running !== item) return;
+          running = undefined;
           items.splice(items.indexOf(item), 1);
         });
     },
     held: () => [...items],
+    drop: (dropped) => {
+      const taken = items.filter((item) => item !== running && dropped(item));
+      for (const item of taken) items.splice(items.indexOf(item), 1);
+      return taken;
+    },
   };
 };

@@ -65,6 +65,7 @@ const JOB: ReviewJob = {
   workflow: "review",
   id: "job-1",
   version: "9.9.9",
+  instance: "dispatcher-1",
   deadline: "2026-10-11T14:00:00.000Z",
   repo: "owner/repo",
   pr: 7,
@@ -1617,6 +1618,20 @@ describe("the job door", () => {
     expect(d.accepted).toEqual([]);
   });
 
+  it.each<[string, unknown]>([
+    ["no", { ...JOB, instance: undefined }],
+    ["an empty", { ...JOB, instance: "" }],
+    ["a malformed", { ...JOB, instance: "dispatcher 1; rm" }],
+    ["a non-string", { ...JOB, instance: 1 }],
+  ])("refuses a job with %s dispatcher instance id, naming the field", (_name, job) => {
+    const d = door();
+    const response = d.handle(request(job));
+
+    expect(response.status).toBe(400);
+    expect(JSON.parse(response.body)).toEqual({ refusal: "`instance` is not a dispatcher instance's id, up to 64 letters, digits, `-` and `_`" });
+    expect(d.accepted).toEqual([]);
+  });
+
   it("refuses a body that is not a job", () => {
     const d = door();
 
@@ -1666,6 +1681,7 @@ const IMPLEMENT_JOB: ImplementJob = {
   workflow: "implement",
   id: "job-1",
   version: "9.9.9",
+  instance: "dispatcher-1",
   deadline: "2026-10-11T14:00:00.000Z",
   repo: "owner/repo",
   issue: 12,
@@ -2486,6 +2502,7 @@ const FOLLOW_UPS_JOB: FollowUpsJob = {
   workflow: "follow-ups",
   id: "job-1",
   version: "9.9.9",
+  instance: "dispatcher-1",
   deadline: "2026-10-11T14:00:00.000Z",
   repo: "owner/repo",
   pr: 7,
@@ -2577,17 +2594,33 @@ describe("the worker's follow-ups job", () => {
 /**
  * What the worker holds (#581): the queue knows each job queued or running,
  * and the held door answers the dispatcher's scan with them, signed with the
- * shared secret as the job door is.
+ * shared secret as the job door is. The question names the dispatcher
+ * instance asking (#597), and every job queued from another is dropped first.
  */
 describe("the held door", () => {
   const SECRET = "the-worker-secret";
-  const ask = (handle: ReturnType<typeof heldDoor>, secret = SECRET) => {
-    const body = Buffer.from(JSON.stringify({ asked: "2026-10-31T12:00:00.000Z" }));
+  const ask = (handle: ReturnType<typeof heldDoor>, secret = SECRET, question: unknown = { asked: "2026-10-31T12:00:00.000Z", instance: "dispatcher-1" }) => {
+    const body = Buffer.from(JSON.stringify(question));
     return handle({ headers: { [SIGNATURE_HEADER]: sign(secret, body) }, body });
   };
+  /** A held door over a real queue, whose work waits until a test lets it end. */
+  const queued = () => {
+    const ran: Job[] = [];
+    const releases: (() => void)[] = [];
+    const queue = oneAtATime<Job>(
+      (job) =>
+        new Promise<void>((resolve) => {
+          ran.push(job);
+          releases.push(resolve);
+        }),
+      () => {},
+    );
+    return { queue, ran, releases, handle: heldDoor({ secret: SECRET, held: queue.held, drop: queue.drop }) };
+  };
+  const settle = () => new Promise((resolve) => setImmediate(resolve));
 
   it("answers each held job's id, kind, repository and number, which the dispatcher reads back", () => {
-    const response = ask(heldDoor({ secret: SECRET, held: () => [JOB, IMPLEMENT_JOB, FOLLOW_UPS_JOB] }));
+    const response = ask(heldDoor({ secret: SECRET, held: () => [JOB, IMPLEMENT_JOB, FOLLOW_UPS_JOB], drop: () => [] }));
 
     expect(response.status).toBe(200);
     expect(parseHeld(JSON.parse(response.body))).toEqual([
@@ -2597,11 +2630,68 @@ describe("the held door", () => {
     ]);
   });
 
-  it("refuses a request whose signature does not verify, and names no job", () => {
-    const response = ask(heldDoor({ secret: SECRET, held: () => [JOB] }), "someone-elses-secret");
+  it("refuses a request whose signature does not verify, names no job, and drops none", () => {
+    const w = queued();
+    w.queue.add(JOB);
+    w.queue.add({ ...IMPLEMENT_JOB, id: "job-2" });
+    const response = ask(w.handle, "someone-elses-secret", { asked: "2026-10-31T12:00:00.000Z", instance: "dispatcher-2" });
 
     expect(response.status).toBe(401);
     expect(response.body).not.toContain(JOB.repo);
+    expect(w.queue.held().map((job) => job.id)).toEqual(["job-1", "job-2"]);
+  });
+
+  it.each<[string, unknown, string]>([
+    ["no instance", { asked: "2026-10-31T12:00:00.000Z" }, "`instance` is not a dispatcher instance's id, up to 64 letters, digits, `-` and `_`"],
+    ["a malformed instance", { asked: "2026-10-31T12:00:00.000Z", instance: "not one; at all" }, "`instance` is not a dispatcher instance's id, up to 64 letters, digits, `-` and `_`"],
+    ["no time", { instance: "dispatcher-1" }, "`asked` is not a time"],
+  ])("refuses a question with %s, naming the field, and drops nothing", (_name, question, refusal) => {
+    const w = queued();
+    w.queue.add(JOB);
+    w.queue.add({ ...IMPLEMENT_JOB, id: "job-2", instance: "dispatcher-0" });
+    const response = ask(w.handle, SECRET, question);
+
+    expect(response.status).toBe(400);
+    expect(JSON.parse(response.body)).toEqual({ refusal });
+    expect(w.queue.held()).toHaveLength(2);
+  });
+
+  it("drops each job queued from another dispatcher instance before it runs, and answers only what it still holds", async () => {
+    const w = queued();
+    w.queue.add({ ...JOB, instance: "dispatcher-0" });
+    w.queue.add({ ...IMPLEMENT_JOB, id: "job-2", instance: "dispatcher-0" });
+    w.queue.add({ ...FOLLOW_UPS_JOB, id: "job-3", instance: "dispatcher-1" });
+    await settle();
+    expect(w.ran.map((job) => job.id)).toEqual(["job-1"]);
+
+    const response = ask(w.handle);
+
+    expect(response.status).toBe(200);
+    // The running job is kept, whichever instance queued it: this door cannot stop it.
+    expect(parseHeld(JSON.parse(response.body))).toEqual([
+      { id: "job-1", workflow: "review", repo: JOB.repo, number: JOB.pr },
+      { id: "job-3", workflow: "follow-ups", repo: FOLLOW_UPS_JOB.repo, number: FOLLOW_UPS_JOB.pr },
+    ]);
+    w.releases[0]?.();
+    await settle();
+    w.releases[1]?.();
+    await settle();
+    expect(w.ran.map((job) => job.id)).toEqual(["job-1", "job-3"]);
+    expect(w.queue.held()).toEqual([]);
+  });
+
+  it("drops no job queued from the instance asking, however many times it asks", async () => {
+    const w = queued();
+    w.queue.add(JOB);
+    w.queue.add({ ...IMPLEMENT_JOB, id: "job-2" });
+    ask(w.handle);
+    ask(w.handle);
+
+    expect(w.queue.held().map((job) => job.id)).toEqual(["job-1", "job-2"]);
+    await settle();
+    w.releases[0]?.();
+    await settle();
+    expect(w.ran.map((job) => job.id)).toEqual(["job-1", "job-2"]);
   });
 
   it("holds a job from the moment it is queued until its work has ended, running or waiting, thrown or not", async () => {
@@ -2623,6 +2713,42 @@ describe("the held door", () => {
 
     releases[1]?.();
     await settle();
+    expect(queue.held()).toEqual([]);
+  });
+
+  it("drops a waiting item so its work never starts, keeps the running one, and runs the rest in order, behind one that throws", async () => {
+    const started: string[] = [];
+    const releases: (() => void)[] = [];
+    const errors: unknown[] = [];
+    const queue = oneAtATime<string>(
+      (item) =>
+        new Promise<void>((resolve, reject) => {
+          started.push(item);
+          releases.push(() => (item === "throws" ? reject(new Error("no")) : resolve()));
+        }),
+      (error) => errors.push(error),
+    );
+    const settle = () => new Promise((resolve) => setImmediate(resolve));
+
+    queue.add("throws");
+    queue.add("dropped");
+    queue.add("kept");
+    queue.add("dropped too");
+    await settle();
+
+    expect(queue.drop((item) => item !== "kept")).toEqual(["dropped", "dropped too"]);
+    expect(queue.held()).toEqual(["throws", "kept"]);
+
+    releases[0]?.();
+    await settle();
+    expect(errors).toHaveLength(1);
+    expect(started).toEqual(["throws", "kept"]);
+    expect(queue.held()).toEqual(["kept"]);
+    expect(queue.drop(() => true)).toEqual([]);
+
+    releases[1]?.();
+    await settle();
+    expect(started).toEqual(["throws", "kept"]);
     expect(queue.held()).toEqual([]);
   });
 });

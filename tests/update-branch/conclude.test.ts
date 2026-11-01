@@ -589,8 +589,9 @@ describe("update-branch:conclude asks again where the head moved while the run w
     reader = { ...reader, pullRequest: () => Promise.reject(new GitHubError("pull request #7: 502 Bad Gateway", 502)) };
     await run();
 
-    expect(warnings()).toHaveLength(1);
+    expect(warnings()).toHaveLength(2);
     expect(warnings()[0]).toContain("Could not read PR #7 to tell whether its head moved on");
+    expect(warnings()[1]).toContain("so whether it carries agent:merge could not be told");
     expect(writes().filter((w) => w.includes("addLabel"))).toEqual([]);
   });
 
@@ -711,6 +712,37 @@ describe("update-branch:conclude hands an armed pull request back to the merge g
 
     expect(writes()).toEqual([`workflow removeLabel ${UPDATE_BRANCH_LABEL}`]);
     expect(warnings().some((line) => line.includes(`carries ${MERGE_LABEL}`))).toBe(true);
+  });
+
+  /**
+   * A read that failed is not a pull request without `agent:merge`: the
+   * hand-back it skips is said, naming the label and the retry, on each path
+   * the run can finish by, the ones that ask for nothing again included.
+   */
+  it.each([
+    ["a clean merge", () => published({ pushed: true, head: MERGE }), {}],
+    ["a resolution whose review publish asked for", () => published({ pushed: true, head: MERGE, requested: true }), CONFLICTS("success")],
+    ["a published.json that does not read", () => put("publish", "published.json", "{not json"), {}],
+  ] as const)("says the hand-back was skipped where the pull request could not be read, after %s", async (_, arrange, over) => {
+    arrange();
+    reader = { ...reader, pullRequest: () => Promise.reject(new GitHubError("pull request #7: 502 Bad Gateway", 502)) };
+
+    await run(INPUTS(over));
+
+    const said = warnings().filter((line) => line.includes(`whether it carries ${MERGE_LABEL} could not be told`));
+    expect(said).toHaveLength(1);
+    expect(said[0]).toContain("502 Bad Gateway");
+    expect(said[0]).toContain(`remove it and add it again to re-start the gate`);
+    expect(writes()).toEqual([`workflow removeLabel ${UPDATE_BRANCH_LABEL}`]);
+  });
+
+  it("says nothing of the hand-back where the pull request is gone", async () => {
+    published({ pushed: true, head: MERGE });
+    github.pullRequests.delete(PR);
+
+    await run();
+
+    expect(warnings()).toEqual([]);
   });
 
   it("warns, and fails nothing, where agent:merge cannot be added again", async () => {

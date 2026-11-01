@@ -3519,8 +3519,10 @@ the merge gate rules on the head the run left. The gate that asked for this refr
 the one the refresh's own push started may have read the head before the arm was carried on to it,
 and waited (§12); the loop's `agent-merge` post is no trigger. That gate merges, waits, or disarms a
 resolution's head, and a label the loop adds never arms. Where `LOOP_TOKEN_SOURCE` is neither `app`
-nor `pat` it is not re-added, and warns. A run that stopped leaves `agent:blocked` and the arm for
-the maintainer, and re-adds nothing.
+nor `pat` it is not re-added, and warns. A pull request that could not be read is not one without
+`agent:merge`: the hand-back is skipped and warns, naming the label and the retry, on every path,
+the ones that ask for nothing again included. A run that stopped leaves `agent:blocked` and the arm
+for the maintainer, and re-adds nothing.
 
 Each directory is read on its own, so a file that does not read is a warning and is read as not
 written, and costs the comment no reason another producer gave; a `published.json` that does not

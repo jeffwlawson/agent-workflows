@@ -125,10 +125,21 @@ type Live = PullRequest | "gone" | { readonly unread: string };
  * since a label the workflow token adds starts nothing. That gate then
  * merges, waits, or disarms a resolution's head. A label the loop adds never
  * arms. A run that stopped hands back nothing: `agent:blocked` and the arm
- * are the maintainer's to act on.
+ * are the maintainer's to act on. A pull request that could not be read is
+ * said, on every path, since a skipped hand-back can leave the arm on with
+ * nothing to re-start the gate.
  */
 const handBackToMerge = async (inputs: Inputs, live: Live, pr: number, loop: Writer): Promise<void> => {
-  if (live === "gone" || "unread" in live || live.state !== "open" || !live.labels.includes(MERGE_LABEL)) return;
+  if (live === "gone") return;
+  // Unread is not "carries no agent:merge": the gate the refresh's push
+  // started may have ended `wait`, and with no hand-back nothing re-starts it.
+  if ("unread" in live) {
+    console.log(
+      `::warning::Could not read PR #${pr} (${live.unread}), so whether it carries ${MERGE_LABEL} could not be told, and it was not handed back to the merge gate. If it carries ${MERGE_LABEL}, remove it and add it again to re-start the gate.`,
+    );
+    return;
+  }
+  if (live.state !== "open" || !live.labels.includes(MERGE_LABEL)) return;
   if (inputs.LOOP_TOKEN === "" || (inputs.LOOP_TOKEN_SOURCE !== "app" && inputs.LOOP_TOKEN_SOURCE !== "pat")) {
     console.log(
       `::warning::PR #${pr} carries ${MERGE_LABEL}, but neither the loop's App nor AGENT_PAT is set, so it was not handed back to the merge gate: a label added with GITHUB_TOKEN starts nothing. Remove ${MERGE_LABEL} and add it again to re-start it.`,

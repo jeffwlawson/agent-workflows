@@ -254,7 +254,7 @@ jobs:
   # `AGENT_PAT`: the arm and the merge are made with that token, and without
   # either the called job refuses rather than arming with `GITHUB_TOKEN`.
   merge:
-    uses: jeffwlawson/agent-workflows/.github/workflows/merge.yml@v0.9.3
+    uses: jeffwlawson/agent-workflows/.github/workflows/merge.yml@v0.9.4
     # Granted here, bounded there. No `contents: write` and no
     # `statuses: write`: the arm and the merge are the loop token's, never
     # this job's.

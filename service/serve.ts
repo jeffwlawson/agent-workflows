@@ -169,7 +169,7 @@ export const serveDispatcher = async (
   log(
     `dispatcher ${VERSION} listening: webhooks at http://${settings.WEBHOOK_HOST}:${webhookPort}/github, ` +
       `tokens at http://${settings.TOKEN_HOST}:${tokenPort}/token; jobs to ${settings.WORKER_URL}; ` +
-      `serving installations on ${owners.join(", ")}`,
+      `serving installations on ${owners.join(", ")}; instance ${dispatcher.instance}`,
   );
   // A restart strands no labelled work (#581): what nothing holds a job for is dispatched again.
   log("scanning for labelled work nothing holds a job for");
@@ -227,7 +227,16 @@ export const serveWorker = async (settings: InputValues<typeof WORKER>, stdout: 
   };
   const queue = oneAtATime(work, (error) => log(`a job failed: ${error instanceof Error ? error.message : String(error)}`));
   const accept = jobDoor({ secret: settings.WORKER_SECRET, version: VERSION, accept: queue.add });
-  const held = heldDoor({ secret: settings.WORKER_SECRET, held: queue.held });
+  const held = heldDoor({
+    secret: settings.WORKER_SECRET,
+    held: queue.held,
+    drop: (dropped) => {
+      const gone = queue.drop(dropped);
+      // A dispatcher restarted since it queued them knows none of their ids (#597).
+      for (const job of gone) log(`job ${job.id}: dropped before it ran: queued by dispatcher instance ${job.instance}, which has since restarted`);
+      return gone;
+    },
+  });
 
   const jobs = door(
     {
@@ -238,7 +247,8 @@ export const serveWorker = async (settings: InputValues<typeof WORKER>, stdout: 
       },
       "/held": async (request) => {
         const response = held(request);
-        log(`held request: ${response.status}`);
+        // A refusal's reason is logged, since the dispatcher's scan stops on it (#601); a list of jobs is not.
+        log(`held request: ${response.status}${response.status === 200 ? "" : ` ${response.body}`}`);
         return response;
       },
     },

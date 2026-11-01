@@ -1,0 +1,6 @@
+schema_version: "1.1"
+name: rescue-deleted-before-open
+context:
+  scaffold_script: place-files.sh
+expected_outcome: |
+  Moves implement:publish's rescue deletion to after the pull request is opened and recorded, adds or updates a test that holds it, and changes nothing the finding did not ask for.

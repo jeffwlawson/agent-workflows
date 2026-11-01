@@ -1323,7 +1323,7 @@ describe("the build ships every prompt beside its runner", () => {
       .flatMap((entry) => {
         const rel = prefix ? `${prefix}/${entry.name}` : entry.name;
         if (entry.isDirectory()) {
-          return ["dist", "node_modules", "output", "docs"].includes(entry.name)
+          return ["dist", "node_modules", "output", "docs", "evals"].includes(entry.name)
             ? []
             : mdFilesUnder(path.join(dir, entry.name), rel);
         }
@@ -1429,6 +1429,23 @@ describe("the build ships every prompt beside its runner", () => {
       expect(fs.existsSync(path.join(out, "docs"))).toBe(false);
       expect(fs.existsSync(path.join(PACKAGE_DIR, "docs/ADOPTING.md"))).toBe(true);
       expect(fs.existsSync(path.join(PACKAGE_DIR, "docs/platform-spec.md"))).toBe(true);
+    } finally {
+      fs.rmSync(out, { recursive: true, force: true });
+    }
+  });
+
+  /**
+   * Nor `evals/` (#617): the golden-PR cases are run by hand from a checkout,
+   * and their briefs, inputs and graders are Markdown the walk would otherwise
+   * ship beside every runner.
+   */
+  it("leaves evals/ out of dist", () => {
+    const out = fs.mkdtempSync(path.join(os.tmpdir(), "agent-assets-"));
+    try {
+      copyAssets(PACKAGE_DIR, out);
+
+      expect(fs.existsSync(path.join(out, "evals"))).toBe(false);
+      expect(fs.existsSync(path.join(PACKAGE_DIR, "evals", "README.md"))).toBe(true);
     } finally {
       fs.rmSync(out, { recursive: true, force: true });
     }

@@ -1,0 +1,6 @@
+schema_version: "1.1"
+name: rescue-deleted-before-open
+context:
+  scaffold_script: place-files.sh
+expected_outcome: |
+  Raises, as a finding to fix before merge, that implement:publish deletes the rescue branch before the pull request is opened, so a failed open loses the rescued commits.

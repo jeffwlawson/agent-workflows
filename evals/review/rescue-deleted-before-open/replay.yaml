@@ -1,0 +1,24 @@
+# PR #570, as the loop's review approved it.
+#
+# The head is 4d56bbc, where the agent-review status turned success at
+# 2026-10-31T22:35Z. The next review, on b41cecd (a merge of main that left
+# implement/publish.ts as it was), raised what this one missed: publish deletes
+# the rescue right after the push and before the pull request is opened, so a
+# failed open loses the rescued commits (fixed in ba76218). That review's
+# follow-up #578 records a second way the rescue loses commits. The merged
+# head, 7c76f9c, already holds the first fix. The base is the merge-base the
+# review's three-dot diff was taken from.
+pr: 570
+repository: https://github.com/jeffwlawson/agent-workflows.git
+base_ref: main
+base: 9589e3e9eacc772a31f1ef8fb9dab8e4cf834725
+head: 4d56bbc52e833ee3ec9303503b0d601d8da78624
+# The brief is the triage comment on #270 (2026-10-31T18:43Z), which the review
+# reads in the discussion and its criteria from.
+brief: inputs/DISCUSSION.md
+inputs:
+  PR_NUMBER: "570"
+  BRANCH: agent/issue-270-an-implement-run-that-hits-its-time-limit-can-lose
+  PR_TITLE: "feat(implement): rescue a stopped run's commits to agent/rescue/issue-<n> and resume from them"
+  ISSUE_NUMBER: "270"
+  ISSUE_TITLE: An implement run that hits its time limit can lose finished, committed work

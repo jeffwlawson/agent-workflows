@@ -1,0 +1,42 @@
+# What every review case is replayed with. A case's replay.yaml and inputs/
+# override any of these.
+#
+# The inputs below are a first review of an ordinary pull request, as
+# review/review.ts renders them: no earlier verdict, nothing carried, no notes,
+# no CI results collected, and the red check not configured (it is not, in this
+# repository). Each string is the one its renderer returns for that state, read
+# off the built modules when these cases were written. SINCE_BRIEF is the one
+# exception: the replay does not read the base branch's history, and says so.
+
+execution:
+  max_turns: 200
+  timeout_seconds: 2400
+  allowed_tools: [Read, Glob, Grep, Bash]
+
+inputs:
+  PULL_REQUEST_KIND: "An ordinary pull request into `main`. Review the whole change."
+  CI_STATUS: "(CI results were not collected for this run.)"
+  RED_CHECK: "**The red check is not configured** for this repository, so there is no red evidence. Review the tests as the rest of this brief says, and do not flag a change only for having no red test."
+  HISTORY: "This review follows **no fix round** it can recognise: either no earlier verdict stands on this pull request, or the commits since the last one are a human's push, a merge, or a fix round a human started by adding `agent:fix`, which posts no verdict of its own. Review them as a change in full."
+  OPEN_FINDINGS: "(no finding from an earlier review of this pull request is open: either this is the first review, or every earlier finding has been verified fixed.)"
+  SETTLED_FINDINGS: "(no finding on this pull request has been closed by a maintainer.)"
+  FIX_NOTES: "(the fix run has left no out-of-scope notes since the last review.)"
+  SINCE_BRIEF: "(The check could not run: this is an eval replay, which does not read the base branch's history since the brief. Nothing to rule on: leave `sinceBrief` out.)"
+  CURRENT_SUMMARY: "(empty)"
+  SUMMARY_RULE: "**This review writes them.** Something was pushed since the summary was last written, so the workflow replaces the title and the summary block with yours."
+  FINAL_SUMMARY: ""
+  CARRIED_FOLLOW_UPS: "(None. `followUps` is a complete restatement every round on this pull request, so re-record the entries an earlier round listed that are still true.)"
+
+# Appended after the rendered prompt. The runner's second phase, which turns
+# the review into structured output, does not run here, so the findings have to
+# be in the final message for a grader to read.
+note: |
+  # EVAL REPLAY
+
+  This review is a replay, run to measure the brief above. Nothing you return is posted and GitHub
+  is not reachable; the checkout is at `{{HEAD}}`, with `origin/{{BASE_REF}}` at the base.
+
+  In your **final message**, before `<promise>COMPLETE</promise>`, write out what the review returns:
+  your recommendation (approve, or changes before merge); then every finding, each with its severity,
+  whether it is fix before merge, its `path:line`, its title and its body; then each acceptance
+  criterion's ruling; then the follow-ups.

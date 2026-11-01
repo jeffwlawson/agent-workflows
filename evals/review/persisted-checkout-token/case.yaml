@@ -1,0 +1,6 @@
+schema_version: "1.1"
+name: persisted-checkout-token
+context:
+  scaffold_script: place-files.sh
+expected_outcome: |
+  Raises, as a finding to fix before merge, that publish.yml's checkout leaves its token in .git/config while the job now holds contents: write, so any later step (npm ci's install scripts among them) could push.

@@ -1,0 +1,6 @@
+schema_version: "1.1"
+name: clean-doctor-service-guard
+context:
+  scaffold_script: place-files.sh
+expected_outcome: |
+  Recommends approval and raises no finding to fix before merge: the change makes doctor fail a service repository's callers pinned before the first release whose reusables skip on service, with tests and docs, and nothing in it needs changing.

@@ -11,15 +11,15 @@ You are on branch `{{BRANCH}}`, already created from `{{BASE_REF}}`.
 
 # CONTEXT
 
-Read these before changing code:
+Read `CONTEXT.md` before changing code: the domain model (the concepts this project is built
+from, the distinctions it holds between them, and where the seams are). Reason from it, not from
+what the code appears to do.
 
-- `CONTEXT.md`: the domain model (the concepts this project is built from, the distinctions
-  it holds between them, and where the seams are). Reason from it, not from what the code
-  appears to do.
-- `CLAUDE.md`: the commands, the conventions, and the contract anything you add here has to
-  satisfy, including any step-by-step it gives for the kind of change this issue asks for.
-  Follow it there rather than from memory: it is the copy that is kept current, and anything
-  restating it (this prompt included) would be a second copy already drifting from it.
+`CLAUDE.md` is already in your context; do not read it again. It is the rules to follow: the
+commands, the conventions, and the contract anything you add here has to satisfy, including any
+step-by-step it gives for the kind of change this issue asks for. Follow it there rather than from
+memory: it is the copy that is kept current, and anything restating it (this prompt included) would
+be a second copy already drifting from it.
 
 Explore the code the issue touches, and its tests, before editing. Match what is there.
 
@@ -52,7 +52,18 @@ Do red-green-refactor where a test seam already exists:
 Do not improvise new test seams: for example, extracting a function purely so it can be
 tested in isolation. That creates spaghetti tests.
 
-Run the verify command `CLAUDE.md` names before committing. It must pass.
+While iterating, run the test files that cover your change, not the whole suite. Run the verify
+command `CLAUDE.md` names once, before committing. It must pass. Run it again only if anything
+changed after it passed. Save the full output of a test run to a file and search that file, rather
+than running the tests again to search them.
+
+A verify failure after your change is yours unless it also fails without your change. To show that,
+run the failing tests, not the whole suite, on `{{BASE_REF}}` in a separate worktree
+(`git worktree add`), with its dependencies installed the way this checkout's were. If they fail
+there too, with the same message, they belong to the environment: do not edit code or tests to make
+them pass. Where the failure says how to set the environment up and the sandbox allows it, do that
+and run again. Otherwise commit, and name in the commit message each test still failing, its
+message, and that it fails on the base too. A failure you did not reproduce on the base is yours.
 
 A verify failure after your change is yours unless it also fails without your change. To show that,
 run the failing tests, not the whole suite, on `{{BASE_REF}}` in a separate worktree
@@ -67,9 +78,12 @@ message, and that it fails on the base too. A failure you did not reproduce on t
 Make one or more commits on `{{BRANCH}}` with conventional commit messages.
 Commit as soon as the work first passes the verify command `CLAUDE.md` names, and make later changes
 as further commits. A run can be stopped at its time limit, and only committed work survives that.
+A later commit is a change after that pass, so run the verify command again before making it.
 Do not use em dashes in anything you write; use a comma, colon, semicolon, parentheses, or a new sentence instead.
 
 Do not push. Do not edit labels. Do not create GitHub comments.
 Do not close the issue. Do not create or edit PRs.
 
-When complete, output `<promise>COMPLETE</promise>`.
+When complete, after committing, output only `<promise>COMPLETE</promise>`, with no summary of what
+you did: nothing reads one. A run you stopped as stale ends with its `<stale>` tag instead (see
+*Check the issue against the code*).

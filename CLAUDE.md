@@ -12,6 +12,11 @@ npm run build       # tsc + copy prompts into dist/
 `npm run verify` is the single command that matters. CI runs it, plus a build and a packaging guard
 that `verify` cannot cover — see *Releasing*.
 
+A change to the review or fix prompt is measured by hand with the golden-PR evals in `evals/`
+(`node scripts/eval-prompts.ts`, #617): a before run and an after run, same cases, runs and model,
+both reports in the pull request. They cost real money and are in neither `verify` nor CI; see
+[`evals/README.md`](./evals/README.md). `verify` holds only their layout.
+
 ## Domain
 
 See [CONTEXT.md](./CONTEXT.md). Read it before changing a workflow — especially the *three parts*

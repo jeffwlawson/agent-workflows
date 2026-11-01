@@ -8,7 +8,7 @@
 # bumps a pin at all. The reasoning, and the copy an adopter installs, is
 # docs/ADOPTING.md §4; a test holds this file equal to the block there.
 # It reads `.github/workflows` only, so it never sees `examples/callers/` — the
-# release covers those, see CLAUDE.md, *Releasing*.
+# release covers those, see docs/agents/releasing.md.
 version: 2
 updates:
   - package-ecosystem: "github-actions"

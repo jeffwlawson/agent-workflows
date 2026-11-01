@@ -25,8 +25,10 @@ which is why adopter-facing issues carry `parked`.
 This repo predates `docs/adr/`, and a large amount of settled reasoning is already written down
 outside it. Read these before proposing that something is undecided:
 
-- **`CLAUDE.md`** — commands, conventions, and the release mechanics. The *"This repo runs its own
-  loop, on the last release"* section is a decision record in all but name.
+- **`CLAUDE.md`** — commands, conventions, and a pointer per kind of change to the file that holds
+  its steps: the release mechanics are in [`releasing.md`](./releasing.md), and the *"This repo
+  runs its own loop, on the last release"* decision is
+  [ADR 0010](../adr/0010-this-repo-runs-its-own-loop-on-the-last-release.md).
 - **`docs/parity.md`** — the numbered analysis of what the loop does and does not do. §10
   (*Invariants*) is the closest thing here to a set of ADRs, and several rules record that they
   have been re-derived and re-argued before.

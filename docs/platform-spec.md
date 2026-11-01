@@ -3123,7 +3123,7 @@ neither.
 >   always passes the App's, so on the service it never fires: conclude adds `agent:update-branch`
 >   again, as the App. Its guard against re-requesting while another trigger label is on is
 >   reasoned from Actions' concurrency group, whose waiting slot holds one run and cancels the run
->   it replaces. The worker queues jobs one at a time and cancels none, so on the service that
+>   it replaces. The worker runs one job at a time per pull request and cancels none, so on the service that
 >   reason does not hold: the guard is harmless there, and only leaves the re-request to a person
 >   where another label's job is still to run.
 >

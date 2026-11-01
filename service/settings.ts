@@ -36,7 +36,8 @@ const REQUIRED = { required: true } as const;
  *   its own, so the one exposed to the internet mints nothing.
  * - `JOB_DEADLINE_MARGIN_MINUTES`: added to a job's own time limit, its
  *   kind's (`TIME_LIMITS` in `job.ts`), for its deadline, past which no token is minted for it. It covers the phases
- *   around the runner's, and the time a job waits in the worker's queue.
+ *   around the runner's, and the time a job waits in the worker's queue, in
+ *   its lane or behind an earlier job for its item (`lanes` in `worker.ts`).
  * - `EXTRA_OWNERS`: the accounts, comma-separated, whose installations the
  *   dispatcher serves besides the App owner's own. Empty is none, so an App
  *   installed on a stranger's account serves nothing there, even where the

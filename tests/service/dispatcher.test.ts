@@ -31,7 +31,7 @@ import {
   verifySignature,
   type Job,
 } from "../../service/job.js";
-import { heldDoor, jobDoor, oneAtATime } from "../../service/worker.js";
+import { heldDoor, jobDoor, lanes } from "../../service/worker.js";
 import { STUB_LABELS } from "../../shared/follow-up-plan.js";
 import {
   FIX_LABEL,
@@ -130,7 +130,7 @@ const setup = (
   /** The real worker, where `queue` says so: each job whose work started, and the way to end the one running. */
   const ran: Job[] = [];
   const finishes: (() => void)[] = [];
-  const queue = oneAtATime<Job>(
+  const queue = lanes(
     (job) =>
       new Promise<void>((resolve) => {
         ran.push(job);

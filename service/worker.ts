@@ -20,6 +20,7 @@ import {
   type FixJob,
   type FollowUpsJob,
   type ImplementJob,
+  type JobKind,
   type ImplementPrdJob,
   type Job,
   type ReviewJob,
@@ -159,6 +160,12 @@ export interface JobEdges {
   readonly runDir: string;
   /** How long a minute of a time limit is, in milliseconds: a minute, but where a test shortens it. */
   readonly minuteMs?: number;
+  /**
+   * Waits for the worker's agent lane (`lanes`), for a job that runs in the
+   * light lane until it would start an agent: an update-branch job whose merge
+   * conflicted, before its agent's job. Resolves at once where unset.
+   */
+  readonly agentLane?: () => Promise<void>;
 }
 
 /**
@@ -1306,6 +1313,11 @@ const runUpdateBranch = async (job: UpdateBranchJob, edges: JobEdges): Promise<r
   const runnerDir = outputDir("update-branch");
   const bundleDir = outputDir("update-branch:bundle");
   if (claimed && status === "conflicts") {
+    // The hand-off (#582): the gate's end ran in the light lane, and the
+    // agent's job waits its turn in the agent lane, behind the agent jobs that
+    // arrived before this one. Its time limit starts once it has the lane; its
+    // deadline is the dispatcher's, so a wait past it ends at the next token.
+    await edges.agentLane?.();
     agent.result = "success";
     const agentLimit = limit(minutes);
     /** The agent's job ran past its time limit, which ends it as Actions ends a job at its `timeout-minutes`. */
@@ -2192,11 +2204,12 @@ const runImplementPrd = async (job: ImplementPrdJob, edges: JobEdges): Promise<r
  * No checkout, no setup and no agent: nothing here reads the repository's
  * code. Each command runs in the run's own directory.
  *
- * **One at a time is the lock.** Actions holds this job in the pull
- * request's concurrency group, so a label added while a merge's run files
- * cannot file twice. Here the worker's queue runs one job at a time, so the
- * second run finds the marker the first took off and ends silently. That
- * holds on one worker only.
+ * **One at a time per pull request is the lock.** Actions holds this job in
+ * the pull request's concurrency group, so a label added while a merge's run
+ * files cannot file twice. Here the worker's queue (`lanes`) runs one job at a
+ * time for each pull request, in the order they arrived, whatever lane each
+ * runs in, so the second run finds the marker the first took off and ends
+ * silently. That holds on one worker only.
  */
 const runFollowUps = async (job: FollowUpsJob, edges: JobEdges): Promise<readonly Phase[]> => {
   const { note, limit, ask, run, done } = startRun(job, edges);
@@ -2280,7 +2293,7 @@ export interface HeldDoorEdges {
   readonly secret: string;
   /** Every job queued or running, in the order they arrived. */
   readonly held: () => readonly Job[];
-  /** Takes every queued job `dropped` matches out of the queue, never the running one, so it never runs. */
+  /** Takes every queued job `dropped` matches out of the queue, never one that has started, so it never runs. */
   readonly drop: (dropped: (job: Job) => boolean) => readonly Job[];
   /** The worker's clock, which a question's `asked` is held to. */
   readonly now?: () => Date;
@@ -2333,42 +2346,130 @@ export interface Queue<T> {
   readonly held: () => readonly T[];
   /**
    * Takes every queued item `dropped` matches out of the queue, so its work
-   * never starts, and answers them in the order they arrived. The running
-   * item is never taken: its work has started.
+   * never starts, and answers them in the order they arrived. An item
+   * whose work has started is never taken, waiting for a lane or not.
    */
   readonly drop: (dropped: (item: T) => boolean) => readonly T[];
 }
 
 /**
- * A queue that runs one job at a time, in the order they arrived: one run per
- * pull request, and per box, at this stage. A job that throws does not stop
- * the ones behind it, and a job dropped before its turn is passed over.
+ * Which of the worker's two lanes a kind runs in (#582), decided by what the
+ * kind *can* do, since whether a job starts an agent is often known only once
+ * its gate or merge has run. `light` starts no agent: follow-ups. `agent` can
+ * start one, and a gate that refuses ends it early in the same lane.
+ * `hand-off` runs in the light lane until it would start an agent, then waits
+ * for the agent lane: update-branch, whose clean merge needs no agent.
  */
-export const oneAtATime = <T>(work: (item: T) => Promise<void>, onError: (error: unknown) => void): Queue<T> => {
-  let tail: Promise<void> = Promise.resolve();
-  const items: T[] = [];
-  let running: T | undefined;
+export const LANES: Readonly<Record<JobKind, "light" | "agent" | "hand-off">> = {
+  review: "agent",
+  fix: "agent",
+  "update-branch": "hand-off",
+  implement: "agent",
+  "implement-prd": "agent",
+  "follow-ups": "light",
+};
+
+/** A job the queue holds, and how far it has got. */
+interface Held {
+  readonly job: Job;
+  readonly lane: (typeof LANES)[JobKind];
+  /** The pull request or issue it is for: two jobs for one never run at once. */
+  readonly item: string;
+  /** Waiting its turn; in the light lane; handed off and waiting for the agent lane; in the agent lane. */
+  state: "queued" | "light" | "waiting" | "agent";
+  /** Ends a hand-off's wait, once it has the agent lane. */
+  resume?: () => void;
+}
+
+/**
+ * **The worker's queue** (#582): two lanes, each running one job at a time,
+ * beneath a chain per pull request or issue.
+ *
+ * - **The agent lane** runs `agent` jobs, and a `hand-off` job's agent part,
+ *   strictly in the order they arrived: a `hand-off` job holds its place in it
+ *   from its arrival, so the lane waits at that place until the job either
+ *   asks for the lane (`agentLane`, handed to its work) or ends without one.
+ *   So two agent jobs never run at once, and no agent job waits behind one
+ *   that arrived after it, nor longer than it would have in one queue.
+ * - **The light lane** runs `light` jobs and a `hand-off` job until it asks
+ *   for the agent lane, which frees the light lane for the next. It takes the
+ *   first that arrived whose item is free, so a light job waiting on its item
+ *   holds up no other.
+ * - **Per item**, a job starts only once every job for its item that arrived
+ *   before it has ended, so two jobs for one item run in arrival order and
+ *   never overlap, whatever their lanes.
+ *
+ * Nothing here reads a deadline: it is the dispatcher's, set at dispatch, so a
+ * job's wait counts against it in either lane, and a job late by its turn ends
+ * at its first token request, as one late in a single queue did. A job that
+ * throws does not stop the ones behind it, and one dropped before its turn is
+ * passed over.
+ */
+export const lanes = (work: (job: Job, agentLane: () => Promise<void>) => Promise<void>, onError: (error: unknown) => void): Queue<Job> => {
+  const entries: Held[] = [];
+  let light: Held | undefined;
+  let agent: Held | undefined;
+
+  /** No job for its item arrived before it and is still held. */
+  const itemFree = (entry: Held): boolean => !entries.slice(0, entries.indexOf(entry)).some((before) => before.item === entry.item);
+
+  const start = (entry: Held): void => {
+    const agentLane = (): Promise<void> => {
+      // Only a hand-off waits: any other job is already in the lane it ends in.
+      if (entry.state !== "light" || entry.lane !== "hand-off") return Promise.resolve();
+      return new Promise<void>((resolve) => {
+        entry.state = "waiting";
+        entry.resume = resolve;
+        light = undefined;
+        pump();
+      });
+    };
+    void Promise.resolve()
+      .then(() => work(entry.job, agentLane))
+      .catch(onError)
+      .finally(() => {
+        entries.splice(entries.indexOf(entry), 1);
+        if (light === entry) light = undefined;
+        if (agent === entry) agent = undefined;
+        pump();
+      });
+  };
+
+  const pump = (): void => {
+    if (agent === undefined) {
+      const front = entries.find((entry) => entry.lane !== "light");
+      if (front?.state === "waiting") {
+        agent = front;
+        front.state = "agent";
+        front.resume?.();
+      } else if (front?.lane === "agent" && front.state === "queued" && itemFree(front)) {
+        agent = front;
+        front.state = "agent";
+        start(front);
+      }
+    }
+    if (light === undefined) {
+      const next = entries.find((entry) => entry.lane !== "agent" && entry.state === "queued" && itemFree(entry));
+      if (next !== undefined) {
+        light = next;
+        next.state = "light";
+        start(next);
+      }
+    }
+  };
+
   return {
-    add: (item) => {
-      items.push(item);
-      tail = tail
-        .then(() => {
-          if (!items.includes(item)) return undefined;
-          running = item;
-          return work(item);
-        })
-        .catch(onError)
-        .finally(() => {
-          if (running !== item) return;
-          running = undefined;
-          items.splice(items.indexOf(item), 1);
-        });
+    add: (job) => {
+      const { repo, number } = heldOf(job);
+      entries.push({ job, lane: LANES[job.workflow], item: `${repo}#${number}`, state: "queued" });
+      pump();
     },
-    held: () => [...items],
+    held: () => entries.map((entry) => entry.job),
     drop: (dropped) => {
-      const taken = items.filter((item) => item !== running && dropped(item));
-      for (const item of taken) items.splice(items.indexOf(item), 1);
-      return taken;
+      const taken = entries.filter((entry) => entry.state === "queued" && dropped(entry.job));
+      for (const entry of taken) entries.splice(entries.indexOf(entry), 1);
+      pump();
+      return taken.map((entry) => entry.job);
     },
   };
 };

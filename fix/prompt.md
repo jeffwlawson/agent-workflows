@@ -114,6 +114,14 @@ from memory.
 
 Run the verify command `CLAUDE.md` names before committing. It must pass.
 
+A verify failure after your change is yours unless it also fails without your change. To show that,
+run the failing tests, not the whole suite, on the PR's base branch in a separate worktree
+(`git worktree add`), with its dependencies installed the way this checkout's were. If they fail
+there too, with the same message, they belong to the environment: do not edit code or tests to make
+them pass. Where the failure says how to set the environment up and the sandbox allows it, do that
+and run again. Otherwise commit, and name in the commit message each test still failing, its
+message, and that it fails on the base too. A failure you did not reproduce on the base is yours.
+
 # COMMIT
 
 Make one or more commits on `{{BRANCH}}` with conventional commit messages. The message is the
@@ -232,4 +240,5 @@ Do not push. Do not edit labels. Do not create GitHub comments or reviews yourse
 review threads: not yourself, and not by asking for it. Nothing you report resolves one. The
 workflow posts your replies and leaves every thread open.
 
-When complete, output `<promise>COMPLETE</promise>`.
+When complete, output only `<promise>COMPLETE</promise>`, with no summary of what you did: the
+outcomes above are asked for after you finish, and that is the only report anything reads.

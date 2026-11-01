@@ -518,11 +518,11 @@ Inside it:
   box's services on `lo`, the job door among them, are out of the agent's reach whatever this rule
   says. The repository's setup has the same network (#537), so for setup too it is defence in
   depth. What it still limits on its own is the worker's own traffic;
-- the package installed once, as root, into `/opt/agent-workflows`, by the registry route
-  (*Installing the package*, above), so the worker never reaches the registry itself and the box
-  keeps no registry token: the install asks for one, uses it and deletes it. An upgrade is the
-  same install at a new version, then a restart. The tokenless install would do without the
-  token, but this box does not use it yet;
+- the package installed, as root, into `/opt/agent-workflows`, so the worker never fetches it
+  itself. The first install still takes the registry route (*Installing the package*, above):
+  `install-box.sh` asks for a token, uses it and deletes it. An upgrade takes the tokenless
+  install, from a tarball Unraid downloads and copies here (*Upgrading both*, below), and no
+  longer uses the registry;
 - the worker as a systemd unit running that install (`node
   /opt/agent-workflows/node_modules/@jeffwlawson/agent-workflows/dist/cli.js worker`) as the
   worker's user, after tinyproxy, its settings in an `EnvironmentFile` only root can read,
@@ -560,7 +560,7 @@ too, stays a control of its own.
 
 **The dispatcher** lives in `/mnt/user/appdata/agent-dispatcher/`: the App's key, `app.pem`, its
 settings, `service.env`, and the package, installed once into `pkg/` by a throwaway container
-(`docker run --rm … node:24-alpine npm install --prefix /pkg …`), so the server holds no registry
+(`docker run --rm … node:24-alpine npm install --prefix /pkg …`), so the server keeps no registry
 token either. `service.env` is root's alone; `app.pem` belongs to the user the container runs as,
 uid 99, mode 600:
 
@@ -593,7 +593,7 @@ docker run -d --name agent-dispatcher --restart unless-stopped --network host \
 Docker reads `--env-file` when it creates a container, not when it restarts one, so a change to
 `service.env` means a new container. An upgrade is an install at the new version into `pkg/` and a
 `docker restart`, with the worker moved to the same version alongside, since a worker refuses jobs
-from a dispatcher of another release. **Tailscale Funnel** publishes the webhook door, on port 10000 (the server's `serve` already
+from a dispatcher of another release (*Upgrading both*, below). **Tailscale Funnel** publishes the webhook door, on port 10000 (the server's `serve` already
 holds 8443):
 
 ```bash
@@ -603,6 +603,26 @@ tailscale funnel --bg --https=10000 http://127.0.0.1:8790
 The App's webhook URL is then the server's Funnel name, `https://<node>.<tailnet>.ts.net:10000/github`.
 Leave *Settings → Tailscale → Allow Tailscale Funnel* at **Yes**, or the plugin's watcher removes
 the Funnel.
+
+**Upgrading both** is one command, run as root on Unraid, and needs no registry token:
+
+```bash
+bash /boot/config/agent-service/upgrade.sh <version>
+```
+
+It downloads the release's tarball and its `.sha256` once, on Unraid (the tokenless install,
+above, from the repository `PACKAGE_SOURCE` names in `agent-service.conf`), checks it, and copies
+it to the box over ssh as `BOX_SSH_USER`, with the box's `upgrade-box.sh`, `check-box.sh` and the
+conf, where the digest is checked again. Then it installs on both with neither service touched,
+restarts the worker and straight after it the dispatcher, and runs both check scripts, failing
+where their versions or the shared secret's fingerprints differ. Restarting the worker drops any
+job queued in it, since its queue is in memory, and between the two restarts the dispatcher gets
+409 from the worker; the script says for how many seconds. Where the worker's restart fails, it
+stops before restarting the dispatcher, and where any step stops it prints the commands that
+finish the job, or the way back: `upgrade.sh` at the earlier version, which installs it on the box
+first. Its halves, `upgrade-unraid.sh` and
+`upgrade-box.sh`, each install a tarball they are handed and can still be run alone, to recover or
+roll back one machine. None of the three uses the registry route any more.
 
 **After a reboot the chain comes back on its own**, as #374 showed with the prototype, the same
 chain of units and scripts: the array

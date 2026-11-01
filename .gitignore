@@ -8,3 +8,5 @@ failure_reason.txt
 
 # A deployment's own settings for deploy/unraid/ (copy agent-service.conf.example).
 deploy/**/agent-service.conf
+# upgrade.sh keeps the box's host key beside the conf.
+deploy/**/known_hosts

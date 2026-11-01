@@ -89,6 +89,10 @@ export const serveDispatcher = async (
   const webhookPort = wholeNumber("WEBHOOK_PORT", settings.WEBHOOK_PORT);
   const tokenPort = wholeNumber("TOKEN_PORT", settings.TOKEN_PORT);
   const margin = wholeNumber("JOB_DEADLINE_MARGIN_MINUTES", settings.JOB_DEADLINE_MARGIN_MINUTES);
+  const scanLimit = wholeNumber("SCAN_DISPATCH_LIMIT", settings.SCAN_DISPATCH_LIMIT);
+  if (scanLimit === 0) {
+    throw new Error("`SCAN_DISPATCH_LIMIT` is `0`, which would not turn the scan off, only stop it dispatching anything. It must be at least 1.");
+  }
   let privateKey: string;
   try {
     privateKey = fs.readFileSync(settings.GITHUB_APP_PRIVATE_KEY_FILE, "utf8");
@@ -127,6 +131,7 @@ export const serveDispatcher = async (
     webhookSecret: settings.GITHUB_WEBHOOK_SECRET,
     workerSecret: settings.WORKER_SECRET,
     deadlineMarginMinutes: margin,
+    scanLimit,
     version: VERSION,
   });
 

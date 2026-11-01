@@ -654,6 +654,9 @@ at the worker's: since a trigger label is on while its run works, one on an open
 held for it, by the worker or the dispatcher, is a run that never reached its ending, and is
 dispatched as its delivery would have been, the actor of the label's latest `labeled` event
 standing in for the sender. `agent:follow-ups` is a marker, not a run, and is never scanned.
+A scan's dispatches are counted per item and label (#596), so a job that ends the worker's process,
+and keeps its label through every restart, is dispatched at most `SCAN_DISPATCH_LIMIT` times and
+then left for a person, with one comment on the item; that label's delivery resets the count.
 
 The **worker** (#457) runs each job the way its workflow's reusable runs it, `review.yml` for a
 `review` job, `fix.yml` for a `fix` job, `update-branch.yml` for an `update-branch` job and

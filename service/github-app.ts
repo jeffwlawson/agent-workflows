@@ -11,7 +11,8 @@ import type { TokenGrant } from "./job.js";
  * reads (#581) go through one that can read issues and pull requests besides,
  * minted and reused the same way, but for listing an installation's
  * repositories, which needs a token for the whole installation that reads
- * metadata alone.
+ * metadata alone. The one comment it writes, where a scan stops dispatching
+ * an item (#596), goes through a token minted for it alone.
  */
 
 const API = "https://api.github.com";
@@ -276,6 +277,10 @@ export const liveAppGitHub = (appId: string, privateKey: string): AppGitHub => {
       const branch = field(reply, "default_branch");
       if (reply.status !== 200 || typeof branch !== "string") throw new Error(`reading ${repo}'s default branch answered ${reply.status}`);
       return branch;
+    },
+    comment: async (repo, number, body, token) => {
+      const reply = await api(`/repos/${repo}/issues/${number}/comments`, token, { method: "POST", body: { body } });
+      if (reply.status !== 201) throw new Error(`commenting on ${repo}#${number} answered ${reply.status}`);
     },
   };
 };

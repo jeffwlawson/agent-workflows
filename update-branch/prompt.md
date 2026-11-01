@@ -49,11 +49,12 @@ Run the verify command `CLAUDE.md` names after resolving. It must pass before yo
 
 A verify failure after your change is yours unless it also fails without your change. To show that,
 run the failing tests, not the whole suite, on `origin/{{BASE_REF}}` in a separate worktree
-(`git worktree add`). If they fail there too, they belong to the environment: do not edit code or
-tests to make them pass. Where the failure says how to set the environment up and the sandbox allows
-it, do that and run again. Otherwise commit, and name in the commit message each test still failing,
-its message, and that it fails on the base too. Make the failure the **first line** of your comment
-as well. A failure you did not reproduce on the base is yours.
+(`git worktree add`), with its dependencies installed the way this checkout's were. If they fail
+there too, with the same message, they belong to the environment: do not edit code or tests to make
+them pass. Where the failure says how to set the environment up and the sandbox allows it, do that
+and run again. Otherwise commit, and name in the commit message each test still failing, its
+message, and that it fails on the base too. Make the failure the **first line** of your comment as
+well. A failure you did not reproduce on the base is yours.
 
 If it cannot pass for any other reason, fix what you can, commit anyway so the work is not lost,
 and make the failure the **first line** of your comment: a silently broken merge is far worse than

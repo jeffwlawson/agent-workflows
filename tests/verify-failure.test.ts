@@ -23,6 +23,11 @@ describe.each([
     expect(text).toContain(`run the failing tests, not the whole suite, on ${base} in a separate worktree`);
   });
 
+  it("installs the worktree's dependencies first, and counts only the same failure as the base's", () => {
+    expect(text).toContain("with its dependencies installed the way this checkout's were");
+    expect(text).toContain("If they fail there too, with the same message, they belong to the environment");
+  });
+
   it("edits nothing to make a failure the base shares pass, and sets the environment up where it can", () => {
     expect(text).toContain("do not edit code or tests to make them pass");
     expect(text).toContain("Where the failure says how to set the environment up and the sandbox allows it");

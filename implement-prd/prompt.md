@@ -80,12 +80,13 @@ branch; read the failure before assuming which.
 
 A verify failure after your change is yours unless it also fails without your change. To show that,
 run the failing tests, not the whole suite, on `{{BASE_REF}}` in a separate worktree
-(`git worktree add`). If they fail there too, they belong to the environment: do not edit code or
-tests to make them pass. Where the failure says how to set the environment up and the sandbox allows
-it, do that and run again. Otherwise commit, and name in the commit message each test still failing,
-its message, and that it fails on the base too. An interaction with an earlier slice passes on the
-base and fails on the branch, so it is yours to fix in this slice. A failure you did not reproduce
-on the base is yours.
+(`git worktree add`), with its dependencies installed the way this checkout's were. If they fail
+there too, with the same message, they belong to the environment: do not edit code or tests to make
+them pass. Where the failure says how to set the environment up and the sandbox allows it, do that
+and run again. Otherwise commit, and name in the commit message each test still failing, its
+message, and that it fails on the base too. An interaction with an earlier slice passes on the base
+and fails on the branch, so it is yours to fix in this slice. A failure you did not reproduce on the
+base is yours.
 
 # BEFORE YOU COMMIT
 

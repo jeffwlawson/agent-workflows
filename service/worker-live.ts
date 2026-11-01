@@ -193,6 +193,9 @@ export const liveSandbox =
  * one thing it configures there, as `fix.yml`'s checkout step does: the
  * agent's commits need a name, and the sandbox's home has no git config.
  */
+/** A commit's full id, SHA-1 or SHA-256; anything else `checkout` is handed as `sha` is a branch's name. */
+const COMMIT_ID = /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/;
+
 export const liveGit = (host: HostEnvironment): Git => ({
   checkout: async ({ dir, repo, branch, sha, baseRef, token, committer, signal }) => {
     const auth = Buffer.from(`x-access-token:${token}`).toString("base64");
@@ -209,12 +212,17 @@ export const liveGit = (host: HostEnvironment): Git => ({
     await run("git", ["-C", dir, "remote", "add", "origin", `https://github.com/${repo}.git`], { env, signal });
     // Every tag, as Actions' `fetch-depth: 0` brings, so a verify command
     // that reads a release by its tag passes here as it does there (#567).
+    // So every ref is named in full, a branch by `refs/heads/` and the head
+    // by its remote-tracking ref, where a tag of the same name would
+    // otherwise be fetched, or checked out, in the branch's place (#569).
+    const source = COMMIT_ID.test(sha) ? sha : `refs/heads/${sha}`;
+    const tracking = `refs/remotes/origin/${branch}`;
     await run(
       "git",
-      ["-C", dir, "fetch", "--quiet", "--tags", "origin", `+${sha}:refs/remotes/origin/${branch}`, `+refs/heads/${baseRef}:refs/heads/${baseRef}`],
+      ["-C", dir, "fetch", "--quiet", "--tags", "origin", `+${source}:${tracking}`, `+refs/heads/${baseRef}:refs/heads/${baseRef}`],
       { env: withToken, signal },
     );
-    await run("git", ["-C", dir, "checkout", "--quiet", "-B", branch, sha], { env, signal });
+    await run("git", ["-C", dir, "checkout", "--quiet", "--no-track", "-B", branch, tracking], { env, signal });
     await run("git", ["-C", dir, "config", "user.name", committer], { env, signal });
     await run("git", ["-C", dir, "config", "user.email", `${committer}@users.noreply.github.com`], { env, signal });
   },

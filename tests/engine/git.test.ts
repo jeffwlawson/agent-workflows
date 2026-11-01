@@ -561,6 +561,22 @@ describe("merge", { timeout: 20 * SUBPROCESS_TIMEOUT }, () => {
     expect(git(clone, "rev-parse", "refs/remotes/origin/main")).toBe(moved);
   });
 
+  it("merges the base branch, not a tag named origin/<base>, under the base's own message (#569)", async () => {
+    git(seed, "checkout", "--quiet", "--detach", "main");
+    const tagged = write(seed, "tag.txt", "tag\n");
+    git(seed, "tag", "origin/main", tagged);
+    git(seed, "push", "--quiet", origin, "refs/tags/origin/main");
+    const moved = moveMain("main.txt", "main\n");
+    checkOut();
+
+    const merged = await mergeIn();
+
+    expect(merged).toMatchObject({ status: "clean", base: moved });
+    expect(git(clone, "rev-parse", "HEAD^2")).toBe(moved);
+    expect(fs.existsSync(path.join(clone, "tag.txt"))).toBe(false);
+    expect(git(clone, "log", "-1", "--format=%s")).toBe("Merge remote-tracking branch 'origin/main' into feature");
+  });
+
   it("stops on a conflict, naming each conflicted path, and leaves the conflicted tree", async () => {
     git(seed, "checkout", "--quiet", "feature");
     write(seed, "shared.txt", "feature's\n");

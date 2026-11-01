@@ -497,7 +497,7 @@ describe("mergePullRequest", () => {
       expect(failed).toBeInstanceOf(WriteFailed);
       expect(failed.message).toContain("not a full 40-character SHA");
       expect(sent).toEqual([]);
-      expect(log.entries[0]).toMatchObject({ outcome: "refused" });
+      expect(log.entries[0]).toMatchObject({ outcome: "refused", calls: [] });
     },
   );
 
@@ -571,7 +571,7 @@ describe("mergePullRequest", () => {
     const { writers, entries } = fakeWriters(github, ["loop"], { mergePullRequest: 1 });
 
     await expect(writers.loop.mergePullRequest({ ...MERGE, sha: SHA.slice(0, 7) })).rejects.toThrow("not a full 40-character SHA");
-    expect(entries[0]).toMatchObject({ outcome: "refused" });
+    expect(entries[0]).toMatchObject({ outcome: "refused", calls: [] });
     expect(github.pullRequests.get(7)?.state).toBe("open");
   });
 });

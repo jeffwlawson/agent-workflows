@@ -295,7 +295,7 @@ export class WriteFailed extends Error {
     readonly entry: LogEntry,
     cause?: unknown,
   ) {
-    super(`${entry.type} ${entry.target} ${entry.outcome}: ${entry.calls.at(-1) ?? "no call made"}`, { cause });
+    super(`${entry.type} ${entry.target} ${entry.outcome}: ${entry.calls.at(-1) ?? (cause instanceof Error ? cause.message : "no call made")}`, { cause });
     this.name = "WriteFailed";
   }
 }
@@ -427,7 +427,8 @@ export const createWriters = <T extends string>(options: {
     }
     const malformed = (MALFORMED[type] as ((...a: Parameters<Writer[K]>) => string | undefined) | undefined)?.(...args);
     if (malformed !== undefined) {
-      throw new WriteFailed(record({ token, type, target, outcome: "refused", calls: [malformed] }), new Error(malformed));
+      // No call was made, so `calls` stays empty, as a limit past leaves it: the reason is the error's.
+      throw new WriteFailed(record({ token, type, target, outcome: "refused", calls: [] }), new Error(malformed));
     }
     const calls: string[] = [];
     let wrote = false;

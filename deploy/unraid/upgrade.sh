@@ -69,7 +69,7 @@ PKG_JSON=${PKG_JSON:-$APPDATA/pkg/node_modules/$PACKAGE_NAME/package.json}
 
 # Where the release comes from: PACKAGE_SOURCE, or else the installed package's
 # repository field, a string or {"url": ...}, in a github.com form only.
-installed_json= previous=
+installed_json='' previous=''
 if [ -f "$PKG_JSON" ]; then
   installed_json=$(tr -d '\n' <"$PKG_JSON")
   # What the dispatcher has installed now: the way back, if this stops partway.
@@ -113,8 +113,14 @@ on_box() { ssh "${ssh_opts[@]}" -t "$box" "$1"; }
 # The same ssh, spelt out for an operator to paste when a step stops.
 box_ssh=$(printf '%q ' ssh "${ssh_opts[@]}" -t "$box")
 # The way back, should a step stop partway: this script at the version the
-# dispatcher had, which installs it on the box first.
-back="bash $here/upgrade.sh ${previous:-<the version the dispatcher runs>}"
+# dispatcher had, which installs it on the box first. It downloads that
+# release's tarball, which a release published before its tarball was attached
+# to it does not carry; for one of those, the registry route is the way.
+earlier=${previous:-<the version the dispatcher runs>}
+way_back() {
+  echo "To put the box back instead: bash $here/upgrade.sh $earlier. That needs v$earlier's Release to carry its tarball and .sha256, which an older release may not." >&2
+  echo "Where it does not, use the registry route, which asks for a registry token: ${box_ssh}'sudo bash ~/install-box.sh $earlier'" >&2
+}
 
 echo "Moving both machines to $version, from $url"
 
@@ -147,12 +153,14 @@ echo
 echo "== Installing: both machines keep running what they started with"
 if ! on_box "sudo bash ~/upgrade-box.sh --install $version ~/$tarball"; then
   echo "The install on the box stopped: read its output above. Unraid was not changed, and neither service was restarted." >&2
-  echo "The box's install may have stopped partway. Fix the cause and run upgrade.sh $version again, or put the box back with: $back" >&2
+  echo "The box's install may have stopped partway. Fix the cause and run upgrade.sh $version again." >&2
+  way_back
   exit 1
 fi
 if ! bash "$here/upgrade-unraid.sh" --install "$version" "$stage/$tarball"; then
   echo "The install on Unraid stopped: read its output above. Neither service was restarted, so both still run what they ran." >&2
-  echo "The box has $version installed, which its worker would start on its next restart. Fix the cause and run upgrade.sh $version again, or put the box back with: $back" >&2
+  echo "The box has $version installed, which its worker would start on its next restart. Fix the cause and run upgrade.sh $version again." >&2
+  way_back
   exit 1
 fi
 on_box "rm -f ~/$tarball ~/$tarball.sha256" || true

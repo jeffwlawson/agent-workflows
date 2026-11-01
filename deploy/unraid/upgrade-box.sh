@@ -121,6 +121,6 @@ if [ "$phase" = restart ]; then exit "${status:-0}"; fi
 echo
 bash "$check_script" || status=${status:-$?}
 echo
-echo "Now make sure Unraid's dispatcher is on $version too (upgrade-unraid.sh $version, or"
+echo "Now make sure Unraid's dispatcher is on $version too (upgrade-unraid.sh $version <tarball>, or"
 echo "upgrade.sh for both): until both match, the worker refuses the dispatcher's jobs."
 exit "${status:-0}"

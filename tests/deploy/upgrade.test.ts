@@ -250,7 +250,21 @@ describe("upgrade.sh", () => {
     expect(status).toBe(1);
     expect(calls.filter((call) => /^(systemctl|docker) restart/.test(call))).toEqual([]);
     expect(installed(root, "opt")).toBe("1.2.3");
-    expect(output).toContain(`put the box back with: bash ${root}/unraid/upgrade.sh 1.2.2`);
+    expect(output).toContain(`To put the box back instead: bash ${root}/unraid/upgrade.sh 1.2.2.`);
+    // An earlier release may carry no tarball, so the registry route is named too.
+    expect(output).toMatch(/older release may not\.\nWhere it does not, use the registry route, .*-t admin@box\.example 'sudo bash ~\/install-box\.sh 1\.2\.2'/);
+  });
+
+  it("names the same way back when the install on the box fails", () => {
+    const root = setUp();
+    fs.rmSync(path.join(root, "bin", "npm"));
+    fs.writeFileSync(path.join(root, "bin", "npm"), "#!/usr/bin/env bash\nexit 1\n", { mode: 0o755 });
+    const { status, output, calls } = run(root);
+
+    expect(status).toBe(1);
+    expect(calls.filter((call) => call.startsWith("docker"))).toEqual([]);
+    expect(output).toContain(`To put the box back instead: bash ${root}/unraid/upgrade.sh 1.2.2.`);
+    expect(output).toContain("'sudo bash ~/install-box.sh 1.2.2'");
   });
 
   it("says which files may already be on the box when the copy fails partway", () => {
@@ -414,6 +428,14 @@ describe("the deploy scripts", () => {
       for (const word of ["read:packages", "_authToken", "npm.pkg.github.com"]) {
         expect(text, `${file} names ${word}`).not.toContain(word);
       }
+    }
+  });
+
+  it("name a tarball wherever a half's closing advice names the other half", () => {
+    for (const file of ["upgrade-unraid.sh", "upgrade-box.sh"]) {
+      const text = fs.readFileSync(path.join(DEPLOY, file), "utf8");
+      const advice = text.match(/\((upgrade-(?:box|unraid)\.sh [^,]*),/)?.[1];
+      expect(advice, file).toBe(`upgrade-${file === "upgrade-box.sh" ? "unraid" : "box"}.sh $version <tarball>`);
     }
   });
 

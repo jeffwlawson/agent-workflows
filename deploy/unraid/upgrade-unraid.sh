@@ -119,6 +119,6 @@ if [ "$phase" = restart ]; then exit "${status:-0}"; fi
 echo
 bash "$check_script" || status=${status:-$?}
 echo
-echo "Now move the box to the same version (upgrade-box.sh $version, or upgrade.sh for both):"
+echo "Now move the box to the same version (upgrade-box.sh $version <tarball>, or upgrade.sh for both):"
 echo "until both match, the worker refuses the dispatcher's jobs."
 exit "${status:-0}"

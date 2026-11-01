@@ -2818,10 +2818,11 @@ describe("the held door", () => {
  */
 describe("the worker's queue", () => {
   const settle = () => new Promise((resolve) => setImmediate(resolve));
-  const review = (id: string, pr = 7): ReviewJob => ({ ...JOB, id, pr });
+  const review = (id: string, pr = 7, branch = `agent/issue-${pr}-a-thing`): ReviewJob => ({ ...JOB, id, pr, branch });
   const implement = (id: string, issue = 12): ImplementJob => ({ ...IMPLEMENT_JOB, id, issue });
   const followUps = (id: string, pr = 7): FollowUpsJob => ({ ...FOLLOW_UPS_JOB, id, pr });
-  const updateBranch = (id: string, pr = 7): UpdateBranchJob => ({ ...UPDATE_BRANCH_JOB, id, pr });
+  const updateBranch = (id: string, pr = 7, branch = `agent/issue-${pr}-a-thing`): UpdateBranchJob => ({ ...UPDATE_BRANCH_JOB, id, pr, branch });
+  const implementPrd = (id: string, issue: number): ImplementPrdJob => ({ ...PRD_JOB, id, issue });
 
   /** A queue whose jobs' work waits for the test: each start, each agent part's start and each end, in order. */
   const queued = () => {
@@ -3020,6 +3021,50 @@ describe("the worker's queue", () => {
 
     await w.end("refresh");
     expect(w.events).toEqual(["refresh starts", "refresh ends", "build starts"]);
+  });
+
+  it("puts a PRD PR's refresh in line behind its parent's slice build, since both push to the PRD branch", async () => {
+    const w = queued();
+    w.queue.add(implementPrd("slice", 585));
+    w.queue.add(updateBranch("refresh", 599, "agent/prd-585-the-two-lane-worker"));
+    w.queue.add(updateBranch("other", 600, "agent/prd-586-another-chain"));
+    await settle();
+    // Another chain's refresh is not held back: only the chain the slice is building.
+    expect(w.running).toEqual(new Set(["slice", "other"]));
+
+    await w.end("other");
+    expect(w.running).toEqual(new Set(["slice"]));
+    await w.end("slice");
+    expect(w.running).toEqual(new Set(["refresh"]));
+  });
+
+  it("puts a parent's slice build in line behind a refresh of its PRD PR that arrived first", async () => {
+    const w = queued();
+    w.queue.add(updateBranch("refresh", 599, "agent/prd-585-the-two-lane-worker"));
+    w.queue.add(implementPrd("slice", 585));
+    await settle();
+    expect(w.running).toEqual(new Set(["refresh"]));
+
+    await w.end("refresh");
+    expect(w.running).toEqual(new Set(["slice"]));
+  });
+
+  it("puts an issue branch's PR in line with its issue's implement job, and keeps a PRD PR's own chain by its number too", async () => {
+    const w = queued();
+    w.queue.add(implement("build", 12));
+    w.queue.add(updateBranch("refresh", 40, "agent/issue-12-a-thing"));
+    w.queue.add(updateBranch("prd refresh", 599, "agent/prd-585-x"));
+    w.queue.add(followUps("file", 599));
+    await settle();
+    // The follow-ups names no branch, and still waits for the refresh on its own pull request.
+    expect(w.running).toEqual(new Set(["build", "prd refresh"]));
+
+    await w.end("prd refresh");
+    expect(w.running).toEqual(new Set(["build", "file"]));
+    await w.end("build");
+    expect(w.running).toEqual(new Set(["file"]));
+    await w.end("file");
+    expect(w.running).toEqual(new Set(["refresh"]));
   });
 
   it("goes on behind a job that throws, in its lane and in its item's chain", async () => {

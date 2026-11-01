@@ -408,7 +408,10 @@ Jobs run in two lanes, each one job at a time, beneath a chain per pull request 
   it has the lane.
 - **Per item**, a job starts only once every job for the same pull request or issue that arrived
   before it has ended, whatever the lanes: a merge's follow-ups waits for an earlier run on the pull
-  request, and a refresh and a review on one head never overlap.
+  request, and a refresh and a review on one head never overlap. A pull request whose head is a
+  loop branch is in its issue's chain too, since both push to that branch: a PRD PR's jobs run in
+  line with its parent's implement-prd jobs (`agent/prd-<parent>-…`), and an issue branch's PR's
+  with its issue's (`agent/issue-<n>-…`).
 
 Whether a job starts an agent is often known only once its gate or merge has run, so the lane is
 the kind's, by what it *can* do. The lanes run no more than one agent at a time, so the host's

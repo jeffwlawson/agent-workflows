@@ -4,7 +4,7 @@ import { SANDBOX_WORKTREE } from "../engine/bwrap-args.js";
 import { COMMANDS, RUNNERS, type Command, type Runner } from "../shared/contract.js";
 import type { HostEnvironment } from "../shared/env.js";
 import { sandboxRefusal } from "../shared/sandbox.js";
-import { fixRescueBranch, issueRescueBranch, PRD_BRANCH_PREFIX, prdRescueBranch } from "../shared/record.js";
+import { branchIssue, fixRescueBranch, issueRescueBranch, PRD_BRANCH_PREFIX, prdRescueBranch } from "../shared/record.js";
 import type { DoorRequest, DoorResponse } from "./dispatcher.js";
 import {
   FOLLOW_UPS_MINUTES,
@@ -2370,12 +2370,25 @@ export const LANES: Readonly<Record<JobKind, "light" | "agent" | "hand-off">> = 
   "follow-ups": "light",
 };
 
+/**
+ * The items a job is ordered by: its own pull request or issue, and, for a
+ * job on a pull request whose head is a loop branch, the issue that branch is
+ * built for (`branchIssue`). A PRD PR's jobs and its parent's implement-prd
+ * jobs push to one branch, the PRD branch, so they share a chain, as an issue
+ * branch's PR shares one with its issue's implement jobs.
+ */
+const itemsOf = (job: Job): readonly string[] => {
+  const { repo, number } = heldOf(job);
+  const issue = "branch" in job ? branchIssue(job.branch) : undefined;
+  return issue === undefined || issue === number ? [`${repo}#${number}`] : [`${repo}#${number}`, `${repo}#${issue}`];
+};
+
 /** A job the queue holds, and how far it has got. */
 interface Held {
   readonly job: Job;
   readonly lane: (typeof LANES)[JobKind];
-  /** The pull request or issue it is for: two jobs for one never run at once. */
-  readonly item: string;
+  /** The items it is for (`itemsOf`): two jobs sharing one never run at once. */
+  readonly items: readonly string[];
   /** Waiting its turn; in the light lane; handed off and waiting for the agent lane; in the agent lane. */
   state: "queued" | "light" | "waiting" | "agent";
   /** Ends a hand-off's wait, once it has the agent lane. */
@@ -2398,7 +2411,8 @@ interface Held {
  *   holds up no other.
  * - **Per item**, a job starts only once every job for its item that arrived
  *   before it has ended, so two jobs for one item run in arrival order and
- *   never overlap, whatever their lanes.
+ *   never overlap, whatever their lanes. A PRD chain is one item: its
+ *   parent's jobs and its PRD PR's share the parent (`itemsOf`).
  *
  * Nothing here reads a deadline: it is the dispatcher's, set at dispatch, so a
  * job's wait counts against it in either lane, and a job late by its turn ends
@@ -2411,8 +2425,9 @@ export const lanes = (work: (job: Job, agentLane: () => Promise<void>) => Promis
   let light: Held | undefined;
   let agent: Held | undefined;
 
-  /** No job for its item arrived before it and is still held. */
-  const itemFree = (entry: Held): boolean => !entries.slice(0, entries.indexOf(entry)).some((before) => before.item === entry.item);
+  /** No job sharing one of its items arrived before it and is still held. */
+  const itemFree = (entry: Held): boolean =>
+    !entries.slice(0, entries.indexOf(entry)).some((before) => before.items.some((item) => entry.items.includes(item)));
 
   const start = (entry: Held): void => {
     const agentLane = (): Promise<void> => {
@@ -2461,8 +2476,7 @@ export const lanes = (work: (job: Job, agentLane: () => Promise<void>) => Promis
 
   return {
     add: (job) => {
-      const { repo, number } = heldOf(job);
-      entries.push({ job, lane: LANES[job.workflow], item: `${repo}#${number}`, state: "queued" });
+      entries.push({ job, lane: LANES[job.workflow], items: itemsOf(job), state: "queued" });
       pump();
     },
     held: () => entries.map((entry) => entry.job),

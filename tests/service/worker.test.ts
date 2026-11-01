@@ -1270,6 +1270,19 @@ describe("the worker's update-branch job, on a clean merge", () => {
     for (const dir of [merging, publishing]) expect(dir?.startsWith(s.runDir)).toBe(true);
   });
 
+  /**
+   * The App's login as the loop token's account (#589, #591): without it
+   * `update-branch:publish` carries no `agent-merge` arm on to a clean
+   * refresh, and the merge gate disarms every armed pull request it refreshed.
+   */
+  it("hands update-branch:publish the App's login as LOOP_LOGIN, the account an arm is read back by", async () => {
+    const s = setup(UB_CLEAN);
+    await runJob(UPDATE_BRANCH_JOB, s.edges);
+
+    expect(s.env("update-branch:publish")["LOOP_LOGIN"]).toBe("loop-app[bot]");
+    expect(s.env("update-branch:publish")["LOOP_LOGIN"]).toBe(s.env("update-branch:publish")["AGENT_LOOP_LOGINS"]);
+  });
+
   it("hands each subcommand the inputs update-branch.yml hands it", async () => {
     const s = setup(UB_CLEAN);
     await runJob(UPDATE_BRANCH_JOB, s.edges);

@@ -3108,8 +3108,9 @@ neither.
 > `update-branch:publish` there, pointed at the runner's and `update-branch:bundle`'s directories.
 > Then `update-branch:conclude`, however the run ended, pointed at publish's, prepare's, the
 > runner's and bundle's. `update-branch:publish` and `update-branch:conclude` alone hold `push`,
-> each as both `GH_TOKEN` and `LOOP_TOKEN`, with `LOOP_TOKEN_SOURCE` `app`; the runner never holds
-> a token that writes. Where `update-branch.yml` passes something the service does not have, it
+> each as both `GH_TOKEN` and `LOOP_TOKEN`, with `LOOP_TOKEN_SOURCE` `app`, and publish with the
+> App's login as `LOOP_LOGIN`, so a clean refresh carries the `agent-merge` arm as on Actions (#589);
+> the runner never holds a token that writes. Where `update-branch.yml` passes something the service does not have, it
 > passes the nearest equivalent:
 >
 > - **The gate job's outputs are its files.** `REFUSED` is read from `gate.json` as for `fix`;

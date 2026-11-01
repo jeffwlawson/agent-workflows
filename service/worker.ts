@@ -1428,6 +1428,10 @@ const runUpdateBranch = async (job: UpdateBranchJob, edges: JobEdges): Promise<r
           GH_TOKEN: push,
           LOOP_TOKEN: push,
           LOOP_TOKEN_SOURCE: TOKEN_SOURCE,
+          // The App's login, the account an arm is read back by: without it a
+          // clean refresh carries no \`agent-merge\` arm, and the merge gate
+          // disarms what it was asked to refresh (#589).
+          LOOP_LOGIN: job.appLogin,
           HEAD_SHA: job.headSha,
           STATUS: status,
           BASE_SHA: base,

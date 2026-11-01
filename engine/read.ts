@@ -189,6 +189,8 @@ export interface LabelledPullRequest {
   readonly number: number;
   readonly headSha: string;
   readonly labels: readonly string[];
+  /** Whether it is a draft, which nothing merges. */
+  readonly draft: boolean;
 }
 
 export interface GitHubReader {
@@ -860,14 +862,14 @@ export const githubReader = (repo: string, transport: Transport): GitHubReader =
       (
         await paged(`/repos/${repo}/pulls?state=open&base=${encodeURIComponent(base)}`, (page) => {
           if (!Array.isArray(page)) throw new Error(`The open pull requests into ${base} could not be read: the answer was not a list.`);
-          return page as readonly { readonly number: number; readonly head?: { readonly sha?: string }; readonly labels?: readonly { readonly name: string }[] }[];
+          return page as readonly { readonly number: number; readonly draft?: unknown; readonly head?: { readonly sha?: string }; readonly labels?: readonly { readonly name: string }[] }[];
         })
       )
         .map((pr) => {
-          if (typeof pr.head?.sha !== "string" || !Array.isArray(pr.labels)) {
-            throw new Error(`Open pull request #${pr.number} into ${base} came back without its head or its labels.`);
+          if (typeof pr.head?.sha !== "string" || !Array.isArray(pr.labels) || typeof pr.draft !== "boolean") {
+            throw new Error(`Open pull request #${pr.number} into ${base} came back without its head, its labels or whether it is a draft.`);
           }
-          return { number: pr.number, headSha: pr.head.sha, labels: pr.labels.map((l) => l.name) };
+          return { number: pr.number, headSha: pr.head.sha, labels: pr.labels.map((l) => l.name), draft: pr.draft };
         })
         .filter((pr) => pr.labels.includes(label)),
     checkRuns: (sha) =>

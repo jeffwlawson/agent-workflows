@@ -318,8 +318,8 @@ describe("the fake reader's merge reads", () => {
     expect(await reader.permission("maintainer")).toBe("maintain");
     await expect(reader.permission("stranger")).rejects.toBeInstanceOf(GitHubError);
     expect(await reader.openPullRequestsLabelled("main", "armed")).toEqual([
-      { number: 8, headSha: "b".repeat(40), labels: ["armed", "other"] },
-      { number: 7, headSha: SHA, labels: ["armed"] },
+      { number: 8, headSha: "b".repeat(40), labels: ["armed", "other"], draft: false },
+      { number: 7, headSha: SHA, labels: ["armed"], draft: false },
     ]);
     expect(reads.map((r) => r.method)).toEqual([
       "commitChecks",

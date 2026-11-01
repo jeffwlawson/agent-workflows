@@ -3803,8 +3803,8 @@ when what it waited on lands (#589):
 **The queue drains one pull request at a time** (#590). Where an armed pull request leaves the
 queue, the **next** armed pull request into the same base is refreshed: of the other open pull
 requests into that base carrying `agent:merge`, the one whose arm is oldest that is behind its
-base, is not red, and has no trigger label on (`agent:review`, `agent:fix`, `agent:update-branch`)
-gets `agent:update-branch` with the loop's token, removed first. Its clean refresh carries its arm
+base, is not red, is not a draft, and has no trigger label on (`agent:review`, `agent:fix`,
+`agent:update-branch`) gets `agent:update-branch` with the loop's token, removed first. Its clean refresh carries its arm
 (§10), and its own gate decides from there. It leaves the queue by `merge:publish`'s merge, and by
 `merge:gate`'s refusal, disarm, or first saying its head is red: each of those may have been the
 one the last merge refreshed, and without the request the rest would wait on a merge that is not
@@ -3818,13 +3818,15 @@ about N. `refreshNext` in `merge/queue.ts` does the choosing for both commands:
   read only off an arm `LOOP_LOGIN` posted. The number breaks a tie, and orders the arms with no
   time after the rest. A pull request whose head carries no such arm is passed over: its own gate
   disarms it.
+- **Not a draft**, by the listing's `draft`: a draft's gate waits without asking for the next, so
+  choosing one would stall the rest behind a merge that is not coming.
 - **Not red** is read as the gate reads it: no counted check failed on the head, and the newest
   `agent-review` of the loop's accounts is not a state other than `success` or `pending`. A pending
   one is not red: the head is behind, and the refresh is what it needs first.
 - **Behind** is the compare of the base with the head reporting `behind_by` one or more; a compare
   that gave no count passes it over.
-- **Its reads stop** at the first one chosen. The statuses of each listed pull request without a
-  trigger label on are read first, for the arm's time, at most 10 of them, lowest number first,
+- **Its reads stop** at the first one chosen. The statuses of each listed pull request that is not a
+  draft and has no trigger label on are read first, for the arm's time, at most 10 of them, lowest number first,
   and a warning names any past that; then each one's compare and checks, in arm order.
 - **Its writes are capped**: one `agent:update-branch` removed and one added per pull request asked,
   and at most 3 asked. A label GitHub refuses on the one chosen warns and asks the next; past the

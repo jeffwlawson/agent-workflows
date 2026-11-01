@@ -432,7 +432,7 @@ export const fakeReader = (github: FakeGitHub): { readonly reader: GitHubReader;
       return [...github.pullRequests.values()]
         .filter((pr) => pr.state === "open" && pr.baseRef === base && pr.labels.includes(label))
         .sort((a, b) => b.number - a.number)
-        .map((pr) => ({ number: pr.number, headSha: pr.headSha, labels: [...pr.labels] }) satisfies LabelledPullRequest);
+        .map((pr) => ({ number: pr.number, headSha: pr.headSha, labels: [...pr.labels], draft: pr.draft }) satisfies LabelledPullRequest);
     },
     checkRuns: async (sha) => {
       reads.push({ method: "checkRuns", args: [sha] });

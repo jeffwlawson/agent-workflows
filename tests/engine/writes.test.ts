@@ -1191,16 +1191,16 @@ describe("githubReader", () => {
   });
 
   describe("openPullRequestsLabelled", () => {
-    const pr = (number: number, labels: readonly string[]) => ({ number, head: { sha: SHA }, labels: labels.map((name) => ({ name })) });
+    const pr = (number: number, labels: readonly string[], draft = false) => ({ number, draft, head: { sha: SHA }, labels: labels.map((name) => ({ name })) });
 
     it("reads the open pull requests into a base carrying the label, every page, with their heads and labels", async () => {
       const { transport, sent } = recording((s) =>
-        "rest" in s && s.rest.path.endsWith("page=1") ? Array.from({ length: 100 }, (_, i) => pr(200 - i, i === 0 ? ["armed", "x"] : [])) : [pr(9, ["armed"])],
+        "rest" in s && s.rest.path.endsWith("page=1") ? Array.from({ length: 100 }, (_, i) => pr(200 - i, i === 0 ? ["armed", "x"] : [])) : [pr(9, ["armed"], true)],
       );
 
       expect(await githubReader(REPO, transport).openPullRequestsLabelled("agent/prd-1-a", "armed")).toEqual([
-        { number: 200, headSha: SHA, labels: ["armed", "x"] },
-        { number: 9, headSha: SHA, labels: ["armed"] },
+        { number: 200, headSha: SHA, labels: ["armed", "x"], draft: false },
+        { number: 9, headSha: SHA, labels: ["armed"], draft: true },
       ]);
       expect(paths(sent)).toEqual([
         "/repos/o/r/pulls?state=open&base=agent%2Fprd-1-a&per_page=100&page=1",
@@ -1210,8 +1210,9 @@ describe("githubReader", () => {
 
     it.each([
       ["an answer that is not a list", { message: "odd" }],
-      ["a pull request without its labels", [{ number: 5, head: { sha: SHA } }]],
-      ["a pull request without its head", [{ number: 5, labels: [{ name: "armed" }] }]],
+      ["a pull request without its labels", [{ number: 5, draft: false, head: { sha: SHA } }]],
+      ["a pull request without its head", [{ number: 5, draft: false, labels: [{ name: "armed" }] }]],
+      ["a pull request without whether it is a draft", [{ number: 5, head: { sha: SHA }, labels: [{ name: "armed" }] }]],
     ])("throws on %s, rather than reading it as none", async (_name, answer) => {
       await expect(githubReader(REPO, recording(() => answer).transport).openPullRequestsLabelled("main", "armed")).rejects.toThrow(/could not be read|came back without/);
     });

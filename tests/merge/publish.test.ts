@@ -142,10 +142,10 @@ describe("merge:publish", () => {
 /** Another open pull request, armed by the loop token's account at `at`, behind `main` and green unless a test says. */
 const other = (
   number: number,
-  { at, base = "main", labels = [MERGE_LABEL], behind = true, red = false, armed = true }: { at?: string; base?: string; labels?: string[]; behind?: boolean; red?: boolean; armed?: boolean } = {},
+  { at, base = "main", labels = [MERGE_LABEL], behind = true, red = false, armed = true, draft = false }: { at?: string; base?: string; labels?: string[]; behind?: boolean; red?: boolean; armed?: boolean; draft?: boolean } = {},
 ): string => {
   const head = number.toString(16).padStart(40, "0");
-  github.pullRequests.set(number, { number, nodeId: `PR_${number}`, state: "open", draft: false, headSha: head, title: "", body: "", labels, baseRef: base });
+  github.pullRequests.set(number, { number, nodeId: `PR_${number}`, state: "open", draft, headSha: head, title: "", body: "", labels, baseRef: base });
   github.statuses.set(head, [
     ...(armed ? [{ context: MERGE_CONTEXT, state: "success", targetUrl: null, description: armDescription({ login: "alice", at: at ?? "2026-11-01T00:00:00Z", refreshes: 0 }), creator: "loop" }] : []),
     { context: VERDICT_CONTEXT, state: "success", targetUrl: null, description: "", creator: "github-actions[bot]" },
@@ -201,6 +201,16 @@ describe("merge:publish drains the queue (#590)", () => {
     expect(made?.writes.map((w) => w.type)).toEqual(["mergePullRequest", "removeLabel"]);
     for (const n of [42, 43, 44, 45, 46]) expect(logged.some((line) => line.startsWith(`Not refreshing PR #${n}:`)), String(n)).toBe(true);
     expect(logged.some((line) => line.includes("#40") || line.includes("#41"))).toBe(false);
+  });
+
+  /** A draft's gate waits without asking for the next, so choosing it would stall the queue. */
+  it("passes over an armed draft, naming it, and refreshes the next oldest", async () => {
+    other(55, { at: "2026-10-01T00:00:00Z", draft: true });
+    other(56, { at: "2026-10-02T00:00:00Z" });
+    await run();
+
+    expect(refreshed()).toEqual([56]);
+    expect(logged).toContain("Not refreshing PR #55: it is a draft, which nothing merges until it is marked ready.");
   });
 
   it("does not count a pending verdict as red: the refresh is what a behind head needs first", async () => {

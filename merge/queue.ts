@@ -116,6 +116,12 @@ export const refreshNext = async ({ pr, base, github, loop, loopLogin, accounts 
 
   const others = listed.filter((other) => other.number !== pr).sort((a, b) => a.number - b.number);
   const idle = others.filter((other) => {
+    // A draft's gate waits without moving the queue on, so asking it would
+    // stall the rest behind a merge that is not coming.
+    if (other.draft) {
+      console.log(`Not refreshing PR #${other.number}: it is a draft, which nothing merges until it is marked ready.`);
+      return false;
+    }
     const busy = other.labels.filter((label) => TRIGGERS.includes(label));
     if (busy.length > 0) console.log(`Not refreshing PR #${other.number}: it carries ${busy.join(", ")}, and that run's ending re-starts its gate.`);
     return busy.length === 0;

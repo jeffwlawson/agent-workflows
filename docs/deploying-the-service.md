@@ -272,7 +272,10 @@ and filed, not a label that says a run is working, and a merge's follow-ups job 
 
 Before deciding, the scan asks the worker at its held door which jobs it has queued or is running,
 and skips any item a job is held for there or that the dispatcher itself has dispatched and is
-still posting. A worker that cannot be reached skips the whole scan, logged; its own start
+still posting. That second check is made again at the moment each job is dispatched, so a label's
+delivery landing while the scan decides the same item makes one job, not two: whichever of the
+two gets there first is dispatched, and the other is skipped and logged. A delivery is never
+skipped for another delivery's job, since a label added again is asked for again. A worker that cannot be reached skips the whole scan, logged; its own start
 announcement scans again. The same answer lets the dispatcher forget every job it dispatched that
 the worker no longer holds, which after a worker's restart is every job it held before.
 
@@ -698,5 +701,6 @@ starts, `agentnet-firewall` puts the rules in and starts the VM, the VM's units 
 (its egress rules, tinyproxy, the worker), the dispatcher's container comes back, and the Funnel
 stays public. About 11 minutes from *Reboot* to a review. Restarting the VM service alone does
 **not** bring it back (Unraid cannot remount `libvirt.img` until a reboot), so reboot the server
-instead of turning VM Manager off and on. Deliveries made while it was down are lost, as above:
-re-add the label.
+instead of turning VM Manager off and on. Deliveries made while it was down are lost, as above,
+but a label they added to an open item is dispatched by the dispatcher's start scan; only what a
+scan does not list, a merge's follow-ups above all, needs a hand.

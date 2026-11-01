@@ -342,8 +342,8 @@ const message = (error: unknown): string => (error instanceof Error ? error.mess
 
 /**
  * What the dispatcher remembers of a job it dispatched: enough to mint for
- * it, to tell a scan what it is on, and whether the worker has answered its
- * post yet.
+ * it, to tell a scan what it is on, whether the worker has answered its
+ * post yet, and whether a scan dispatched it.
  */
 interface Dispatched {
   readonly repo: string;
@@ -351,6 +351,7 @@ interface Dispatched {
   readonly workflow: JobKind;
   readonly number: number;
   readonly posted: boolean;
+  readonly scanned: boolean;
 }
 
 /** A scan's door's answer, sent at once, and the scan it starts. */
@@ -426,8 +427,17 @@ export const createDispatcher = (edges: DispatcherEdges) => {
   /**
    * Posts a job of `fields`' kind to the worker: the repository's variables
    * read, and its deadline from its kind's own time limit.
+   *
+   * A scan's job and a delivery's for the same item and kind are one job, not
+   * two: the label a scan lists is the one a delivery in flight carries. So
+   * the dispatch a scan makes skips where the dispatcher remembers any job of
+   * its kind on its item, and a delivery's skips where it remembers one a scan
+   * made. That check and the reservation are one synchronous step, after the
+   * last await, so whichever of the two reaches it first is the one dispatched
+   * (#581's review). A delivery is never deduplicated against another
+   * delivery: a label added again is asked for again.
    */
-  const dispatch = async (fields: Dispatchable, login: string, where: string, at: string): Promise<string> => {
+  const dispatch = async (fields: Dispatchable, login: string, where: string, at: string, scanned = false): Promise<string> => {
     const variables = Object.fromEntries(
       await Promise.all(REPOSITORY_VARIABLES.map(async (name) => [name, (await edges.github.variable(fields.repo, name)) ?? ""] as const)),
     ) as Record<RepositoryVariable, string>;
@@ -436,9 +446,13 @@ export const createDispatcher = (edges: DispatcherEdges) => {
     const job = { ...fields, id: newId(), version: edges.version, deadline: deadline.toISOString(), appLogin: login, variables } as Job;
 
     prune();
+    const entry = { repo: job.repo, deadline, workflow: job.workflow, number: "issue" in job ? job.issue : job.pr, scanned };
+    const same = [...jobs.values()].find(
+      (held) => held.repo === entry.repo && held.number === entry.number && held.workflow === entry.workflow && (scanned || held.scanned),
+    );
+    if (same !== undefined) return `skipped on ${where}${at}: ${same.scanned ? "a scan" : "the dispatcher"} has dispatched a job for it`;
     // Known before the worker hears of it, so its first token request cannot
     // arrive ahead of the job it names.
-    const entry = { repo: job.repo, deadline, workflow: job.workflow, number: "issue" in job ? job.issue : job.pr };
     jobs.set(job.id, { ...entry, posted: false });
     const body = JSON.stringify(job);
     let status: number;
@@ -475,9 +489,10 @@ export const createDispatcher = (edges: DispatcherEdges) => {
     fields: { readonly repo: string; readonly issue: number; readonly title: string; readonly state: string; readonly baseRef: string },
     login: string,
     where: string,
+    scanned = false,
   ): Promise<string> => {
     const outcomes: string[] = [];
-    for (const kind of kinds) outcomes.push(await dispatch({ workflow: kind, ...fields }, login, where, ` to ${kind}`));
+    for (const kind of kinds) outcomes.push(await dispatch({ workflow: kind, ...fields }, login, where, ` to ${kind}`, scanned));
     return outcomes.join("; ");
   };
 
@@ -735,7 +750,7 @@ export const createDispatcher = (edges: DispatcherEdges) => {
       if (skip !== undefined) return `skipped on ${where}: ${skip}`;
       const refusal = await unasked(repo, item.number, label, login, where);
       if (refusal !== undefined) return refusal;
-      return dispatchIssue(kinds, { repo, issue: item.number, title: item.title, state: item.state, baseRef: await baseRef() }, login, where);
+      return dispatchIssue(kinds, { repo, issue: item.number, title: item.title, state: item.state, baseRef: await baseRef() }, login, where, true);
     }
     const kind = kindOf(LABEL_KINDS.pull_request, label);
     if (kind === undefined || kind === "follow-ups") return `ignored on ${where}: \`${label}\` is not a label a scan answers on a pull request`;
@@ -746,7 +761,7 @@ export const createDispatcher = (edges: DispatcherEdges) => {
     const unanswered = await unasked(repo, item.number, label, login, where);
     if (unanswered !== undefined) return unanswered;
     const { number: pr, branch, headSha, baseRef: base, state, merged } = item;
-    return dispatch({ workflow: kind, repo, pr, branch, headSha, baseRef: base, state, merged }, login, where, ` at ${headSha}`);
+    return dispatch({ workflow: kind, repo, pr, branch, headSha, baseRef: base, state, merged }, login, where, ` at ${headSha}`, true);
   };
 
   /** One repository's part of a scan: refused where it is not served, and each labelled item decided otherwise. */

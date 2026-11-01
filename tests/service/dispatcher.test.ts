@@ -81,7 +81,7 @@ interface Installations {
 /** The App's owner, which is the repository's owner too, unless a test says otherwise. */
 const APP_OWNER = "owner";
 
-const setup = (options: { workerStatus?: number; owners?: readonly string[]; holdPosts?: boolean } = {}) => {
+const setup = (options: { workerStatus?: number; owners?: readonly string[]; holdPosts?: boolean; holdLabeller?: boolean } = {}) => {
   const repository: Repository = {
     installed: true,
     account: APP_OWNER,
@@ -94,6 +94,8 @@ const setup = (options: { workerStatus?: number; owners?: readonly string[]; hol
   const worker = { holds: [] as Job[], down: false, asked: 0 };
   /** Each post held back until a test lets it through, where `holdPosts` says so. */
   const heldPosts: (() => void)[] = [];
+  /** Each `labeled` event read held back until a test lets it through, where `holdLabeller` says so. */
+  const heldLabellers: (() => void)[] = [];
   const lines: string[] = [];
   const minted: { repo: string; permissions: Readonly<Record<string, string>> }[] = [];
   const posted: { body: string; headers: Readonly<Record<string, string>> }[] = [];
@@ -131,7 +133,10 @@ const setup = (options: { workerStatus?: number; owners?: readonly string[]; hol
       if (installations.unlistable.includes(repo)) throw new Error("GitHub answered 502");
       return repo === REPO ? repository.items.filter((item) => item.labels.includes(label)) : [];
     },
-    labeller: async (repo, number, label) => (repo === REPO ? repository.items.find((item) => item.number === number)?.labellers[label] : undefined),
+    labeller: async (repo, number, label) => {
+      if (options.holdLabeller === true) await new Promise<void>((resolve) => heldLabellers.push(resolve));
+      return repo === REPO ? repository.items.find((item) => item.number === number)?.labellers[label] : undefined;
+    },
     defaultBranch: async () => "main",
   };
   const dispatcher = createDispatcher({
@@ -164,6 +169,7 @@ const setup = (options: { workerStatus?: number; owners?: readonly string[]; hol
     installations,
     worker,
     heldPosts,
+    heldLabellers,
     lines,
     minted,
     posted,
@@ -1184,6 +1190,48 @@ describe("the scan after a restart", () => {
     expect(s.posted).toHaveLength(1);
     expect(s.lines).toContain("scan: skipped on owner/repo#7: the dispatcher has dispatched a job for it");
     expect((await s.dispatcher.token(tokenRequest({ jobId: "job-1", kind: "read" }))).status).toBe(200);
+  });
+
+  it("dispatches once where a delivery for the item lands while the scan reads who labelled it, the delivery first", async () => {
+    const s = setup({ holdLabeller: true });
+    s.repository.items = [pullItem([REVIEW_LABEL])];
+    const scanned = s.dispatcher.scan();
+    while (s.heldLabellers.length === 0) await new Promise((resolve) => setImmediate(resolve));
+
+    expect((await deliver(s, labelled())).outcome).toMatch(/^dispatched /);
+    s.heldLabellers.forEach((release) => release());
+    await scanned;
+
+    expect(s.posted).toHaveLength(1);
+    expect(s.lines).toContain(`scan: skipped on owner/repo#7 at ${HEAD}: the dispatcher has dispatched a job for it`);
+  });
+
+  it("dispatches once where a delivery for the item lands while the scan's post is in flight, the scan first", async () => {
+    const s = setup({ holdPosts: true });
+    s.repository.items = [pullItem([REVIEW_LABEL]), issueItem([IMPLEMENT_LABEL])];
+    const scanned = s.dispatcher.scan();
+    while (s.heldPosts.length === 0) await new Promise((resolve) => setImmediate(resolve));
+
+    expect((await deliver(s, labelled())).outcome).toBe(`skipped on owner/repo#7 at ${HEAD}: a scan has dispatched a job for it`);
+    while (s.heldPosts.length < 3) {
+      s.heldPosts.forEach((release) => release());
+      await new Promise((resolve) => setImmediate(resolve));
+    }
+    s.heldPosts.forEach((release) => release());
+    await scanned;
+    expect((await deliver(s, issueLabelled(), undefined, "issues")).outcome).toBe(
+      "skipped on owner/repo#12 to implement: a scan has dispatched a job for it; skipped on owner/repo#12 to implement-prd: a scan has dispatched a job for it",
+    );
+
+    expect(jobsPosted(s).map((job) => job.workflow)).toEqual(["review", "implement", "implement-prd"]);
+  });
+
+  it("still dispatches a delivery for an item a delivery already dispatched: a label added again is asked for again", async () => {
+    const s = setup();
+    await deliver(s, labelled());
+
+    expect((await deliver(s, labelled())).outcome).toMatch(/^dispatched /);
+    expect(s.posted).toHaveLength(2);
   });
 
   it("does not skip an issue's other kind's job: either one held skips the label", async () => {

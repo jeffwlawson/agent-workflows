@@ -406,8 +406,11 @@ export interface GitMerger {
    * than at the one checked out: resolved after the fetch, so the base's
    * remote-tracking name is the base as fetched. With `message`, a merge
    * commit is made with that message, and always made, never a fast-forward,
-   * so a mark the message carries is never lost; without it, git writes its
-   * own.
+   * so a mark the message carries is never lost; without it, the merge is
+   * made under the subject a person's `git merge origin/<base>` makes,
+   * `Merge remote-tracking branch 'origin/<base>' into <into>`, spelled here
+   * rather than left to git, so config such as `merge.suppressDest` does not
+   * change it.
    */
   merge(options: {
     readonly base: string;

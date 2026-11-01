@@ -185,6 +185,9 @@ export const liveSandbox =
     }
   };
 
+/** A commit's full id, SHA-1 or SHA-256; anything else `checkout` is handed as `sha` is a branch's name. */
+const COMMIT_ID = /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/;
+
 /**
  * The checkout, with the token passed to each fetch as a header in the
  * command's own environment (`GIT_CONFIG_*`), so it is neither in the
@@ -193,9 +196,6 @@ export const liveSandbox =
  * one thing it configures there, as `fix.yml`'s checkout step does: the
  * agent's commits need a name, and the sandbox's home has no git config.
  */
-/** A commit's full id, SHA-1 or SHA-256; anything else `checkout` is handed as `sha` is a branch's name. */
-const COMMIT_ID = /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/;
-
 export const liveGit = (host: HostEnvironment): Git => ({
   checkout: async ({ dir, repo, branch, sha, baseRef, token, committer, signal }) => {
     const auth = Buffer.from(`x-access-token:${token}`).toString("base64");

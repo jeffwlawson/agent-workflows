@@ -120,11 +120,11 @@ Repository permissions:
 
 | Permission | In the API | Access | Why |
 |---|---|---|---|
-| Metadata | `metadata` | read | every API call, and a label's sender's permission |
+| Metadata | `metadata` | read | every API call, a label's sender's permission, and the repositories each installation reaches, which a scan lists |
 | Variables | `actions_variables` | read | `AGENT_ORCHESTRATOR`, re-read at every token, and the variables the service reads, `AGENT_SETUP` among them: the repository's own, else its organization's shared with it, as `vars` resolves them |
 | Contents | `contents` | write | the checkout and the pull request's history, read by every phase; a push, by a `push` token only |
-| Pull requests | `pull_requests` | write | the review, its threads, the title and summary, and the ready mark |
-| Issues | `issues` | write | comments and labels, the issue an implement job builds, and a PRD's parent |
+| Pull requests | `pull_requests` | write | the review, its threads, the title and summary, and the ready mark; a scan reads an open pull request's head and base |
+| Issues | `issues` | write | comments and labels, the issue an implement job builds, and a PRD's parent; a scan reads the open items carrying a trigger label and their `labeled` events |
 | Checks | `checks` | read | CI's result, which the review's verdict reads |
 | Commit statuses | `statuses` | write | the verdict and the fix-round statuses |
 | Workflows | `workflows` | write | a push touching `.github/workflows/**` is refused without it, *after* the agent has done all its work |
@@ -237,12 +237,12 @@ so does an App whose own record cannot be read, since that is where the App's ow
 | `GITHUB_APP_ID` | required | | the App's ID |
 | `GITHUB_APP_PRIVATE_KEY_FILE` | required | | a path to the App's private key, in PEM |
 | `GITHUB_WEBHOOK_SECRET` | required | | the App's webhook secret |
-| `WORKER_URL` | required | | the worker's job door, where a job is posted |
+| `WORKER_URL` | required | | the worker's job door, where a job is posted, ending `/jobs`; a scan asks what the worker holds at `/held` beside it |
 | `WORKER_SECRET` | required | | the secret the dispatcher and the worker share, which signs a job and a token request |
 | `WEBHOOK_HOST` | optional | `127.0.0.1` | the address the webhook door listens on |
 | `WEBHOOK_PORT` | optional | `8790` | the webhook door's port; GitHub's deliveries arrive at `POST /github` |
 | `TOKEN_HOST` | optional | `127.0.0.1` | the address the token door listens on: one the worker reaches |
-| `TOKEN_PORT` | optional | `8791` | the token door's port; the worker asks at `POST /token` |
+| `TOKEN_PORT` | optional | `8791` | the token door's port; the worker asks at `POST /token`, and announces its start at `POST /started` |
 | `JOB_DEADLINE_MARGIN_MINUTES` | optional | `60` | added to a job's own time limit for its deadline, review's (its CI wait and `AGENT_REVIEW_TIMEOUT_MINUTES`) or fix's, update-branch's and implement's (`AGENT_TIMEOUT_MINUTES`), or implement-prd's (35 minutes and `AGENT_TIMEOUT_MINUTES`), or follow-ups' (10 minutes), covering the phases around the runner's and the time a job waits in the worker's queue |
 | `EXTRA_OWNERS` | optional | `""` | accounts, comma-separated, whose installations the dispatcher serves besides the App owner's; empty is none. An installation on any other account is refused |
 
@@ -253,7 +253,39 @@ Each door also answers `GET /health` with `200`.
 - **A delivery that arrives while the dispatcher is down is lost.** GitHub does not redeliver on
   its own; redeliver it from the App's *Recent Deliveries*, or remove the label and add it again.
 - **The jobs it dispatched are held in memory.** A dispatcher restarted mid-job refuses that job's
-  next token request as unknown, and the job ends there. Remove the label and add it again.
+  next token request as unknown, and the job ends there. The scan at its start skips that item,
+  since the worker still holds the job; remove the label and add it again.
+
+**What a restart recovers: the scan.** At its start, and again whenever the worker announces its
+own start, the dispatcher scans for labelled work nothing holds a job for, one pass at a time (a
+request while one waits is folded into it). For each installation it serves, each repository that
+opts in, it lists the open issues and pull requests carrying `agent:implement`, `agent:review`,
+`agent:fix` or `agent:update-branch`, and decides each one as that label's delivery would be
+decided: the same installation, owner and opt-in checks, a head in the same repository, an open
+pull request, and the same job. A scan has no sender, so the actor of the item's latest `labeled`
+event for that label stands in for one, held to the same rule: the App's own login, or someone who
+can write to the repository *now*. An item with no such event is skipped and logged, never
+dispatched on a guess.
+
+`agent:follow-ups` is never scanned: it is a marker that stays on until the pull request is merged
+and filed, not a label that says a run is working, and a merge's follow-ups job comes from the merge.
+
+Before deciding, the scan asks the worker at its held door which jobs it has queued or is running,
+and skips any item a job is held for there or that the dispatcher itself has dispatched and is
+still posting. A worker that cannot be reached skips the whole scan, logged; its own start
+announcement scans again. The same answer lets the dispatcher forget every job it dispatched that
+the worker no longer holds, which after a worker's restart is every job it held before.
+
+A label still on an item with nothing held for it is a run that never reached its ending, since
+the loop's commands take the trigger label off however a decided run ends. Two limits follow:
+
+- a run that ended because the dispatcher **granted no token** leaves its label on by design
+  (adding it again is the retry), so a scan after it dispatches it once more, once per start;
+- a job **running in the worker when only the dispatcher restarted** is skipped, since the worker
+  still holds it, and dies at its next token request, as above.
+
+Every line a scan logs starts `scan:`, with the item and the reason it was dispatched, skipped or
+refused; a repository or a listing that cannot be read is logged and the scan goes on.
 
 ## The worker
 
@@ -479,12 +511,12 @@ Read from the environment. A missing required one stops the worker at start, nam
 | Setting | Kind | Default | Meaning |
 |---|---|---|---|
 | `WORKER_SECRET` | required | | the secret the dispatcher and the worker share, the dispatcher's own `WORKER_SECRET` |
-| `DISPATCHER_TOKEN_URL` | required | | the dispatcher's token door, ending `/token` |
+| `DISPATCHER_TOKEN_URL` | required | | the dispatcher's token door, ending `/token`; the worker announces its start at `/started` beside it, once its own door listens |
 | `CLAUDE_CODE_VERSION` | required | | the version of `@anthropic-ai/claude-code` the worker installs at start, so "latest" is never chosen by accident |
 | `CLAUDE_CODE_OAUTH_TOKEN` | required | | the agent's model token, handed to the runner alone |
 | `WORK_DIR` | required | | where the agent's CLI is installed and each run's directory is kept |
 | `JOBS_HOST` | optional | `127.0.0.1` | the address the job door listens on: one the dispatcher reaches |
-| `JOBS_PORT` | optional | `8787` | the job door's port; jobs arrive at `POST /jobs`, which the dispatcher's `WORKER_URL` names |
+| `JOBS_PORT` | optional | `8787` | the job door's port; jobs arrive at `POST /jobs`, which the dispatcher's `WORKER_URL` names, and a scan asks what the worker holds at `POST /held` |
 | `WORKER_PROXY` | optional | `""` | an `http:` or `https:` URL: the proxy the worker's own requests (the CLI's install, its token requests) and every subcommand it starts leave through, by `HTTP_PROXY`, `HTTPS_PROXY`, their lower-case forms and `NODE_USE_ENV_PROXY=1`, never with a `NO_PROXY`; empty connects directly, and the worker refuses to start on anything else. It does not reach the sandbox, whose proxy is `AGENT_SANDBOX_PROXY`. Unlike that one it may be `https:`, since the worker names the proxy by its own host, which its certificate names |
 | `AGENT_SANDBOX` | optional | `bwrap` | the sandbox the agent runs in, `bwrap` or `none` (spec §3); `none` runs the agent with the worker's own filesystem |
 | `AGENT_SANDBOX_RO_BINDS` | optional | `""` | host directories, `:`-separated, bound read-only into the sandbox for the toolchain; the CLI's prefix is added |
@@ -497,8 +529,13 @@ The job door also answers `GET /health` with `200`.
 
 - **A delivery that arrives while the dispatcher is down is lost**, since GitHub does not
   redeliver on its own (*What it does not keep*, above): after an outage, redeliver from the App's
-  *Recent Deliveries*, or remove the label and add it again. The worker's queue is in memory too: a worker restarted mid-job loses that job and
-  the ones waiting behind it, and the pull request keeps its `agent:review` until you re-add it.
+  *Recent Deliveries*, or remove the label and add it again. A label a lost delivery added
+  to an open item is picked up by the scan at the dispatcher's start (*What it does not keep*,
+  above). What a scan does not list stays lost: a merge's follow-ups, above all.
+- **The worker's queue is in memory too**: a worker restarted mid-job loses that job and the ones
+  waiting behind it. Its start announcement makes the dispatcher scan, which dispatches each of
+  them again, the running one and the queued ones alike, since each item keeps its label. Where
+  the dispatcher is down when the worker starts, its own start scans instead.
 - **Each piece restarts itself, in order.** Run both processes under something that restarts them
   at boot and after a crash (a container's restart policy, a systemd unit), with the worker
   started after its proxy, and the firewall around the worker's host in place before the worker's
@@ -647,7 +684,8 @@ conf, where the digest is checked again. Then it installs on both with neither s
 restarts the worker and straight after it the dispatcher, and runs both check scripts, failing
 where their versions or the shared secret's fingerprints differ. Restarting the worker drops any
 job queued in it, since its queue is in memory, and between the two restarts the dispatcher gets
-409 from the worker; the script says for how many seconds. Where the worker's restart fails, it
+409 from the worker, its scan's dispatches included; the script says for how many seconds. The
+restarted dispatcher's own scan dispatches the dropped jobs again. Where the worker's restart fails, it
 stops before restarting the dispatcher, and where any step stops it prints the commands that
 finish the job, or the way back: `upgrade.sh` at the earlier version, which installs it on the box
 first. Its halves, `upgrade-unraid.sh` and

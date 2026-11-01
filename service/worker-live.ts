@@ -65,6 +65,27 @@ export const liveTokens =
     return token;
   };
 
+/**
+ * Announces the worker's start (#581) at the dispatcher's start door, beside
+ * its token door: `/started` where `tokenUrl` ends `/token`. The dispatcher
+ * answers with a scan, which re-queues what the restart dropped. Answers the
+ * line the worker logs, and never throws: a dispatcher that is down scans at
+ * its own start instead.
+ */
+export const announceStart = async (tokenUrl: string, secret: string, version: string): Promise<string> => {
+  const body = JSON.stringify({ version, started: new Date().toISOString() });
+  try {
+    const response = await fetch(new URL("started", tokenUrl), {
+      method: "POST",
+      headers: { "content-type": "application/json", [SIGNATURE_HEADER]: sign(secret, body) },
+      body,
+    });
+    return response.status === 202 ? "the dispatcher is scanning" : `the dispatcher answered ${response.status}`;
+  } catch (error) {
+    return `the dispatcher could not be reached: ${error instanceof Error ? error.message : String(error)}; it scans at its own start`;
+  }
+};
+
 /** How long a subcommand ended by its time limit is given to exit before it is killed. */
 const KILL_GRACE_MS = 10_000;
 

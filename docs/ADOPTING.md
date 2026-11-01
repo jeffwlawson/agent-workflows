@@ -2,8 +2,9 @@
 
 A set of GitHub Actions workflows that let a labelled issue become a reviewed pull request without
 a human in the middle — most of them working one issue, one working a parent issue's sub-issues in
-sequence onto a single branch, and one — optional — filing the out-of-scope findings a review
-recorded, once the pull request has merged. This is what it takes to install them somewhere else.
+sequence onto a single branch, one — optional — filing the out-of-scope findings a review
+recorded, once the pull request has merged, and one, optional too, carrying out the merge you
+decided on by adding `agent:merge`. This is what it takes to install them somewhere else.
 
 **Nothing below counts them.** A number in prose is a copy no test reads, so it goes stale in
 silence the release after somebody adds a workflow — which is what happened to the nine places this
@@ -104,6 +105,7 @@ each. A row that is a **warning** instead — printed, exit 0 — says so where 
 | as a note, the older layout of a caller file per caller, with the merge that makes one label start one run | §4: nothing is broken. A caller you left out, `follow-ups` most of all, is read as declined in either layout, and raises nothing |
 | `self-check` is the check run its job produces, byte for byte — **both** halves, and the calling half is that job's `name:` where it has one | §4 — a job that waits for itself for the whole of its 15-minute CI wait |
 | the labels exist | §3 — a transition that is a silent no-op |
+| where a `merge` caller is installed, the loop's App or `AGENT_PAT` is set: with neither, an error; and, as a note, that with the PAT alone its owner cannot arm | §3, *The merge decision*: the arm is a commit status only the loop token's account may post, so with only `GITHUB_TOKEN` the gate refuses every `agent:merge`, and nothing is armed or merged |
 | no retired label is still here, as a warning with the `gh label delete` that removes it | §3, *Retired labels*: nothing reads it, and it reads as a run in progress that is not |
 | the fix-round budget, `AGENT_MAX_FIX_ROUNDS`, is a whole number where it is set; that no review caller still passes the removed `auto-fix`; and, as a warning, that a budget above 0 (the default of 3 included) has the App or `AGENT_PAT` behind it | §3b — a variable the review refuses fails every review; GitHub fails every job in a caller that passes `auto-fix` before any starts, with no log; and without the App or the PAT no automatic round ever starts, and every verdict asks for `agent:fix` by hand |
 | whether the review caller configures the red check, as a note either way; and, as a warning, one that is half configured: a `red-check-command` with no `red-check-report` or no `red-check-test-globs`, named, or either of those with no command | §4, *The red check*: half configured, the check reports itself misconfigured on every review and the review reads what is red as unknown; with no command, the other two are read by nothing |
@@ -271,7 +273,7 @@ or in what `gh` can read, records that the add fired no event.
 | Secret | Required | What breaks without it |
 |---|---|---|
 | `CLAUDE_CODE_OAUTH_TOKEN` | **yes** | every agent workflow fails immediately |
-| `AGENT_APP_ID` and `AGENT_APP_PRIVATE_KEY` | the **recommended** identity; `init` sets both | without them, or `AGENT_PAT`, all three failures in §1 |
+| `AGENT_APP_ID` and `AGENT_APP_PRIVATE_KEY` | the **recommended** identity; `init` sets both | without them, or `AGENT_PAT`, all three failures in §1, and a `merge` caller that refuses every run (§3, *The merge decision*) |
 | `AGENT_PAT` | the **supported fallback**, where there is no App | the same, where there is no App either |
 
 The loop needs an identity that is not the Actions bot for the writes that start the next stage:
@@ -320,7 +322,16 @@ nothing more:
 | Pull requests: **write** | open the PR, mark it ready, add labels to it |
 | Issues: **write** | label transitions on issues, and the PRD chain's comment on the parent |
 | Workflows: **write** | a push touching `.github/workflows/**` is rejected without it, *after* the agent has done all its work |
+| Commit statuses: **write** | post the `agent-merge` arm on the commit you added `agent:merge` at (§3, *The merge decision*) |
 | Metadata: **read** | GitHub's own, and required of every App |
+
+**An App made before this release has no Commit statuses: write**, and nothing adds it for you:
+`init` finds the App's secrets set and leaves the App alone. Add it by hand on the App's settings
+page (*Permissions & events*, *Repository permissions*, *Commit statuses*: Read and write), then
+accept the new permission on each installation, which GitHub asks the installation's owner to do
+under Settings → Integrations → GitHub Apps. Until it is accepted the App's tokens cannot post the
+arm, so the first `agent:merge` stops with that reason, `agent:blocked` on. Nothing else in the
+loop spends it, so an install without a `merge` caller loses nothing by waiting.
 
 It has no webhook: nothing listens for one.
 
@@ -355,7 +366,10 @@ loop uses neither: `doctor` reports half an App as an error.
 **What stays with the Actions bot.** Reviews, top-level comments, thread replies and commit
 statuses are still posted with `GITHUB_TOKEN`, as `github-actions[bot]`, so the author gate's trust
 in the loop's own earlier posts (§8) and every check that recognises them work unchanged. Moving
-those to the App too is a separate change (#305).
+those to the App too is a separate change (#305). The one status that is not is the `agent-merge`
+arm, posted with the loop's token on purpose: any workflow in a pull request's own branch can post
+as `github-actions[bot]`, so an arm posted as that account could be forged from the pull request
+it arms.
 
 ### `AGENT_PAT`, the fallback
 
@@ -370,6 +384,7 @@ silent, so N tokens means N chances to forget. Permissions:
 | Pull requests: **write** | open the PR, add labels to it |
 | Issues: **write** | label transitions on issues |
 | Workflows: **write** | required wherever agents may touch `.github/workflows/**`, which in *this* repo is unconditional — the workflows are the product. A push touching those paths is rejected without it, *after* the agent has done all its work |
+| Commit statuses: **write** | only with a `merge` caller: the `agent-merge` arm is posted with this token (§3, *The merge decision*) |
 
 > **On expiry.** A fine-grained token can be set to *No expiration*, and this one should not be.
 > `Contents: write` together with `Workflows: write` is the pair that lets a holder push a workflow
@@ -549,21 +564,22 @@ service release costs you one setting.
 
 ## 3. Labels
 
-All of these must exist. A missing label makes its transition a no-op, and the state machine drifts
-without erroring.
+All of these must exist, `agent:merge` where its caller is installed (*The merge decision*, below).
+A missing label makes its transition a no-op, and the state machine drifts without erroring.
 
 ```bash
 gh label create "agent:implement"   --color 8250DF --description "Build this issue, or the next slice of this PRD. On while the run works."
 gh label create "agent:review"      --color 0969DA --description "Review this PR. On while the review runs."
 gh label create "agent:fix"         --color D4A72C --description "Act on review findings. On while the fix runs."
 gh label create "agent:update-branch" --color 1B7C83 --description "Merge the base branch into this PR. On while it runs."
+gh label create "agent:merge"       --color 1A7F37 --description "Merge this PR once current, green and approved. Armed until merged or disarmed."
 gh label create "agent:blocked"     --color CF222E --description "A run failed or was refused. Needs you."
 ```
 
 `init` creates these, and recolours any whose colour or description differs, so an install made
 before a release changed them catches up on its next run; the block is what to run where it could
 not. Each colour is a **stage**: purple is building, blue reviewing, yellow fixing, teal refreshing,
-grey a marker, red a run that needs you.
+green merging, grey a marker, red a run that needs you.
 
 **A trigger label is on while its run works.** The run leaves it on as it starts and takes it off
 when it ends, whether it succeeded, failed, was refused, timed out or was cancelled, so the label on
@@ -571,8 +587,8 @@ an issue or pull request is the run working on it now. A failure or a refusal al
 `agent:blocked` and says why in a comment, and a human re-adds the trigger label to retry. A refusal
 that leaves you nothing to act on (a closed issue or pull request, a finished PRD, a deleted branch,
 a fix with nothing to do) says so and adds no label. It is not
-a rule with exceptions, though. It is a three-valued property, and which value a label has is a
-**column**:
+a rule with exceptions, though. It is a property with a value per label, and which value a label
+has is a **column**:
 
 | Label | Lifecycle | Cleared by |
 |---|---|---|
@@ -580,6 +596,7 @@ a rule with exceptions, though. It is a three-valued property, and which value a
 | `agent:implement` on an ordinary issue | **on while its run works** | the run, as it ends |
 | `agent:implement` on a PRD parent | **cursor** | each run, as it ends, and put back by review's advance when a slice round on the PRD PR ends on an approval, which never happens after the final review |
 | `agent:follow-ups` on a pull request | **marker, removed on success** | the filing run, on any run that reached a verdict — or you, to opt out |
+| `agent:merge` on a pull request | **armed until merged or disarmed** | the merge; a disarm, where the head gained anything but a clean merge of its base; a refusal or a stopped run; or you, to take the decision back |
 
 **Fill the column in when you add a label.** Written as prose this said "consumed on entry, except
 on a PRD parent, and also except for the marker" — which is read as "consumed on entry", and the
@@ -649,6 +666,62 @@ over — that is a second vocabulary, and joining the two is a decision you have
 rather than an automation, and the one join that is *not* a human hand — a filed stub arriving
 `needs-triage`. Take it alongside the workflows and edit the mapping — in the order §4 gives, since
 the file is also a skill's output path — and the reasoning survives the rename.
+
+### The merge decision: `agent:merge`
+
+**Adding `agent:merge` to a pull request is your merge decision, for the head it was added at**, and
+the loop carries it out ([ADR 0009](./adr/0009-agent-merge-executes-the-human-decision.md)). The
+decision stays yours: the loop never adds the label to arm a pull request, whatever a verdict or a
+budget says. Run `/merge-check` on the head first, and add the label while the head is still the one
+it checked.
+
+**What it decides.** The label **arms** the commit it was added at: the gate posts an `agent-merge`
+commit status on it, naming you, with the loop's token. The loop then squash-merges that commit and
+nothing else. The squash's title is the pull request's title with ` (#<n>)` after it, and its
+message is whatever your repository's squash setting makes it.
+
+**What it waits for.** A run checks the armed head and merges it only where all of these hold:
+
+- the head is **current with its base**. One that is behind is not merged: it waits, armed, and
+  says so once per head;
+- every **required check is green**. A red head is said once per head, and the arm stays; a fix
+  pushed after it is a new head, which disarms (below);
+- the newest **`agent-review` verdict is an approval**;
+- no other run is working on it: while `agent:review`, `agent:fix` or `agent:update-branch` is on,
+  nothing merges.
+
+A run waits up to 15 minutes for a pending check or verdict, and then ends with the label still on.
+**Nothing re-starts it in this release**: a pull request that is behind, red or still pending when
+its run ends keeps `agent:merge` and is merged by no later event. To have it checked again, remove
+`agent:merge` and add it back. Added by a person who can write, that arms the head as it is then,
+so check that head first.
+
+**What disarms it.** A head that is not the armed commit. A fix round, a conflict an agent resolved,
+a push of yours, GitHub's *Update branch* button or a force-push each add code you did not decide
+on, so the next run takes `agent:merge` off and asks you, by name, for a `/merge-check` on the new
+head and `agent:merge` again. It does not say which kind of push it was: the record cannot tell.
+
+**What it refuses.** A closed pull request, a draft, one from a fork, and a label added by someone
+who cannot write to the repository are each refused with a comment, and the label comes off. A merge
+GitHub refuses (a branch rule, a conflict that arrived after the gate) stops the run with
+GitHub's reason, `agent:merge` off and `agent:blocked` on.
+
+**It needs the loop's App or `AGENT_PAT`** (§2). The arm is posted and read back only as the loop
+token's account, never as `github-actions[bot]`, which any workflow in the pull request's own
+branch can post as, and the merge is made with that token too. With only `GITHUB_TOKEN` the gate
+refuses every run: nothing is armed and nothing merges. `doctor` fails a `merge` caller with
+neither behind it. An App made before this release needs Commit statuses: write added by hand (§2,
+*The loop's App*).
+
+**With `AGENT_PAT` and no App, the PAT's owner cannot arm.** The loop then writes as that account,
+so a label it adds cannot be told from one the loop added itself, and a label the loop adds never
+arms: the gate says so on the pull request and merges nothing. Someone else who can write has to
+add `agent:merge`, or set up the loop's App, after which the label is yours to add. `doctor` notes
+it.
+
+**It is opt-in by its caller job**, as `follow-ups` is (§4): a repository without the `merge` job
+in its pull-request caller file has a label that nothing reads, and `doctor` demands the label only
+where the job is installed.
 
 ### Three more, and none of them mandated
 
@@ -1130,14 +1203,14 @@ That is the difference between installing this loop and forking it. A control yo
 that drifts; a control behind a pinned `uses:` is one you get fixes to.
 
 ```
-.github/workflows/agent-pr.yml      # review, fix, update-branch, follow-ups (optional)
+.github/workflows/agent-pr.yml      # review, fix, update-branch, follow-ups and merge (both optional)
 .github/workflows/agent-issue.yml   # implement, implement-prd
 .github/dependabot.yml              # not part of the loop; see the end of this section
 ```
 
 **One caller file per side.** The pull-request side's file triggers on
-`pull_request_target: [labeled, closed]` and holds the `review`, `fix`, `update-branch` and
-`follow-ups` callers; the issue side's triggers on `issues: [labeled]` and holds `implement` and
+`pull_request_target: [labeled, closed]` and holds the `review`, `fix`, `update-branch`,
+`follow-ups` and `merge` callers; the issue side's triggers on `issues: [labeled]` and holds `implement` and
 `implement-prd`. No caller carries a label `if:`: every reusable workflow's own guard decides
 whether an event is its label, as it always has, so one label starts one run of its side's file
 rather than one per caller, and the Actions tab shows the runs that did something.
@@ -1168,7 +1241,12 @@ checklist. Not a
 mechanism invented for this: it is the same per-caller granularity that already lets you skip
 `implement-prd`.
 
-`init` (§0) scaffolds the lot on a first run, this job included, so **opting out is deleting its
+**`merge` is opt-in the same way**: its job is the whole of switching on the merge you decide by
+adding `agent:merge` (§3, *The merge decision*), and a repository without it has a label nothing
+reads. Its job passes no `CLAUDE_CODE_OAUTH_TOKEN`, since it runs no model, and grants no
+`contents: write`: the merge is made with the loop's token, not with the job's.
+
+`init` (§0) scaffolds the lot on a first run, these jobs included, so **opting out is deleting a
 job from `agent-pr.yml` afterwards** rather than declining it up front. `doctor` reads the missing
 job as declined, not broken, in either layout. That is not a gap in the command: a re-run pins what
 is installed, and a caller you deleted is named rather than written back into your tree.
@@ -1289,6 +1367,7 @@ The permissions per workflow, which are what each job actually spends:
 | `fix` | — | — | write | **read** | read | write | — |
 | `update-branch` | — | — | write | — | read | write | **write** |
 | `follow-ups` | — | — | read | **write** | read | write | — |
+| `merge` | — | **read** | read | — | read | write | **read** |
 
 `packages: read` is the one row that is the same everywhere, because it is not about what the job
 does — it is about installing the runner it runs.
@@ -1670,7 +1749,7 @@ So the group you need most is the one that never fires here.
 `.github/workflows` itself, and naming the workflow directory finds nothing.
 
 **The grouping is the part worth reading.** Ungrouped, each caller is its own dependency, so a
-release opens **six** pull requests and six is enough to merge three of them. A repository whose
+release opens **seven** pull requests and seven is enough to merge three of them. A repository whose
 callers name two different tags is calling two releases at once — and since the runner version is
 baked into the reusable half, that is two *runner* versions too, which is the split-brain the pin
 exists to close. Grouped, it is one pull request moving all of them or none.

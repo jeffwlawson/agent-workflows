@@ -21,8 +21,9 @@ sentence. How one orchestrator does a thing is description, and sits in a quoted
 > it owns: the `dispatcher` and `worker` subcommands of this package, whose code is
 > [`service/`](../service/) and whose deployment is
 > [deploying-the-service.md](./deploying-the-service.md). It answers every trigger label the loop
-> has: `agent:review`, `agent:fix`, `agent:update-branch` and `agent:follow-ups` on a pull request,
-> `agent:implement` on an issue, a regular one or a PRD, and every merge, for `follow-ups`. A block for it appears only where it differs from the Actions orchestrator in a way a
+> has but `agent:merge`: `agent:review`, `agent:fix`, `agent:update-branch` and `agent:follow-ups`
+> on a pull request, `agent:implement` on an issue, a regular one or a PRD, and every merge, for
+> `follow-ups`. At this release it does not serve `agent:merge` (§12). A block for it appears only where it differs from the Actions orchestrator in a way a
 > reader would trip on.
 
 Neither block binds anyone. Where they disagree with a bold sentence, the bold sentence is right.
@@ -60,7 +61,7 @@ cannot check is one only an orchestrator's author will catch.
   `review`, `fix` and `update-branch`. It reads its inputs from the environment, starts the agent,
   and writes files and commits. It is not the agent.
 - **Command.** A subcommand that does an orchestrator's work on the record and starts no agent,
-  named `<workflow>:<step>`: `fix:gate`, `fix:prepare`, `fix:bundle`, `fix:publish`, `fix:conclude`, `follow-ups:file`, `follow-ups:conclude`, `implement:gate`, `implement:prepare`, `implement:bundle`, `implement:publish`, `implement:conclude`, `implement-prd:gate`, `implement-prd:catch-up`, `implement-prd:prepare`, `implement-prd:bundle`, `implement-prd:publish`, `implement-prd:conclude`, `review:gate`, `review:budget`,
+  named `<workflow>:<step>`: `fix:gate`, `fix:prepare`, `fix:bundle`, `fix:publish`, `fix:conclude`, `follow-ups:file`, `follow-ups:conclude`, `implement:gate`, `implement:prepare`, `implement:bundle`, `implement:publish`, `implement:conclude`, `implement-prd:gate`, `implement-prd:catch-up`, `implement-prd:prepare`, `implement-prd:bundle`, `implement-prd:publish`, `implement-prd:conclude`, `merge:gate`, `merge:publish`, `merge:conclude`, `review:gate`, `review:budget`,
   `review:collect-checks`, `review:red-check-place`, `review:red-check-classify`, `review:publish`,
   `review:conclude`, `review:advance`, `update-branch:gate`, `update-branch:merge`,
   `update-branch:prepare`, `update-branch:bundle`, `update-branch:publish` and
@@ -140,7 +141,7 @@ The inputs every runner reads, set once for any of them:
 |---|---|---|---|
 | `OUTPUT_DIR` | required | | The directory the runner writes its files into (§2.3). |
 | `GH_REPO` | required | | The repository, `owner/name`. Required rather than left to whatever `gh` infers. |
-| `GH_TOKEN` | required | | The token `gh` reads. The runners only read with it, `fix:prepare` reads and fetches the rescue branch with it, and `update-branch:merge`, `update-branch:prepare` and `update-branch:publish` fetch the base branch with it; `follow-ups:file` posts the post-merge checklist, files its issues, posts its report and takes `agent:follow-ups` off with it, through the writer, `follow-ups:conclude` posts its failure comment with it, `implement:gate` makes its refusals, its start comment and its label transitions with it, `implement:prepare` reads and fetches the rescue branch with it, `implement:publish` the link on the issue with it and reads the rescue branch's tip, `implement:conclude` its set-aside note, its failure comment, `agent:implement` off and `agent:blocked` on, and reads the rescue branch's tip with it, `implement-prd:gate` its refusals, its start comments, its label transitions, the approved slice's note and the PRD PR's building row, `implement-prd:catch-up` fetches the PRD branch and the base branch with it and parks the chain with it, `implement-prd:prepare` reads and fetches the PRD branch and the rescue branch with it, `implement-prd:publish` fetches the base branch and the PRD branch and reads the rescue branch's tip, the open pull requests from the PRD branch and a reused PRD PR's rounds and head with it, `implement-prd:conclude` its set-aside note, its failure comment, `agent:implement` off and `agent:blocked` on, and fetches the base branch and the PRD branch and reads the rescue branch's tip and the PRD PR's rounds with it, and `review:publish` posts the review, the summary and the verdict with it, `review:conclude` its comments, its error verdict and the labels nothing fires on, `review:advance` a PRD PR's progress list and its notes there, `fix:gate` its refusals and its label transitions, `fix:publish` its thread replies, its comments and notes, and the rescue branch's deletion, `fix:conclude` its failure comment, the rescue-set-aside note where `fix:publish` did not post it, and `agent:fix` off and `agent:blocked` on, `update-branch:gate` its refusal and its label transitions, `update-branch:publish` the verdict it carries over, its comment, and the comment that no review will start, and `update-branch:conclude` its failure comment, `agent:update-branch` off and `agent:blocked` on, and the comment that no refresh of a moved head will start. |
+| `GH_TOKEN` | required | | The token `gh` reads. The runners only read with it, `fix:prepare` reads and fetches the rescue branch with it, and `update-branch:merge`, `update-branch:prepare` and `update-branch:publish` fetch the base branch with it; `follow-ups:file` posts the post-merge checklist, files its issues, posts its report and takes `agent:follow-ups` off with it, through the writer, `follow-ups:conclude` posts its failure comment with it, `implement:gate` makes its refusals, its start comment and its label transitions with it, `implement:prepare` reads and fetches the rescue branch with it, `implement:publish` the link on the issue with it and reads the rescue branch's tip, `implement:conclude` its set-aside note, its failure comment, `agent:implement` off and `agent:blocked` on, and reads the rescue branch's tip with it, `implement-prd:gate` its refusals, its start comments, its label transitions, the approved slice's note and the PRD PR's building row, `implement-prd:catch-up` fetches the PRD branch and the base branch with it and parks the chain with it, `implement-prd:prepare` reads and fetches the PRD branch and the rescue branch with it, `implement-prd:publish` fetches the base branch and the PRD branch and reads the rescue branch's tip, the open pull requests from the PRD branch and a reused PRD PR's rounds and head with it, `implement-prd:conclude` its set-aside note, its failure comment, `agent:implement` off and `agent:blocked` on, and fetches the base branch and the PRD branch and reads the rescue branch's tip and the PRD PR's rounds with it, and `review:publish` posts the review, the summary and the verdict with it, `review:conclude` its comments, its error verdict and the labels nothing fires on, `review:advance` a PRD PR's progress list and its notes there, `fix:gate` its refusals and its label transitions, `fix:publish` its thread replies, its comments and notes, and the rescue branch's deletion, `fix:conclude` its failure comment, the rescue-set-aside note where `fix:publish` did not post it, and `agent:fix` off and `agent:blocked` on, `update-branch:gate` its refusal and its label transitions, `update-branch:publish` the verdict it carries over, its comment, and the comment that no review will start, and `update-branch:conclude` its failure comment, `agent:update-branch` off and `agent:blocked` on, and the comment that no refresh of a moved head will start, `merge:gate` its refusals, its disarm, its red and behind comments and `agent:merge` off, and reads the head's statuses, checks and compare with its base with it, `merge:publish` `agent:merge` off after the merge, and reads the pull request's title with it, and `merge:conclude` its failure comment, `agent:merge` off and `agent:blocked` on, and reads whether the pull request merged with it. The arm and the merge are not made with it: they are `LOOP_TOKEN`'s. |
 
 A command that runs where no token is held, as the red check's two do beside the pull request's own
 code, and `fix:bundle`, `update-branch:bundle`, `implement:bundle` and `implement-prd:bundle` do after the agent,
@@ -160,7 +161,7 @@ orchestrator that sets none of them gets `none`. Each is a row in each runner's 
 The last three mean nothing under `none`, where the agent has the runner's own environment and
 filesystem.
 
-Each runner's and command's own inputs are in its workflow's section, §6 to §11.
+Each runner's and command's own inputs are in its workflow's section, §6 to §12.
 
 ### 2.3 Outputs
 
@@ -368,6 +369,11 @@ over to a clean merge, match a status's creator against it in the REST spelling.
 command that asks declares `AGENT_LOOP_LOGINS`; the `update-branch` runner, which asks neither
 question, does not.
 
+One record is read by a narrower identity than this list: the merge arm (§4.3, §12). `merge:gate`
+reads an `agent-merge` status only where its creator is `LOOP_LOGIN`, the one account the loop's
+token writes as, and never `github-actions[bot]`, which any workflow in a pull request's own branch
+can post as. Where the loop's token is the workflow token, nothing is an arm.
+
 **`doctor` cannot check this.** The login is whichever account the orchestrator posts as, and the
 Actions reusable will work out its own App's login at run time (#305); nothing in a repository
 names it beforehand.
@@ -376,7 +382,8 @@ names it beforehand.
 > `GITHUB_TOKEN`, so as `github-actions[bot]`, and the reusables leave `AGENT_LOOP_LOGINS` unset.
 > Only a workflow in the repository can post as it, and adding or editing a workflow takes write
 > access, which is why trusting the login is sound there. The loop's App carries pushes, pull
-> requests, ready-marks and trigger labels, which no runner reads as text.
+> requests, ready-marks and trigger labels, which no runner reads as text, and the merge arm and
+> the merge itself (§12), whose arm `merge:gate` reads back as the loop token's account alone.
 
 > **Service orchestrator:** posts as its own App, and passes that App's login in
 > `AGENT_LOOP_LOGINS` to every runner and command that declares it, so its reviews, verdicts and
@@ -388,7 +395,8 @@ names it beforehand.
 ### 4.2 Labels
 
 What each `agent:*` label means, which object it goes on, and its lifecycle (on while the run
-works) is [ADOPTING §3](./ADOPTING.md#3-labels)'s, and the build reads that table. A label is
+works; for `agent:merge`, the maintainer's merge decision, armed until merged or disarmed) is
+[ADOPTING §3](./ADOPTING.md#3-labels)'s, and the build reads that table. A label is
 record: an orchestrator that answers one ***must*** give it that meaning.
 
 A repository ***must*** be served by one orchestrator, for every label. Two listening for the same
@@ -404,15 +412,16 @@ falls back to the orchestrator the repository already had rather than to two. A 
 orchestrator answers only the labels `SERVICE_LABELS` in `service/dispatcher.ts` lists, the keys
 of its map from trigger label to job kind, per event type: `agent:review`, `agent:fix`,
 `agent:update-branch` and `agent:follow-ups` on a pull request's delivery and `agent:implement` on
-an issue's, which is every trigger label the loop has. A label is answered on its own event type
-only, and on a service-served repository every other label is answered by nothing. A merge is the
+an issue's, which is every trigger label the loop has but `agent:merge`. That one is not in
+`SERVICE_LABELS` at this release (§12). A label is answered on its own event type only, and on a
+service-served repository every other label, `agent:merge` included, is answered by nothing. A merge is the
 one trigger that is not a label: a `follow-ups` job is started as well on the `closed` delivery of
 every pull request merged, whatever its labels (§11).
 
 `doctor` reads the variable. It reports any value but unset or `service` as an error, and one it
 could not read as unknown. With `service`, it checks that the labels the service answers exist,
-and would name any label nothing answers there. At this release the service answers every one, so
-it names none.
+and names, as a warning, each trigger label nothing answers there. At this release that is
+`agent:merge`, which it names whether or not the `merge` caller is installed.
 
 **`doctor` cannot check this.** It reads which orchestrator a repository asks for, not which one
 listens: a caller left installed listens and skips, and a service listens from outside the
@@ -440,7 +449,9 @@ and fix's re-review is `fix:publish`'s. So is taking a run's own label off howev
 `review:conclude` takes `agent:review` off, and `fix:conclude` `agent:fix`, or `fix:gate` where it refused the run;
 `update-branch:conclude` takes `agent:update-branch` off, or `update-branch:gate` where it refused the run.
 Update-branch's re-review of a resolution is `update-branch:publish`'s, and its request for itself
-again where the head moved while it worked is `update-branch:conclude`'s.
+again where the head moved while it worked is `update-branch:conclude`'s. `agent:merge` is not a
+run's label and stays on when a run merely ends: `merge:gate` takes it off where it refuses or
+disarms the run, `merge:publish` after the merge, and `merge:conclude` where the run stopped (§12).
 
 ### 4.3 Markers, status contexts, trailers and branch names
 
@@ -470,6 +481,8 @@ string the agent wrote, so the agent cannot forge one of those through a review.
 | `<!-- agent:prd-started -->` | The end of a PRD chain's first run's comment on the parent, saying which sub-issue it builds first. | `implement-prd:gate`, as `PRD_STARTED_MARK` in `shared/record.ts` spells it | `implement-prd:gate`, to not post it twice on a retry |
 | `<!-- agent:slice-approved <sha> -->` | The end of the note on an approved slice's sub-issue, `<sha>` the PRD PR head it was approved on. | `implement-prd:gate`, past an approval, as `sliceApprovedMark` in `shared/record.ts` spells it | `implement-prd:gate`, to not post it twice on a retry |
 | `<!-- agent:post-merge-checklist -->` | The end of the post-merge checklist on a merged pull request (§11). | `follow-ups:file`, as `POST_MERGE_CHECKLIST_MARK` in `shared/record.ts` spells it | `follow-ups:file`, to not post it twice on a retry |
+| `<!-- agent:merge-red <sha> -->` | The end of the comment saying an armed head `<sha>` is not green, so it was not merged and the arm stays (§12). | `merge:gate`, as `mergeRedMark` and `mergeRedComment` in `shared/record.ts` spell it | `merge:gate`, to say it once per head |
+| `<!-- agent:merge-behind <sha> -->` | The end of the comment saying an armed head `<sha>` is behind its base, so it waits, armed (§12). | `merge:gate`, as `mergeBehindMark` and `mergeBehindComment` in `shared/record.ts` spell it | `merge:gate`, to say it once per head |
 | `### After merge, by a human`, or `**After merge, by a human:**` on a line of its own | A brief's list of checks only a person can make after merging, in the linked issue's latest brief (the text the review reads its criteria from). Read from a trusted author's text only (§4.1). | triage, by hand | `follow-ups:file`, for the post-merge checklist |
 
 **Markers in a pull request's body.** The orchestrator writes the body, and a regular pull
@@ -502,12 +515,14 @@ body.
 | `<!-- agent:final-review requested -->` | A PRD PR's body: the finishing run asked for the final review. Written by `implement-prd:publish` on the finishing run, with the final review's row, in front of the progress list's end marker, or at the body's end where it has no list; taken back out where `agent:review` does not go on. | `review`, as the final review; `implement-prd:gate`, as `FINAL_REVIEW_MARK` in `shared/record.ts` spells it, to call a PRD of more than one slice finished |
 
 **Commit status contexts.** Read off each of the pull request's commits, newest first, counting
-only a status whose creator is the loop's identity (§4.1).
+only a status whose creator is the loop's identity (§4.1). `agent-merge` is the exception: it is
+counted only where its creator is the loop token's account, a narrower set (§4.1).
 
 | Context | What it records | Written by | Read by |
 |---|---|---|---|
 | `agent-review` | The review's verdict on the commit. A state of `error` is no verdict. | `review:publish`, from `review`'s `verdict.json`; `error` by `review:conclude`; copied unparsed from the old head on to a clean merge by `update-branch:publish` | `review`, to know what changed since the last verdict |
 | `agent-fix-round` | Beside a verdict, with the same target URL: that verdict started a fix round. | `review:publish`, from `review`'s `verdict.json` | `review`, to count fix rounds since the last verdict; `review:budget`, to count the rounds the budget has spent, on a PRD PR by the round its linked review's header names |
+| `agent-merge` | The arm (ADR 0009): the maintainer's merge decision for the commit, `success`, its description `Armed by @<login> to merge this commit.` naming who armed it, as `armDescription` and `ARMED_BY` in `shared/record.ts` spell and read it. Posted with the loop's token. Read only where its creator is the loop token's account, `LOOP_LOGIN`, and never `github-actions[bot]`, whatever the list in §4.1 holds: any workflow in a pull request's own branch posts as that, and could arm its own push. A head with none, a push since the arm included, is disarmed. Never CI: `review:collect-checks` and `merge:gate` leave it out of their checks. | `merge:gate`, on a label added by someone who can write, at the head it was added at | `merge:gate`, for whether the head is armed and by whom |
 
 **Commit trailers.** Read from the PRD branch's first-parent log.
 
@@ -533,6 +548,7 @@ only a status whose creator is the loop's identity (§4.1).
 |---|---|---|
 | `agent:fix` added to the pull request | One fix round, automatic or by hand, each time it was added. | `review`, `fix`, `implement-prd`, to count rounds |
 | `agent:follow-ups` on the pull request | Findings wait to be filed. It gates the filing alone, not the post-merge checklist (§11). Read live, and taken off once filed, by `follow-ups:file` through `removeLabel`, last, and left on by any run that fails: `follow-ups:conclude`, which says so, never takes it off. | `follow-ups:file` |
+| `agent:merge` on the pull request | The maintainer's merge decision, standing until the merge or a disarm: armed until merged or disarmed. Its addition by someone who can write arms the head it was added at; an addition by the loop token's account arms nothing. Taken off by `merge:gate` on a refusal or a disarm, by `merge:publish` after the merge, and by `merge:conclude` on a run that stopped, never by a run that merely ended. | `merge:gate`, through the event, and through `SENDER` for who added it |
 | `pr-follow-up` on an issue | An issue `follow-ups:file` filed earlier, labelled as `createIssue` creates it, where the repository has the label, and read with its body's key. | `follow-ups:file` |
 
 **`doctor` cannot check this.** These strings are written by the orchestrator's posting code, and
@@ -2131,10 +2147,13 @@ model, needs no checkout, and writes nothing to the record.
 
 It reads three surfaces, because each sees what the others cannot: the commit's check runs, its
 commit statuses (the latest per context), and its workflow runs, the only place a run that is
-queued or waiting for approval shows. The loop's own are left out of all three: a check run named
-`SELF_CHECK`, or whose name either side of ` / ` is one of the loop's job ids; the `agent-review`
-status; and the run `SELF_RUN_ID`, a run whose workflow is named `Agent …`, or one that calls the
-loop's reusable workflows.
+queued or waiting for approval shows. The loop's own are left out of all three, as
+`shared/loop-checks.ts` knows them, the one copy `merge:gate` reads too: a check run named
+`SELF_CHECK`, or whose name either side of ` / ` is one of the loop's job ids, the `merge / merge`
+job among them, since a review waiting on a merge gate that waits for that review's verdict would
+hold both; the `agent-review` and `agent-merge` statuses, the loop's answers rather than CI; and the
+run `SELF_RUN_ID`, a run whose workflow is named `Agent …`, or one that calls the loop's reusable
+workflows.
 
 - **The wait.** Up to 15 minutes, ending as soon as nothing it can see is pending: no check run
   unfinished (one waiting on an environment's reviewers aside), no status `pending`, and no
@@ -2170,7 +2189,7 @@ loop's reusable workflows.
 #### What it reads from the record
 
 - The `agent-review` status on `REVIEWED_SHA`, only to leave it out: it is the verdict this review
-  has not posted yet.
+  has not posted yet. The `agent-merge` status the same way: it is the merge arm, not CI.
 
 **`doctor` cannot check this.** The record is written by the orchestrator's posting code, for the reason §4.3 gives.
 
@@ -3687,3 +3706,286 @@ Nothing: what it says comes from its inputs and its directory.
 > directory, so the reason file it reads is never its own. Both commands' write logs are uploaded
 > `always()`. A failure before the package installs, the Node setup's own, posts nothing: the run
 > never got as far as the command.
+
+## 12. `merge`
+
+Trigger label: `agent:merge`, added to an open, ready pull request from the repository's own
+branches. The `merge` caller job is opt-in: a repository that deleted it has a label that does
+nothing, so `doctor` checks that the label exists only where that caller is installed, and reports
+one installed with neither the loop's App nor `AGENT_PAT` set as an error.
+
+A workflow with no runner: three commands and no agent, in **one job that checks nothing out**, so
+the loop's token is minted where neither an agent nor the pull request's own code runs (ADR 0003).
+Adding `agent:merge` **is** the maintainer's merge decision, for the head it was added at, and the
+loop only carries it out ([ADR 0009](./adr/0009-agent-merge-executes-the-human-decision.md)).
+`merge:gate` records the decision as the **arm**, an `agent-merge` status on that head (§4.3),
+posted with the loop's token, and decides from the record whether the head merges now.
+`merge:publish` makes the squash merge on that decision alone, guarded on the head the gate
+checked. `merge:conclude` says a run that stopped. Nothing else merges: a pull request no human
+armed is never merged, and a head that gained any commit since the arm is disarmed rather than
+merged.
+
+The label is not a run's label. Its lifecycle is **armed until merged or disarmed**: `merge:gate`
+takes it off where it refuses or disarms, `merge:publish` after the merge, and `merge:conclude`
+where a run stopped, and a run that merely ends leaves it on. The gate's decision, in
+`gate.json`, is one of:
+
+- `merge`: the head carries an arm, is current with its base, every counted check passed and the
+  newest verdict approves it. `merge:publish` merges it.
+- `wait`: the head carries an arm, and another trigger label is on, a counted check or the verdict
+  is still pending, or whether it is current could not be told, when the bound ran out; or the pull
+  request stopped being open and ready while the gate waited. Nothing is said, and the label stays
+  on.
+- `behind`: the head carries an arm and nothing on it is red, but the base's tip is not in its
+  history. It waits, armed, and says so once per head.
+- `red`: the head carries an arm, and a counted check failed or the newest verdict is not an
+  approval. Said once per head; the arm and the label stay.
+- `disarmed`: the head carries no arm. Said, and the label taken off.
+- `refused`: the run was refused before anything was armed. Said, and the label taken off.
+
+The run starts only on `agent:merge` being added. A gate that ends `wait`, `behind` or `red` leaves
+the label on, and at this release nothing starts the gate again until the label is removed and
+added again; an addition by someone who can write arms the head they added it at.
+
+> **Service orchestrator:** does not serve `agent:merge` at this release. The label is not in
+> `SERVICE_LABELS`, so on a service-served repository it is answered by nothing, and `doctor` names
+> it as such (§4.2). The service's `merge` job kind is a later release's.
+
+### `merge:gate`
+
+Refuses, arms, or decides the head. It runs no model and needs no checkout. In order:
+
+- **The refusals the event settles**, before anything is read: a pull request whose `PR_STATE` is
+  not `open`, or that is `PR_MERGED`, with `This PR is closed.`; a draft (`PR_DRAFT`); a fork, whose
+  `HEAD_REPO` is not `GH_REPO`; and a `LOOP_TOKEN_SOURCE` that is neither `app` nor `pat`, since an
+  arm posted with the workflow token is one any workflow in the pull request's branch could post
+  too, and a merge made with it starts no workflow.
+- **The labeller.** Where `SENDER` is not `LOOP_LOGIN`, compared without regard to case, their
+  permission on the repository is read with the loop's token. Anything but `admin`, `maintain` or
+  `write` is refused, and so is a permission GitHub answered without establishing; a read that
+  fails fails the command, writing nothing.
+- **A refusal** is said in the loop's one order: the comment, `` **`agent:merge` didn't run:** ``
+  and the sentence, as `mergeRefusal` in `shared/record.ts` spells it; then `agent:merge` off. Both
+  are tolerated, so a comment that fails still takes the label off. It never adds `agent:blocked`:
+  a refusal is a decision, and the command succeeds.
+- **The arm.** On a label `SENDER` added who is not the loop token's account, the live head is read
+  first. Where it is still `HEAD_SHA`, the arm is posted on `HEAD_SHA` with `LOOP_TOKEN`:
+  `agent-merge`, `success`, its description naming `SENDER` (§4.3). Where it has moved, a label
+  added just after a push carrying the commit before it, the run disarms instead and arms nothing.
+  A status GitHub refuses fails the command, naming the grant to check: the App's Commit statuses:
+  write, accepted on the installation, or a PAT that can write commit statuses. A label the loop
+  token's own account added never arms: it re-starts the gate on a head already armed, and disarms
+  any other.
+- **The head.** Read live, then polled every `CHECK_POLL_SECONDS`, up to `CHECK_WAIT_SECONDS`,
+  while anything is pending. In order:
+  - A pull request no longer open, or now a draft: `wait`, and nothing said.
+  - **No arm**: the newest `agent-merge` status on the head whose creator is `LOOP_LOGIN`, where it
+    is `success`, is the arm, and anything else is none; with `LOOP_LOGIN` `github-actions[bot]`
+    no status is an arm at all. A head with none is **disarmed**: the comment, `` **`agent:merge`
+    disarmed:** ``, naming who armed which commit where the record says (the arm this run posted
+    or read, or else the one on `HEAD_SHA`), the head, and the retry, `/merge-check` on the head
+    and `agent:merge` added again, as `disarmComment` spells it; then `agent:merge` off, both
+    tolerated. It never says what kind of push moved the head: the record cannot tell a human's
+    from an agent's.
+  - **Another trigger label** on the pull request, `agent:review`, `agent:fix` or
+    `agent:update-branch`: pending, since that run moves or reads the head.
+  - **Red**: a counted check failed, or the newest `agent-review` status of the loop's accounts
+    (§4.1) is a state other than `success` or `pending`. Said once per head, the comment ending in
+    `<!-- agent:merge-red <sha> -->` (§4.3), the arm and the label left on: `red`.
+  - **Behind**: the compare of `BASE_REF` with the head reports the head `behind_by` one commit or
+    more. Said once per head, the comment ending in `<!-- agent:merge-behind <sha> -->`, the arm and
+    the label left on: `behind`.
+  - **Pending**: a counted check unfinished (a check run not completed, a status `pending` or
+    `expected`), no verdict of the loop's accounts or a `pending` one, or a compare that gave no
+    count. At the bound, `wait`, nothing said, the label left on.
+  - Otherwise `merge`.
+
+The **counted checks** are the ones the base requires of this pull request, by GitHub's own
+`isRequired`, rulesets and branch protection alike. Where it requires none, every check on the head
+counts but the loop's own, as `shared/loop-checks.ts` knows them: a check run whose name either side
+of ` / ` is one of the loop's job ids, `merge` among them, and the `agent-review` and `agent-merge`
+statuses. A check run passes on `SUCCESS`, `NEUTRAL` or `SKIPPED`, and a status on `SUCCESS`.
+
+**Once per head** is a comment by the loop's accounts (§4.1) already carrying the head's mark; one
+by anyone else does not count, and a comment read that fails says it again rather than not at all.
+
+The arm and the labeller's permission are the loop token's; every other write is made with
+`GH_TOKEN`, since none of them has to start a run. It writes at most one comment, `agent:merge` off
+once, and one status. `gate.json` is written the moment it decides and again however the command
+ends; one that failed before deciding writes `{}`, and one whose inputs could not be read writes
+none.
+
+#### Inputs
+
+| Input | Kind | Default | What it is |
+|---|---|---|---|
+| `LOOP_TOKEN` | required | | The loop's token, the App's or `AGENT_PAT`: the arm is posted with it and the labeller's permission read with it. |
+| `LOOP_TOKEN_SOURCE` | required | | Where `LOOP_TOKEN` came from: `app`, `pat` or `workflow`. Anything but the first two is refused. |
+| `AGENT_LOOP_LOGINS` | optional | `""` | The loop's accounts, a comma-separated list, recognised beside `github-actions[bot]` (§4.1): whose verdicts and comments it reads as the loop's. Empty is that one alone. This is trust. |
+| `LOOP_LOGIN` | required | | The account `LOOP_TOKEN` writes as, in REST's spelling: the App's `<slug>[bot]`, or the PAT's owner. An arm is read only where this account posted it, and a label it added never arms. |
+| `PR_NUMBER` | required | | The pull request. |
+| `BASE_REF` | required | | Its base branch, which the head has to be current with. |
+| `ACTION` | required | | Accepts `labeled`: the event's action. |
+| `SENDER` | required | | Who added the label, in REST's spelling. |
+| `HEAD_SHA` | required | | The head the label was added at, as the event saw it, a full commit id: the commit a writer's label arms. |
+| `HEAD_REPO` | required | | The head's repository, `owner/name`. One that is not `GH_REPO` is a fork, and refused. |
+| `PR_STATE` | required | | The pull request's state as the event saw it: `open` or `closed`. |
+| `PR_MERGED` | optional | `""` | `true` where the event saw it merged. |
+| `PR_DRAFT` | optional | `"false"` | Accepts `true` or `false`: whether the event saw it a draft. |
+| `CHECK_WAIT_SECONDS` | optional | `"900"` | How long it waits while anything on the head is pending: the review's CI wait, which a test holds it equal to. |
+| `CHECK_POLL_SECONDS` | optional | `"20"` | How often it reads the head meanwhile. |
+
+#### Outputs
+
+| Output | When it is written |
+|---|---|
+| `gate.json` | Where it read its inputs: `decision`, one of `merge`, `wait`, `behind`, `red`, `disarmed` and `refused`, and `head`, the head it checked, where it read one. `{}` where it failed before deciding. |
+| `write_log.jsonl` | Every write as it lands, one JSON line each, and a last line for how the command ended, as `review:conclude`'s. Not written where it wrote nothing. |
+
+**`doctor` cannot check this.** These tables are the command's, for the reason §6 gives.
+
+#### What it reads from the record
+
+- The pull request, read live: its state, whether it is a draft, its head and its labels.
+- `SENDER`'s permission on the repository, with the loop's token.
+- The statuses on the head, every page: the newest `agent-merge` by `LOOP_LOGIN`, and the newest
+  `agent-review` by the loop's accounts (§4.3). Where the head is not `HEAD_SHA` and this run armed
+  nothing, the statuses on `HEAD_SHA` too, for who armed it, which the disarm names.
+- The checks on the head, through its status rollup, with whether the base requires each of this
+  pull request.
+- The compare of `BASE_REF` with the head, for `behind_by`.
+- The comments on the pull request, for the red and behind marks of the loop's accounts.
+
+**`doctor` cannot check this.** The record is written by the orchestrator's posting code, for the reason §4.3 gives.
+
+> **Actions orchestrator:** the job's step after the Node setup, from `RUNNER_TEMP`, in the one
+> job, which checks nothing out. The job runs only on a same-repository pull request's `labeled`
+> event for `agent:merge`, in a concurrency group of its own, `agent-merge-<n>`, not the
+> `agent-pr-<n>` review, fix and update-branch share: the gate polls for the verdict a review
+> posts, so holding the review's group would hold that review behind it. A second `agent:merge`
+> waits behind the first. Its time limit is 20 minutes, above the gate's bound. The step before
+> resolves the loop's token with `.github/actions/loop-token`, asked for `account`, whose `login`
+> output is `LOOP_LOGIN`: the App's `<slug>[bot]` from the mint, the PAT's owner read with the
+> PAT, or `github-actions[bot]` for the workflow token. A PAT whose owner could not be read leaves
+> it empty, and the gate fails at start, naming it. `ACTION`, `SENDER`, `HEAD_SHA`, `HEAD_REPO`,
+> `PR_STATE`, `PR_MERGED`, `PR_DRAFT` and `BASE_REF` are the label's event's, and
+> `CHECK_WAIT_SECONDS` and `CHECK_POLL_SECONDS` are left at their defaults. `GH_TOKEN` is the job's
+> own, granted `checks: read`, `contents: read`, `packages: read`, `pull-requests: write` and
+> `statuses: read`, and no `contents: write` or `statuses: write`: the arm and the merge are the
+> loop token's. `OUTPUT_DIR` is a `gate/` directory of its own, which `merge:publish` and
+> `merge:conclude` read. A glue step copies `gate.json`'s `decision` into the step output
+> `decision`, and nothing where there is no `gate.json`.
+
+### `merge:publish`
+
+Makes the merge `merge:gate` decided, and nothing else. It runs no model and needs no checkout. It
+reads `gate.json` before its first write; a decision that is not one of the six, or a `head` that
+is not a full commit id, fails it.
+
+- **On `merge`**: the pull request is squash-merged with `LOOP_TOKEN`, **guarded on the head the
+  gate checked**, so a head that moved in between is refused by GitHub rather than merged on an
+  old decision. The title is the pull request's own and `` (#<n>)``, which GitHub's default gives a
+  pull request of more than one commit, passed so a one-commit pull request gets the same. The
+  message is left to the repository's squash setting. Then `agent:merge` off with `GH_TOKEN`,
+  tolerated: a merged pull request's label is history, not a decision still standing.
+- **A merge GitHub refuses** fails the command with GitHub's reason, for `merge:conclude` to say.
+  Nothing is retried: whether to try again is the maintainer's decision. A `merge` with no `head`
+  fails it too, and nothing is merged.
+- **On any other decision**: nothing. The gate said what there was to say.
+
+#### Inputs
+
+| Input | Kind | Default | What it is |
+|---|---|---|---|
+| `LOOP_TOKEN` | required | | The loop's token, the App's or `AGENT_PAT`, which the merge is made with: a merge made with the workflow token starts no workflow, so neither CI on the base nor the follow-ups would run. |
+| `LOOP_TOKEN_SOURCE` | required | | Where `LOOP_TOKEN` came from: `app`, `pat` or `workflow`. |
+| `PR_NUMBER` | required | | The pull request. |
+| `GATE_DIR` | directory | | `merge:gate`'s `OUTPUT_DIR`. Reads `gate.json`. |
+
+#### Outputs
+
+| Output | When it is written |
+|---|---|
+| `write_log.jsonl` | Every write as it lands, one JSON line each, and a last line for how the command ended, as `review:conclude`'s. Not written where it wrote nothing. |
+
+**`doctor` cannot check this.** These tables are the command's, for the reason §6 gives.
+
+#### What it reads from the record
+
+- The pull request's title, for the merge commit's.
+
+**`doctor` cannot check this.** The record is written by the orchestrator's posting code, for the reason §4.3 gives.
+
+> **Actions orchestrator:** the job's step after the gate, run only where the glue step's
+> `decision` is `merge`, from `RUNNER_TEMP`. The head it guards on is the gate's, read from
+> `gate.json`, never the event's. `GATE_DIR` is the gate's `gate/` directory, and its own
+> `OUTPUT_DIR` a `publish/` directory, which `merge:conclude` reads. It is handed the loop's token
+> and the job's own.
+
+### `merge:conclude`
+
+Ends every merge run, success included. It runs no model and needs no checkout. It is told how the
+job ended and whether it ran out of time, and works out the ending from them:
+
+- **A run that finished** (`JOB_STATUS` is `success`): nothing. The gate or publish said what
+  there was to say, and `agent:merge` is a standing decision, so a run that merely ended does not
+  take it off.
+- **A pull request that merged** before the run stopped, read live: nothing, since there is nothing
+  to retry and nothing left to block. A read that fails is a warning, and read as not merged.
+- **A run that stopped** (`failure` or `cancelled`), in the loop's one order: one comment,
+  `` **`agent:merge` stopped:** `` and the reason as a sentence, starting with a capital and ending
+  in a full stop (#253), the run's link where there is one, and `` To try again, add
+  `agent:merge`. ``, as `mergeStoppedComment` in `shared/record.ts` spells it; then `agent:merge`
+  off; then `agent:blocked`. A merge GitHub refused is so not retried on every event that follows,
+  and adding the label again is the retry.
+
+The reason is, in this order: `` It timed out after <TIMEOUT_MINUTES> minutes. `` where `TIMED_OUT`
+is `true`; `It was cancelled before it finished, by hand or by GitHub.` where the job was cancelled;
+the mint's failure, in the words `.github/actions/loop-token` uses, where `MINT_OUTCOME` is
+`failure`; the `failure_reason.txt` `merge:publish` wrote; the one `merge:gate` wrote; and failing
+those, `It stopped without giving a reason. The workflow run's log has the details.` The reason
+files are not read on a timeout or a cancel, since what wrote one was stopped, not failing, and one
+that cannot be read is a warning and is read as not written.
+
+Every write is made with `GH_TOKEN` and tolerated, so a comment that fails still takes the label
+off: one comment, `agent:merge` off and `agent:blocked` on.
+
+#### Inputs
+
+| Input | Kind | Default | What it is |
+|---|---|---|---|
+| `PR_NUMBER` | required | | The pull request. |
+| `JOB_STATUS` | required | | How the job ended: `success`, `failure` or `cancelled`. |
+| `TIMED_OUT` | optional | `""` | `true` where the job ran its whole limit. |
+| `TIMEOUT_MINUTES` | optional | `""` | That limit, for the comment. |
+| `MINT_OUTCOME` | optional | `""` | The outcome of minting the loop's token: `success`, `failure`, `cancelled` or `skipped`. Empty is not run. |
+| `GATE_DIR` | directory | | `merge:gate`'s `OUTPUT_DIR`. Reads `failure_reason.txt` (where written). |
+| `PUBLISH_DIR` | directory | | `merge:publish`'s `OUTPUT_DIR`. Reads `failure_reason.txt` (where written). |
+| `GITHUB_SERVER_URL` | optional | `""` | With the next two, the link to the run the failure comment names. Empty renders none. |
+| `GITHUB_REPOSITORY` | optional | `""` | See `GITHUB_SERVER_URL`. |
+| `GITHUB_RUN_ID` | optional | `""` | See `GITHUB_SERVER_URL`. |
+
+#### Outputs
+
+| Output | When it is written |
+|---|---|
+| `write_log.jsonl` | Every write as it lands, one JSON line each, and a last line for how the command ended, as `review:conclude`'s. Not written where it wrote nothing. |
+
+**`doctor` cannot check this.** These tables are the command's, for the reason §6 gives.
+
+#### What it reads from the record
+
+- Whether the pull request merged, read live, on a run that stopped.
+
+**`doctor` cannot check this.** The record is written by the orchestrator's posting code, for the reason §4.3 gives.
+
+> **Actions orchestrator:** the job's last command, run `always()`, from `RUNNER_TEMP`. The job's
+> first step starts a clock, and a step before this one, also `always()`, measures whether the job
+> ran out of time, as `follow-ups.yml`'s does: a cancelled job that ran its whole limit, less a
+> minute, did, and a limit that is not a positive integer reads as no timeout. Both read the limit
+> from the job's `TIMEOUT_MINUTES`, 20, the figure its `timeout-minutes` states. It is told the job's status, that step's `timed-out` output, and the
+> outcome of the token step as `MINT_OUTCOME`. `GATE_DIR` and `PUBLISH_DIR` are the gate's and
+> publish's directories, and its own `OUTPUT_DIR` is a `conclude/` directory, so the reason file it
+> reads is never its own. The three commands' write logs are uploaded `always()`, as one artifact.
+> A failure before the package installs, the Node setup's own, posts nothing: the run never got as
+> far as the command.

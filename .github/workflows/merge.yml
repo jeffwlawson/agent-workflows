@@ -1,0 +1,224 @@
+name: Agent Merge (reusable)
+
+# Carry out the maintainer's merge decision (ADR 0009, #588). Adding
+# `agent:merge` to a ready pull request **is** the decision; this workflow
+# only executes it. The `merge` job in `agent-pr.yml` is the caller (a grant
+# and the loop's token secrets, no inputs), and every control stays here.
+#
+# **It runs no model and checks nothing out.** Three commands decide and
+# write, and none of them reads a byte of the pull request's code: so the
+# loop's token, minted in the one job, is never where an agent or the pull
+# request's own code runs (ADR 0003).
+#
+# - `merge:gate` refuses a closed pull request, a draft, a fork, a labeller who
+#   cannot write and a run with only the workflow token; on a writer's label
+#   it **arms** the head the label was added at, an `agent-merge` status posted
+#   with the loop's token; then it waits, bounded, for the head's required
+#   checks and its verdict, and decides: `merge`, `wait`, `behind`, `red`,
+#   `disarmed` or `refused`.
+# - `merge:publish` squash-merges on `merge` alone, guarded on the head the
+#   gate checked, with the loop's token: a merge made with the workflow token
+#   starts no workflow, so neither CI on the base nor the follow-ups would run.
+# - `merge:conclude` says a run that stopped, takes `agent:merge` off and adds
+#   `agent:blocked`.
+on:
+  # **No inputs**: nothing is checked out, so there is no toolchain to
+  # describe and no command to run. **Three optional secrets, and no model
+  # credential**: the loop's token is what arms and merges, and without the
+  # App or the PAT the gate refuses rather than arming with the workflow token.
+  workflow_call:
+    secrets:
+      AGENT_PAT:
+        description: >-
+          User PAT. Arms the head and makes the merge where the loop's App is
+          not set up: an arm posted with `GITHUB_TOKEN` is one any workflow in
+          the pull request's branch could post too, and a merge made with it
+          starts no workflow. Optional, but with neither it nor the App the
+          gate refuses.
+        required: false
+      AGENT_APP_ID:
+        description: >-
+          The loop's GitHub App's ID. With `AGENT_APP_PRIVATE_KEY`, the job
+          mints a token for this repository from the App, and arms and merges
+          with it, as the App's bot. The App needs Commit statuses: write.
+        required: false
+      AGENT_APP_PRIVATE_KEY:
+        description: The loop's GitHub App's private key. See `AGENT_APP_ID`.
+        required: false
+
+# One group per pull request, of its own: not `agent-pr-<n>`, which review,
+# fix and update-branch share. The gate polls for the verdict a review posts,
+# so a gate holding the review's group would hold the review it waits on
+# behind itself until its bound ran out. A second `agent:merge` waits behind
+# the first rather than racing it to the merge.
+#
+# On the workflow, as `update-branch.yml`'s is, and keyed the same way: a
+# workflow-level group is entered before any job's `if:` is evaluated, and a
+# group admits one pending run, cancelling the one it replaces, so every other
+# event takes a group of its own, keyed by its run id.
+concurrency:
+  group: agent-merge-${{ github.event.pull_request.number }}${{ github.event.label.name != 'agent:merge' && format('-other-{0}', github.run_id) || '' }}
+  cancel-in-progress: false
+
+# Every job's `if:` opens with `vars.AGENT_ORCHESTRATOR != 'service'` (#455):
+# a repository that sets that variable is served by the service orchestrator,
+# and every job here skips, so one orchestrator answers each label.
+jobs:
+  merge:
+    # The fork guard, and the trigger label: `agent:merge` added. A fork pull
+    # request never reaches a step that names the loop's secrets. The gate
+    # refuses a fork too, for an orchestrator with no such condition.
+    if: >-
+      vars.AGENT_ORCHESTRATOR != 'service' &&
+      github.event.pull_request.head.repo.full_name == github.repository &&
+      github.event.action == 'labeled' && github.event.label.name == 'agent:merge'
+    runs-on: ubuntu-latest
+    # Above the gate's bound, the review's CI wait of 15 minutes, with room
+    # for the install, the merge and the ending.
+    timeout-minutes: 20
+    # Granted by the caller, bounded here. What is **withheld** is the
+    # statement: no `contents: write` and no `statuses: write`, since the arm
+    # and the merge are the loop token's, never this job's.
+    permissions:
+      # Reading the checks on the head, and whether each is required, through
+      # the status rollup. A caller granting less than this declares is
+      # refused before any job starts.
+      checks: read
+      # Comparing the head with its base, for whether it is behind.
+      contents: read
+      # Installing the runner package: GitHub Packages has no anonymous install.
+      packages: read
+      # The refusal, disarm and waiting comments, `agent:merge` off and
+      # `agent:blocked`. A pull request's labels live under this scope.
+      pull-requests: write
+      # Reading the arm and the verdict off the head.
+      statuses: read
+
+    env:
+      PR_NUMBER: ${{ github.event.pull_request.number }}
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      # Nothing is checked out, so there is no remote to resolve the
+      # repository from.
+      GH_REPO: ${{ github.repository }}
+      # The limit `timeout-minutes` states, as the measuring step compares it
+      # and as the timeout comment names it; `tests/workflows.test.ts` holds
+      # the two equal.
+      TIMEOUT_MINUTES: "20"
+
+    steps:
+      # The clock *Measure how the job ended* reads a time limit off (#220).
+      - name: Start the clock
+        run: echo "JOB_STARTED=$(date +%s)" >> "$GITHUB_ENV"
+
+      # The registry half of `setup-node`, toolchain-free, as `follow-ups.yml`
+      # sets it up: no checkout, so no version file, and a `node-version` held
+      # to `engines.node`.
+      - name: Authenticate to GitHub Packages
+        uses: actions/setup-node@v7
+        with:
+          node-version: "24"
+          registry-url: https://npm.pkg.github.com
+          scope: "@jeffwlawson"
+          package-manager-cache: false
+
+      # The loop's token, minted here, in the one job, which runs no agent.
+      # `account`, since the gate reads an arm back only where the loop
+      # token's account posted it.
+      - name: Resolve the loop's token
+        id: token
+        uses: jeffwlawson/agent-workflows/.github/actions/loop-token@v0.9.3
+        with:
+          app-id: ${{ secrets.AGENT_APP_ID }}
+          private-key: ${{ secrets.AGENT_APP_PRIVATE_KEY }}
+          agent-pat: ${{ secrets.AGENT_PAT }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          account: "true"
+
+      # `merge:gate`: the event's facts as inputs, the rest read live. Its
+      # directory is its own, so publish and conclude read its files by path.
+      - name: Decide
+        id: gate
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          OUTPUT_DIR: ${{ runner.temp }}/gate
+          LOOP_TOKEN: ${{ steps.token.outputs.token }}
+          LOOP_TOKEN_SOURCE: ${{ steps.token.outputs.source }}
+          LOOP_LOGIN: ${{ steps.token.outputs.login }}
+          BASE_REF: ${{ github.event.pull_request.base.ref }}
+          ACTION: ${{ github.event.action }}
+          SENDER: ${{ github.event.sender.login }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          HEAD_REPO: ${{ github.event.pull_request.head.repo.full_name }}
+          PR_STATE: ${{ github.event.pull_request.state }}
+          PR_MERGED: ${{ github.event.pull_request.merged }}
+          PR_DRAFT: ${{ github.event.pull_request.draft }}
+        # `npm exec --prefix` rather than a bare `npx`: see the long note on
+        # the same line in review.yml.
+        run: npm exec --prefix "$RUNNER_TEMP" --yes --package=@jeffwlawson/agent-workflows@0.9.3 -- agent-workflows merge:gate
+
+      # Glue only Actions can do (ADR 0003): the gate's decision, copied into
+      # the step output `decision`, which the merge step's `if:` reads.
+      # Nothing where it wrote no `gate.json`.
+      - name: Hand the gate's decision on
+        id: decision
+        run: |
+          file="${RUNNER_TEMP}/gate/gate.json"
+          [ -f "$file" ] || { echo "merge:gate wrote no gate.json; this run decided nothing."; exit 0; }
+          echo "decision=$(jq -r '.decision // ""' "$file")" >> "$GITHUB_OUTPUT"
+
+      # On `merge` alone. The head to guard on is the gate's, read from its
+      # `gate.json`, never the event's.
+      - name: Merge
+        if: steps.decision.outputs.decision == 'merge'
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          OUTPUT_DIR: ${{ runner.temp }}/publish
+          LOOP_TOKEN: ${{ steps.token.outputs.token }}
+          LOOP_TOKEN_SOURCE: ${{ steps.token.outputs.source }}
+          GATE_DIR: ${{ runner.temp }}/gate
+        run: npm exec --prefix "$RUNNER_TEMP" --yes --package=@jeffwlawson/agent-workflows@0.9.3 -- agent-workflows merge:publish
+
+      # How the job ended, measured here because only this job's clock knows
+      # (#220), as `follow-ups.yml` measures it: a cancel that ran the whole
+      # limit, less a minute, timed out.
+      - name: Measure how the job ended
+        id: outcome
+        if: always()
+        env:
+          JOB_STATUS: ${{ job.status }}
+        run: |
+          timed_out=false
+          if [ "$JOB_STATUS" = "cancelled" ] && [ -n "${JOB_STARTED:-}" ] && [[ "$TIMEOUT_MINUTES" =~ ^[1-9][0-9]*$ ]] && [ $(( $(date +%s) - JOB_STARTED )) -ge $(( TIMEOUT_MINUTES * 60 - 60 )) ]; then
+            timed_out=true
+          fi
+          echo "timed-out=${timed_out}" >> "$GITHUB_OUTPUT"
+
+      # `merge:conclude`, `always()`: nothing on a run that finished, and on
+      # one that stopped the failure comment, `agent:merge` off and
+      # `agent:blocked`. It writes with the workflow token alone.
+      - name: Conclude the run
+        if: always()
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          OUTPUT_DIR: ${{ runner.temp }}/conclude
+          GATE_DIR: ${{ runner.temp }}/gate
+          PUBLISH_DIR: ${{ runner.temp }}/publish
+          JOB_STATUS: ${{ job.status }}
+          TIMED_OUT: ${{ steps.outcome.outputs.timed-out }}
+          MINT_OUTCOME: ${{ steps.token.outcome }}
+        run: npm exec --prefix "$RUNNER_TEMP" --yes --package=@jeffwlawson/agent-workflows@0.9.3 -- agent-workflows merge:conclude
+
+      # Every write each command made (ADR 0005), by the paths they declare.
+      # `always()`, since a run that stopped is the one a log is read for.
+      - name: Keep the write logs
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: agent-merge-write-log
+          path: |
+            ${{ runner.temp }}/gate/write_log.jsonl
+            ${{ runner.temp }}/publish/write_log.jsonl
+            ${{ runner.temp }}/conclude/write_log.jsonl
+          if-no-files-found: ignore
+          retention-days: 7
+          overwrite: true

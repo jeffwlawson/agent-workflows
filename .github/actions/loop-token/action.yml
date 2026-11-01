@@ -56,6 +56,14 @@ inputs:
       `token` is empty.
     required: false
     default: "false"
+  account:
+    description: >-
+      `true` to report, as `login`, the account the token writes as. Only the
+      merge gate asks (#588): it reads an arm back only where that account
+      posted it. Asking costs a call with `AGENT_PAT`, so it is not made
+      unasked.
+    required: false
+    default: "false"
 
 outputs:
   token:
@@ -70,6 +78,14 @@ outputs:
       workflow token starts nothing, so a step that would add one reads this to
       warn, or to say on the pull request which label to add by hand, instead.
     value: ${{ steps.choose.outputs.source }}
+  login:
+    description: >-
+      The account `token` writes as, in REST's spelling, where `account` is
+      `true`: the App's bot, `<slug>[bot]`; the PAT's owner; or
+      `github-actions[bot]` for the workflow token. Empty where `account` was
+      not asked for, under `choose-only`, or where the PAT's owner could not
+      be read.
+    value: ${{ inputs.account == 'true' && inputs.choose-only != 'true' && (steps.choose.outputs.source == 'app' && format('{0}[bot]', steps.mint.outputs.app-slug) || steps.choose.outputs.source == 'pat' && steps.pat-account.outputs.login || steps.choose.outputs.source == 'workflow' && 'github-actions[bot]') || '' }}
 
 runs:
   using: composite
@@ -118,6 +134,23 @@ runs:
         private-key: ${{ inputs.private-key }}
         owner: ${{ github.repository_owner }}
         repositories: ${{ github.event.repository.name }}
+
+    # The PAT's owner, asked of GitHub with the PAT, and only where `account`
+    # asked for it: an App's bot is named by the mint's `app-slug`, and the
+    # workflow token is always `github-actions[bot]`. A read that fails leaves
+    # `login` empty, which the step that needs it refuses by name.
+    - name: Name the PAT's account
+      id: pat-account
+      if: steps.choose.outputs.source == 'pat' && inputs.account == 'true' && inputs.choose-only != 'true'
+      shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.agent-pat }}
+      run: |
+        if login="$(gh api user --jq .login)"; then
+          echo "login=${login}" >> "$GITHUB_OUTPUT"
+        else
+          echo "::warning::Could not read which account AGENT_PAT belongs to."
+        fi
 
     # A mint that failed fails the job, and its failure comment reads the
     # reason from here rather than saying it stopped without one. Never a

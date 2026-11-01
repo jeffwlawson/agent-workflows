@@ -799,6 +799,51 @@ const REVIEW_RED_CHECK_PLACE = {
 } as const satisfies CommandContract;
 
 /**
+ * `merge:gate`, declared ahead of `COMMANDS` so that `merge:publish` and
+ * `merge:conclude` can read its outputs (`readsFromCommand`). See `COMMANDS`.
+ *
+ * `CHECK_WAIT_SECONDS` defaults to the review's CI wait, `CI_WAIT_SECONDS` in
+ * `review/collect-checks.ts`, which this module cannot import: a test holds
+ * the two equal.
+ */
+const MERGE_GATE = {
+  inputs: {
+    ...EVERY_SUBCOMMAND,
+    ...LOOP,
+    ...LOOP_ACCOUNTS,
+    LOOP_LOGIN: REQUIRED,
+    PR_NUMBER: REQUIRED,
+    BASE_REF: REQUIRED,
+    ACTION: { required: true, accepts: ["labeled"] },
+    SENDER: REQUIRED,
+    HEAD_SHA: REQUIRED,
+    HEAD_REPO: REQUIRED,
+    PR_STATE: REQUIRED,
+    PR_MERGED: EMPTY,
+    PR_DRAFT: { required: false, default: "false", accepts: ["true", "false"] },
+    CHECK_WAIT_SECONDS: { required: false, default: "900" },
+    CHECK_POLL_SECONDS: { required: false, default: "20" },
+  },
+  outputs: [...EVERY_SUBCOMMAND_OUTPUTS, "gate.json", WRITE_LOG],
+} as const satisfies CommandContract;
+
+/**
+ * `merge:publish`, declared ahead of `COMMANDS` so that `merge:conclude` can
+ * read its outputs (`readsFromCommand`). See `COMMANDS`.
+ */
+const MERGE_PUBLISH = {
+  inputs: {
+    ...EVERY_SUBCOMMAND,
+    ...LOOP,
+    PR_NUMBER: REQUIRED,
+    GATE_DIR: readsFromCommand("merge:gate", MERGE_GATE, {
+      "gate.json": "always",
+    }),
+  },
+  outputs: [...EVERY_SUBCOMMAND_OUTPUTS, WRITE_LOG],
+} as const satisfies CommandContract;
+
+/**
  * Every command, by the subcommand that invokes it, `<workflow>:<step>`: the
  * inputs every subcommand reads, and its own. Its code is `<step>.ts` in the
  * workflow's folder, and exports one function the CLI calls with the inputs
@@ -1031,6 +1076,33 @@ const REVIEW_RED_CHECK_PLACE = {
  *   (`REVIEW_RESULT`, `POSTING_RESULT`), the review job's outputs, the
  *   posting job's (`MOVED`, `REVIEW_URL`) and the mint's outcome, and reads
  *   the runner's park hand-over through `PARK_DIR`.
+ * - `merge:gate` decides an `agent:merge` run (#588) from the record and
+ *   the event's facts: `ACTION`, `SENDER`, the label's sender, `HEAD_SHA`,
+ *   the payload's head, `PR_STATE`, `PR_MERGED`, `PR_DRAFT`, `HEAD_REPO`, the
+ *   head's repository, and `BASE_REF`. A closed pull request, a draft, a fork,
+ *   `LOOP_TOKEN_SOURCE` `workflow`, and a sender who can neither write nor is
+ *   `LOOP_LOGIN`, the loop token's account, are refused on the pull request,
+ *   `agent:merge` off. A writer's label arms the payload's head, posting
+ *   `agent-merge` with the loop's token, or disarms where the live head moved.
+ *   Then it waits, bounded by `CHECK_WAIT_SECONDS` and polled every
+ *   `CHECK_POLL_SECONDS`, while a required check or the verdict is pending or
+ *   another trigger label is on. It reads the labeller's permission with the
+ *   loop's token, and an arm only where `LOOP_LOGIN` posted it.
+ *   `AGENT_LOOP_LOGINS` is whose verdicts and comments it reads. `gate.json`
+ *   is its decision, `merge`, `wait`, `behind`, `red`, `disarmed` or
+ *   `refused`, and the head it checked, written as soon as it decides and
+ *   however it ends.
+ * - `merge:publish` squash-merges the pull request on `merge`, the gate's
+ *   decision read through `GATE_DIR`, guarded on the head the gate checked,
+ *   titled with the pull request's title and ` (#<n>)`, with the loop's
+ *   token, and then takes `agent:merge` off. On any other decision it does
+ *   nothing.
+ * - `merge:conclude` ends every merge run: on one that stopped
+ *   (`JOB_STATUS` `failure` or `cancelled`), the failure comment, with the
+ *   time limit where `TIMED_OUT` is `true`, a cancel, the mint's failure
+ *   (`MINT_OUTCOME`), or the reason `merge:publish` or `merge:gate` left in
+ *   `PUBLISH_DIR` or `GATE_DIR`; then `agent:merge` off and `agent:blocked`.
+ *   On a run that finished, nothing.
  * - `update-branch:gate` refuses or claims the pull request before the
  *   checkout: a closed or merged one is refused on the pull request, and one
  *   it claims has the permission probe, `agent:blocked` off and the wait,
@@ -1369,6 +1441,26 @@ export const COMMANDS = {
       PARK_DIR: readsFrom("review", {
         "park.json": "sometimes",
         "progress.json": "sometimes",
+      }),
+      ...RUN_LINK,
+    },
+    outputs: [...EVERY_SUBCOMMAND_OUTPUTS, WRITE_LOG],
+  },
+  "merge:gate": MERGE_GATE,
+  "merge:publish": MERGE_PUBLISH,
+  "merge:conclude": {
+    inputs: {
+      ...EVERY_SUBCOMMAND,
+      PR_NUMBER: REQUIRED,
+      JOB_STATUS: { required: true, accepts: ["success", "failure", "cancelled"] },
+      TIMED_OUT: EMPTY,
+      TIMEOUT_MINUTES: EMPTY,
+      MINT_OUTCOME: EMPTY,
+      GATE_DIR: readsFromCommand("merge:gate", MERGE_GATE, {
+        "failure_reason.txt": "sometimes",
+      }),
+      PUBLISH_DIR: readsFromCommand("merge:publish", MERGE_PUBLISH, {
+        "failure_reason.txt": "sometimes",
       }),
       ...RUN_LINK,
     },

@@ -32,6 +32,7 @@ export const REFERENCE_CALLER_FILES: Readonly<Record<string, string>> = {
   fix: "pr.yml",
   "update-branch": "pr.yml",
   "follow-ups": "pr.yml",
+  merge: "pr.yml",
   implement: "issue.yml",
   "implement-prd": "issue.yml",
 };

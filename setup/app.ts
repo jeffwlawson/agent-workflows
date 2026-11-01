@@ -32,12 +32,17 @@ import { availableSecrets, parseList } from "./doctor.js";
  * Workflows: write because a branch touching `.github/workflows/` is otherwise
  * rejected at the push, after the agent's work is done; acceptable because
  * neither the key nor a token minted from it is ever on the agent's runner.
+ * Statuses: write for the `agent-merge` arm (ADR 0009), a commit status that
+ * is posted and read back only as the loop token's account, so that nothing
+ * running from a pull request's branch can arm it. An App registered before
+ * that needs it added by hand and accepted on each installation.
  */
 export const APP_PERMISSIONS = {
   contents: "write",
   pull_requests: "write",
   issues: "write",
   workflows: "write",
+  statuses: "write",
   metadata: "read",
 } as const;
 

@@ -2,7 +2,7 @@ import type { CheckRun, GitHubReader, LatestStatus, WorkflowRun } from "../engin
 import type { ReadingIo } from "../shared/command-io.js";
 import type { COMMANDS } from "../shared/contract.js";
 import type { InputValues } from "../shared/env.js";
-import { VERDICT_CONTEXT } from "../shared/record.js";
+import { AGENT_CHECKS, isLoopRun, isLoopStatus } from "../shared/loop-checks.js";
 
 type Inputs = InputValues<(typeof COMMANDS)["review:collect-checks"]["inputs"]>;
 type Io = ReadingIo<(typeof COMMANDS)["review:collect-checks"]["outputs"]>;
@@ -25,42 +25,6 @@ export const GRACE_SECONDS = 60;
 
 /** How long it sleeps between looks. */
 export const POLL_SECONDS = 20;
-
-/**
- * The loop's own jobs, which are not CI. A called workflow's job appears as
- * `<caller job id> / <called job id>`, so `agent-fix.yml` produces `fix / fix`.
- * The pattern matches a name whose *either* half is an agent job, because the
- * two halves are owned by different people: the second is a job id in one of
- * the reusable files and cannot change under an adopter, the first is whatever
- * they called their caller job. `^(…)$` alone stopped matching every sibling
- * the moment the loop was split, which put a queued `fix` back in the wait:
- * review would burn the full ceiling on a job that cannot start until review
- * ends, then review on degraded evidence after all.
- *
- * Still bounded at both ends, which is the point of anchoring at all:
- * `fixtures`, `CI / fix-lint` and `build / fixtures` are repo checks, not
- * agents, and none of them match.
- *
- * - `follow-ups` is **not** named (#224): that workflow fires only on a closed
- *   pull request (#50), and this wait runs on an open one, so its check run
- *   can never be here to exclude.
- * - `post-review` (#257) and `advance` (PRD #222) run after the review job, so
- *   a review never waits on its own, but a later round on the same head would
- *   read them as CI, as it would under a renamed caller job. `post-review`
- *   rather than `post`, so a repository's own CI job called `post` is still CI.
- *   `( / |$)` keeps `advance` from matching a name that goes on past it.
- * - `time-limit` (#220) has finished by the time this reads anything, and a
- *   job that sums two numbers is not CI.
- * - `red-check` (#231) is **never** CI: it runs the PR's tests against the
- *   merge-base, where a fix's new test is meant to fail, so its check run
- *   reading red is the check working. Counted here, it would turn the result
- *   red on every PR it found a red test on. Its report reaches the review
- *   instead.
- */
-export const AGENT_CHECKS = /(^|\/ )(review|time-limit|red-check|post-review|advance|fix|update-branch|implement-prd|implement)( \/ |$)/;
-
-/** A caller of one of the loop's reusable workflows, by the path it calls. */
-const LOOP_WORKFLOW = /^[^/]+\/agent-workflows\/\.github\/workflows\//;
 
 /** One surface's answer, before `none` is read as green. */
 type Word = "green" | "red" | "unknown" | "none";
@@ -118,20 +82,13 @@ export const collectChecks = async (inputs: Inputs, io: Io): Promise<void> => {
     // error to read when it is wrong. Compared as a literal: a job id is not
     // a pattern, and a `.` in one would quietly match a neighbouring check.
     check: (run) => run.name !== inputs.SELF_CHECK && !AGENT_CHECKS.test(run.name),
-    // The verdict's own context is this job's answer, not yet written: counted,
-    // a `failure` verdict on the previous round would be evidence for the next
-    // one, and every "changes recommended" would derive "needs a closer look"
-    // one round later, by reading its own answer back.
-    status: (status) => status.context !== VERDICT_CONTEXT,
-    // The loop's own runs, on `AGENT_CHECKS`'s grounds and three ways, each
-    // for a case the others miss: this run by its id (the caller's, since a
-    // called workflow contributes no run of its own), an `Agent …` workflow by
-    // its name, and a renamed caller by what it calls, which is how `init` and
-    // `doctor` recognise one too.
-    run: (run) =>
-      String(run.id) !== inputs.SELF_RUN_ID &&
-      !run.name.startsWith("Agent ") &&
-      !run.referencedWorkflows.some((called) => LOOP_WORKFLOW.test(called)),
+    // The loop's own statuses are its answers, not CI (`shared/loop-checks.ts`):
+    // the verdict, this job's answer not yet written, and the merge arm.
+    status: (status) => !isLoopStatus(status.context),
+    // The loop's own runs, on `AGENT_CHECKS`'s grounds: this run by its id
+    // (the caller's, since a called workflow contributes no run of its own),
+    // and the rest as `isLoopRun` knows them.
+    run: (run) => String(run.id) !== inputs.SELF_RUN_ID && !isLoopRun(run),
   };
 
   const evidence: string[] = [];

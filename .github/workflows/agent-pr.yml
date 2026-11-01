@@ -1,7 +1,7 @@
 name: Agent PR
 
-# The pull-request side of the loop: one caller file holding the four callers
-# that run on a pull request (#225). Each job is a caller, and each says the
+# The pull-request side of the loop: one caller file holding the callers that
+# run on a pull request (#225). Each job is a caller, and each says the
 # facts about *this* repo its reusable workflow cannot read for itself: the
 # token it is granted and the secrets it is handed. Everything else (the label
 # guard, the fork guard, the permissions ceiling, the concurrency group, every
@@ -29,7 +29,7 @@ name: Agent PR
 # Two activity types, and `closed` is `follow-ups`' alone: it is **not** a
 # default `pull_request_target` type, so a file that listed only `labeled`
 # would file nothing on a merge and look exactly like one that did. Every job
-# of the other three skips a `closed` event, so they spend nothing on one.
+# of the others skips a `closed` event, so they spend nothing on one.
 on:
   pull_request_target:
     types: [labeled, closed]

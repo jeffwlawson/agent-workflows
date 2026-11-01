@@ -214,6 +214,41 @@ const withoutJob = (text: string, job: string): string => {
   return `${text.slice(0, span?.from ?? 0)}${text.slice(span?.to ?? 0)}`;
 };
 
+/** The pull-request side's job ids, read off the reference file, opt-in callers included. */
+const prSideJobs = (): readonly string[] =>
+  callersIn(fs.readFileSync(path.join("examples", "callers", "pr.yml"), "utf8"), manifest.name, "pr.yml").map(
+    (caller) => caller.jobId,
+  );
+
+/**
+ * The reference `merge` job (#588), exactly as `examples/callers/pr.yml`
+ * carries it, at `ref`. Opt-in by its job, as `follow-ups` is.
+ */
+const mergeJob = (ref: string): string =>
+  [
+    "  merge:",
+    `    uses: ${manifest.name.replace(/^@/, "")}/.github/workflows/merge.yml@${ref}`,
+    "    permissions:",
+    "      checks: read",
+    "      contents: read",
+    "      packages: read",
+    "      pull-requests: write",
+    "      statuses: read",
+    "    secrets:",
+    "      AGENT_PAT: ${{ secrets.AGENT_PAT }}",
+    "      AGENT_APP_ID: ${{ secrets.AGENT_APP_ID }}",
+    "      AGENT_APP_PRIVATE_KEY: ${{ secrets.AGENT_APP_PRIVATE_KEY }}",
+    "",
+  ].join("\n");
+
+/**
+ * A pull-request caller file's text with the `merge` job last in it: the
+ * text itself where it already has one, so this holds whether or not the
+ * reference file it was copied from carries the job yet.
+ */
+const withMergeJob = (text: string): string =>
+  jobSpan(text, "merge") === undefined ? `${text.replace(/\n*$/, "\n")}\n${mergeJob(`v${manifest.version}`)}` : text;
+
 /**
  * A workflow directory is one holding a runner named after it —
  * `implement/implement.ts`. Found by walking, so a runner added later is held to
@@ -1509,7 +1544,13 @@ describe("init installs the reference callers into an adopting repo", () => {
   it("moves only the pins on a six-file tree, and writes no merged file beside it", async () => {
     const root = adopted();
     const six = sixFileTree(root, "v0.0.1");
-    expect(six).toHaveLength(6);
+    // One file per reference caller, `follow-ups` and `merge` included.
+    expect(six).toHaveLength(
+      ["issue", "pr"].flatMap((name) =>
+        callersIn(fs.readFileSync(path.join("examples", "callers", `${name}.yml`), "utf8"), manifest.name, `${name}.yml`),
+      ).length,
+    );
+    expect(six.length).toBeGreaterThanOrEqual(6);
 
     const changes = await init({ dir: root, app: noApp, github: offline, labels: noLabels });
 
@@ -1899,7 +1940,7 @@ describe("init installs the reference callers into an adopting repo", () => {
 
     // The block itself has to still be there: a doc restructure that moved it
     // would otherwise make this pass by comparing nothing.
-    expect(mandated).toHaveLength(5);
+    expect(mandated).toHaveLength(6);
     expect(byName([...TRIGGER_LABELS, ...STATE_LABELS])).toEqual(byName(mandated));
   });
 
@@ -2118,7 +2159,8 @@ describe("init allows pull_request_target for the loop's callers on a public rep
   it("drops the files that no longer hold a PR-side caller when the callers are merged by hand", async () => {
     const root = adopted();
     sixFileTree(root, `v${manifest.version}`);
-    const six = ["review", "fix", "update-branch", "follow-ups"].map((job) => `.github/workflows/agent-${job}.yml`);
+    const six = prSideJobs().map((job) => `.github/workflows/agent-${job}.yml`);
+    expect(six).toEqual(expect.arrayContaining(["review", "fix", "update-branch", "follow-ups"].map((job) => `.github/workflows/agent-${job}.yml`)));
     const { surface, sent } = github("public", []);
     await init({ dir: root, app: noApp, github: surface, labels: noLabels });
     expect(sent[0]?.body.conditions.workflow_path.include).toEqual([...six].sort());
@@ -2422,6 +2464,7 @@ describe("init creates the loop's GitHub App", () => {
           pull_requests: "write",
           issues: "write",
           workflows: "write",
+          statuses: "write",
           metadata: "read",
         },
         default_events: [],
@@ -2900,9 +2943,25 @@ describe("init converges the labels the loop owns", () => {
     { name: "needs-triage", color: "ededed", description: "theirs" },
   ];
 
-  const OWNED = [...TRIGGER_LABELS, ...STATE_LABELS, ...(ADVISORY_LABELS["follow-ups"] ?? [])].filter((label) =>
-    label.name.startsWith("agent:"),
-  );
+  /**
+   * What `init` owns on a first run: the labels the reference callers reach
+   * for, which is every trigger label whose caller ships there (`agent:merge`
+   * only with the `merge` job, #588), and `agent:follow-ups` whichever callers
+   * were taken.
+   */
+  const OWNED = [
+    ...labelSpecsFor(
+      fs
+        .readdirSync(path.join("examples", "callers"))
+        .filter((entry) => entry.endsWith(".yml"))
+        .flatMap((entry) =>
+          callersIn(fs.readFileSync(path.join("examples", "callers", entry), "utf8"), manifest.name, entry).map(
+            (caller) => caller.workflow,
+          ),
+        ),
+    ),
+    ...(ADVISORY_LABELS["follow-ups"] ?? []),
+  ].filter((label) => label.name.startsWith("agent:"));
 
   const labelChanges = (changes: readonly { file: string; action: string; note?: string }[]) =>
     changes.filter((c) => c.file.startsWith("label "));
@@ -2914,7 +2973,9 @@ describe("init converges the labels the loop owns", () => {
     const first = await init({ dir: root, app: noApp, github: offline, labels: surface });
 
     for (const label of OWNED) {
-      expect(first.find((c) => c.file === `label "${label.name}"`)?.action, label.name).toBe("updated");
+      // A label newer than that install, `agent:merge` (#588), is created.
+      const expected = OLD.some((old) => old.name === label.name) ? "updated" : "created";
+      expect(first.find((c) => c.file === `label "${label.name}"`)?.action, label.name).toBe(expected);
       const held = now().find((l) => l.name === label.name);
       expect(held?.color.toUpperCase()).toBe(label.color);
       expect(held?.description).toBe(label.description);
@@ -3010,6 +3071,37 @@ describe("init converges the labels the loop owns", () => {
     expect(kept?.note).toContain("HTTP 403");
     expect(kept?.note).toContain(labelCommand(OWNED.find((label) => label.name === "agent:fix") as RepoLabel));
   });
+
+  /**
+   * `agent:merge` (#588) is the merge caller's trigger label, so `init`
+   * creates it, coloured and described as §3 gives it, where that job is
+   * installed, and leaves it alone where it is not: the caller is opt-in.
+   */
+  it("creates agent:merge where the merge caller is installed, and not where it is declined", async () => {
+    const spec = TRIGGER_LABELS.find((label) => label.name === record.MERGE_LABEL);
+    expect(spec).toEqual({
+      name: "agent:merge",
+      color: "1A7F37",
+      description: "Merge this PR once current, green and approved. Armed until merged or disarmed.",
+    });
+
+    const root = adopted();
+    await init({ dir: root, app: noApp, github: offline, labels: noLabels });
+    const pr = path.join(root, ".github", "workflows", "agent-pr.yml");
+    const installed = fs.readFileSync(pr, "utf8");
+
+    fs.writeFileSync(pr, withMergeJob(installed));
+    const armed = github(OLD);
+    const changes = await init({ dir: root, app: noApp, github: offline, labels: armed.surface });
+    expect(changes.find((c) => c.file === 'label "agent:merge"')?.action).toBe("created");
+    expect(armed.now().find((l) => l.name === "agent:merge")).toEqual({ ...spec, color: spec?.color.toLowerCase() });
+
+    fs.writeFileSync(pr, withoutJob(fs.readFileSync(pr, "utf8"), "merge"));
+    const declined = github(OLD);
+    const without = await init({ dir: root, app: noApp, github: offline, labels: declined.surface });
+    expect(without.find((c) => c.file === 'label "agent:merge"')).toBeUndefined();
+    expect(declined.sent).not.toContain("create agent:merge");
+  });
 });
 
 /**
@@ -3087,6 +3179,7 @@ describe("doctor names the failures that otherwise look like something else", ()
       "agent:review",
       "agent:fix",
       "agent:update-branch",
+      "agent:merge",
       "agent:blocked",
     ],
     visibility: "private",
@@ -3190,10 +3283,14 @@ describe("doctor names the failures that otherwise look like something else", ()
       const said = lines(out, "note", "caller layout");
       expect(said).toHaveLength(2);
       const pr = said.find((line) => line.includes("pull request"));
-      for (const job of ["review", "fix", "update-branch", "follow-ups"]) {
+      // The pull-request side's jobs, read off the reference file, so an
+      // opt-in caller added there (`merge`, #588) is counted here too.
+      const prJobs = prSideJobs();
+      expect(prJobs).toEqual(expect.arrayContaining(["review", "fix", "update-branch", "follow-ups"]));
+      for (const job of prJobs) {
         expect(pr).toContain(`.github/workflows/agent-${job}.yml`);
       }
-      expect(pr).toContain("4 files");
+      expect(pr).toContain(`${prJobs.length} files`);
       const issue = said.find((line) => line.includes("an issue"));
       expect(issue).toContain(".github/workflows/agent-implement.yml");
       expect(issue).toContain(".github/workflows/agent-implement-prd.yml");
@@ -3217,7 +3314,9 @@ describe("doctor names the failures that otherwise look like something else", ()
       expect(after.code).toBe(0);
       expect(after.err).toBe("");
       // One fewer caller counted, and not one finding more.
-      expect(after.out).toBe(before.out.replace("6 caller(s)", "5 caller(s)"));
+      const counted = Number(/(\d+) caller\(s\)/.exec(before.out)?.[1]);
+      expect(counted).toBeGreaterThan(1);
+      expect(after.out).toBe(before.out.replace(`${counted} caller(s)`, `${counted - 1} caller(s)`));
     });
 
     it("reads a missing follow-ups caller as declined in the six-file layout", async () => {
@@ -3262,7 +3361,8 @@ describe("doctor names the failures that otherwise look like something else", ()
 
       expect(code).toBe(1);
       const said = lines(err, "FAIL", "duplicate caller");
-      expect(said).toHaveLength(4);
+      // One per pull-request side caller, each now called from two files.
+      expect(said).toHaveLength(prSideJobs().length);
       const review = said.find((line) => line.includes("`review.yml`"));
       expect(review).toContain(".github/workflows/agent-pr.yml's `review` job");
       expect(review).toContain(".github/workflows/agent-review.yml's `review` job");
@@ -4397,6 +4497,139 @@ describe("doctor names the failures that otherwise look like something else", ()
   });
 
   /**
+   * **The merge caller** (#588, ADR 0009), opt-in by its job: recognised by
+   * the `merge.yml` it calls, its label demanded only where it is installed,
+   * its grant ruled like every other caller's, and an error where neither the
+   * loop's App nor `AGENT_PAT` is set, since the arm and the merge are both
+   * the loop token's. Ruled through `diagnose` and through `runDoctor`.
+   */
+  describe("the merge caller", () => {
+    const withMerge = async (): Promise<string> => {
+      const root = await installed();
+      const pr = path.join(root, ".github", "workflows", "agent-pr.yml");
+      fs.writeFileSync(pr, withMergeJob(fs.readFileSync(pr, "utf8")));
+      return root;
+    };
+    const withoutMerge = async (): Promise<string> => {
+      const root = await installed();
+      const pr = path.join(root, ".github", "workflows", "agent-pr.yml");
+      const text = fs.readFileSync(pr, "utf8");
+      if (jobSpan(text, "merge") !== undefined) fs.writeFileSync(pr, withoutJob(text, "merge"));
+      return root;
+    };
+    const rule = (root: string, facts: RepoFacts): readonly Finding[] =>
+      diagnose(readInstalledCallers(root, manifest.name), facts);
+    const of = (findings: readonly Finding[], check: string): readonly Finding[] =>
+      findings.filter((finding) => finding.check === check);
+    const LOOP_TOKEN = "merge without a loop token";
+
+    it("passes an install with the merge caller, its label and a loop token", async () => {
+      const root = await withMerge();
+      expect(readInstalledCallers(root, manifest.name).filter((caller) => caller.workflow === "merge")).toHaveLength(1);
+
+      const { code, err } = await check(root, healthy());
+
+      expect(err).toBe("");
+      expect(code).toBe(0);
+    });
+
+    it("recognises the caller by what it calls, under any job id", async () => {
+      const root = await withMerge();
+      edit(root, "merge", (text) => text.replace(/^  merge:$/m, "  ship-it:"));
+
+      const callers = readInstalledCallers(root, manifest.name).filter((caller) => caller.workflow === "merge");
+      expect(callers.map((caller) => caller.jobId)).toEqual(["ship-it"]);
+      const missing = of(rule(root, { ...healthy(), labels: (healthy().labels ?? []).filter((name) => name !== "agent:merge") }), "labels");
+      expect(missing[0]?.problem).toMatch(/^agent:merge does not exist/);
+    });
+
+    it("demands agent:merge where the caller is installed, with the command that creates it", async () => {
+      const facts = { ...healthy(), labels: (healthy().labels ?? []).filter((name) => name !== "agent:merge") };
+
+      const missing = of(rule(await withMerge(), facts), "labels");
+      expect(missing).toHaveLength(1);
+      expect(missing[0]?.severity).toBe("error");
+      expect(missing[0]?.problem).toMatch(/^agent:merge does not exist/);
+      expect(missing[0]?.fix).toBe(
+        'gh label create "agent:merge" --color 1A7F37 --description "Merge this PR once current, green and approved. Armed until merged or disarmed."',
+      );
+    });
+
+    it("demands no agent:merge where the caller is declined", async () => {
+      const facts = { ...healthy(), labels: (healthy().labels ?? []).filter((name) => name !== "agent:merge") };
+
+      const findings = rule(await withoutMerge(), facts);
+      expect(of(findings, "labels")).toEqual([]);
+      expect(findings.filter((finding) => finding.problem.includes("merge.yml"))).toEqual([]);
+    });
+
+    it.each([
+      ["checks", "read"],
+      ["contents", "read"],
+      ["packages", "read"],
+      ["pull-requests", "write"],
+      ["statuses", "read"],
+    ])("fails a merge caller that grants no %s: %s", async (permission, value) => {
+      const root = await withMerge();
+      edit(root, "merge", (text) => text.replace(new RegExp(`^ *${permission}: ${value}\\n`, "m"), ""));
+
+      const short = of(rule(root, healthy()), `${permission}: ${value}`);
+      expect(short).toHaveLength(1);
+      expect(short[0]?.severity).toBe("error");
+      expect(short[0]?.problem).toContain(`grants the \`merge\` job no \`${permission}: ${value}\``);
+      expect(short[0]?.problem).toMatch(/before any job starts/);
+    });
+
+    it("fails a merge caller with neither the loop's App nor AGENT_PAT behind it", async () => {
+      const root = await withMerge();
+      const findings = rule(root, { ...healthy(), secrets: ["CLAUDE_CODE_OAUTH_TOKEN"] });
+
+      const said = of(findings, LOOP_TOKEN);
+      expect(said).toHaveLength(1);
+      expect(said[0]?.severity).toBe("error");
+      expect(said[0]?.problem).toContain("calls `merge.yml`");
+      expect(said[0]?.problem).toContain("nothing is armed and nothing merges");
+      expect(said[0]?.fix).toContain("Commit statuses: write");
+
+      const { code, err } = await check(root, { ...healthy(), secrets: ["CLAUDE_CODE_OAUTH_TOKEN"] });
+      expect(err).toContain(LOOP_TOKEN);
+      expect(code).toBe(1);
+    });
+
+    it("says nothing of a loop token where the App or AGENT_PAT is set, or none is installed", async () => {
+      const root = await withMerge();
+      expect(of(rule(root, healthy()), LOOP_TOKEN)).toEqual([]);
+      expect(
+        of(rule(root, { ...healthy(), secrets: ["CLAUDE_CODE_OAUTH_TOKEN", "AGENT_APP_ID", "AGENT_APP_PRIVATE_KEY"] }), LOOP_TOKEN),
+      ).toEqual([]);
+      expect(of(rule(await withoutMerge(), { ...healthy(), secrets: ["CLAUDE_CODE_OAUTH_TOKEN"] }), LOOP_TOKEN)).toEqual([]);
+    });
+
+    /**
+     * On the PAT alone the loop writes as the PAT's owner, whose label reads
+     * as the loop's own and never arms: a note, since anyone else who can
+     * write still arms. The App, set, is the loop's own account, and silences it.
+     */
+    it("notes that the PAT's owner cannot arm where the loop writes as AGENT_PAT", async () => {
+      const root = await withMerge();
+
+      const said = of(rule(root, healthy()), "merge on AGENT_PAT");
+      expect(said.map((finding) => finding.severity)).toEqual(["note"]);
+      expect(said[0]?.problem).toContain("cannot arm");
+      expect(of(rule(root, { ...healthy(), secrets: ["CLAUDE_CODE_OAUTH_TOKEN", "AGENT_PAT", "AGENT_APP_ID", "AGENT_APP_PRIVATE_KEY"] }), "merge on AGENT_PAT")).toEqual([]);
+      expect(of(rule(await withoutMerge(), healthy()), "merge on AGENT_PAT")).toEqual([]);
+    });
+
+    /** Unreadable secrets are unknown, never a pass and never this error: the `secrets` warning says so. */
+    it("rules on no loop token where the secrets could not be read", async () => {
+      const findings = rule(await withMerge(), { ...healthy(), secrets: undefined });
+
+      expect(of(findings, LOOP_TOKEN)).toEqual([]);
+      expect(of(findings, "secrets").map((finding) => finding.severity)).toEqual(["warning"]);
+    });
+  });
+
+  /**
    * **The orchestrator** (#455). `AGENT_ORCHESTRATOR` unset is Actions, ruled
    * as it always was; `service` is the service orchestrator, with checks of its
    * own and none of Actions'; any other value is an error; and one nobody could
@@ -4440,10 +4673,23 @@ describe("doctor names the failures that otherwise look like something else", ()
       expect(checks(rule(empty(), healthy()))).toEqual(["error callers"]);
     });
 
+    /**
+     * The trigger labels this release's service does not answer: read off the
+     * one list the dispatcher reads, so a release that teaches the service a
+     * label moves this without an edit. `agent:merge` (#588) arrived on
+     * Actions first.
+     */
+    const unansweredLabels = (): readonly string[] =>
+      [...TRIGGER_LABELS.map((label) => label.name), record.FOLLOW_UPS_LABEL].filter((name) => !SERVICE_LABELS.includes(name));
+
     it("passes a service-served repository with no callers and its labels", () => {
       const findings = rule(empty(), service({ labels: ["agent:implement", "agent:review", "agent:fix", "agent:update-branch", "agent:blocked"] }));
 
-      expect(checks(findings)).toEqual(["note orchestrator", "note service App"]);
+      expect(checks(findings)).toEqual([
+        "note orchestrator",
+        "note service App",
+        ...(unansweredLabels().length > 0 ? ["warning unanswered labels"] : []),
+      ]);
     });
 
     /**
@@ -4471,10 +4717,15 @@ describe("doctor names the failures that otherwise look like something else", ()
       expect(app?.problem).toContain("`doctor` cannot check this.");
     });
 
-    // #519 served the last one: the check still reads the one list, and finds
-    // nothing it does not answer.
-    it("names no label as unanswered, since the service answers every trigger label and the follow-ups marker", () => {
-      expect(rule(empty(), service()).filter((finding) => finding.check === "unanswered labels")).toEqual([]);
+    // #519 served the last of the run labels, and `agent:merge` (#588)
+    // arrived on Actions before the service answers it: the check names
+    // exactly what the one list leaves out, and nothing else.
+    it("names as unanswered exactly the trigger labels the service does not answer", () => {
+      const said = rule(empty(), service()).filter((finding) => finding.check === "unanswered labels");
+      const unanswered = unansweredLabels();
+
+      expect(said).toHaveLength(unanswered.length > 0 ? 1 : 0);
+      for (const name of unanswered) expect(said[0]?.problem).toContain(`\`${name}\``);
     });
 
     it("warns that callers left installed are skipped, and skips every Actions check", async () => {
@@ -4490,6 +4741,7 @@ describe("doctor names the failures that otherwise look like something else", ()
         "note orchestrator",
         "note service App",
         "warning callers",
+        ...(unansweredLabels().length > 0 ? ["warning unanswered labels"] : []),
       ]);
       const [callers] = findings.filter((finding) => finding.check === "callers");
       expect(callers?.problem).toContain("installed, and skipped");

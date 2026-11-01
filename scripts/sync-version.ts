@@ -8,8 +8,8 @@ import { ACTION_DIR, assertPinnable, escapeRe, rewritePins, WORKFLOW_DIR } from 
 /**
  * The half of `npm version` npm will not do.
  *
- * A release names its version in twelve files. `npm version` bumps two of
- * them — the manifest and the lockfile — and the other ten hold the pins: one
+ * A release names its version in thirteen files. `npm version` bumps two of
+ * them — the manifest and the lockfile — and the other eleven hold the pins: one
  * `--package=…@<version>` per step of a reusable workflow that runs the
  * package (review's runner and each of its commands, #417), one
  * `npm install … @<version>` per step that installs it ahead of them (the red
@@ -112,6 +112,41 @@ const pinned = (rel: string, text: string, forms: readonly PinForm[], pinning: P
 };
 
 /**
+ * The reusable workflows the release `ref` holds, by repo-relative path: what
+ * tells a reusable the local callers do not call **yet** from one they left
+ * out. A local caller runs against the release it pins (`CLAUDE.md`, *This
+ * repo runs its own loop*), and a caller naming a workflow that release does
+ * not have is refused by GitHub, every job in its file. So the release that
+ * first ships a reusable is cut with the local set one caller short, and the
+ * one after it, whose local pin then has it, is refused until the caller is in.
+ */
+export type ReleasedWorkflows = (ref: string) => ReadonlySet<string>;
+
+/**
+ * `ReleasedWorkflows` asked of git in `packageDir`, which needs the tag: a
+ * checkout without it is refused by name rather than read as a release with no
+ * workflows, which would let every caller be left out.
+ */
+export const gitReleasedWorkflows =
+  (packageDir: string): ReleasedWorkflows =>
+  (ref) => {
+    let listed: string;
+    try {
+      listed = execFileSync("git", ["ls-tree", "--name-only", `${ref}^{commit}`, "--", `${WORKFLOW_DIR}/`], {
+        cwd: packageDir,
+        encoding: "utf8",
+        stdio: ["ignore", "pipe", "pipe"],
+      });
+    } catch (error) {
+      const { stderr } = error as { readonly stderr?: Buffer | string };
+      throw new Error(
+        `The local callers pin ${ref}, and a reusable workflow they do not call can be left out only where ${ref} does not have it, but git could not list ${ref}'s workflows: ${String(stderr ?? error).trim()}. Fetch the tags (\`git fetch --tags\`) and retry.`,
+      );
+    }
+    return new Set(listed.split("\n").filter(Boolean));
+  };
+
+/**
  * Rewrite every version pin in the tree at `root` to `version`.
  *
  * The sites of one workflow live in three directories, so the set is
@@ -121,7 +156,11 @@ const pinned = (rel: string, text: string, forms: readonly PinForm[], pinning: P
  * workflow exactly once, and every file must carry exactly the pins expected
  * of it — otherwise nothing is written at all.
  */
-export const syncVersion = (version: string, packageDir = "."): readonly VersionSite[] => {
+export const syncVersion = (
+  version: string,
+  packageDir = ".",
+  released: ReleasedWorkflows = gitReleasedWorkflows(packageDir),
+): readonly VersionSite[] => {
   // Before the first file is opened, rather than distributed to every one of
   // them for the suite to reject one at a time.
   assertPinnable(version);
@@ -192,28 +231,52 @@ export const syncVersion = (version: string, packageDir = "."): readonly Version
     (readFile(packageDir, file).match(actionUse) ?? []).map(() => "action" as const);
   const calledBy = (file: string): readonly string[] =>
     [...readFile(packageDir, file).matchAll(workflowUse)].map((match) => match[1] ?? "");
+  /** The one ref the local callers pin, before this release moves it. */
+  const localPinOf = (files: readonly string[]): string => {
+    const refs = new Set(
+      files.flatMap((file) => [...readFile(packageDir, file).matchAll(new RegExp(`${workflowUse.source}(v\\d+\\.\\d+\\.\\d+)`, "g"))].map((m) => m[2] ?? "")),
+    );
+    const [ref] = refs;
+    if (refs.size !== 1 || ref === undefined) {
+      throw new Error(`The local callers pin [${[...refs].join(", ")}]; which release they run on cannot be told, so which reusable they may leave out cannot either.`);
+    }
+    return ref;
+  };
 
   /**
    * Each caller set calls every reusable workflow exactly **once**. Fewer is a
    * workflow the set's adopters cannot run, and more is one that runs twice on
    * every label; either way the count a file is held to below would be the
    * count of a set that is wrong.
+   *
+   * With one exception, in the local set alone: a reusable the release its
+   * callers pin does not have yet, which this release is the first to ship
+   * (`ReleasedWorkflows`). Asked only where the local set leaves one out, so a
+   * set that calls them all needs no tag.
    */
   const sets = [
-    { dir: WORKFLOW_DIR, files: localNames.map((name) => `${WORKFLOW_DIR}/${CALLER_PREFIX}${name}.yml`) },
-    { dir: CALLER_DIR, files: localNames.map((name) => `${CALLER_DIR}/${name}.yml`) },
+    { dir: WORKFLOW_DIR, local: true, files: localNames.map((name) => `${WORKFLOW_DIR}/${CALLER_PREFIX}${name}.yml`) },
+    { dir: CALLER_DIR, local: false, files: localNames.map((name) => `${CALLER_DIR}/${name}.yml`) },
   ];
-  for (const { dir, files } of sets) {
+  for (const { dir, local, files } of sets) {
     const idle = files.find((file) => calledBy(file).length === 0);
     if (idle !== undefined) {
       throw new Error(`${idle} calls no reusable workflow; a caller file with no pin is one the release cannot move.`);
     }
     const called = files.flatMap(calledBy);
-    if (!sameSet(called, reusableNames)) {
+    const left = local ? reusableNames.filter((name) => !called.includes(name)) : [];
+    const pinned = left.length === 0 ? undefined : localPinOf(files);
+    const holds = pinned === undefined ? new Set<string>() : released(pinned);
+    const unreleased = left.filter((name) => !holds.has(`${WORKFLOW_DIR}/${name}.yml`));
+    const missing = left.filter((name) => !unreleased.includes(name));
+    if (!sameSet(called, reusableNames.filter((name) => !unreleased.includes(name)))) {
       throw new Error(
         `The caller files in ${dir} call [${called.join(", ")}] but the reusable workflows are ` +
           `[${[...reusableNames].sort().join(", ")}]. Each caller set calls every reusable workflow ` +
-          `exactly once; a set that disagrees is a release that would pin some of them.`,
+          `exactly once; a set that disagrees is a release that would pin some of them.` +
+          (missing.length > 0
+            ? ` The local set may leave out only a reusable the release it pins does not have yet, and ${pinned ?? "its pin"} has ${missing.join(", ")}: add ${missing.length === 1 ? "its caller" : "their callers"} to the local caller file.`
+            : ""),
       );
     }
   }
@@ -266,7 +329,7 @@ export const syncVersion = (version: string, packageDir = "."): readonly Version
  * `syncVersion` returned. `npm version` blocks a dirty tree only for *tracked*
  * modifications, so a `git add -A` here would sweep any untracked file lying
  * around into the release commit and the tag `publish.yml` fires on — a
- * thirteenth file inside a release, which nothing in the suite can see.
+ * fourteenth file inside a release, which nothing in the suite can see.
  */
 if (process.argv[1] && fs.realpathSync(process.argv[1]) === fileURLToPath(import.meta.url)) {
   const packageDir = path.resolve(import.meta.dirname, "..");

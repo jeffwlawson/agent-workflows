@@ -25,6 +25,7 @@ import {
 } from "./policies.js";
 import type { LabelSurface } from "./labels.js";
 import { DISPATCHER } from "../service/settings.js";
+import { MERGE_LABEL } from "../shared/record.js";
 import {
   appManifest,
   appSettingsUrl,
@@ -135,10 +136,15 @@ export const STATE_LABELS: readonly LabelSpec[] = [
 
 /**
  * Coloured by **stage** (#236), so the colour on an issue or a pull request
- * says where in the lifecycle it is: build, review, fix, refresh. Each is on
- * while its run works and comes off when the run ends, which is what retired
- * `agent:in-progress`; the descriptions say so, since they are what GitHub
- * shows on hover.
+ * says where in the lifecycle it is: build, review, fix, refresh, merge. Each
+ * of the first four is on while its run works and comes off when the run ends,
+ * which is what retired `agent:in-progress`; the descriptions say so, since
+ * they are what GitHub shows on hover.
+ *
+ * `agent:merge` (ADR 0009) is the one that is not: it is the maintainer's
+ * merge decision, **armed until merged or disarmed**, and its description says
+ * that instead. It is a trigger label all the same, demanded only where its
+ * caller is installed, since the `merge` caller is opt-in by its job.
  */
 export const TRIGGER_LABELS: readonly LabelSpec[] = [
   {
@@ -152,6 +158,11 @@ export const TRIGGER_LABELS: readonly LabelSpec[] = [
     name: "agent:update-branch",
     color: "1B7C83",
     description: "Merge the base branch into this PR. On while it runs.",
+  },
+  {
+    name: MERGE_LABEL,
+    color: "1A7F37",
+    description: "Merge this PR once current, green and approved. Armed until merged or disarmed.",
   },
 ];
 

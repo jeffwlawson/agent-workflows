@@ -258,6 +258,23 @@ export const FIX_ROUND_STATUS = {
   description: "This review asked for an automatic fix round.",
 } as const;
 
+/**
+ * **The arm** (ADR 0009, #588): the maintainer's merge decision, recorded on
+ * the commit they labelled. `success`, its description naming the human who
+ * armed it (`armDescription`), posted with the loop's token. Read back only
+ * where its creator is the loop token's account, never `github-actions[bot]`:
+ * any workflow in a pull request's own branch posts as that, and could arm
+ * its own push. A status belongs to a commit and cannot be edited, which is
+ * the shape the arm has: a push leaves a head with none.
+ */
+export const MERGE_CONTEXT = "agent-merge";
+
+/** The arm's description: who armed it, as `@<login>`, which a disarm names back. */
+export const armDescription = (login: string): string => `Armed by @${login} to merge this commit.`;
+
+/** The login an arm's description names, its first group. */
+export const ARMED_BY = /^Armed by @([A-Za-z0-9][A-Za-z0-9-]*(?:\[bot\])?) to merge this commit\.$/;
+
 // Labels.
 
 /**
@@ -268,6 +285,14 @@ export const IMPLEMENT_LABEL = "agent:implement";
 export const REVIEW_LABEL = "agent:review";
 export const FIX_LABEL = "agent:fix";
 export const UPDATE_BRANCH_LABEL = "agent:update-branch";
+
+/**
+ * The maintainer's merge decision (ADR 0009): not a run's label but a standing
+ * authorisation, **armed until merged or disarmed**. Taken off by the merge, a
+ * disarm, a stopped run, a refusal, or the maintainer, and never when a run
+ * merely ends. The loop re-adds it to re-start the gate, and never to arm.
+ */
+export const MERGE_LABEL = "agent:merge";
 
 /** The state label: a run failed or was refused, and a human is needed. */
 export const BLOCKED_LABEL = "agent:blocked";
@@ -511,3 +536,55 @@ export const CATCH_UP_TRAILER = "Agent-Catch-Up";
 /** The message of `implement-prd`'s merge of `base` into the PRD branch `branch`, made before slice `sub`. */
 export const catchUpMessage = (base: string, branch: string, sub: number): string =>
   `Merge ${base} into ${branch}\n\n${CATCH_UP_TRAILER}: #${sub}`;
+
+// What the merge workflow says on a pull request (#588).
+
+/** Each sentence a `merge:gate` refusal opens with. */
+export const mergeRefusal = (sentence: string): string => `**\`${MERGE_LABEL}\` didn't run:** ${sentence}`;
+
+/**
+ * The **disarm** comment: the head is not the commit the maintainer armed, so
+ * nothing merges on the old decision. It names the human who armed it where
+ * the record says who, gives the armed commit and the head, and asks for a
+ * fresh merge-check. It never says what kind of push moved the head: the record
+ * cannot tell a human's push from an agent's without trusting text.
+ */
+export const disarmComment = (
+  head: string,
+  armed: { readonly commit: string; readonly login?: string } | undefined,
+  addedByLoop?: string,
+): string => {
+  const what =
+    armed === undefined
+      ? `No one armed \`${head}\`, the head of this PR`
+      : `${armed.login === undefined ? `\`${armed.commit}\` was armed` : `@${armed.login} armed \`${armed.commit}\``}, but the head of this PR is now \`${head}\``;
+  // A label the loop's account added never arms, and where that account is a
+  // person's, through `AGENT_PAT`, their own label is that account's too.
+  const why =
+    armed === undefined && addedByLoop !== undefined
+      ? ` It was added as @${addedByLoop}, the account the loop writes as, and a label the loop adds never arms. Where that account is yours, through \`AGENT_PAT\`, set up the loop's App, or have another person who can write add it.`
+      : "";
+  return `**\`${MERGE_LABEL}\` disarmed:** ${what}, so \`${MERGE_LABEL}\` was taken off and nothing was merged.${why} To merge it, run \`/merge-check\` on \`${head}\` and add \`${MERGE_LABEL}\` again.\n`;
+};
+
+/** The end of the comment saying a head is red, naming it: said once per head. */
+export const mergeRedMark = (sha: string): string => `<!-- agent:merge-red ${sha} -->`;
+
+/** The end of the comment saying a head is behind its base, naming it: said once per head. */
+export const mergeBehindMark = (sha: string): string => `<!-- agent:merge-behind ${sha} -->`;
+
+/** A red head, said once: what is red, and that the arm stays. */
+export const mergeRedComment = (head: string, reasons: readonly string[]): string =>
+  `**\`${MERGE_LABEL}\` is waiting:** \`${head}\` is not green, so it was not merged. ${reasons.join(" ")} The arm stays, and a push disarms it. Once it is green, remove \`${MERGE_LABEL}\` and add it again to merge it.\n\n${mergeRedMark(head)}\n`;
+
+/** A head behind its base, said once: it waits, armed. */
+export const mergeBehindComment = (head: string, base: string): string =>
+  `**\`${MERGE_LABEL}\` is waiting:** \`${head}\` is behind \`${base}\`, so it was not merged. The arm stays. Once it is current with \`${base}\`, remove \`${MERGE_LABEL}\` and add it again to merge it.\n\n${mergeBehindMark(head)}\n`;
+
+/**
+ * A merge run that stopped, in the one pattern every stopped run's comment
+ * takes (#253): `sentence`, already a sentence, then the run's link where there
+ * is one, and the retry.
+ */
+export const mergeStoppedComment = (sentence: string, runUrl: string | undefined): string =>
+  `**\`${MERGE_LABEL}\` stopped:** ${sentence}\n\n${runUrl === undefined ? "" : `[Workflow run](${runUrl}) · `}To try again, add \`${MERGE_LABEL}\`.\n`;

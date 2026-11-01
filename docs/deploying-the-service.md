@@ -274,8 +274,12 @@ Before deciding, the scan asks the worker at its held door which jobs it has que
 and skips any item a job is held for there or that the dispatcher itself has dispatched and is
 still posting. That second check is made again at the moment each job is dispatched, so a label's
 delivery landing while the scan decides the same item makes one job, not two: whichever of the
-two gets there first is dispatched, and the other is skipped and logged. A delivery is never
-skipped for another delivery's job, since a label added again is asked for again. A worker that cannot be reached skips the whole scan, logged; its own start
+two gets there first is dispatched, and the other is skipped and logged. A delivery is skipped for a
+scan's job only where that job cannot have ended yet: the scan dispatched it after the delivery
+arrived, or the worker has not taken it yet. One the worker took before the delivery arrived may
+have run and ended, and the label may be one a later run added again, as a fix round adds
+`agent:review`, so that delivery is dispatched. A delivery is never skipped for another delivery's
+job, since a label added again is asked for again. A worker that cannot be reached skips the whole scan, logged; its own start
 announcement scans again. The same answer lets the dispatcher forget every job it dispatched that
 the worker no longer holds, which after a worker's restart is every job it held before.
 

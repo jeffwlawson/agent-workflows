@@ -352,7 +352,13 @@ interface Dispatched {
   readonly number: number;
   readonly posted: boolean;
   readonly scanned: boolean;
+  /** Its place among every job the dispatcher has reserved, first `1`. */
+  readonly order: number;
 }
+
+/** Who a dispatch is for: a scan, or a delivery, with the reservations made before it arrived. */
+const SCAN = "scan";
+type Origin = typeof SCAN | { readonly arrived: number };
 
 /** A scan's door's answer, sent at once, and the scan it starts. */
 export interface Announcement {
@@ -384,6 +390,8 @@ export const createDispatcher = (edges: DispatcherEdges) => {
       : `the App's installation is on ${account}, which is neither the App's owner nor an account EXTRA_OWNERS lists`;
   const newId = edges.newId ?? randomUUID;
   const jobs = new Map<string, Dispatched>();
+  /** How many jobs have been reserved so far, which a delivery notes at its arrival. */
+  let reservations = 0;
 
   /**
    * Forget every job past its deadline, which no request can be granted for
@@ -429,15 +437,21 @@ export const createDispatcher = (edges: DispatcherEdges) => {
    * read, and its deadline from its kind's own time limit.
    *
    * A scan's job and a delivery's for the same item and kind are one job, not
-   * two: the label a scan lists is the one a delivery in flight carries. So
-   * the dispatch a scan makes skips where the dispatcher remembers any job of
-   * its kind on its item, and a delivery's skips where it remembers one a scan
-   * made. That check and the reservation are one synchronous step, after the
-   * last await, so whichever of the two reaches it first is the one dispatched
-   * (#581's review). A delivery is never deduplicated against another
-   * delivery: a label added again is asked for again.
+   * two, where both answer the same label: one a delivery in flight carries
+   * is the one a scan lists. So the dispatch a scan makes skips where the
+   * dispatcher remembers any job of its kind on its item, and a delivery's
+   * skips where it remembers one a scan made that answers its label too: one
+   * reserved after the delivery arrived, or whose post the worker has not
+   * answered yet, so whose run cannot have ended and had the label added
+   * again. A scan's job the worker took before the delivery arrived does not
+   * skip it: that label may be the one a later run's ending added again, as
+   * fix's does `agent:review` (#581's second review). That check and the
+   * reservation are one synchronous step, after the last await, so whichever
+   * of the two reaches it first is the one dispatched (#581's review). A
+   * delivery is never deduplicated against another delivery: a label added
+   * again is asked for again.
    */
-  const dispatch = async (fields: Dispatchable, login: string, where: string, at: string, scanned = false): Promise<string> => {
+  const dispatch = async (fields: Dispatchable, login: string, where: string, at: string, origin: Origin): Promise<string> => {
     const variables = Object.fromEntries(
       await Promise.all(REPOSITORY_VARIABLES.map(async (name) => [name, (await edges.github.variable(fields.repo, name)) ?? ""] as const)),
     ) as Record<RepositoryVariable, string>;
@@ -446,13 +460,16 @@ export const createDispatcher = (edges: DispatcherEdges) => {
     const job = { ...fields, id: newId(), version: edges.version, deadline: deadline.toISOString(), appLogin: login, variables } as Job;
 
     prune();
-    const entry = { repo: job.repo, deadline, workflow: job.workflow, number: "issue" in job ? job.issue : job.pr, scanned };
+    const scanned = origin === SCAN;
+    const answers = (held: Dispatched): boolean => scanned || (held.scanned && (!held.posted || held.order > origin.arrived));
     const same = [...jobs.values()].find(
-      (held) => held.repo === entry.repo && held.number === entry.number && held.workflow === entry.workflow && (scanned || held.scanned),
+      (held) => held.repo === job.repo && held.number === ("issue" in job ? job.issue : job.pr) && held.workflow === job.workflow && answers(held),
     );
     if (same !== undefined) return `skipped on ${where}${at}: ${same.scanned ? "a scan" : "the dispatcher"} has dispatched a job for it`;
     // Known before the worker hears of it, so its first token request cannot
     // arrive ahead of the job it names.
+    reservations += 1;
+    const entry = { repo: job.repo, deadline, workflow: job.workflow, number: "issue" in job ? job.issue : job.pr, scanned, order: reservations };
     jobs.set(job.id, { ...entry, posted: false });
     const body = JSON.stringify(job);
     let status: number;
@@ -489,10 +506,10 @@ export const createDispatcher = (edges: DispatcherEdges) => {
     fields: { readonly repo: string; readonly issue: number; readonly title: string; readonly state: string; readonly baseRef: string },
     login: string,
     where: string,
-    scanned = false,
+    origin: Origin,
   ): Promise<string> => {
     const outcomes: string[] = [];
-    for (const kind of kinds) outcomes.push(await dispatch({ workflow: kind, ...fields }, login, where, ` to ${kind}`, scanned));
+    for (const kind of kinds) outcomes.push(await dispatch({ workflow: kind, ...fields }, login, where, ` to ${kind}`, origin));
     return outcomes.join("; ");
   };
 
@@ -509,7 +526,7 @@ export const createDispatcher = (edges: DispatcherEdges) => {
    * auto-merge can send the event as a bot the gate would refuse, which would
    * drop the follow-ups without a word. Actions' job checks no sender either.
    */
-  const merge = async (p: LabelEvent): Promise<string> => {
+  const merge = async (p: LabelEvent, origin: Origin): Promise<string> => {
     const repo = p.repository?.full_name;
     const pr = p.pull_request?.number;
     if (typeof repo !== "string" || typeof pr !== "number") return "refused: the delivery is missing a field a job needs";
@@ -520,7 +537,7 @@ export const createDispatcher = (edges: DispatcherEdges) => {
     if (why !== undefined) return `refused on ${where}: ${why}`;
     if (p.pull_request.head?.repo?.full_name !== repo) return `refused on ${where}: the head is on a fork`;
     const login = appLogin((await edges.github.app()).slug);
-    return dispatch({ workflow: "follow-ups", repo, pr }, login, where, " on its merge");
+    return dispatch({ workflow: "follow-ups", repo, pr }, login, where, " on its merge", origin);
   };
 
   /**
@@ -535,9 +552,9 @@ export const createDispatcher = (edges: DispatcherEdges) => {
    * which is answered on a closed one, merged or not, as `follow-ups.yml`'s
    * condition answers it, author gate and all; a close is a merge's route.
    */
-  const pullRequest = async (payload: unknown): Promise<string> => {
+  const pullRequest = async (payload: unknown, origin: Origin): Promise<string> => {
     const p = (payload ?? {}) as LabelEvent;
-    if (p.action === "closed") return merge(p);
+    if (p.action === "closed") return merge(p, origin);
     if (p.action !== "labeled") return `ignored: a pull request \`${String(p.action)}\`, not labelled or closed`;
     const label = p.label?.name;
     const repo = p.repository?.full_name;
@@ -569,12 +586,13 @@ export const createDispatcher = (edges: DispatcherEdges) => {
     const login = appLogin((await edges.github.app()).slug);
     const distrust = await untrusted(repo, sender, login);
     if (distrust !== undefined) return `refused on ${where}: ${distrust}`;
-    if (kind === "follow-ups") return dispatch({ workflow: kind, repo, pr }, login, where, " on its label");
+    if (kind === "follow-ups") return dispatch({ workflow: kind, repo, pr }, login, where, " on its label", origin);
     return dispatch(
       { workflow: kind, repo, pr, branch, headSha, baseRef, state, merged: p.pull_request?.merged === true },
       login,
       where,
       ` at ${headSha}`,
+      origin,
     );
   };
 
@@ -590,7 +608,7 @@ export const createDispatcher = (edges: DispatcherEdges) => {
    * An `issues` delivery about a pull request is ignored: a pull request's
    * labels are answered on its own route. The line logged is each dispatch's.
    */
-  const issue = async (payload: unknown): Promise<string> => {
+  const issue = async (payload: unknown, origin: Origin): Promise<string> => {
     const p = (payload ?? {}) as IssueLabelEvent;
     if (p.action !== "labeled") return `ignored: an issue \`${String(p.action)}\`, not labelled`;
     const label = p.label?.name;
@@ -622,14 +640,14 @@ export const createDispatcher = (edges: DispatcherEdges) => {
     const login = appLogin((await edges.github.app()).slug);
     const distrust = await untrusted(repo, sender, login);
     if (distrust !== undefined) return `refused on ${where}: ${distrust}`;
-    return dispatchIssue(kinds, { repo, issue: number, title, state, baseRef }, login, where);
+    return dispatchIssue(kinds, { repo, issue: number, title, state, baseRef }, login, where, origin);
   };
 
   /** Whether a delivery is a job, routed by its event type; otherwise the reason it is not, which is logged. */
-  const decide = async (event: string | undefined, payload: unknown): Promise<string> => {
+  const decide = async (event: string | undefined, payload: unknown, origin: Origin): Promise<string> => {
     if (event === "ping") return "ping: answered";
-    if (event === "pull_request") return pullRequest(payload);
-    if (event === "issues") return issue(payload);
+    if (event === "pull_request") return pullRequest(payload, origin);
+    if (event === "issues") return issue(payload, origin);
     return `ignored: \`${event ?? "unnamed"}\` is neither a pull request's nor an issue's event`;
   };
 
@@ -647,7 +665,7 @@ export const createDispatcher = (edges: DispatcherEdges) => {
     const outcome =
       payload === undefined
         ? Promise.resolve("refused: the body is not JSON")
-        : decide(event, payload).catch(
+        : decide(event, payload, { arrived: reservations }).catch(
             (error: unknown) => `failed: ${error instanceof Error ? error.message : String(error)}`,
           );
     return { response: answer(202, { accepted: true }), outcome };
@@ -750,7 +768,7 @@ export const createDispatcher = (edges: DispatcherEdges) => {
       if (skip !== undefined) return `skipped on ${where}: ${skip}`;
       const refusal = await unasked(repo, item.number, label, login, where);
       if (refusal !== undefined) return refusal;
-      return dispatchIssue(kinds, { repo, issue: item.number, title: item.title, state: item.state, baseRef: await baseRef() }, login, where, true);
+      return dispatchIssue(kinds, { repo, issue: item.number, title: item.title, state: item.state, baseRef: await baseRef() }, login, where, SCAN);
     }
     const kind = kindOf(LABEL_KINDS.pull_request, label);
     if (kind === undefined || kind === "follow-ups") return `ignored on ${where}: \`${label}\` is not a label a scan answers on a pull request`;
@@ -761,7 +779,7 @@ export const createDispatcher = (edges: DispatcherEdges) => {
     const unanswered = await unasked(repo, item.number, label, login, where);
     if (unanswered !== undefined) return unanswered;
     const { number: pr, branch, headSha, baseRef: base, state, merged } = item;
-    return dispatch({ workflow: kind, repo, pr, branch, headSha, baseRef: base, state, merged }, login, where, ` at ${headSha}`, true);
+    return dispatch({ workflow: kind, repo, pr, branch, headSha, baseRef: base, state, merged }, login, where, ` at ${headSha}`, SCAN);
   };
 
   /** One repository's part of a scan: refused where it is not served, and each labelled item decided otherwise. */

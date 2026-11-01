@@ -81,7 +81,7 @@ interface Installations {
 /** The App's owner, which is the repository's owner too, unless a test says otherwise. */
 const APP_OWNER = "owner";
 
-const setup = (options: { workerStatus?: number; owners?: readonly string[]; holdPosts?: boolean; holdLabeller?: boolean } = {}) => {
+const setup = (options: { workerStatus?: number; owners?: readonly string[]; holdPosts?: boolean; holdLabeller?: boolean; holdPermission?: boolean } = {}) => {
   const repository: Repository = {
     installed: true,
     account: APP_OWNER,
@@ -96,6 +96,8 @@ const setup = (options: { workerStatus?: number; owners?: readonly string[]; hol
   const heldPosts: (() => void)[] = [];
   /** Each `labeled` event read held back until a test lets it through, where `holdLabeller` says so. */
   const heldLabellers: (() => void)[] = [];
+  /** Each permission look-up held back until a test lets it through, where `holdPermission` says so. */
+  const heldPermissions: (() => void)[] = [];
   const lines: string[] = [];
   const minted: { repo: string; permissions: Readonly<Record<string, string>> }[] = [];
   const posted: { body: string; headers: Readonly<Record<string, string>> }[] = [];
@@ -117,6 +119,7 @@ const setup = (options: { workerStatus?: number; owners?: readonly string[]; hol
     },
     permission: async (repo, login) => {
       looked.push(login);
+      if (options.holdPermission === true) await new Promise<void>((resolve) => heldPermissions.push(resolve));
       return repo === REPO ? repository.permissions[login] : undefined;
     },
     mint: async (repo, permissions) => {
@@ -170,6 +173,7 @@ const setup = (options: { workerStatus?: number; owners?: readonly string[]; hol
     worker,
     heldPosts,
     heldLabellers,
+    heldPermissions,
     lines,
     minted,
     posted,
@@ -1208,22 +1212,42 @@ describe("the scan after a restart", () => {
 
   it("dispatches once where a delivery for the item lands while the scan's post is in flight, the scan first", async () => {
     const s = setup({ holdPosts: true });
-    s.repository.items = [pullItem([REVIEW_LABEL]), issueItem([IMPLEMENT_LABEL])];
+    s.repository.items = [pullItem([REVIEW_LABEL])];
     const scanned = s.dispatcher.scan();
     while (s.heldPosts.length === 0) await new Promise((resolve) => setImmediate(resolve));
 
     expect((await deliver(s, labelled())).outcome).toBe(`skipped on owner/repo#7 at ${HEAD}: a scan has dispatched a job for it`);
-    while (s.heldPosts.length < 3) {
-      s.heldPosts.forEach((release) => release());
-      await new Promise((resolve) => setImmediate(resolve));
-    }
     s.heldPosts.forEach((release) => release());
     await scanned;
-    expect((await deliver(s, issueLabelled(), undefined, "issues")).outcome).toBe(
-      "skipped on owner/repo#12 to implement: a scan has dispatched a job for it; skipped on owner/repo#12 to implement-prd: a scan has dispatched a job for it",
-    );
 
+    expect(jobsPosted(s).map((job) => job.workflow)).toEqual(["review"]);
+  });
+
+  it("dispatches once where a delivery arrives before the scan's dispatch and decides after the worker has taken it", async () => {
+    const s = setup({ holdPermission: true });
+    s.repository.items = [pullItem([REVIEW_LABEL], {}, "loop-app[bot]"), issueItem([IMPLEMENT_LABEL], "loop-app[bot]")];
+    const pending = deliver(s, labelled());
+    while (s.heldPermissions.length === 0) await new Promise((resolve) => setImmediate(resolve));
+
+    await s.dispatcher.scan();
+    s.heldPermissions.forEach((release) => release());
+
+    expect((await pending).outcome).toBe(`skipped on owner/repo#7 at ${HEAD}: a scan has dispatched a job for it`);
     expect(jobsPosted(s).map((job) => job.workflow)).toEqual(["review", "implement", "implement-prd"]);
+  });
+
+  it.each([
+    ["a pull request's", () => pullItem([REVIEW_LABEL]), () => labelled(), undefined, ["review"]],
+    ["an issue's", () => issueItem([IMPLEMENT_LABEL]), () => issueLabelled(), "issues", ["implement", "implement-prd"]],
+  ])("dispatches %s label added again after a scan's job for it has ended, which nothing skips until a deadline", async (_, item, payload, event, kinds) => {
+    const s = setup();
+    s.repository.items = [item()];
+    await s.dispatcher.scan();
+    // The scan's job ran and ended, and a later run's ending added the label again.
+    s.worker.holds = [];
+
+    expect((await deliver(s, payload(), undefined, event)).outcome).toMatch(/^dispatched /);
+    expect(jobsPosted(s).map((job) => job.workflow)).toEqual([...kinds, ...kinds]);
   });
 
   it("still dispatches a delivery for an item a delivery already dispatched: a label added again is asked for again", async () => {

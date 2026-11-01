@@ -534,6 +534,41 @@ describe("the checkout the service makes", () => {
     expect(git(copy, "show", "base-tip:version.txt")).toBe("1.1.0\n");
   });
 
+  /** The base checked out by its name, as an implement job checks it out, into a checkout of its own. */
+  const checkOutBase = async (): Promise<string> => {
+    const base = path.join(scratch, "base-checkout");
+    await liveGit({ PATH: process.env["PATH"] ?? "", HOME: home }).checkout({
+      dir: base,
+      repo: "owner/repo",
+      branch: "main",
+      sha: "main",
+      baseRef: "main",
+      token: "the-token",
+      committer: "agent[bot]",
+      signal: new AbortController().signal,
+    });
+    return base;
+  };
+
+  it("checks the base out by its name where a tag of the same name is at its tip (#569)", async () => {
+    git(origin, "tag", "main", "main");
+    const base = await checkOutBase();
+
+    expect(git(base, "symbolic-ref", "HEAD").trim()).toBe("refs/heads/main");
+    expect(git(base, "rev-parse", "HEAD").trim()).toBe(git(origin, "rev-parse", "refs/heads/main").trim());
+  });
+
+  it("checks the base branch out, not a tag of the same name on another commit (#569)", async () => {
+    git(origin, "tag", "main", "v1.0.0^{commit}");
+    const base = await checkOutBase();
+    const tip = git(origin, "rev-parse", "refs/heads/main").trim();
+
+    expect(git(base, "rev-parse", "HEAD").trim()).toBe(tip);
+    expect(git(base, "rev-parse", "refs/heads/main").trim()).toBe(tip);
+    expect(git(base, "rev-parse", "refs/remotes/origin/main").trim()).toBe(tip);
+    expect(git(base, "tag", "--list", "main").trim()).toBe("main");
+  });
+
   it("stores no token in the checkout's configuration", () => {
     const config = fs.readFileSync(path.join(dir, ".git", "config"), "utf8");
     expect(config).not.toContain(Buffer.from("x-access-token:the-token").toString("base64"));

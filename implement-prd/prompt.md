@@ -27,15 +27,15 @@ a second task list.
 
 # CONTEXT
 
-Read these before changing code:
+Read `CONTEXT.md` before changing code: the domain model (the concepts this project is built
+from, the distinctions it holds between them, and where the seams are). Reason from it, not from
+what the code appears to do.
 
-- `CONTEXT.md`: the domain model (the concepts this project is built from, the distinctions
-  it holds between them, and where the seams are). Reason from it, not from what the code
-  appears to do.
-- `CLAUDE.md`: the commands, the conventions, and the contract anything you add here has to
-  satisfy, including any step-by-step it gives for the kind of change this slice asks for.
-  Follow it there rather than from memory: it is the copy that is kept current, and anything
-  restating it (this prompt included) would be a second copy already drifting from it.
+`CLAUDE.md` is already in your context; do not read it again. It is the rules to follow: the
+commands, the conventions, and the contract anything you add here has to satisfy, including any
+step-by-step it gives for the kind of change this slice asks for. Follow it there rather than from
+memory: it is the copy that is kept current, and anything restating it (this prompt included) would
+be a second copy already drifting from it.
 
 Then read what the earlier slices already did: `git log {{BASE_REF}}..HEAD` and
 `git diff {{BASE_REF}}...HEAD`.

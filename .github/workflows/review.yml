@@ -755,7 +755,7 @@ jobs:
 
       - name: Install Claude Code
         if: steps.state.outputs.proceed == 'true'
-        run: npm install -g @anthropic-ai/claude-code
+        run: npm install -g @anthropic-ai/claude-code@2.1.316
 
       # Wait for the PR's other checks, then hand their results to the agent
       # (#421). `review/collect-checks.ts` says why each part is as it is: the
@@ -875,6 +875,11 @@ jobs:
           # own default. Change the model in Settings -> Variables, no commit.
           AGENT_MODEL: ${{ vars.AGENT_MODEL }}
           AGENT_MODEL_REVIEW: ${{ vars.AGENT_MODEL_REVIEW }}
+          # The effort and the prompt cache's TTL, the same way: unset passes
+          # neither, and Claude Code keeps its own defaults (#638).
+          AGENT_EFFORT: ${{ vars.AGENT_EFFORT }}
+          AGENT_EFFORT_REVIEW: ${{ vars.AGENT_EFFORT_REVIEW }}
+          AGENT_PROMPT_CACHE_TTL: ${{ vars.AGENT_PROMPT_CACHE_TTL }}
           OUTPUT_DIR: ${{ runner.temp }}
           CI_STATUS_FILE: ${{ runner.temp }}/collect-checks/ci_status.md
           # The evidence and the fact are two files, not one. The first is what

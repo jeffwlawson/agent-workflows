@@ -273,7 +273,7 @@ the tests in the diff yourself, and say in `howChecked` that the red evidence wa
 
 # WHAT TO CHECK
 
-Read `CONTEXT.md` and `CLAUDE.md` first, then explore the changed files in context.
+Read `CONTEXT.md` first, then explore the changed files in context. `CLAUDE.md` is already in your context; do not read it again.
 
 1. **Correctness against the issue**: does the change do what the linked issue asked? Its
    acceptance criteria are ruled on one by one, under *ACCEPTANCE CRITERIA* above.

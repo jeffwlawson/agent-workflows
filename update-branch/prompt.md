@@ -22,7 +22,7 @@ Resolve every conflict, commit the merge, and describe what you did.
 
 # RESOLUTION POLICY
 
-Read `CONTEXT.md` and `CLAUDE.md` first.
+Read `CONTEXT.md` first. `CLAUDE.md` is already in your context; do not read it again.
 
 **Always resolve. Never `git merge --abort`.** Leaving the merge unfinished fails the run and the
 branch is left untouched, which is worse than an imperfect resolution you have flagged.

@@ -6,10 +6,54 @@ import * as sandcastle from "@ai-hero/sandcastle";
 import { afterEach, beforeEach, describe, expect, it, vi, type MockInstance } from "vitest";
 import { bwrap, CARRY_HOOKS } from "../engine/bwrap.js";
 import { noSandbox } from "@ai-hero/sandcastle/sandboxes/no-sandbox";
-import { agentSandbox, concludingMerge, usageLedger, type AgentSandbox, type SandboxInputs } from "../shared/agent.js";
+import { agentSandbox, claudeAgent, concludingMerge, usageLedger, type AgentSandbox, type SandboxInputs } from "../shared/agent.js";
 import { SANDBOX } from "../shared/contract.js";
 import type { RunUsage } from "../shared/usage.js";
 import { SUBPROCESS_TIMEOUT } from "../vitest.config.js";
+
+/**
+ * The agent a runner starts, built from what `readInputs` hands `claudeAgent`
+ * (#638): the effort is read off the command it runs, and the TTL off the
+ * environment it is given, so each is what `claude` would start with.
+ */
+describe("claudeAgent: the effort and the prompt cache's TTL a runner's inputs choose", () => {
+  const unset = { CLAUDE_CODE_OAUTH_TOKEN: "a-model-token", AGENT_MODEL: "", AGENT_EFFORT: "", AGENT_PROMPT_CACHE_TTL: "" };
+  const command = (agent: sandcastle.AgentProvider): string =>
+    agent.buildPrintCommand({ prompt: "", dangerouslySkipPermissions: true }).command;
+  let logged: MockInstance<typeof console.log>;
+
+  beforeEach(() => {
+    logged = vi.spyOn(console, "log").mockImplementation(() => {});
+  });
+
+  afterEach(() => {
+    logged.mockRestore();
+  });
+
+  it("passes no effort when none is given, and logs the default", () => {
+    const agent = claudeAgent("fix", { ...unset, AGENT_EFFORT_FIX: "" });
+    expect(command(agent)).not.toContain("--effort");
+    expect(logged).toHaveBeenCalledWith("Agent effort: default");
+  });
+
+  it("starts claude with the runner's own effort, over AGENT_EFFORT, and logs which input chose it", () => {
+    expect(command(claudeAgent("fix", { ...unset, AGENT_EFFORT_FIX: "low" }))).toMatch(/\s--effort\s+low\b/);
+    expect(logged).toHaveBeenCalledWith("Agent effort: low (AGENT_EFFORT_FIX)");
+
+    expect(command(claudeAgent("fix", { ...unset, AGENT_EFFORT: "high", AGENT_EFFORT_FIX: "low" }))).toMatch(/\s--effort\s+low\b/);
+    expect(command(claudeAgent("review", { ...unset, AGENT_EFFORT: "high", AGENT_EFFORT_FIX: "low" }))).toMatch(/\s--effort\s+high\b/);
+    expect(logged).toHaveBeenCalledWith("Agent effort: high (AGENT_EFFORT)");
+  });
+
+  it("maps a hyphenated runner onto its underscored effort input", () => {
+    expect(command(claudeAgent("update-branch", { ...unset, AGENT_EFFORT_UPDATE_BRANCH: "max" }))).toMatch(/\s--effort\s+max\b/);
+  });
+
+  it("hands the agent CLAUDE_CODE_PROMPT_CACHE_TTL only where AGENT_PROMPT_CACHE_TTL is set", () => {
+    expect(claudeAgent("review", unset).env).not.toHaveProperty("CLAUDE_CODE_PROMPT_CACHE_TTL");
+    expect(claudeAgent("review", { ...unset, AGENT_PROMPT_CACHE_TTL: "1h" }).env).toHaveProperty("CLAUDE_CODE_PROMPT_CACHE_TTL", "1h");
+  });
+});
 
 /**
  * The sandbox selector, fed what `readInputs` hands it. An unknown

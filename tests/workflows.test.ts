@@ -9786,7 +9786,9 @@ describe("the loop resolves its token in the jobs that write", () => {
       const code = codeOf(step);
       // A command naming its own token is held line by line. The workflow
       // token is allowed there only for a read (#345): the fix round reads
-      // the statuses with it, since the App holds no `statuses` scope.
+      // the statuses with it: the step's job grants the workflow token the
+      // read, and an App made before #588 holds no `statuses` scope, which
+      // only the merge arm spends.
       for (const line of code.split("\n")) {
         const inline = INLINE.exec(line)?.[1];
         if (inline === undefined) continue;

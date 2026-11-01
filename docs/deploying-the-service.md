@@ -84,6 +84,36 @@ its own. Its login, `<slug>[bot]`, is what the service's reviews are posted as, 
 reads it off the App's own record rather than from a setting, so a typo cannot make every round
 the first.
 
+### Registering it with `init`
+
+`init --service` registers a service-ready App through the same manifest flow `init` uses for the
+loop's App (ADOPTING §2), run from a checkout of a repository the App's owner owns. It asks, at a
+terminal, for:
+
+- the **webhook URL**, whose path must end `/github`, with no query or fragment, and which is never
+  defaulted;
+- the **dispatcher settings file** to write, which must not exist yet;
+- the **private key file** to write, `app.pem` beside the settings file unless you name another,
+  which must not exist yet either.
+
+An answer it refuses (a URL whose path does not end `/github`, a file that exists, a path inside the checkout)
+stops it before anything is registered, and an existing file is never written over. Without a
+terminal it asks nothing and registers nothing. The manifest is the loop's App's with the
+permissions below added, the webhook, **Active**, at the URL as given, the events under *The
+webhook*, and the App private (**Only on this account**), so the table and the event list here are
+what GitHub's page shows you before you click Create.
+
+From GitHub's answer it writes the key to the key file and `GITHUB_APP_ID`,
+`GITHUB_APP_PRIVATE_KEY_FILE` (the key file's path) and `GITHUB_WEBHOOK_SECRET` to the settings
+file, as `NAME=value` lines, each file mode 600. Neither the key nor the secret is printed, and
+neither goes in the repository's Actions secrets. An answer carrying no webhook secret writes
+nothing and says so; the App exists by then, so set a secret and generate a key on its settings
+page. Everything else the dispatcher reads (`WORKER_URL`, `WORKER_SECRET`, the doors' hosts and
+ports) is yours to add to the settings file, as its closing output says. A `NAME=value` file is
+what both systemd's `EnvironmentFile=` and Docker's `--env-file` read; how the file reaches the
+dispatcher's environment is your host's to decide. Install the App afterwards, at the page it
+opens.
+
 ### Permissions
 
 Repository permissions:

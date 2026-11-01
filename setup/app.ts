@@ -3,6 +3,7 @@ import { randomBytes } from "node:crypto";
 import * as http from "node:http";
 import type { AddressInfo } from "node:net";
 import * as readline from "node:readline";
+import { SERVICE_APP_EVENTS, SERVICE_APP_PERMISSIONS } from "../service/dispatcher.js";
 import { safeGh, type GhOptions } from "../shared/common.js";
 import { availableSecrets, parseList } from "./doctor.js";
 
@@ -41,15 +42,18 @@ export const APP_PERMISSIONS = {
 } as const;
 
 /**
- * What `init` asks GitHub to register. No `hook_attributes`: the App has no
- * webhook, since nothing listens for one. `redirect_url` is the flow's to add,
- * since only the flow knows where it is listening.
+ * What `init` asks GitHub to register. The Actions loop's App has no
+ * `hook_attributes`: it has no webhook, since nothing listens for one. A
+ * service-ready App's has the dispatcher's webhook door (#562).
+ * `redirect_url` is the flow's to add, since only the flow knows where it is
+ * listening.
  */
 export interface AppManifest {
   readonly name: string;
   readonly url: string;
   readonly public: false;
-  readonly default_permissions: typeof APP_PERMISSIONS;
+  readonly default_permissions: Readonly<Record<string, string>>;
+  readonly hook_attributes?: { readonly url: string; readonly active: true };
   readonly default_events: readonly string[];
 }
 
@@ -74,6 +78,39 @@ export const appManifest = (owner: string, homepage: string): AppManifest => ({
   default_events: [],
 });
 
+/** Access levels, lowest first, for keeping the higher of two grants. */
+const ACCESS = ["read", "write", "admin"];
+
+/**
+ * The Actions loop's permissions and the service's (`SERVICE_APP_PERMISSIONS`,
+ * the one declaration the dispatcher's start-time check reads too), each at
+ * the higher access of the two.
+ */
+export const serviceAppPermissions = (): Readonly<Record<string, string>> => {
+  const merged: Record<string, string> = { ...APP_PERMISSIONS };
+  for (const [name, access] of Object.entries(SERVICE_APP_PERMISSIONS)) {
+    const held = merged[name];
+    if (held === undefined || ACCESS.indexOf(access) > ACCESS.indexOf(held)) merged[name] = access;
+  }
+  return merged;
+};
+
+/** The path the dispatcher's webhook door answers deliveries at, which the webhook URL must end with. */
+export const WEBHOOK_PATH = "/github";
+
+/**
+ * A service-ready App (#562): the Actions loop's manifest with the service's
+ * permissions added, the webhook at `webhookUrl`, active, and the events a
+ * trigger label is answered on. Private, like the other: an App anyone could
+ * install is a repository of theirs the dispatcher might run agents for.
+ */
+export const serviceAppManifest = (owner: string, homepage: string, webhookUrl: string): AppManifest => ({
+  ...appManifest(owner, homepage),
+  default_permissions: serviceAppPermissions(),
+  hook_attributes: { url: webhookUrl, active: true },
+  default_events: SERVICE_APP_EVENTS,
+});
+
 /** Who owns the repository, which decides where the App is created and where its secrets can go. */
 export interface RepoOwner {
   readonly login: string;
@@ -88,6 +125,13 @@ export interface RegisteredApp {
   readonly name: string;
   /** The private key. Held in memory until it is stored, and never printed. */
   readonly pem: string;
+  /**
+   * The webhook secret GitHub generated, for an App registered with a webhook.
+   * Held and never printed, like the key; absent where GitHub sent none, which
+   * service mode refuses rather than this: the App exists by then, and only
+   * `init` can say which one it was.
+   */
+  readonly webhookSecret?: string;
 }
 
 /**
@@ -196,11 +240,11 @@ export interface ManifestFlowOptions {
 /** The conversion's answer, read, or `undefined` where it lacks what the loop needs. */
 const asRegistered = (body: unknown): RegisteredApp | undefined => {
   if (typeof body !== "object" || body === null) return undefined;
-  const { id, slug, name, pem } = body as Record<string, unknown>;
+  const { id, slug, name, pem, webhook_secret: secret } = body as Record<string, unknown>;
   if (typeof id !== "number" || typeof slug !== "string" || typeof name !== "string" || typeof pem !== "string") {
     return undefined;
   }
-  return { id, slug, name, pem };
+  return { id, slug, name, pem, ...(typeof secret === "string" && secret !== "" ? { webhookSecret: secret } : {}) };
 };
 
 /**

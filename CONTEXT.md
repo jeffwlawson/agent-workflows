@@ -595,7 +595,11 @@ can answer must not hang a scripted run; `--app` switches without asking. A secr
 not read creates nothing. The secrets go on the organization only where the person is shown to be
 its admin, and on the repository otherwise; `AGENT_PAT` is never deleted, and after a switch
 `init` says it can be, and the token revoked. Like the policy and the labels, the App is
-reached through an injected surface (`setup/app.ts`) that every call must name.
+reached through an injected surface (`setup/app.ts`) that every call must name. `init --service`
+(#562) registers a service-ready App through the same flow instead: the service's permissions
+(`SERVICE_APP_PERMISSIONS`, the declaration the dispatcher checks the App against at start), its
+webhook and its events, with the ID, key and webhook secret written to files the operator names,
+mode 600, and none of them to the repository's Actions secrets.
 
 `doctor` names it only where it was taught to. `diagnose` rules on a **fixed list** — every grant
 the job a caller calls spends, an absent `permissions:` block, the `AGENT_PAT` wire, the identity the loop writes as and the loop's App's wire and its two halves (#321), the pin's shape

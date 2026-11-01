@@ -94,9 +94,10 @@ tell a human's push from an agent's without trusting text, and decision 2 treats
 - **`merge.yml` and its commands** (`merge:gate`, `merge:publish`, `merge:conclude`), a job in the
   reference pull-request caller, and on the service a **`merge` job kind** (ADR 0008). Neither runs
   an agent or checks anything out.
-- **The loop's App needs Commit statuses: write** to post the arm. The `init`-made App does not
-  hold it today, so `init` asks for it from that release, and an existing App needs it added by
-  hand and accepted on each installation. Without the App or `AGENT_PAT` there is nothing to arm
+- **The loop's App needs Commit statuses: write** to post the arm. The Actions loop's App, the one
+  plain `init` registers, does not hold it today, so `init` asks for it from that release, and an
+  existing one needs it added by hand and accepted on each installation. A service-ready App, the
+  one `init --service` registers, holds it already, for the service's verdict statuses. Without the App or `AGENT_PAT` there is nothing to arm
   with and nothing to merge with, and the run says so.
 - **`update-branch:publish` carries the arm as it carries the verdict**, on its clean path only.
 - **The doctrine changes wording, not substance.** Every doc and skill that said the loop never

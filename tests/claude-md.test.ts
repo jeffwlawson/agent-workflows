@@ -79,3 +79,15 @@ it.each([...new Set(["CLAUDE.md", ...Object.values(MOVED)])])("%s links only to 
   const links = [...fs.readFileSync(file, "utf8").matchAll(/\]\((\.{1,2}\/[^)#\s]+)(?:#[^)]*)?\)/g)].map((match) => match[1] ?? "");
   expect(links.filter((link) => !fs.existsSync(path.join(path.dirname(file), link)))).toEqual([]);
 });
+
+/**
+ * A moved section cited by name from another moved file was a section of the
+ * same file before the split, so the bare `*name*` sent a reader nowhere once
+ * it moved (#654's review). A citation of one is a link to the file that holds it.
+ */
+it.each([...new Set(Object.values(MOVED))])("%s cites a moved section only as a link", (file) => {
+  const text = fs.readFileSync(file, "utf8").replace(/\s+/g, " ").replace(/\*\*[^*]+\*\*/g, "");
+  const cited = [...text.matchAll(/(?<!\[)\*([^*]+)\*(?!\])/g)].map((match) => match[1] ?? "");
+  const own = new Set(headings(fs.readFileSync(file, "utf8")));
+  expect(cited.filter((name) => Object.keys(MOVED).some((heading) => !own.has(heading) && heading.startsWith(name)))).toEqual([]);
+});

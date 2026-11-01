@@ -47,8 +47,8 @@ the declaration.
    `### Inputs` table (or the command's `#### Inputs`) in `docs/platform-spec.md`, and, where it is
    required, the reusable's `env:` setting it, in the step or its job. `tests/platform-spec.test.ts`
    is red until all three are in; a new output file is the same, without the third. Where the
-   reusable needs a new caller input or secret to set it, the two-step rule in *This repo runs its
-   own loop* applies.
+   reusable needs a new caller input or secret to set it, the two-step rule in
+   [*This repo runs its own loop*](../adr/0010-this-repo-runs-its-own-loop-on-the-last-release.md) (ADR 0010) applies.
 6. **A change to anything a runner reads from the record** (a marker, a status context, a trailer,
    a branch pattern, a trusted login) is a change to `docs/platform-spec.md` §4 in the same commit.
    Where TypeScript spells it, it spells it once, in `shared/record.ts`.

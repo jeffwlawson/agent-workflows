@@ -15,7 +15,7 @@ so a `setup/setup.ts` would quietly enrol these two in every rule written for th
    what an adopter owns, so a re-run that re-copied would silently revert their `with:` inputs,
    their job id and their extra permissions — the silent-failure class this command exists to
    remove. Drift in the caller *body* is `doctor`'s to report, not `init`'s to overwrite.
-3. The rewrite is `shared/pins.ts` — the same one the release performs. See *Releasing*.
+3. The rewrite is `shared/pins.ts` — the same one the release performs. See [*Releasing*](./releasing.md).
 4. `doctor` is two halves: `gatherFacts` asks `gh` what a checkout cannot answer, and `diagnose`
    rules on callers and facts and nothing else. Keep the second one pure — every check is exercised
    through it, and an unreadable fact must stay `undefined` rather than collapsing into a pass.

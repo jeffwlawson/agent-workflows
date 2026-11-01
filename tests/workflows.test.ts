@@ -5905,6 +5905,38 @@ describe("agent-implement-prd works one sub-issue per run", () => {
   });
 });
 /**
+ * Off a terminal, `gh issue view <n> --comments` prints the comment thread and
+ * nothing else: no title, no body (#607, seen on #567). Every agent shell has
+ * no terminal, so a skill reading an issue that way writes its brief without
+ * the issue's own criteria, and nothing reports it. And `gh issue close
+ * --comment` on an issue already closed drops the comment and still exits 0.
+ * Both fail silently, so the recipes in `docs/agents/` are held here.
+ */
+describe("docs/agents reads an issue whole and comments before closing", () => {
+  const DIR = path.join("docs", "agents");
+  const lines = fs
+    .readdirSync(DIR)
+    .filter((f) => f.endsWith(".md"))
+    .flatMap((f) =>
+      fs
+        .readFileSync(path.join(DIR, f), "utf8")
+        .split("\n")
+        .map((line, i) => ({ at: `${f}:${i + 1}`, line })),
+    );
+
+  it("reads no issue or PR with --comments and no --json", () => {
+    const bare = lines.filter(
+      ({ line }) => /gh (issue|pr) view/.test(line) && line.includes("--comments") && !line.includes("--json"),
+    );
+    expect(bare.map(({ at }) => at)).toEqual([]);
+  });
+
+  it("closes no issue with --comment", () => {
+    const closing = lines.filter(({ line }) => /gh issue close/.test(line) && line.includes("--comment"));
+    expect(closing.map(({ at }) => at)).toEqual([]);
+  });
+});
+/**
  * The two blocker refusals in this file — and the third place that
  * deliberately has none — partition on a rule that, until #19, lived only in a
  * comment thread on an issue being closed, and #5's own author predicted the

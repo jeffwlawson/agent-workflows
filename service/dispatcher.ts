@@ -136,6 +136,11 @@ export interface DispatcherEdges {
   readonly scanLimit: number;
   readonly now?: () => Date;
   readonly newId?: () => string;
+  /**
+   * This dispatcher instance's id, which each job it posts carries and its
+   * held-door question names (#597): fresh at each start, a UUID unless given.
+   */
+  readonly instance?: string;
 }
 
 /** A request as either door received it: its headers, lower-cased, and its raw body. */
@@ -343,7 +348,7 @@ interface IssueLabelEvent {
 }
 
 /** A job's own fields, without those every job carries, which the dispatcher fills in. */
-type OwnFields<J> = J extends Job ? Omit<J, "id" | "version" | "deadline" | "appLogin" | "variables"> : never;
+type OwnFields<J> = J extends Job ? Omit<J, "id" | "version" | "instance" | "deadline" | "appLogin" | "variables"> : never;
 type Dispatchable = OwnFields<Job>;
 
 const text = (headers: DoorRequest["headers"], name: string): string | undefined => headers[name];
@@ -358,6 +363,9 @@ const json = (body: Buffer): unknown => {
 };
 
 const answer = (status: number, body: unknown): DoorResponse => ({ status, body: JSON.stringify(body) });
+
+/** A held-door question the worker answered with a refusal, which asking again meets too. */
+class Refused extends Error {}
 
 const message = (error: unknown): string => (error instanceof Error ? error.message : String(error));
 
@@ -431,6 +439,7 @@ export const createDispatcher = (edges: DispatcherEdges) => {
       ? undefined
       : `the App's installation is on ${account}, which is neither the App's owner nor an account EXTRA_OWNERS lists`;
   const newId = edges.newId ?? randomUUID;
+  const instance = edges.instance ?? randomUUID();
   const jobs = new Map<string, Dispatched>();
   /** How many jobs have been reserved so far, which a delivery notes at its arrival. */
   let reservations = 0;
@@ -506,7 +515,7 @@ export const createDispatcher = (edges: DispatcherEdges) => {
     ) as Record<RepositoryVariable, string>;
     const minutes = TIME_LIMITS[fields.workflow](variables) + edges.deadlineMarginMinutes;
     const deadline = new Date(now().getTime() + minutes * 60_000);
-    const job = { ...fields, id: newId(), version: edges.version, deadline: deadline.toISOString(), appLogin: login, variables } as Job;
+    const job = { ...fields, id: newId(), version: edges.version, instance, deadline: deadline.toISOString(), appLogin: login, variables } as Job;
 
     prune();
     const scanned = "taken" in origin;
@@ -765,13 +774,24 @@ export const createDispatcher = (edges: DispatcherEdges) => {
    * the dispatcher's own remembered ones it can forget for it: every job whose
    * post the worker had answered before it was asked and which it no longer
    * holds has ended, or was dropped by a restart, and asks for no token again.
-   * One whose post is still in flight is kept.
+   * One whose post is still in flight is kept. The question names this
+   * instance (#597), and the worker drops every job it holds queued from
+   * another before it answers, so a scan after a dispatcher's restart
+   * dispatches their items again rather than skipping them for jobs no
+   * dispatcher would mint for. A question the worker refuses throws
+   * `Refused`, naming the refusal its answer carries (#601): asking again,
+   * at the worker's start, meets the same refusal, so its reason is the only
+   * place a person can learn why the scan stopped.
    */
   const askWorker = async (): Promise<readonly HeldJob[]> => {
     const answered = [...jobs].filter(([, job]) => job.posted).map(([id]) => id);
-    const body = JSON.stringify({ asked: now().toISOString() });
+    const body = JSON.stringify({ asked: now().toISOString(), instance });
     const reply = await edges.askHeld(body, { "content-type": "application/json", [SIGNATURE_HEADER]: sign(edges.workerSecret, body) });
-    if (reply.status !== 200) throw new Error(`the worker answered ${reply.status}`);
+    if (reply.status !== 200) {
+      const said = json(Buffer.from(reply.body));
+      const refusal = typeof said === "object" && said !== null ? (said as Readonly<Record<string, unknown>>).refusal : undefined;
+      throw new Refused(`the worker answered ${reply.status}${typeof refusal === "string" && refusal !== "" ? `: ${refusal}` : ""}`);
+    }
     const held = parseHeld(json(Buffer.from(reply.body)));
     if (typeof held === "string") throw new Error(`the worker's answer is not a list of jobs: ${held}`);
     const ids = new Set(held.map((job) => job.id));
@@ -912,7 +932,10 @@ export const createDispatcher = (edges: DispatcherEdges) => {
    * One pass of the scan: the worker asked what it holds, then each
    * repository of each installation served. A worker that cannot be reached
    * skips the pass, since nothing could say what it holds, and its own start
-   * announcement scans again. Nothing here throws: each failure is logged,
+   * announcement scans again. One that refuses the question skips it too,
+   * naming the refusal, and nothing scans again until a person mends the cause
+   * (#601): a skewed clock or a wrong secret refuses every question alike.
+   * Nothing here throws: each failure is logged,
    * and the rest of the pass goes on.
    */
   const pass = async (): Promise<void> => {
@@ -920,6 +943,7 @@ export const createDispatcher = (edges: DispatcherEdges) => {
     try {
       held = await askWorker();
     } catch (error) {
+      if (error instanceof Refused) return edges.log(`scan: skipped: the worker refused to say which jobs it holds: ${error.message}`);
       return edges.log(`scan: skipped: the worker could not say which jobs it holds: ${message(error)}. Its start scans again`);
     }
     let accounts: readonly string[];
@@ -985,7 +1009,7 @@ export const createDispatcher = (edges: DispatcherEdges) => {
     return { response: answer(202, { accepted: true }), scanned: scan() };
   };
 
-  return { delivery, token, scan, started };
+  return { delivery, token, scan, started, instance };
 };
 
 export type Dispatcher = ReturnType<typeof createDispatcher>;

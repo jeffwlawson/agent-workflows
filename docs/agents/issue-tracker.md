@@ -13,13 +13,20 @@ CLI for all operations.
 
 - **Create an issue**: `gh issue create --title "..." --body "..."`. Use a heredoc or `--body-file`
   for multi-line bodies.
-- **Read an issue**: `gh issue view <number> --comments`, filtering comments by `jq` and also
-  fetching labels.
+- **Read an issue**: `gh issue view <number> --json number,title,body,labels,comments`, filtering
+  comments by `jq`. Not `--comments` alone: without a terminal, which is every agent shell, it
+  prints the comments and no title or body, so a brief written from it misses the issue's own
+  criteria. `--json` goes through GraphQL; where GraphQL is refused, read the issue and its
+  comments through the REST endpoints in
+  [`skills/issues-to-prd/references/github.md`](../../skills/issues-to-prd/references/github.md).
 - **List issues**: `gh issue list --state open --json number,title,body,labels,comments --jq '[.[] | {number, title, body, labels: [.labels[].name], comments: [.comments[].body]}]'`
   with appropriate `--label` and `--state` filters.
 - **Comment on an issue**: `gh issue comment <number> --body "..."`
 - **Apply / remove labels**: `gh issue edit <number> --add-label "..."` / `--remove-label "..."`
-- **Close**: `gh issue close <number> --comment "..."`
+- **Close**: post the comment with `gh issue comment <number> --body "..."`, then run
+  `gh issue close <number>` on its own.
+  Closing with a `--comment` flag is not used: on an issue that is already closed, it drops the
+  comment and still exits 0.
 
 Infer the repo from `git remote -v` — `gh` does this automatically when run inside a clone. This
 repo is normally worked in a **worktree**; `gh` resolves the remote the same way there.
@@ -32,7 +39,9 @@ requests; `/triage` reads this flag.)_
 When set to `yes`, PRs run through the same labels and states as issues, using the `gh pr`
 equivalents:
 
-- **Read a PR**: `gh pr view <number> --comments` and `gh pr diff <number>` for the diff.
+- **Read a PR**: `gh pr view <number> --json number,title,body,labels` for the body,
+  `gh pr view <number> --json comments` for the comments, and `gh pr diff <number>` for the diff.
+  Not `--comments` alone: without a terminal it prints the comments and no title or body.
 - **List external PRs for triage**: `gh pr list --state open --json number,title,body,labels,author,authorAssociation,comments`
   then keep only `authorAssociation` of `CONTRIBUTOR`, `FIRST_TIME_CONTRIBUTOR`, or `NONE` (drop
   `OWNER`/`MEMBER`/`COLLABORATOR`).
@@ -50,7 +59,9 @@ defaults, and getting the order wrong produces a chain nothing catches.
 
 ## When a skill says "fetch the relevant ticket"
 
-Run `gh issue view <number> --comments`.
+Run `gh issue view <number> --json number,title,body,labels,comments`, the *Read an issue* recipe
+above, and for the same reason: `--comments` alone prints no title or body without a terminal.
+Where GraphQL is refused, use the REST pair that recipe points at.
 
 ## Native relations: sub-issues and blocking
 

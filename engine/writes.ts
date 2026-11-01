@@ -178,5 +178,24 @@ export const githubWrites = (repo: string, transport: Transport): Omit<Backend, 
       await call(`PATCH ${Object.keys(patch).join("+")}`, () => transport.rest({ method: "PATCH", path: pull(number), body: patch }));
       return { outcome: "applied" };
     },
+    mergePullRequest: async (call, merge) => {
+      // One call, never retried and never read back: GitHub's refusal is the
+      // answer, kept in the log as the evidence of why it did not merge.
+      const merged = (await call("PUT merge", () =>
+        transport.rest({
+          method: "PUT",
+          path: `${pull(merge.pr)}/merge`,
+          body: {
+            merge_method: "squash",
+            sha: merge.sha,
+            commit_title: merge.title,
+            ...(merge.message === undefined ? {} : { commit_message: merge.message }),
+          },
+        }),
+      )) as { readonly sha?: unknown } | undefined;
+      // The merge landed; only what it made is unread, so the write is partial rather than not done.
+      if (typeof merged?.sha !== "string") throw new Error("GitHub answered the merge without the merge commit's SHA.");
+      return { outcome: "applied", sha: merged.sha };
+    },
   };
 };

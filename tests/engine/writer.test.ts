@@ -44,6 +44,20 @@ describe("the writer", () => {
     expect(parsed(lines).at(-1)).toEqual({ seq: 3, token: "workflow", type: "addLabel", target: "#7 c", outcome: "refused", calls: [] });
   });
 
+  /** The arm `agent:merge` records is a status the loop's token posts: a cap on the type is all it needs. */
+  it("posts a status with the loop's writer under the command's cap, read back with its creator", async () => {
+    const github = fakeGitHub();
+    const { writers, entries } = fakeWriters(github, ["workflow", "loop"], { setCommitStatus: 1 });
+
+    await writers.loop.setCommitStatus({ sha: SHA, context: "ctx", state: "success", description: "by @someone" });
+
+    expect(entries[0]).toMatchObject({ token: "loop", type: "setCommitStatus", outcome: "applied" });
+    expect(await fakeReader(github).reader.commitStatuses(SHA)).toEqual([
+      { context: "ctx", state: "success", targetUrl: null, description: "by @someone", creator: "loop" },
+    ]);
+    await expect(writers.workflow.setCommitStatus({ sha: SHA, context: "ctx", state: "success", description: "" })).rejects.toBeInstanceOf(LimitReached);
+  });
+
   it("refuses a type the command set no limit for", async () => {
     const github = fakeGitHub();
     const { writers } = fakeWriters(github, ["workflow"], { addLabel: 1 });
@@ -274,6 +288,50 @@ describe("the fake reader's follow-ups reads", () => {
 
     expect(created).toEqual({ outcome: "applied", number: 8, url: "https://github.com/o/r/issues/8" });
     expect(await reader.labelledIssues("x")).toEqual([{ number: 8, url: created.url, state: "OPEN", stateReason: null, body: "b" }]);
+  });
+});
+
+describe("the fake reader's merge reads", () => {
+  it("reads a commit's checks, whether a head is behind, a login's permission and the labelled pull requests into a base, as a test scripts them", async () => {
+    const github = fakeGitHub([
+      { number: 7, baseRef: "main", labels: ["armed"] },
+      { number: 8, baseRef: "main", labels: ["armed", "other"], headSha: "b".repeat(40) },
+      { number: 9, baseRef: "main", labels: [] },
+      { number: 10, baseRef: "next", labels: ["armed"] },
+    ]);
+    const checks = [{ kind: "checkRun" as const, name: "verify", status: "COMPLETED", conclusion: "SUCCESS", required: true }];
+    github.checks.set(SHA, checks);
+    github.comparisons.set(`main...${SHA}`, "ahead");
+    github.comparisons.set(`main...${"b".repeat(40)}`, "diverged");
+    github.comparisons.set("main...c", "odd");
+    github.permissions.set("maintainer", "maintain");
+    const { reader, reads } = fakeReader(github);
+
+    expect(await reader.commitChecks(SHA, 7)).toEqual(checks);
+    expect(await reader.commitChecks("b".repeat(40), 8)).toEqual([]);
+    expect([await reader.behindBase("main", SHA), await reader.behindBase("main", "b".repeat(40)), await reader.behindBase("main", "c")]).toEqual([
+      "current",
+      "behind",
+      "unknown",
+    ]);
+    await expect(reader.behindBase("main", "d")).rejects.toBeInstanceOf(GitHubError);
+    expect(await reader.permission("maintainer")).toBe("maintain");
+    await expect(reader.permission("stranger")).rejects.toBeInstanceOf(GitHubError);
+    expect(await reader.openPullRequestsLabelled("main", "armed")).toEqual([
+      { number: 8, headSha: "b".repeat(40), labels: ["armed", "other"] },
+      { number: 7, headSha: SHA, labels: ["armed"] },
+    ]);
+    expect(reads.map((r) => r.method)).toEqual([
+      "commitChecks",
+      "commitChecks",
+      "behindBase",
+      "behindBase",
+      "behindBase",
+      "behindBase",
+      "permission",
+      "permission",
+      "openPullRequestsLabelled",
+    ]);
   });
 });
 

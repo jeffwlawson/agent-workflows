@@ -60,6 +60,7 @@ const writerOver = (transport: Transport) =>
       editPullRequest: 9,
       openPullRequest: 9,
       createIssue: 9,
+      mergePullRequest: 9,
     },
     appendLine: () => undefined,
   });
@@ -447,6 +448,131 @@ describe("createIssue", () => {
     expect((failed.cause as GitHubError).status).toBe(422);
     expect(entries[0]?.calls).toHaveLength(1);
     expect(github.filed.size).toBe(0);
+  });
+});
+
+describe("mergePullRequest", () => {
+  const MERGE = { pr: 7, sha: SHA, title: "feat: a thing (#7)" };
+  const refusal = (status: number, message: string) => () => {
+    throw new GitHubError(`PUT /repos/o/r/pulls/7/merge: ${status} {"message":"${message}"}`, status, {
+      reason: message,
+      raw: JSON.stringify({ message }),
+    });
+  };
+
+  it("squash-merges guarded on the full head, with the title, and returns the merge commit", async () => {
+    const { transport, sent } = recording(() => ({ sha: "c".repeat(40), merged: true, message: "Pull Request successfully merged" }));
+    const { writers, log } = writerOver(transport);
+
+    expect(await writers.workflow.mergePullRequest(MERGE)).toEqual({ outcome: "applied", sha: "c".repeat(40) });
+    expect(sent).toEqual([
+      { rest: { method: "PUT", path: "/repos/o/r/pulls/7/merge", body: { merge_method: "squash", sha: SHA, commit_title: MERGE.title } } },
+    ]);
+    expect(log.entries[0]).toMatchObject({ type: "mergePullRequest", target: `#7 at ${SHA} "feat: a thing (#7)"`, outcome: "applied", calls: ["PUT merge ok"] });
+  });
+
+  it("sends a message where one is given, and logs it nowhere", async () => {
+    const lines: string[] = [];
+    const { transport, sent } = recording(() => ({ sha: "c".repeat(40) }));
+    const { writers } = createWriters({
+      backends: { workflow: { ...githubWrites(REPO, transport), ...gitWrites({ dir: ".", env: {}, remote: "" }, "unused") } },
+      limits: { mergePullRequest: 1 },
+      appendLine: (line) => lines.push(line),
+    });
+
+    await writers.workflow.mergePullRequest({ ...MERGE, message: "the squashed body" });
+
+    expect(sent[0]).toMatchObject({ rest: { body: { commit_message: "the squashed body" } } });
+    expect(lines.join("\n")).not.toContain("squashed body");
+  });
+
+  it.each(["abc1234", "B".repeat(40), "b".repeat(39), "b".repeat(41), `${"b".repeat(39)}g`, ""])(
+    "refuses %j as the guard before any request",
+    async (sha) => {
+      const { transport, sent } = recording(() => ({ sha: "c".repeat(40) }));
+      const { writers, log } = writerOver(transport);
+
+      const failed = (await writers.workflow.mergePullRequest({ ...MERGE, sha }).catch((error: unknown) => error)) as WriteFailed;
+
+      expect(failed).toBeInstanceOf(WriteFailed);
+      expect(failed.message).toContain("not a full 40-character SHA");
+      expect(sent).toEqual([]);
+      expect(log.entries[0]).toMatchObject({ outcome: "refused" });
+    },
+  );
+
+  it.each([
+    [409, "Head branch was modified. Review and try the merge again."],
+    [405, "Merge commits are not allowed on this repository."],
+    [422, "Validation Failed"],
+  ])("fails a %i with GitHub's answer in the log, and does not retry it", async (status, message) => {
+    const { transport, sent } = recording(refusal(status, message));
+    const { writers, log } = writerOver(transport);
+
+    const failed = (await writers.workflow.mergePullRequest(MERGE).catch((error: unknown) => error)) as WriteFailed;
+
+    expect(failed).toBeInstanceOf(WriteFailed);
+    expect((failed.cause as GitHubError).status).toBe(status);
+    expect(sent).toHaveLength(1);
+    expect(log.entries[0]).toMatchObject({ outcome: "failed", calls: [`PUT merge ${status} ${message}`], response: JSON.stringify({ message }) });
+  });
+
+  it("does not retry a server error either", async () => {
+    const { transport, sent } = recording(() => {
+      throw new GitHubError("PUT /repos/o/r/pulls/7/merge: 502 Bad Gateway", 502, { reason: "Bad Gateway" });
+    });
+
+    await expect(writerOver(transport).writers.workflow.mergePullRequest(MERGE)).rejects.toBeInstanceOf(WriteFailed);
+    expect(sent).toHaveLength(1);
+  });
+
+  /** It merged, so it is not "not done"; what it made is what went unread. */
+  it("is partial where GitHub answers the merge without the merge commit", async () => {
+    const { transport } = recording(() => ({ merged: true }));
+    const { writers, log } = writerOver(transport);
+
+    await expect(writers.workflow.mergePullRequest(MERGE)).rejects.toThrow("without the merge commit's SHA");
+    expect(log.entries[0]?.outcome).toBe("partial");
+  });
+
+  /** The fake a command's test stands on merges, and refuses, as a run does. */
+  it("is merged by the fake on the guarded head, closing the pull request and moving its base", async () => {
+    const github = fakeGitHub([{ number: 7, headSha: SHA, baseRef: "main", mergeCommit: "c".repeat(40) }]);
+    github.branches.set("main", "d".repeat(40));
+    const { writers, entries } = fakeWriters(github, ["loop"], { mergePullRequest: 1 });
+
+    expect(await writers.loop.mergePullRequest(MERGE)).toEqual({ outcome: "applied", sha: "c".repeat(40) });
+    expect(github.pullRequests.get(7)).toMatchObject({ state: "closed", merged: true });
+    expect(github.branches.get("main")).toBe("c".repeat(40));
+    expect(entries[0]).toMatchObject({ token: "loop", target: `#7 at ${SHA} "feat: a thing (#7)"`, outcome: "applied", calls: ["PUT merge ok"] });
+  });
+
+  it.each([
+    ["a head that moved", { headSha: "a".repeat(40) }, 409],
+    ["a draft", { draft: true }, 405],
+    ["a closed pull request", { state: "closed" as const }, 405],
+  ])("is refused by the fake on %s, merging nothing", async (_name, pr, status) => {
+    const github = fakeGitHub([{ number: 7, headSha: SHA, ...pr }]);
+    const { writers, entries } = fakeWriters(github, ["loop"], { mergePullRequest: 1 });
+
+    const failed = (await writers.loop.mergePullRequest(MERGE).catch((error: unknown) => error)) as WriteFailed;
+
+    expect((failed.cause as GitHubError).status).toBe(status);
+    expect(entries[0]?.outcome).toBe("failed");
+    expect(entries[0]?.response).toBeDefined();
+    expect(github.pullRequests.get(7)?.merged).toBeUndefined();
+  });
+
+  it("is refused by the fake on a short guard before it reaches the fake", async () => {
+    const github = fakeGitHub([{ number: 7, headSha: SHA }]);
+    github.fails = () => {
+      throw new Error("reached the fake");
+    };
+    const { writers, entries } = fakeWriters(github, ["loop"], { mergePullRequest: 1 });
+
+    await expect(writers.loop.mergePullRequest({ ...MERGE, sha: SHA.slice(0, 7) })).rejects.toThrow("not a full 40-character SHA");
+    expect(entries[0]).toMatchObject({ outcome: "refused" });
+    expect(github.pullRequests.get(7)?.state).toBe("open");
   });
 });
 
@@ -948,6 +1074,137 @@ describe("githubReader", () => {
     expect(runs).toHaveLength(101);
     expect(runs[100]).toEqual({ name: "last", status: "queued", conclusion: null });
     expect(paths(sent)).toEqual([`/repos/o/r/commits/${SHA}/check-runs?per_page=100&page=1`, `/repos/o/r/commits/${SHA}/check-runs?per_page=100&page=2`]);
+  });
+
+  describe("commitChecks", () => {
+    const rollup = (nodes: readonly unknown[], pageInfo: { hasNextPage: boolean; endCursor: string | null } = { hasNextPage: false, endCursor: null }) => ({
+      repository: { object: { statusCheckRollup: { contexts: { nodes, pageInfo } } } },
+    });
+    const run = (name: string, required = true) => ({ __typename: "CheckRun", name, status: "COMPLETED", conclusion: "SUCCESS", isRequired: required });
+    const context = (name: string, required = false) => ({ __typename: "StatusContext", context: name, state: "PENDING", isRequired: required });
+
+    it("reads every check run and status context, each with whether it is required for the pull request, every page", async () => {
+      const { transport, sent } = recording((s) =>
+        "variables" in s && s.variables["after"] === null
+          ? rollup([run("verify"), context("ci/x")], { hasNextPage: true, endCursor: "c1" })
+          : rollup([{ ...run("lint", false), status: "IN_PROGRESS", conclusion: null }]),
+      );
+
+      expect(await githubReader(REPO, transport).commitChecks(SHA, 7)).toEqual([
+        { kind: "checkRun", name: "verify", status: "COMPLETED", conclusion: "SUCCESS", required: true },
+        { kind: "status", context: "ci/x", state: "PENDING", required: false },
+        { kind: "checkRun", name: "lint", status: "IN_PROGRESS", conclusion: null, required: false },
+      ]);
+      expect(sent.map((s) => ("variables" in s ? s.variables : undefined))).toEqual([
+        { owner: "o", name: "r", sha: SHA, number: 7, after: null },
+        { owner: "o", name: "r", sha: SHA, number: 7, after: "c1" },
+      ]);
+      expect("query" in sent[0]! && sent[0].query).toContain("isRequired(pullRequestNumber:$number)");
+    });
+
+    it("reads a commit with no check and no status, GitHub's null rollup, as none", async () => {
+      const { transport } = recording(() => ({ repository: { object: { statusCheckRollup: null } } }));
+
+      expect(await githubReader(REPO, transport).commitChecks(SHA, 7)).toEqual([]);
+    });
+
+    it.each([
+      ["no repository", { repository: null }],
+      ["no commit", { repository: { object: null } }],
+      ["a commit without its rollup", { repository: { object: {} } }],
+      ["a rollup with no list", { repository: { object: { statusCheckRollup: {} } } }],
+      ["a list with no page info", { repository: { object: { statusCheckRollup: { contexts: { nodes: [] } } } } }],
+      ["a check without isRequired", rollup([{ ...run("verify"), isRequired: undefined }])],
+      ["a check of another kind", rollup([{ __typename: "Something", isRequired: true }])],
+      ["a check run without a name", rollup([{ ...run("verify"), name: undefined }])],
+      ["a status context without a state", rollup([{ ...context("ci/x"), state: undefined }])],
+      ["a next page with no cursor", rollup([run("verify")], { hasNextPage: true, endCursor: null })],
+    ])("throws on an answer with %s, rather than reading it as no checks", async (_name, answer) => {
+      await expect(githubReader(REPO, recording(() => answer).transport).commitChecks(SHA, 7)).rejects.toThrow(/could not be read|cannot be read/);
+    });
+  });
+
+  describe("behindBase", () => {
+    it.each([
+      [{ status: "ahead", behind_by: 0 }, "current"],
+      [{ status: "identical", behind_by: 0 }, "current"],
+      [{ status: "diverged", behind_by: 3 }, "behind"],
+      [{ status: "behind", behind_by: 1 }, "behind"],
+      [{ status: "ahead" }, "unknown"],
+      [{ behind_by: "0" }, "unknown"],
+      [{ behind_by: -1 }, "unknown"],
+      [{ behind_by: 0.5 }, "unknown"],
+      [null, "unknown"],
+    ])("reads %j as %s", async (answer, currency) => {
+      const { transport, sent } = recording(() => answer);
+
+      expect(await githubReader(REPO, transport).behindBase("main", SHA)).toBe(currency);
+      expect(paths(sent)).toEqual([`/repos/o/r/compare/main...${SHA}?per_page=1`]);
+    });
+
+    it("throws a refused compare rather than reading it as current", async () => {
+      const { transport } = recording(() => {
+        throw new GitHubError("GET compare: 404 Not Found", 404);
+      });
+
+      await expect(githubReader(REPO, transport).behindBase("main", SHA)).rejects.toBeInstanceOf(GitHubError);
+    });
+  });
+
+  describe("permission", () => {
+    it.each([
+      [{ permission: "admin", role_name: "admin" }, "admin"],
+      [{ permission: "write", role_name: "maintain" }, "maintain"],
+      [{ permission: "write", role_name: "write" }, "write"],
+      [{ permission: "read", role_name: "triage" }, "triage"],
+      [{ permission: "read", role_name: "read" }, "read"],
+      [{ permission: "none", role_name: "none" }, "none"],
+      [{ permission: "write", role_name: "release-manager" }, "write"],
+      [{ permission: "write" }, "write"],
+      [{ permission: "superuser", role_name: "superuser" }, "unknown"],
+      [{}, "unknown"],
+      [null, "unknown"],
+    ])("reads %j as %s", async (answer, permission) => {
+      const { transport, sent } = recording(() => answer);
+
+      expect(await githubReader(REPO, transport).permission("some[bot]")).toBe(permission);
+      expect(paths(sent)).toEqual(["/repos/o/r/collaborators/some%5Bbot%5D/permission"]);
+    });
+
+    it("throws a refused lookup rather than reading it as none", async () => {
+      const { transport } = recording(() => {
+        throw new GitHubError("GET permission: 403 Resource not accessible by integration", 403);
+      });
+
+      await expect(githubReader(REPO, transport).permission("someone")).rejects.toBeInstanceOf(GitHubError);
+    });
+  });
+
+  describe("openPullRequestsLabelled", () => {
+    const pr = (number: number, labels: readonly string[]) => ({ number, head: { sha: SHA }, labels: labels.map((name) => ({ name })) });
+
+    it("reads the open pull requests into a base carrying the label, every page, with their heads and labels", async () => {
+      const { transport, sent } = recording((s) =>
+        "rest" in s && s.rest.path.endsWith("page=1") ? Array.from({ length: 100 }, (_, i) => pr(200 - i, i === 0 ? ["armed", "x"] : [])) : [pr(9, ["armed"])],
+      );
+
+      expect(await githubReader(REPO, transport).openPullRequestsLabelled("agent/prd-1-a", "armed")).toEqual([
+        { number: 200, headSha: SHA, labels: ["armed", "x"] },
+        { number: 9, headSha: SHA, labels: ["armed"] },
+      ]);
+      expect(paths(sent)).toEqual([
+        "/repos/o/r/pulls?state=open&base=agent%2Fprd-1-a&per_page=100&page=1",
+        "/repos/o/r/pulls?state=open&base=agent%2Fprd-1-a&per_page=100&page=2",
+      ]);
+    });
+
+    it.each([
+      ["an answer that is not a list", { message: "odd" }],
+      ["a pull request without its labels", [{ number: 5, head: { sha: SHA } }]],
+      ["a pull request without its head", [{ number: 5, labels: [{ name: "armed" }] }]],
+    ])("throws on %s, rather than reading it as none", async (_name, answer) => {
+      await expect(githubReader(REPO, recording(() => answer).transport).openPullRequestsLabelled("main", "armed")).rejects.toThrow(/could not be read|came back without/);
+    });
   });
 
   it("reads a commit's latest status per context from the combined endpoint", async () => {

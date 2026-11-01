@@ -166,6 +166,25 @@ export interface PullRequestEdit {
   readonly body?: (live: string) => string | undefined;
 }
 
+/**
+ * A pull request squash-merged, guarded on its head: GitHub refuses the merge
+ * where the head is no longer `sha`. The message is left to the repository's
+ * squash setting where it is not given.
+ */
+export interface PullRequestMerge {
+  readonly pr: number;
+  /** The head to guard on, all 40 characters: a short one is refused before any call. */
+  readonly sha: string;
+  readonly title: string;
+  readonly message?: string;
+}
+
+/** A pull request merged: the merge commit it made. */
+export interface Merged {
+  readonly outcome: "applied";
+  readonly sha: string;
+}
+
 export interface Writer {
   addLabel(issue: number, label: string): Promise<Done>;
   /** A label that is not there is `unchanged`, not a failure. */
@@ -209,6 +228,13 @@ export interface Writer {
   pushRef(push: RefPush): Promise<Done>;
   /** A ref deleted, where the lease holds, and failed where it does not. */
   deleteRef(remove: RefDelete): Promise<Done>;
+  /**
+   * A squash merge of the pull request, guarded on `sha`. Each refusal GitHub
+   * answers with (409 the head moved, 405 not mergeable or squash not allowed,
+   * 422) fails the write with its answer kept, and none is retried: whether to
+   * try again is a decision, and a decision is the loop's.
+   */
+  mergePullRequest(merge: PullRequestMerge): Promise<Merged>;
 }
 
 export type WriteType = keyof Writer;
@@ -339,6 +365,21 @@ const TARGETS: { readonly [K in WriteType]: (...args: Parameters<Writer[K]>) => 
   createIssue: (create) => `${JSON.stringify(create.title)}${create.labels.length === 0 ? "" : ` ${create.labels.join(" ")}`}`,
   pushRef: (push) => `${push.ref} ${push.commit.slice(0, 7)} ${"tip" in push.lease ? `over ${push.lease.tip.slice(0, 7)}` : "new"}`,
   deleteRef: (remove) => `${remove.ref} at ${remove.lease.tip.slice(0, 7)}`,
+  // The guard in full, since it is the evidence of what was merged; the title, never a body.
+  mergePullRequest: (merge) => `#${merge.pr} at ${merge.sha} ${JSON.stringify(merge.title)}`,
+};
+
+/** A full commit SHA, as a merge's guard takes it. */
+const FULL_SHA = /^[0-9a-f]{40}$/;
+
+/**
+ * Why a write's arguments are refused before any call, where they are: our own
+ * code's bug, as a limit past is, so it reaches neither GitHub nor a fake.
+ */
+const MALFORMED: { readonly [K in WriteType]?: (...args: Parameters<Writer[K]>) => string | undefined } = {
+  // A short SHA is a lesson learned by hand: GitHub does not take it as the guard it reads like.
+  mergePullRequest: (merge) =>
+    FULL_SHA.test(merge.sha) ? undefined : `the head to guard the merge on is not a full 40-character SHA: ${JSON.stringify(merge.sha)}`,
 };
 
 export interface WriteLog {
@@ -384,6 +425,10 @@ export const createWriters = <T extends string>(options: {
     if (used > limit) {
       throw new LimitReached(record({ token, type, target, outcome: "refused", calls: [] }), limit);
     }
+    const malformed = (MALFORMED[type] as ((...a: Parameters<Writer[K]>) => string | undefined) | undefined)?.(...args);
+    if (malformed !== undefined) {
+      throw new WriteFailed(record({ token, type, target, outcome: "refused", calls: [malformed] }), new Error(malformed));
+    }
     const calls: string[] = [];
     let wrote = false;
     let thrown: unknown;
@@ -412,7 +457,7 @@ export const createWriters = <T extends string>(options: {
         error,
       );
     }
-    const result = done as Done | Posted | Opened | IssueCreated;
+    const result = done as Done | Posted | Opened | IssueCreated | Merged;
     record({ token, type, target, outcome: result.outcome, calls, ...("url" in result ? { url: result.url } : {}) });
     return done;
   };
@@ -434,6 +479,7 @@ export const createWriters = <T extends string>(options: {
       createIssue: bound("createIssue"),
       pushRef: bound("pushRef"),
       deleteRef: bound("deleteRef"),
+      mergePullRequest: bound("mergePullRequest"),
     };
   };
 

@@ -7,7 +7,7 @@
  */
 
 export interface RestRequest {
-  readonly method: "GET" | "POST" | "PATCH" | "DELETE";
+  readonly method: "GET" | "POST" | "PUT" | "PATCH" | "DELETE";
   /** From the API root, leading slash included: `/repos/o/r/issues/7/labels`. */
   readonly path: string;
   readonly body?: unknown;

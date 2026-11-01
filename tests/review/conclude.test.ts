@@ -6,7 +6,7 @@ import { parse } from "yaml";
 import { conclude, MINT_FAILED } from "../../review/conclude.js";
 import type { CommandIo, Token } from "../../shared/command-io.js";
 import type { COMMANDS } from "../../shared/contract.js";
-import { FIX_ROUND_STATUS, VERDICT_CONTEXT } from "../../shared/record.js";
+import { FIX_LABEL, FIX_ROUND_STATUS, MERGE_LABEL, UPDATE_BRANCH_LABEL, VERDICT_CONTEXT } from "../../shared/record.js";
 import { fakeGitHub, fakeReader, fakeWriters, type FakeGitHub } from "../engine/fakes.js";
 
 /**
@@ -437,6 +437,93 @@ describe("review:conclude ends a posted review", () => {
     await run(INPUTS(over));
 
     expect(writes().includes("loop markReadyForReview")).toBe(ready);
+  });
+});
+
+/**
+ * **The review's approval hands off to merge** (#589): the review waits for
+ * CI, so its approval is usually the last thing an armed pull request waits
+ * on. It re-adds `agent:merge` with the loop's token, after its own label is
+ * off, and the gate's own rules decide.
+ */
+describe("review:conclude hands an approval of an armed pull request to the merge gate", () => {
+  const HAND_BACK = [`loop removeLabel ${MERGE_LABEL}`, `loop addLabel ${MERGE_LABEL}`];
+  const armed = (...more: string[]): void => {
+    github.pullRequests.get(PR)!.labels.push(MERGE_LABEL, ...more);
+  };
+
+  beforeEach(() => publishedReview());
+
+  it("re-adds agent:merge with the loop's token, removing it first, after agent:review is off", async () => {
+    armed();
+
+    await run();
+
+    expect(writes()).toEqual(["workflow removeLabel agent:blocked", "loop markReadyForReview", "workflow removeLabel agent:review", ...HAND_BACK]);
+    expect(labels()).toEqual([MERGE_LABEL]);
+  });
+
+  it.each([
+    ["a review that recommends changes with no round", { VERDICT: "changes recommended", FIX_ROUND: "false" }],
+    ["one that needs a closer look", { VERDICT: "needs a closer look" }],
+    ["a PRD PR's slice round, approving", { BRANCH: "agent/prd-14-a-prd", ROUND: "slice" }],
+  ] as const)("re-adds nothing after %s", async (_, over) => {
+    armed();
+
+    await run(INPUTS(over));
+
+    expect(writes().filter((w) => w.includes(MERGE_LABEL))).toEqual([]);
+  });
+
+  it("re-adds nothing where it starts a fix round", async () => {
+    armed();
+    verdictPosted();
+
+    await run(INPUTS(FIX_ROUND));
+
+    expect(writes()).toContain("loop addLabel agent:fix");
+    expect(writes().filter((w) => w.includes(MERGE_LABEL))).toEqual([]);
+  });
+
+  it("hands off a PRD PR's final approval", async () => {
+    armed();
+
+    await run(INPUTS({ BRANCH: "agent/prd-14-a-prd", ROUND: "final" }));
+
+    expect(writes().slice(-2)).toEqual(HAND_BACK);
+  });
+
+  it("re-adds nothing on a pull request without agent:merge", async () => {
+    await run();
+
+    expect(writes().filter((w) => w.includes(MERGE_LABEL))).toEqual([]);
+  });
+
+  it.each([FIX_LABEL, UPDATE_BRANCH_LABEL])("re-adds nothing while %s is on", async (other) => {
+    armed(other);
+
+    await run();
+
+    expect(writes().filter((w) => w.includes(MERGE_LABEL))).toEqual([]);
+  });
+
+  it("re-adds nothing where the head moved, and asks for the review again instead", async () => {
+    armed();
+    github.pullRequests.get(PR)!.headSha = PUSHED;
+
+    await run();
+
+    expect(writes()).toContain("loop addLabel agent:review");
+    expect(writes().filter((w) => w.includes(MERGE_LABEL))).toEqual([]);
+  });
+
+  it("re-adds nothing with the workflow token alone, which would start nothing, and says so", async () => {
+    armed();
+
+    await run(INPUTS({ LOOP_TOKEN_SOURCE: "workflow" }));
+
+    expect(writes().filter((w) => w.includes(MERGE_LABEL))).toEqual([]);
+    expect(logged.some((line) => line.startsWith("::warning::") && line.includes(`carries ${MERGE_LABEL}`))).toBe(true);
   });
 });
 

@@ -22,9 +22,15 @@ an argument, and passing one is refused rather than ignored.
 `follow-ups:file` is a command rather than a runner, and runs **no model**: it files the
 out-of-scope findings a review recorded, once the pull request has closed, and on a merge posts
 the post-merge checklist, and needs no `CLAUDE_CODE_OAUTH_TOKEN` because nothing in it is an agent.
-Its caller is the one file in the loop that is optional — copy it and merged pull requests file
-their findings and get the post-merge checklist, leave it out and the findings stay in the review
-body, unfiled, and no checklist is posted.
+Its caller is one of the two in the loop that are optional: keep its job and merged pull requests
+file their findings and get the post-merge checklist; leave it out and the findings stay in the
+review body, unfiled, and no checklist is posted.
+
+`merge:gate`, `merge:publish` and `merge:conclude` are commands too, and run no model: they carry
+out the merge a maintainer decided on by adding `agent:merge` to a pull request, merging the head
+it was added at once that head is current with its base, green and approved
+([ADR 0009](./docs/adr/0009-agent-merge-executes-the-human-decision.md)). Their caller is the other
+optional one: keep its job and `agent:merge` merges; leave it out and the label does nothing.
 
 Two more subcommands are the **install path**, run by a human rather than by a workflow:
 

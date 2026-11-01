@@ -450,8 +450,9 @@ const requestReview = async (inputs: Inputs, io: Io, parent: number, pr: number,
 
 /**
  * **The finishing run's hand-over** (#504): every sub-issue is built and the
- * last slice's round approved, so the PRD PR leaves the chain. A human merges
- * it; the loop never merges it and never approves.
+ * last slice's round approved, so the PRD PR leaves the chain. A human decides
+ * its merge, and nothing here merges or approves it (ADR 0009: the loop carries
+ * out a merge only where the maintainer armed the pull request for it).
  *
  * One slice landed means its round was a review of the whole PRD PR already,
  * and of the same lines, so the PRD PR is marked ready and no second review

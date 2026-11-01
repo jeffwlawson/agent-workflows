@@ -42,7 +42,7 @@ into. This is the answer.
 | | What it says | Who writes it | Who reads it |
 | --- | --- | --- | --- |
 | **triage roles** (above) | *how well specified is this, and who should do it* | a human, `/triage`, or the `follow-ups` workflow on a stub it files (below) | humans, and the local skills |
-| **`agent:*`** | *workflow state — what is running, or refused, right now* | the workflows, and a human at the one entry point below | the loop's workflows |
+| **`agent:*`** | *workflow state — what is running, or refused, right now* | the workflows, and a human at the two hands below: `agent:implement` and `agent:merge` | the loop's workflows |
 
 They are **not merged, and neither is derived from the other.** A triage role is a judgement about
 an issue; an `agent:*` label is a position in a state machine. An issue can sit at
@@ -57,9 +57,9 @@ step.
 
 This is the only place the two vocabularies touch **in that direction** — a triage judgement
 authorising a workflow — and it stays a **human hand**. (They touch once in the other direction
-too, where a workflow writes a triage label onto an issue it just created; that is the section
-after next.) Not because automating it is hard, but because the two labels authorise different
-things:
+too, where a workflow writes a triage label onto an issue it just created; that is the last of
+the two sections after this one.) Not because automating it is hard, but because the two labels
+authorise different things:
 
 - `ready-for-agent` says *this issue is specified well enough that an agent could build it.*
   That includes acceptance criteria the loop can read: under a heading (or a bold label on its
@@ -90,6 +90,23 @@ Two mechanical reasons reinforce it:
 them — see [`ticket-shape.md`](./ticket-shape.md#labels), which is the instruction that makes that
 so. Exactly one issue per batch is ever promoted, the parent, by a person.
 
+## The second human hand: `agent:merge`, the merge decision
+
+`agent:implement` is where a person authorises the loop's first transition. **`agent:merge` is where
+a person authorises its last one**, and it is a human hand into the `agent:*` vocabulary in the same
+sense: no triage label and no loop rule ever adds it to arm a pull request
+([ADR 0009](../adr/0009-agent-merge-executes-the-human-decision.md)). It is not a join between the
+two vocabularies, since no triage role sits on a pull request, but it belongs beside the one above
+because it is the other place the loop waits for a person.
+
+Adding it is the maintainer's **merge decision**, for the head it was added at, normally after
+`/merge-check` reported that head merge-ready. The decision stays human and the execution moves:
+the loop merges that commit, or clean merges of the base onto it, once it is current, green and
+approved, and drops the label and asks the maintainer by name for a fresh check the moment the head
+gains anything else. The loop re-adds the label only to re-start its own gate, on a head that is
+already armed, and never to arm one: an automatic promoter here would be the loop deciding its own
+merges, which is exactly the decision this label keeps with a person.
+
 ## The other join: a filed stub arrives `needs-triage`
 
 The `follow-ups` workflow files the out-of-scope findings a review recorded, once the pull request
@@ -98,7 +115,7 @@ writing a triage label**, and it is the only place in the loop that happens.
 
 It is a join rather than a merge of the two vocabularies, and it goes in the harmless direction:
 the stub arrives as *work to judge*, never as work to do. Nothing files an `agent:*` label onto it,
-so the gate the section above describes is untouched — a stub becomes buildable exactly when a
+so the gate *The one join* above describes is untouched — a stub becomes buildable exactly when a
 person promotes it, like anything else on the tracker. Read the other way round, this is where the
 loop's own gate now sits: the review agent raises the finding and cannot file it, the filing
 workflow files it and cannot authorise it (`docs/parity.md` §10).

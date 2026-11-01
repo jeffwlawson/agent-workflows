@@ -47,7 +47,8 @@ const REQUIRED = { required: true } as const;
  *   and says so on it once (#596): a job that ends the worker's process keeps
  *   its label, and every restart's scan would dispatch it again. At least `1`:
  *   `0` is refused at start, since it would not turn the scan off, only make
- *   it comment on every labelled item it finds.
+ *   it comment on every labelled item it finds. Not applied to `agent:merge`
+ *   (#591), a standing decision whose gate ends with the label on.
  */
 export const DISPATCHER = {
   GITHUB_APP_ID: REQUIRED,

@@ -24,6 +24,7 @@ import {
   heldOf,
   IMPLEMENT_PRD_OTHER_MINUTES,
   JOB_KINDS,
+  MERGE_MINUTES,
   parseJob,
   sign,
   SIGNATURE_HEADER,
@@ -31,12 +32,13 @@ import {
   verifySignature,
   type Job,
 } from "../../service/job.js";
-import { heldDoor, jobDoor, lanes } from "../../service/worker.js";
+import { admit, heldDoor, jobDoor, lanes } from "../../service/worker.js";
 import { STUB_LABELS } from "../../shared/follow-up-plan.js";
 import {
   FIX_LABEL,
   FOLLOW_UPS_LABEL,
   IMPLEMENT_LABEL,
+  MERGE_LABEL,
   ORCHESTRATOR_VARIABLE,
   REVIEW_LABEL,
   SERVICE_ORCHESTRATOR,
@@ -124,6 +126,8 @@ const setup = (
   /** Each comment posted, and whether posting one fails, as a GitHub outage does. */
   const comments: { repo: string; number: number; body: string; token: string }[] = [];
   const commenting = { fails: false };
+  /** Each commit whose pull requests were read, for a check suite's or a status's delivery. */
+  const pullsRead: string[] = [];
   let clock = START;
   let ids = 0;
   let starts = 0;
@@ -138,7 +142,16 @@ const setup = (
       }),
     () => {},
   );
-  const jobs = jobDoor({ secret: WORKER_SECRET, version: "9.9.9", accept: queue.add });
+  /** Each line the worker's door logged for a merge job it coalesced (#591). */
+  const coalesced: string[] = [];
+  const jobs = jobDoor({
+    secret: WORKER_SECRET,
+    version: "9.9.9",
+    accept: (job) => {
+      const line = admit(queue, job);
+      if (line !== undefined) coalesced.push(line);
+    },
+  });
   const held = heldDoor({ secret: WORKER_SECRET, held: queue.held, drop: queue.drop, now: () => new Date(clock.getTime() + (options.workerAhead ?? 0) * MINUTE_MS) });
   const github: AppGitHub = {
     app: async () => ({ slug: "loop-app", owner: APP_OWNER, permissions: {}, events: [] }),
@@ -176,6 +189,11 @@ const setup = (
       return repo === REPO ? repository.items.find((item) => item.number === number)?.labellers[label] : undefined;
     },
     defaultBranch: async () => "main",
+    pullsAt: async (repo, sha) => {
+      pullsRead.push(sha);
+      if (repo !== REPO) return [];
+      return repository.items.flatMap(({ labellers: _, ...item }) => (item.type === "pull_request" && item.headSha === sha ? [(({ type: __, ...pull }) => pull)(item)] : []));
+    },
     comment: async (repo, number, body, token) => {
       if (commenting.fails) throw new Error("GitHub answered 502");
       comments.push({ repo, number, body, token });
@@ -218,6 +236,7 @@ const setup = (
     },
     queue,
     ran,
+    coalesced,
     /** Ends the job whose work is running, and lets the queue move on. */
     finish: async () => {
       finishes.shift()?.();
@@ -235,6 +254,7 @@ const setup = (
     looked,
     comments,
     commenting,
+    pullsRead,
     advance: (minutes: number) => {
       clock = new Date(clock.getTime() + minutes * MINUTE_MS);
     },
@@ -303,7 +323,7 @@ describe("the webhook door", () => {
 
   it.each<[string, (s: ReturnType<typeof setup>) => unknown, RegExp]>([
     ["a label the service does not answer", () => labelled({ label: "agent:blocked" }), /`agent:blocked` is not a label this release's service answers/],
-    ["an event that is neither a pull request's nor an issue's", () => labelled(), /neither a pull request's nor an issue's event/],
+    ["an event the service does not answer", () => labelled(), /`push` is not an event this release's service answers/],
     [
       "a repository the App is not installed on",
       (s) => {
@@ -437,7 +457,7 @@ describe("the labels the dispatcher routes", () => {
 
   it("answers agent:implement on an issue's event, with both implement and implement-prd, and every other label on a pull request's", () => {
     expect(LABEL_KINDS.issues).toEqual({ [IMPLEMENT_LABEL]: ["implement", "implement-prd"] });
-    expect(Object.keys(LABEL_KINDS.pull_request)).toEqual([REVIEW_LABEL, FIX_LABEL, UPDATE_BRANCH_LABEL, FOLLOW_UPS_LABEL]);
+    expect(Object.keys(LABEL_KINDS.pull_request)).toEqual([REVIEW_LABEL, FIX_LABEL, UPDATE_BRANCH_LABEL, FOLLOW_UPS_LABEL, MERGE_LABEL]);
     expect(SERVICE_LABELS).toContain(IMPLEMENT_LABEL);
   });
 
@@ -1079,10 +1099,10 @@ describe("the follow-ups route", () => {
     }
   });
 
-  it("ignores every pull request action but a label and a close", async () => {
+  it("ignores every pull request action but a label, a push and a close", async () => {
     const result = await deliver(setup(), { ...closed(), action: "reopened" });
 
-    expect(result.outcome).toBe("ignored: a pull request `reopened`, not labelled or closed");
+    expect(result.outcome).toBe("ignored: a pull request `reopened`, not labelled, pushed to or closed");
   });
 
   it("starts nothing for the labels a stub is filed with, which no route answers", async () => {
@@ -1101,12 +1121,12 @@ describe("the follow-ups route", () => {
 describe("the App's permissions and events, checked at start (#560)", () => {
   const FULL = {
     permissions: { metadata: "read", actions_variables: "read", contents: "write", pull_requests: "write", issues: "write", checks: "read", statuses: "write", workflows: "write" },
-    events: ["issues", "pull_request"],
+    events: ["issues", "pull_request", "check_suite", "status"],
   };
 
   it("needs each permission at the highest access a token it mints asks for", () => {
     expect(SERVICE_APP_PERMISSIONS).toEqual(FULL.permissions);
-    expect(SERVICE_APP_EVENTS).toEqual(["pull_request", "issues"]);
+    expect(SERVICE_APP_EVENTS).toEqual(["pull_request", "issues", "check_suite", "status"]);
   });
 
   it("finds no gap in a record that meets the whole set", () => {
@@ -1137,9 +1157,22 @@ describe("the App's permissions and events, checked at start (#560)", () => {
     ]);
   });
 
+  // #591: the dispatcher's own reads list a commit's pull requests, for a
+  // check suite's or a status's delivery.
+  it("names Pull requests among the dispatcher's reads where it is not granted", () => {
+    const { pull_requests: _, ...rest } = FULL.permissions;
+
+    expect(READER_PERMISSIONS).toEqual({ metadata: "read", actions_variables: "read", pull_requests: "read" });
+    expect(appGaps({ ...FULL, permissions: rest })).toEqual([
+      "the App's `pull_requests` permission needs write, not granted: the dispatcher's reads, the scan's reads, the scan's comment, `read` tokens, `write` tokens, `resolve` tokens, `push` tokens will be refused, 422",
+    ]);
+  });
+
   it("names an event the App is not subscribed to", () => {
     expect(appGaps({ ...FULL, events: ["pull_request"] })).toEqual([
       "the App is not subscribed to the `issues` event: no delivery of it reaches the dispatcher",
+      "the App is not subscribed to the `check_suite` event: no delivery of it reaches the dispatcher",
+      "the App is not subscribed to the `status` event: no delivery of it reaches the dispatcher",
     ]);
   });
 
@@ -1154,6 +1187,7 @@ const pullItem = (labels: string[], change: Partial<Extract<Labelled, { type: "p
   number: 7,
   state: "open",
   merged: false,
+  draft: false,
   branch: "agent/issue-7-a-thing",
   headSha: HEAD,
   headRepo: REPO as string | undefined,
@@ -1426,7 +1460,7 @@ describe("the scan after a restart", () => {
 
     expect(s.posted).toEqual([]);
     expect(s.installations.labels).not.toContain(FOLLOW_UPS_LABEL);
-    expect([...s.installations.labels].sort()).toEqual([REVIEW_LABEL, FIX_LABEL, UPDATE_BRANCH_LABEL, IMPLEMENT_LABEL].sort());
+    expect([...s.installations.labels].sort()).toEqual([REVIEW_LABEL, FIX_LABEL, UPDATE_BRANCH_LABEL, MERGE_LABEL, IMPLEMENT_LABEL].sort());
   });
 
   it("dispatches nothing for an item with no trigger label on it, a run's ending having taken it off or left agent:blocked", async () => {
@@ -1466,7 +1500,7 @@ describe("the scan after a restart", () => {
 
     await s.dispatcher.scan();
 
-    expect(s.lines.filter((line) => line.startsWith("scan: failed on owner/repo: its "))).toHaveLength(4);
+    expect(s.lines.filter((line) => line.startsWith("scan: failed on owner/repo: its "))).toHaveLength(5);
     expect(s.lines.at(-1)).toBe("scan: done");
   });
 
@@ -1832,5 +1866,314 @@ describe("the scan's limit", () => {
 
     expect(s.posted).toHaveLength(3);
     expect(s.comments).toHaveLength(1);
+  });
+});
+
+/** A `pull_request` `synchronize` delivery, a push to the pull request, carrying `labels`. */
+const pushedTo = (change: { labels?: readonly string[]; state?: string; headRepo?: string; sender?: string; draft?: boolean; number?: number } = {}) => ({
+  action: "synchronize",
+  sender: { login: change.sender ?? "pusher" },
+  repository: { full_name: REPO },
+  pull_request: {
+    number: change.number ?? 7,
+    state: change.state ?? "open",
+    merged: false,
+    draft: change.draft ?? false,
+    labels: (change.labels ?? [MERGE_LABEL]).map((name) => ({ name })),
+    head: { ref: "agent/issue-7-a-thing", sha: HEAD, repo: { full_name: change.headRepo ?? REPO } },
+    base: { ref: "main" },
+  },
+});
+
+/** A `check_suite` delivery on `sha`, `completed` unless said. */
+const checkSuite = (change: { action?: string; sha?: string } = {}) => ({
+  action: change.action ?? "completed",
+  sender: { login: "ci-bot[bot]" },
+  repository: { full_name: REPO },
+  check_suite: { head_sha: change.sha ?? HEAD, conclusion: "success" },
+});
+
+/** A `status` delivery on `sha`, `success` from a CI's context unless said. */
+const statusOn = (change: { context?: string; state?: string; sha?: string } = {}) => ({
+  sender: { login: "ci-bot[bot]" },
+  repository: { full_name: REPO },
+  sha: change.sha ?? HEAD,
+  context: change.context ?? "ci/build",
+  state: change.state ?? "success",
+});
+
+/** An armed pull request, as GitHub lists it: open, carrying `agent:merge`, added by the maintainer. */
+const armed = (change: Partial<Extract<Labelled, { type: "pull_request" }>> = {}, labels: string[] = [MERGE_LABEL]) => pullItem(labels, change);
+
+/**
+ * The service's `merge` job kind (#591): `agent:merge` itself, and the events
+ * that can change the gate's answer on an armed head, a push, a check suite's
+ * completion and a final status, each start a merge job.
+ */
+describe("the merge route", () => {
+  it("dispatches agent:merge added by someone who can write as a merge job that may arm, carrying what the gate is told", async () => {
+    const s = setup();
+    const job = await dispatched(s, { ...labelled({ label: MERGE_LABEL }), pull_request: { ...labelled().pull_request, draft: false } });
+
+    expect(job).toMatchObject({
+      workflow: "merge",
+      repo: REPO,
+      pr: 7,
+      branch: "agent/issue-7-a-thing",
+      headSha: HEAD,
+      baseRef: "main",
+      state: "open",
+      merged: false,
+      draft: false,
+      action: "labeled",
+      sender: "maintainer",
+      appLogin: "loop-app[bot]",
+      deadline: new Date(START.getTime() + (MERGE_MINUTES + MARGIN) * MINUTE_MS).toISOString(),
+    });
+    expect(MERGE_MINUTES).toBe(20);
+    expect(SERVICE_LABELS).toContain(MERGE_LABEL);
+  });
+
+  it("dispatches the App's own agent:merge without a look-up, and refuses a sender who cannot write", async () => {
+    const byApp = setup();
+    expect(await dispatched(byApp, labelled({ label: MERGE_LABEL, sender: "loop-app[bot]" }))).toMatchObject({ workflow: "merge", action: "labeled", sender: "loop-app[bot]" });
+    expect(byApp.looked).toEqual([]);
+
+    const s = setup();
+    const result = await deliver(s, labelled({ label: MERGE_LABEL, sender: "triager" }));
+    expect(result.outcome).toBe("refused on owner/repo#7: triager cannot write to owner/repo");
+    expect(s.posted).toEqual([]);
+  });
+
+  it("carries a draft as a draft, for the gate to refuse", async () => {
+    const job = await dispatched(setup(), { ...labelled({ label: MERGE_LABEL }), pull_request: { ...labelled().pull_request, draft: true } });
+
+    expect(job).toMatchObject({ workflow: "merge", draft: true });
+  });
+
+  it("dispatches a push to a pull request carrying agent:merge as a merge job that arms nothing, with no author gate", async () => {
+    const s = setup();
+    const job = await dispatched(s, pushedTo({ sender: "stranger" }));
+
+    expect(job).toMatchObject({ workflow: "merge", pr: 7, headSha: HEAD, action: "synchronize", sender: "stranger", draft: false });
+    expect(s.looked).toEqual([]);
+    expect(s.lines).toEqual([]);
+  });
+
+  it.each<[string, () => unknown, string]>([
+    ["not carrying agent:merge", () => pushedTo({ labels: [REVIEW_LABEL] }), "ignored on owner/repo#7: a push to a pull request not carrying `agent:merge`"],
+    ["that is closed", () => pushedTo({ state: "closed" }), "refused on owner/repo#7: the pull request is closed, not open"],
+    ["from a fork", () => pushedTo({ headRepo: "someone/fork" }), "refused on owner/repo#7: the head is on a fork"],
+  ])("starts nothing for a push to a pull request %s", async (_name, payload, outcome) => {
+    const s = setup();
+    const result = await deliver(s, payload());
+
+    expect(result.outcome).toBe(outcome);
+    expect(s.posted).toEqual([]);
+  });
+
+  it("dispatches a check suite's completion on an armed head as a merge job that arms nothing, reading the commit's pull requests", async () => {
+    const s = setup();
+    s.repository.items = [armed()];
+    const result = await deliver(s, checkSuite(), undefined, "check_suite");
+
+    expect(result.outcome).toMatch(/^dispatched owner\/repo#7 at a{40} on a check suite's completion as job job-1/);
+    expect(jobsPosted(s)).toEqual([
+      expect.objectContaining({ workflow: "merge", pr: 7, headSha: HEAD, baseRef: "main", draft: false, action: "synchronize", sender: "ci-bot[bot]" }),
+    ]);
+    expect(s.pullsRead).toEqual([HEAD]);
+  });
+
+  it.each(["success", "failure", "error"])("dispatches a final %s status from a context not the loop's own on an armed head", async (state) => {
+    const s = setup();
+    s.repository.items = [armed()];
+    const result = await deliver(s, statusOn({ state }), undefined, "status");
+
+    expect(result.outcome).toMatch(/^dispatched owner\/repo#7 at a{40} on a status as job job-1/);
+    expect(jobsPosted(s).map((job) => job.workflow)).toEqual(["merge"]);
+  });
+
+  it.each<[string, string, () => unknown]>([
+    ["a status for agent-merge", "status", () => statusOn({ context: "agent-merge" })],
+    ["a status for agent-review", "status", () => statusOn({ context: "agent-review", state: "failure" })],
+    ["a status for agent-fix-round", "status", () => statusOn({ context: "agent-fix-round" })],
+    ["a pending status", "status", () => statusOn({ state: "pending" })],
+    ["a check suite requested", "check_suite", () => checkSuite({ action: "requested" })],
+    ["a check suite rerequested", "check_suite", () => checkSuite({ action: "rerequested" })],
+  ])("starts nothing for %s on an armed head, and reads nothing to decide so", async (_name, event, payload) => {
+    const s = setup();
+    s.repository.items = [armed()];
+    const result = await deliver(s, payload(), undefined, event);
+
+    expect(result.outcome).toMatch(/^ignored: /);
+    expect(s.posted).toEqual([]);
+    expect(s.pullsRead).toEqual([]);
+  });
+
+  it.each<[string, () => (Labelled & { labels: string[]; labellers: Record<string, string> })[], RegExp]>([
+    ["a pull request without agent:merge", () => [armed({}, [REVIEW_LABEL])], /^ignored on owner\/repo#7: a check suite's completion on a pull request not carrying `agent:merge`$/],
+    ["a closed pull request", () => [armed({ state: "closed" })], /^ignored on owner\/repo@a{40}: a check suite's completion on a commit that is no open pull request's head$/],
+    ["a commit no open pull request has as its head", () => [armed({ headSha: "b".repeat(40) })], /^ignored on owner\/repo@a{40}: a check suite's completion on a commit that is no open pull request's head$/],
+    ["a pull request from a fork", () => [armed({ headRepo: "someone/fork" })], /^refused on owner\/repo#7: the head is on a fork$/],
+  ])("starts nothing for a completed check suite on %s", async (_name, items, outcome) => {
+    const s = setup();
+    s.repository.items = items();
+    const result = await deliver(s, checkSuite(), undefined, "check_suite");
+
+    expect(result.outcome).toMatch(outcome);
+    expect(s.posted).toEqual([]);
+  });
+
+  it("starts nothing on a repository that does not opt in, and reads none of its pull requests", async () => {
+    const s = setup();
+    s.repository.items = [armed()];
+    delete s.repository.variables[ORCHESTRATOR_VARIABLE];
+    const result = await deliver(s, statusOn(), undefined, "status");
+
+    expect(result.outcome).toMatch(/^refused on owner\/repo@a{40}: AGENT_ORCHESTRATOR is unset/);
+    expect(s.pullsRead).toEqual([]);
+  });
+
+  it("dispatches a merge job for each armed pull request whose head the commit is, and nothing for the others", async () => {
+    const s = setup();
+    s.repository.items = [armed(), armed({ number: 8 }, [REVIEW_LABEL]), armed({ number: 9 })];
+    await deliver(s, statusOn(), undefined, "status");
+
+    expect(jobsPosted(s).map((job) => [job.workflow, "pr" in job ? job.pr : 0])).toEqual([
+      ["merge", 7],
+      ["merge", 9],
+    ]);
+  });
+});
+
+/**
+ * Coalescing (#591): per pull request, at most one merge job runs and at most
+ * one waits, so merge jobs cannot pile up in the worker's one serial queue.
+ * The worker's door holds the rule; driven here over the real queue and doors.
+ */
+describe("merge jobs coalesced in the worker's queue", () => {
+  const tick = () => new Promise((resolve) => setImmediate(resolve));
+  /** Five merge deliveries for #7, one of each trigger and the App's own label. */
+  const five = async (s: ReturnType<typeof setup>) => {
+    await deliver(s, pushedTo());
+    await deliver(s, checkSuite(), undefined, "check_suite");
+    await deliver(s, statusOn(), undefined, "status");
+    await deliver(s, statusOn({ context: "ci/lint", state: "failure" }), undefined, "status");
+    await deliver(s, labelled({ label: MERGE_LABEL, sender: "loop-app[bot]" }));
+  };
+  const held = (s: ReturnType<typeof setup>) => s.queue.held().map((job) => `${job.workflow} ${"pr" in job ? job.pr : ""}`);
+
+  it("leaves one merge job queued for five deliveries while it waits, and absorbs each with a line naming it", async () => {
+    const s = setup({ queue: true });
+    s.repository.items = [armed()];
+    // Something else runs first, so the merge job waits behind it.
+    await deliver(s, labelled({ label: REVIEW_LABEL }));
+    await deliver(s, pushedTo());
+    await tick();
+
+    await five(s);
+
+    expect(s.posted).toHaveLength(7);
+    expect(held(s)).toEqual(["review 7", "merge 7"]);
+    expect(s.coalesced).toHaveLength(5);
+    expect(s.coalesced[0]).toBe("job job-3: absorbed by merge job job-2, queued for owner/repo#7 and not yet started, which reads the record fresh when it starts");
+  });
+
+  it("leaves one merge job running and one queued for five deliveries while one runs", async () => {
+    const s = setup({ queue: true });
+    s.repository.items = [armed()];
+    await deliver(s, pushedTo());
+    await tick();
+    expect(s.ran.map((job) => job.id)).toEqual(["job-1"]);
+
+    await five(s);
+
+    expect(held(s)).toEqual(["merge 7", "merge 7"]);
+    expect(s.queue.running()?.id).toBe("job-1");
+    expect(s.queue.held().map((job) => job.id)).toEqual(["job-1", "job-2"]);
+    expect(s.coalesced).toHaveLength(4);
+
+    // The successor runs once the first has ended, and reads the record then.
+    await s.finish();
+    expect(s.ran.map((job) => job.id)).toEqual(["job-1", "job-2"]);
+  });
+
+  it("does not absorb a delivery for another pull request, nor another kind's job for the same one", async () => {
+    const s = setup({ queue: true });
+    s.repository.items = [armed(), armed({ number: 8 })];
+    await deliver(s, labelled({ label: REVIEW_LABEL }));
+    await deliver(s, pushedTo());
+    await deliver(s, pushedTo({ number: 8 }));
+    await deliver(s, labelled({ label: FIX_LABEL }));
+    await tick();
+
+    expect(held(s)).toEqual(["review 7", "merge 7", "merge 8", "fix 7"]);
+    expect(s.coalesced).toEqual([]);
+  });
+
+  it("lets a person's agent:merge replace the merge job queued, since it is the one delivery that arms", async () => {
+    const s = setup({ queue: true });
+    await deliver(s, labelled({ label: REVIEW_LABEL }));
+    await deliver(s, pushedTo());
+    await deliver(s, labelled({ label: MERGE_LABEL }));
+    await deliver(s, pushedTo());
+    await tick();
+
+    expect(s.queue.held().map((job) => job.id)).toEqual(["job-1", "job-3"]);
+    expect(s.queue.held()[1]).toMatchObject({ workflow: "merge", action: "labeled", sender: "maintainer" });
+    expect(s.coalesced).toEqual([
+      "job job-3: replaced merge job job-2, queued for owner/repo#7 and not yet started, since it is a person's `agent:merge` and arms the head its delivery named",
+      "job job-4: absorbed by merge job job-3, queued for owner/repo#7 and not yet started, which reads the record fresh when it starts",
+    ]);
+  });
+});
+
+/**
+ * The scan and `agent:merge` (#591): a standing authorisation, not a run's
+ * label, so the scan dispatches a gate for an armed pull request nothing
+ * holds one for, however many restarts there are, and never counts it.
+ */
+describe("the scan and agent:merge", () => {
+  it("dispatches a merge job that arms nothing for an armed pull request nothing holds one for, the labeller as its sender", async () => {
+    const s = setup();
+    s.repository.items = [armed()];
+
+    await s.dispatcher.scan();
+
+    expect(jobsPosted(s)).toEqual([expect.objectContaining({ workflow: "merge", pr: 7, headSha: HEAD, action: "synchronize", sender: "maintainer", draft: false })]);
+  });
+
+  it("skips an armed pull request whose merge job the worker holds", async () => {
+    const s = setup();
+    s.repository.items = [armed()];
+    await deliver(s, pushedTo());
+
+    await s.dispatcher.scan();
+
+    expect(s.posted).toHaveLength(1);
+    expect(s.lines).toContain("scan: skipped on owner/repo#7: the worker holds a job for it");
+  });
+
+  it("still dispatches it after more restarts than SCAN_DISPATCH_LIMIT, and never says it was left for a person", async () => {
+    const s = setup({ scanLimit: 2 });
+    s.repository.items = [armed(), pullItem([REVIEW_LABEL], { number: 8 })];
+
+    await s.dispatcher.scan();
+    for (let restart = 0; restart < 4; restart += 1) await crash(s);
+
+    expect(jobsPosted(s).filter((job) => job.workflow === "merge")).toHaveLength(5);
+    expect(jobsPosted(s).filter((job) => job.workflow === "review")).toHaveLength(2);
+    expect(s.comments.map(({ number }) => number)).toEqual([8]);
+    expect(s.lines.filter((line) => line.includes("SCAN_DISPATCH_LIMIT") && line.includes(MERGE_LABEL))).toEqual([]);
+  });
+
+  it("refuses an armed pull request whose agent:merge was added last by someone who cannot write", async () => {
+    const s = setup();
+    s.repository.items = [pullItem([MERGE_LABEL], {}, "triager")];
+
+    await s.dispatcher.scan();
+
+    expect(s.posted).toEqual([]);
+    expect(s.lines).toContain("scan: refused on owner/repo#7: triager cannot write to owner/repo, and added `agent:merge` last");
   });
 });

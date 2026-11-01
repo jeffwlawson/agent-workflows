@@ -28,6 +28,13 @@ Ready for review, resolving review threads and auto-merge have no REST route; th
 gh api -X PUT repos/<owner>/<repo>/pulls/<n>/merge -f merge_method=squash -f sha=<reviewed-head>
 ```
 
+**Arm** the loop instead, where the maintainer says so: `agent:merge` is their merge decision for the head it lands on, so check the head is still the one you reviewed, then add it. Where the head has moved, add nothing and say so; the review is of a commit the PR has left.
+
+```bash
+test "$(gh api repos/<owner>/<repo>/pulls/<n> --jq .head.sha)" = <reviewed-head> \
+  && gh api -X POST repos/<owner>/<repo>/issues/<n>/labels -f 'labels[]=agent:merge'
+```
+
 **Blocking edges** take the issue's database id, not its number: the trap and the commands are in the repo's `docs/agents/issue-tracker.md`.
 
 ### When the proxy refuses writes outside the session's own branch

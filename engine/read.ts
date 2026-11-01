@@ -25,6 +25,8 @@ export interface CommitStatus {
   readonly description: string;
   /** The login that set it. */
   readonly creator: string;
+  /** When it was set, as GitHub gives it, where the answer gave a time. */
+  readonly createdAt?: string;
 }
 
 /** A review on a pull request, as far as a read-back of one needs it. */
@@ -162,6 +164,35 @@ export interface PullRequestLink {
   readonly url: string;
 }
 
+/**
+ * A check on a commit, as GitHub's status rollup gives it, in GraphQL's
+ * spelling (`COMPLETED`, `SUCCESS`, ...): a check run with its status and its
+ * conclusion, `null` until it completes, or a status context with its state.
+ * `required` is GitHub's own `isRequired` for the pull request asked about,
+ * which reads rulesets and branch protection alike, with no admin read.
+ */
+export type CommitCheck =
+  | { readonly kind: "checkRun"; readonly name: string; readonly status: string; readonly conclusion: string | null; readonly required: boolean }
+  | { readonly kind: "status"; readonly context: string; readonly state: string; readonly required: boolean };
+
+/** Whether a head has its base's tip in its history, or an answer that did not say. */
+export type BaseCurrency = "behind" | "current" | "unknown";
+
+/**
+ * A login's permission on the repository, GitHub's role names, or `unknown`
+ * where the answer named none of them: never read as `none`.
+ */
+export type RepositoryPermission = "admin" | "maintain" | "write" | "triage" | "read" | "none" | "unknown";
+
+/** An open pull request carrying a label, as far as deciding what to ask of it needs. */
+export interface LabelledPullRequest {
+  readonly number: number;
+  readonly headSha: string;
+  readonly labels: readonly string[];
+  /** Whether it is a draft, which nothing merges. */
+  readonly draft: boolean;
+}
+
 export interface GitHubReader {
   pullRequest(number: number): Promise<PullRequest>;
   /**
@@ -261,6 +292,30 @@ export interface GitHubReader {
    * `diverged`.
    */
   compare(base: string, head: string): Promise<string>;
+  /**
+   * Every check run and status context on `sha`, each with whether it is
+   * required for pull request `pullRequest`: every page. A commit with no
+   * check at all has none; an answer that cannot be read throws, so a failed
+   * read never looks like a commit with nothing left to wait for.
+   */
+  commitChecks(sha: string, pullRequest: number): Promise<readonly CommitCheck[]>;
+  /**
+   * Whether `base`'s tip is in `head`'s history, by the compare API's
+   * `behind_by`: `current` where none of `base`'s commits is missing from
+   * `head`, `behind` where any is, `unknown` where the answer gave no count.
+   */
+  behindBase(base: string, head: string): Promise<BaseCurrency>;
+  /**
+   * `login`'s permission on the repository. Built over the loop's token for
+   * the labeller check: whether the workflow token may ask is #77's open
+   * question. A refused call throws, as every read here does.
+   */
+  permission(login: string): Promise<RepositoryPermission>;
+  /**
+   * The open pull requests into `base` carrying `label`, newest first, every
+   * page. The label is the caller's: the engine spells no record string.
+   */
+  openPullRequestsLabelled(base: string, label: string): Promise<readonly LabelledPullRequest[]>;
   /** Every check run on `sha`, the latest of each, as the endpoint documents. */
   checkRuns(sha: string): Promise<readonly CheckRun[]>;
   /** The latest status of each context on `sha`. */
@@ -303,6 +358,7 @@ interface RawStatus {
   readonly target_url: string | null;
   readonly description: string | null;
   readonly creator: { readonly login: string } | null;
+  readonly created_at?: string;
 }
 
 interface RawReview {
@@ -440,6 +496,43 @@ const ISSUE_SHAPE = `query($owner:String!,$name:String!,$number:Int!){
     parent{number} subIssues(first:1){totalCount} labels(first:100){nodes{name}}
   }}
 }`;
+
+/**
+ * GraphQL rather than REST, for `isRequired`: REST says which checks a branch
+ * requires only to an admin, and only for branch protection, not rulesets.
+ */
+const COMMIT_CHECKS = `query($owner:String!,$name:String!,$sha:GitObjectID!,$number:Int!,$after:String){
+  repository(owner:$owner,name:$name){object(oid:$sha){... on Commit{
+    statusCheckRollup{contexts(first:100,after:$after){
+      nodes{__typename
+        ... on CheckRun{name status conclusion isRequired(pullRequestNumber:$number)}
+        ... on StatusContext{context state isRequired(pullRequestNumber:$number)}
+      }
+      pageInfo{hasNextPage endCursor}
+    }}
+  }}}
+}`;
+
+/** One rollup entry read as a check, or a throw where it is neither kind GitHub documents. */
+const toCommitCheck = (node: unknown, sha: string): CommitCheck => {
+  const unreadable = (): never => {
+    throw new Error(`A check on ${sha} came back in a shape that cannot be read, so whether it passed cannot be established.`);
+  };
+  if (typeof node !== "object" || node === null) return unreadable();
+  const raw = node as Readonly<Record<string, unknown>>;
+  const required = raw["isRequired"];
+  if (typeof required !== "boolean") return unreadable();
+  const { __typename: kind, name, status, conclusion, context, state } = raw;
+  if (kind === "CheckRun" && typeof name === "string" && typeof status === "string" && (conclusion === null || typeof conclusion === "string")) {
+    return { kind: "checkRun", name, status, conclusion, required };
+  }
+  if (kind === "StatusContext" && typeof context === "string" && typeof state === "string") {
+    return { kind: "status", context, state, required };
+  }
+  return unreadable();
+};
+
+const PERMISSIONS: ReadonlySet<string> = new Set(["admin", "maintain", "write", "triage", "read", "none"]);
 
 /** An issue or a comment as REST gives it, as far as `AuthoredText` reads it. */
 interface RawAuthored {
@@ -589,6 +682,7 @@ export const githubReader = (repo: string, transport: Transport): GitHubReader =
             targetUrl: s.target_url,
             description: s.description ?? "",
             creator: s.creator?.login ?? "",
+            ...(typeof s.created_at === "string" ? { createdAt: s.created_at } : {}),
           })),
         );
         if (raw.length < 100) return statuses;
@@ -711,6 +805,73 @@ export const githubReader = (repo: string, transport: Transport): GitHubReader =
       })) as { readonly status: string };
       return raw.status;
     },
+    commitChecks: async (sha, pullRequest) => {
+      const checks: CommitCheck[] = [];
+      for (let after: string | null = null; ; ) {
+        const data = (await transport.graphql(COMMIT_CHECKS, { owner, name, sha, number: pullRequest, after })) as
+          | { readonly repository?: { readonly object?: Readonly<Record<string, unknown>> | null } | null }
+          | undefined;
+        const commit = data?.repository?.object;
+        if (commit === undefined || commit === null || !("statusCheckRollup" in commit)) {
+          throw new Error(`The checks on ${sha} could not be read: the answer held no commit.`);
+        }
+        // `null` is GitHub's answer for a commit with no check and no status at all.
+        const rollup = commit["statusCheckRollup"] as { readonly contexts?: unknown } | null;
+        if (rollup === null) return checks;
+        const contexts = rollup.contexts as
+          | { readonly nodes?: unknown; readonly pageInfo?: { readonly hasNextPage?: unknown; readonly endCursor?: unknown } }
+          | undefined;
+        if (!Array.isArray(contexts?.nodes) || typeof contexts.pageInfo?.hasNextPage !== "boolean") {
+          throw new Error(`The checks on ${sha} could not be read: the answer held no list of them.`);
+        }
+        checks.push(...contexts.nodes.map((node: unknown) => toCommitCheck(node, sha)));
+        const cursor = contexts.pageInfo.endCursor;
+        if (!contexts.pageInfo.hasNextPage) return checks;
+        if (typeof cursor !== "string") throw new Error(`The checks on ${sha} could not be read past their first ${checks.length}.`);
+        after = cursor;
+      }
+    },
+    // The compare API rather than the pull request's `mergeable_state`: that
+    // is computed after the read, answering `unknown` until it is, and says
+    // `behind` only where the base requires a branch up to date, folding the
+    // rest into `blocked` or `unstable` beside the checks. `behind_by` is the
+    // one fact asked for, and counts on any base.
+    behindBase: async (base, head) => {
+      const raw = (await transport.rest({
+        method: "GET",
+        path: `/repos/${repo}/compare/${encodeURIComponent(base)}...${encodeURIComponent(head)}?per_page=1`,
+      })) as { readonly behind_by?: unknown } | null | undefined;
+      const behind = raw?.behind_by;
+      if (typeof behind !== "number" || !Number.isInteger(behind) || behind < 0) return "unknown";
+      return behind === 0 ? "current" : "behind";
+    },
+    permission: async (login) => {
+      const raw = (await transport.rest({ method: "GET", path: `/repos/${repo}/collaborators/${encodeURIComponent(login)}/permission` })) as
+        | { readonly permission?: unknown; readonly role_name?: unknown }
+        | null
+        | undefined;
+      // `role_name` tells maintain and triage apart, which the older
+      // `permission` folds into write and read; a custom role has a name of
+      // its own, and is read by the base role `permission` gives.
+      for (const named of [raw?.role_name, raw?.permission]) {
+        if (typeof named === "string" && PERMISSIONS.has(named)) return named as RepositoryPermission;
+      }
+      return "unknown";
+    },
+    openPullRequestsLabelled: async (base, label) =>
+      (
+        await paged(`/repos/${repo}/pulls?state=open&base=${encodeURIComponent(base)}`, (page) => {
+          if (!Array.isArray(page)) throw new Error(`The open pull requests into ${base} could not be read: the answer was not a list.`);
+          return page as readonly { readonly number: number; readonly draft?: unknown; readonly head?: { readonly sha?: string }; readonly labels?: readonly { readonly name: string }[] }[];
+        })
+      )
+        .map((pr) => {
+          if (typeof pr.head?.sha !== "string" || !Array.isArray(pr.labels) || typeof pr.draft !== "boolean") {
+            throw new Error(`Open pull request #${pr.number} into ${base} came back without its head, its labels or whether it is a draft.`);
+          }
+          return { number: pr.number, headSha: pr.head.sha, labels: pr.labels.map((l) => l.name), draft: pr.draft };
+        })
+        .filter((pr) => pr.labels.includes(label)),
     checkRuns: (sha) =>
       paged(`/repos/${repo}/commits/${sha}/check-runs`, (page) =>
         (page as { readonly check_runs: readonly CheckRun[] }).check_runs.map((run) => ({

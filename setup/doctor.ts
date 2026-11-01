@@ -3,6 +3,7 @@ import { PACKAGE_NAME } from "../shared/manifest.js";
 import {
   FIX_LABEL,
   FOLLOW_UPS_LABEL,
+  MERGE_LABEL,
   ORCHESTRATOR_VARIABLE,
   SERVICE_ORCHESTRATOR,
 } from "../shared/record.js";
@@ -452,6 +453,46 @@ export const REQUIRED_PERMISSIONS: readonly {
       "every grant back to `read`, so a review still cannot touch the branch. Newer than every " +
       "other grant on this caller, so a caller installed before that release holds " +
       "`contents: read` and looks complete",
+  },
+  {
+    permission: "pull-requests",
+    value: "write",
+    workflows: ["merge"],
+    why:
+      "the gate's comments (a refusal, a disarm naming who armed the pull request, a red or a " +
+      "behind head said once) and every removal of `agent:merge` are made with the workflow " +
+      "token. The squash-merge is not: it is made with the loop's token, the App's or " +
+      "`AGENT_PAT`'s, which is why this caller grants no `contents: write`",
+  },
+  {
+    permission: "checks",
+    value: "read",
+    workflows: ["merge"],
+    why:
+      "the gate reads the head's check runs to decide whether every required check is green, " +
+      "and waits while one is pending. A **public** repository serves those reads without the " +
+      "scope, so a caller without it looks complete; the job declares it, so it is refused " +
+      "before any job starts on either visibility",
+  },
+  {
+    permission: "statuses",
+    value: "read",
+    workflows: ["merge"],
+    why:
+      "the gate reads the head's commit statuses: the `agent-merge` arm, the newest " +
+      "`agent-review` verdict and any required status context. The arm is posted with the " +
+      "loop's token and never with this one, so the grant is a read: a status this token could " +
+      "post would be one any workflow in the pull request's branch could post too",
+  },
+  {
+    permission: "contents",
+    value: "read",
+    workflows: ["merge"],
+    why:
+      "nothing is checked out and nothing is written to the branch: the gate reads whether the " +
+      "head is current with its base, and the squash-merge is the loop token's. It is the level " +
+      "the job declares, and leaving the line out sets `contents: none`, which is refused like " +
+      "any other shortfall",
   },
   {
     permission: "contents",
@@ -1140,6 +1181,28 @@ export const diagnose = (
     }
   }
 
+  // The merge caller in a file whose trigger lists no `synchronize` (#589),
+  // a caller *body* change `diagnose` has to learn, since nothing diffs an
+  // adopter's caller against the reference: a push to an armed pull request
+  // then starts no gate, so the disarm is not said when the head moves, only
+  // at whatever re-starts the gate next. A warning: nothing merges that
+  // should not, since every gate checks the arm on the head it reads.
+  // `undefined` is GitHub's defaults, which include `synchronize`.
+  for (const caller of callers.filter((installed) => installed.workflow === "merge")) {
+    if (caller.pullRequestTypes === undefined || caller.pullRequestTypes.includes("synchronize")) continue;
+    add({
+      severity: "warning",
+      check: "merge without synchronize",
+      problem:
+        `${caller.file}'s \`${caller.jobId}\` job calls \`merge.yml\`, and the file's ` +
+        `\`pull_request_target\` lists no \`synchronize\`. A push to a pull request carrying ` +
+        `\`${MERGE_LABEL}\` then starts no gate, so a push the maintainer did not see disarms ` +
+        `nothing when it lands: \`${MERGE_LABEL}\` stays on, saying nothing, until something ` +
+        `else re-starts the gate.`,
+      fix: `Add \`synchronize\` to the \`types:\` under \`pull_request_target\` in ${caller.file}, as \`examples/callers/pr.yml\` lists it.`,
+    });
+  }
+
   if (facts.secrets === undefined) {
     add({
       severity: "warning",
@@ -1198,10 +1261,58 @@ export const diagnose = (
           `and it cannot mark a pull request ready — so the loop looks alive and transitions nothing. ` +
           `Without it, the PRD chain stops after its first slice.`,
         fix:
-          `Set up a GitHub App with Contents, Pull requests, Issues and Workflows write and set ` +
+          `Set up a GitHub App with Contents, Pull requests, Issues, Workflows and Commit statuses write and set ` +
           `\`AGENT_APP_ID\` and \`AGENT_APP_PRIVATE_KEY\`, or set \`AGENT_PAT\` to a fine-grained ` +
           `PAT with the same.`,
       });
+    }
+
+    // The merge caller with no loop token behind it (ADR 0009): the arm is a
+    // commit status only the loop token's account may post, and the merge is
+    // made with that token too, so with neither the App nor the PAT the gate
+    // refuses every run. Ruled only where the secrets were read: unreadable is
+    // the `secrets` warning above, never a pass and never this error.
+    if (hasWriter === false) {
+      for (const caller of callers.filter((installed) => installed.workflow === "merge")) {
+        add({
+          severity: "error",
+          check: "merge without a loop token",
+          problem:
+            `${caller.file}'s \`${caller.jobId}\` job calls \`merge.yml\`, and neither the loop's ` +
+            `App (\`AGENT_APP_ID\` and \`AGENT_APP_PRIVATE_KEY\`) nor \`AGENT_PAT\` is set. The arm ` +
+            `is an \`agent-merge\` commit status posted and read back only as the loop token's ` +
+            `account, never the workflow token's, which any workflow in a pull request's own branch ` +
+            `can post as, and the squash-merge is made with the loop's token too. So with only ` +
+            `\`GITHUB_TOKEN\` the gate refuses every \`${MERGE_LABEL}\` it is given: nothing is ` +
+            `armed and nothing merges.`,
+          fix:
+            `Set up the loop's App with Commit statuses: write (\`init --app\`), or set ` +
+            `\`AGENT_PAT\` to a fine-grained PAT that can also write commit statuses, in which case ` +
+            `someone other than its owner has to add \`${MERGE_LABEL}\`; or delete the ` +
+            `\`${caller.jobId}\` job, since the merge caller is opt-in.`,
+        });
+      }
+    }
+
+    // The same caller on the PAT alone: the loop writes as the PAT's owner,
+    // so a label that account adds is indistinguishable from one the loop
+    // re-added, and a label the loop adds never arms. A note, since nothing is
+    // broken: anyone else who can write arms as before.
+    if (hasPat === true && hasApp === false) {
+      for (const caller of callers.filter((installed) => installed.workflow === "merge")) {
+        add({
+          severity: "note",
+          check: "merge on AGENT_PAT",
+          problem:
+            `${caller.file}'s \`${caller.jobId}\` job calls \`merge.yml\`, and the loop writes as ` +
+            `\`AGENT_PAT\`'s owner. A \`${MERGE_LABEL}\` that account adds cannot be told from one the ` +
+            `loop added itself, and the loop never arms, so the PAT's owner cannot arm a pull request: ` +
+            `the gate says so on it and merges nothing.`,
+          fix:
+            `Have someone else who can write add \`${MERGE_LABEL}\`, or set up the loop's App ` +
+            `(\`init --app\`), after which the label is yours to add.`,
+        });
+      }
     }
 
     // Half an App (#321): one of the two secrets without the other. The
@@ -1470,9 +1581,9 @@ const diagnoseService = (
 
   // The one list the dispatcher reads too, so the two cannot disagree. The
   // follow-ups marker is named with the trigger labels, since a review adds
-  // it and the service answers it. This release's service answers every one,
-  // so the check names nothing; it stays for a label a release adds before
-  // the service answers it.
+  // it and the service answers it. This release's service answers every
+  // trigger label, `agent:merge` included since #591, so the check names
+  // none; it stays for any label a release adds before the service answers it.
   const unanswered = [...TRIGGER_LABELS.map((label) => label.name), FOLLOW_UPS_LABEL].filter(
     (name) => !SERVICE_LABELS.includes(name),
   );

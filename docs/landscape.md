@@ -38,7 +38,7 @@ So the survey has something to measure against. Sources are this repository's ow
 | Where it runs | **The adopter's GitHub Actions**, on hosted or self-hosted runners. #364 drove the same runners from a self-hosted service outside Actions; #375 writes that contract down |
 | Agent | **Claude Code through Sandcastle.** Not swappable today; #367 keeps other agents possible |
 | Loop | **Closed and budgeted.** Implement, then review against the issue's acceptance criteria, then automatic fix rounds bounded by `AGENT_MAX_FIX_ROUNDS` (default 3) and an early stop when a round closes nothing, then follow-up issues filed from the findings left out of scope |
-| Planning | **Multi-issue.** A PRD parent's sub-issues are built one slice at a time on one PRD branch, each reviewed as a slice round of one PRD PR that a human merges once |
+| Planning | **Multi-issue.** A PRD parent's sub-issues are built one slice at a time on one PRD branch, each reviewed as a slice round of one PRD PR that a human decides to merge once |
 | Credentials | **Split.** The agent's job holds a read-only token and no write credential; a separate publish job on a fresh runner writes as the loop's GitHub App. The **red check** runs the PR's tests over the merge base's source |
 | Cost model | **A Claude subscription** (`CLAUDE_CODE_OAUTH_TOKEN`), plus Actions minutes |
 | Licence and maturity | MIT, v0.7.10, one maintainer, first commit 2026-07-22. Published to GitHub Packages, which needs a token to install even a public package |
@@ -654,8 +654,8 @@ maintenance, and a name people already search for.
 No surveyed project combines these; several are found nowhere else.
 
 1. **A multi-issue plan built slice by slice on one branch, with a review round per slice** and
-   one human merge at the end. `course-video-manager` builds on one branch without reviewing; gh-aw
-   builds in parallel PRs; nobody else has slices at all.
+   one human merge decision at the end. `course-video-manager` builds on one branch without
+   reviewing; gh-aw builds in parallel PRs; nobody else has slices at all.
 2. **The red check.** No other project runs a PR's new tests over the merge base and hands the
    reviewer what came out red.
 3. **A budgeted fix loop counted on GitHub's own surfaces.** Rounds are statuses on the PR, the

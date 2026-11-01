@@ -213,7 +213,7 @@ describe("the manifest flow creates the loop's App", () => {
     );
 
     expect(seen["hook_attributes"]).toEqual({ url: "https://hooks.example.test/github", active: true });
-    expect(seen["default_events"]).toEqual(["pull_request", "issues"]);
+    expect(seen["default_events"]).toEqual(["pull_request", "issues", "check_suite", "status"]);
     expect(seen["public"]).toBe(false);
     expect(outcome).toEqual({ id: 4242, slug: "acme-loop-bot", name: "Acme Loop Bot", pem: conversion.pem, webhookSecret: "s3cret" });
   });
@@ -285,16 +285,30 @@ describe("the App's permissions in the adoption doc", () => {
         .readFileSync(path.join("docs", "ADOPTING.md"), "utf8")
         .split(/^(?=### )/m)
         .find((part) => part.startsWith("### The loop's App")) ?? "";
+    // GitHub's page names a permission otherwise than its API does in one
+    // case the App asks for: *Commit statuses* is `statuses`.
+    const API_NAMES: Readonly<Record<string, string>> = { commit_statuses: "statuses" };
     const documented = Object.fromEntries(
-      [...section.matchAll(/^\| ([A-Z][\w ]*): \*\*(read|write)\*\* \|/gm)].map(([, name, access]) => [
-        (name ?? "").toLowerCase().replaceAll(" ", "_"),
-        access,
-      ]),
+      [...section.matchAll(/^\| ([A-Z][\w ]*): \*\*(read|write)\*\* \|/gm)].map(([, name, access]) => {
+        const shown = (name ?? "").toLowerCase().replaceAll(" ", "_");
+        return [API_NAMES[shown] ?? shown, access];
+      }),
     );
 
     // The table has to still be there: a restructure that moved it would
     // otherwise make this pass by comparing nothing.
     expect(Object.keys(documented).length).toBeGreaterThan(0);
     expect(documented).toEqual(APP_PERMISSIONS);
+  });
+
+  /**
+   * The `agent-merge` arm (ADR 0009) is a commit status the loop's token
+   * posts, so the App asks for it, and the doc tells the owner of an App made
+   * before this release to add it by hand.
+   */
+  it("ask for Commit statuses: write, and say an older App needs it added by hand", () => {
+    expect(APP_PERMISSIONS.statuses).toBe("write");
+    const doc = fs.readFileSync(path.join("docs", "ADOPTING.md"), "utf8");
+    expect(doc).toContain("**An App made before this release has no Commit statuses: write**");
   });
 });

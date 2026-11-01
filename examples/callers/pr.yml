@@ -1,7 +1,7 @@
 name: Agent PR
 
-# The pull-request side of the loop: one caller file holding the four callers
-# that run on a pull request (#225). Each job is a caller, and each says the
+# The pull-request side of the loop: one caller file holding the callers that
+# run on a pull request (#225). Each job is a caller, and each says the
 # facts about *this* repo its reusable workflow cannot read for itself: the
 # token it is granted and the secrets it is handed. Everything else (the label
 # guard, the fork guard, the permissions ceiling, the concurrency group, every
@@ -26,13 +26,18 @@ name: Agent PR
 # `@main` would hand a job that runs with your secrets to whatever currently
 # sits on another repository's default branch (docs/ADOPTING.md §9).
 #
-# Two activity types, and `closed` is `follow-ups`' alone: it is **not** a
-# default `pull_request_target` type, so a file that listed only `labeled`
-# would file nothing on a merge and look exactly like one that did. Every job
-# of the other three skips a `closed` event, so they spend nothing on one.
+# `closed` is `follow-ups`' alone: it is **not** a default
+# `pull_request_target` type, so a file that listed only `labeled` would file
+# nothing on a merge and look exactly like one that did.
+# `synchronize`, a push, is `merge`'s alone (#589): a push to a pull request
+# carrying `agent:merge` re-starts its gate, which merges a head a clean
+# refresh carried the arm on to and disarms any other, so the disarm is said
+# when the head moves; a file without the `merge` job leaves it out, since
+# nothing else answers it. Every job of the others skips a `closed` and a
+# `synchronize` event, so they spend nothing on one.
 on:
   pull_request_target:
-    types: [labeled, closed]
+    types: [labeled, closed, synchronize]
 
 # Nothing at the top level: every grant is on the job that spends it, so a job
 # added here later starts with nothing rather than with its neighbours' scopes.
@@ -43,7 +48,7 @@ jobs:
   # `review / review` passed below. Rename it and the CI wait stops recognising
   # itself. A test compares the two, so the pair cannot drift silently.
   review:
-    uses: jeffwlawson/agent-workflows/.github/workflows/review.yml@v0.9.4
+    uses: jeffwlawson/agent-workflows/.github/workflows/review.yml@v0.9.5
     # Granted here, bounded there. A called workflow can only downgrade the
     # token it is handed, so these have to be at least what its jobs need —
     # `pull-requests: write` is what every `gh pr edit` in it spends, and
@@ -130,7 +135,7 @@ jobs:
       AGENT_APP_PRIVATE_KEY: ${{ secrets.AGENT_APP_PRIVATE_KEY }}
 
   fix:
-    uses: jeffwlawson/agent-workflows/.github/workflows/fix.yml@v0.9.4
+    uses: jeffwlawson/agent-workflows/.github/workflows/fix.yml@v0.9.5
     # Granted here, bounded there. A called workflow can only downgrade the
     # token it is handed, so these have to be at least what the job needs.
     permissions:
@@ -163,7 +168,7 @@ jobs:
       AGENT_APP_PRIVATE_KEY: ${{ secrets.AGENT_APP_PRIVATE_KEY }}
 
   update-branch:
-    uses: jeffwlawson/agent-workflows/.github/workflows/update-branch.yml@v0.9.4
+    uses: jeffwlawson/agent-workflows/.github/workflows/update-branch.yml@v0.9.5
     # Granted here, bounded there. A called workflow can only downgrade the
     # token it is handed, so these have to be at least what the job needs.
     permissions:
@@ -211,7 +216,7 @@ jobs:
   # partial failure, which also posts a checklist that is missing. Both types are narrowed in the called job's condition,
   # which an adopter cannot loosen.
   follow-ups:
-    uses: jeffwlawson/agent-workflows/.github/workflows/follow-ups.yml@v0.9.4
+    uses: jeffwlawson/agent-workflows/.github/workflows/follow-ups.yml@v0.9.5
     # Granted here, bounded there. A called workflow can only downgrade the
     # token it is handed, so these have to be at least what the job needs — and
     # `issues: write` is the one this workflow exists for. The agent that raised
@@ -235,3 +240,48 @@ jobs:
     # toolchain to describe and no command to run — and no secrets, because it
     # runs no model and creates its issues with the workflow token. A repository
     # without `AGENT_PAT` files exactly as much as one with it.
+
+  # **This job is the opt-in** to the loop carrying out a merge decision
+  # (ADR 0009, #588). Adding `agent:merge` to a ready pull request is the
+  # maintainer's decision for the head they labelled, and the called job
+  # squash-merges that head once it is current with its base, green and
+  # approved, refreshes it with `agent:update-branch` when it falls behind,
+  # or takes the label off and says why. It needs `synchronize` in the
+  # trigger above: without it a push disarms nothing until the next label. Delete this job and the
+  # label does nothing: the loop never merges a pull request no human armed.
+  #
+  # Needs the loop's App, which must hold Commit statuses: write, or
+  # `AGENT_PAT`: the arm and the merge are made with that token, and without
+  # either the called job refuses rather than arming with `GITHUB_TOKEN`.
+  merge:
+    uses: jeffwlawson/agent-workflows/.github/workflows/merge.yml@v0.9.5
+    # Granted here, bounded there. No `contents: write` and no
+    # `statuses: write`: the arm and the merge are the loop token's, never
+    # this job's.
+    permissions:
+      # Reading the head's checks, and which of them the base requires. The
+      # called job declares it, so omitting it here is refused before any job
+      # starts.
+      checks: read
+      # Comparing the head with its base.
+      contents: read
+      # Installing the runner package, which the called job does with `npx` from
+      # GitHub Packages. Granted here because a called workflow can only
+      # *downgrade* the token it is handed, so the scope has to start in the
+      # caller — and unconditional because GitHub Packages has no anonymous
+      # install even for a public package. Omit it and there is no run to install
+      # in: a caller granting less than a job it calls declares is refused before
+      # any job starts (docs/ADOPTING.md §4).
+      packages: read
+      # The comments it posts, and `agent:merge` and `agent:blocked`.
+      pull-requests: write
+      # Reading the arm and the review's verdict off the head.
+      statuses: read
+    # No `with:`: nothing is checked out, so there is no toolchain to
+    # describe. No model credential: it runs no model. The loop's App's two
+    # secrets beside the PAT, all three optional, though with none of them
+    # the called job refuses.
+    secrets:
+      AGENT_PAT: ${{ secrets.AGENT_PAT }}
+      AGENT_APP_ID: ${{ secrets.AGENT_APP_ID }}
+      AGENT_APP_PRIVATE_KEY: ${{ secrets.AGENT_APP_PRIVATE_KEY }}

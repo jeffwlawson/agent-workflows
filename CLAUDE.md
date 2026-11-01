@@ -161,10 +161,11 @@ git push --follow-tags
 commit, and on a version already on the registry skips the publish but still attaches the
 release's tarball to its GitHub Release where that is missing.
 
-**That first command is the whole release.** The version appears in twelve files and `npm
-version` bumps two of them; `scripts/sync-version.ts` writes the other ten — the `npm exec`
-pin of each step that runs the package (thirty-one: the runner's or the filing command's in each of
-six reusable workflows but `fix.yml`, `update-branch.yml`, `implement.yml` and `implement-prd.yml`,
+**That first command is the whole release.** The version appears in thirteen files and `npm
+version` bumps two of them; `scripts/sync-version.ts` writes the other eleven — the `npm exec`
+pin of each step that runs the package (thirty-four: the runner's or the filing command's in each of
+seven reusable workflows but `fix.yml`, `update-branch.yml`, `implement.yml`, `implement-prd.yml`
+and `merge.yml`,
 `implement-prd:gate`, `implement-prd:catch-up`, `implement-prd:publish` and `implement-prd:conclude`
 in `implement-prd.yml`, `implement:gate`,
 `implement:prepare`, `implement:bundle`, `implement:publish` and `implement:conclude` in
@@ -174,7 +175,8 @@ in `implement-prd.yml`, `implement:gate`,
 `fix:gate`, `fix:prepare`, `fix:bundle`, `fix:publish` and `fix:conclude` in `fix.yml`, and
 `update-branch:gate`, `update-branch:merge`, `update-branch:prepare`, `update-branch:bundle`,
 `update-branch:publish` and `update-branch:conclude` in `update-branch.yml`, and
-`follow-ups:conclude` beside the filing command in `follow-ups.yml`), the
+`follow-ups:conclude` beside the filing command in `follow-ups.yml`, and `merge:gate`,
+`merge:publish` and `merge:conclude` in `merge.yml`), the
 `npm install` pin of each step that installs it early, ahead of the steps that run from that
 install (six: one ahead of the red check's two in `review.yml`, one ahead of `fix:prepare`, the
 runner and `fix:bundle` in `fix.yml`, in `update-branch.yml` one ahead of `update-branch:gate`
@@ -184,14 +186,14 @@ and `update-branch:merge` in the gate job and one ahead of `update-branch:prepar
 `implement-prd:bundle` in `implement-prd.yml`, which all three run by its path), the `uses:` ref of
 each caller in the two caller files
 of each of the two caller sets, and the `uses:` ref a reusable's step names a composite action in
-`.github/actions/` with (eight of those: `loop-token` once in each of `implement.yml`, `fix.yml`
-and `update-branch.yml`, twice in `implement-prd.yml` and three times in `review.yml`, so
-fifty-seven pins in the ten files). Fix's runner, update-branch's, implement's and implement-prd's carry no pin of their own: each
+`.github/actions/` with (nine of those: `loop-token` once in each of `implement.yml`, `fix.yml`,
+`update-branch.yml` and `merge.yml`, twice in `implement-prd.yml` and three times in `review.yml`,
+so sixty-three pins in the eleven files). Fix's runner, update-branch's, implement's and implement-prd's carry no pin of their own: each
 runs its job's early install's binary by its path, from the checkout, because `npm exec` finds an install under its `--prefix`
 only from that directory (#486's fix round). It
 runs from the `version` lifecycle script, which npm fires *after* the manifest is bumped and
 *before* the commit is made, so everything it stages lands in the same `v<version>` commit. It
-stages **by path** — the ten it wrote, never `-A`: npm's dirty-tree check passes untracked
+stages **by path** — the eleven it wrote, never `-A`: npm's dirty-tree check passes untracked
 files, so `-A` would carry a stray one into the tag `publish.yml` fires on, and nothing here would
 see it. It propagates and never decides: the version is read from `package.json`, never passed in,
 and nothing there commits or tags — `npm version` does both, and a second tagging path is a second
@@ -202,8 +204,11 @@ origin has, asked of origin rather than of a possibly stale `origin/main`. `publ
 unmerged tag too, but only after the push; v0.7.9 was first cut in a worktree one merge behind.
 
 It refuses rather than doing part of the job. Both caller sets must hold the same caller files,
-each set must call every reusable exactly once, and each file must carry exactly the pins expected
-of it, one recognisable pin per site, so a seventh workflow whose caller is missing from either
+each set must call every reusable exactly once (the local set may leave out only a reusable the
+release its callers pin does not have yet, asked of git at that tag, so the release that first
+ships a reusable is cut with the local caller one job short, as v0.9.5 was for `merge.yml`, and
+the next is refused until it is in), and each file must carry exactly the pins expected of it, one recognisable pin per site, so
+an eighth workflow whose caller is missing from either
 set, or a caller file missing from either, stops the release instead of quietly propagating to
 what it found. A step naming a composite action, and a caller naming a reusable workflow, is
 counted by its path, not by its pin, so one named under a ref that is not a pin is refused rather
@@ -401,7 +406,8 @@ Before writing a brief, `/triage` checks other issues, open PRs and work in flig
 
 The five canonical triage roles at their default strings, kept as a **second vocabulary** beside
 `agent:*` workflow state rather than merged into it; the one join, `ready-for-agent` →
-`agent:implement`, stays a human hand. Also the only definition of the `wayfinder:*` planning
+`agent:implement`, stays a human hand, and `agent:merge`, the merge decision, is the second human
+hand into `agent:*` (ADR 0009). Also the only definition of the `wayfinder:*` planning
 labels, which two workflows refuse and nothing else describes. See
 [`docs/agents/triage-labels.md`](./docs/agents/triage-labels.md).
 

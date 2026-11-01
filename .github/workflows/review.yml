@@ -1373,8 +1373,9 @@ jobs:
       # `agent:review` off, however the run ended (#236), so
       # it never outlives the run; then the hand-off, `agent:review` again
       # where the head moved while the review ran, else `agent:fix` where the
-      # review asked for a round. `review/conclude.ts` says why each is as it
-      # is.
+      # review asked for a round, else, on an approval of a pull request
+      # carrying `agent:merge`, that label re-added for the merge gate (#589).
+      # `review/conclude.ts` says why each is as it is.
       #
       # `always()`: the ending is the point of it. Told the facts, not the
       # conclusions: how the review job ended and what it decided, as its

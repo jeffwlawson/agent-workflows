@@ -8,7 +8,7 @@ import type { GitHubReader } from "../../engine/read.js";
 import type { Limits } from "../../engine/writer.js";
 import type { CommandIo, Token } from "../../shared/command-io.js";
 import type { COMMANDS } from "../../shared/contract.js";
-import { BLOCKED_LABEL, FIX_LABEL, REVIEW_LABEL, UPDATE_BRANCH_LABEL } from "../../shared/record.js";
+import { BLOCKED_LABEL, FIX_LABEL, MERGE_LABEL, REVIEW_LABEL, UPDATE_BRANCH_LABEL } from "../../shared/record.js";
 import { conclude, MINT_FAILED } from "../../update-branch/conclude.js";
 import { fakeGitHub, fakeReader, fakeWriters, type FakeGitHub } from "../engine/fakes.js";
 
@@ -453,7 +453,7 @@ describe("update-branch:conclude takes the trigger label off however the run end
   it("writes within its limits", async () => {
     await run(INPUTS(CONFLICTS("failure")));
 
-    expect(asked).toEqual({ comment: 2, removeLabel: 1, addLabel: 2 });
+    expect(asked).toEqual({ comment: 2, removeLabel: 2, addLabel: 2 });
   });
 });
 
@@ -626,5 +626,100 @@ describe("update-branch:conclude asks again where the head moved while the run w
     await run();
 
     expect(warnings().some((line) => line.includes("could not be added again"))).toBe(true);
+  });
+});
+
+/**
+ * **The refresh hands back to the gate** (#589): the gate that asked for this
+ * refresh ended, and the one its own push started may have found the head
+ * before the arm was carried and waited. So a run that finished on a pull
+ * request carrying `agent:merge` re-adds it with the loop's token, after its
+ * own label is off; one that stopped leaves `agent:blocked` and the arm to the
+ * maintainer.
+ */
+describe("update-branch:conclude hands an armed pull request back to the merge gate", () => {
+  const HAND_BACK = [`loop removeLabel ${MERGE_LABEL}`, `loop addLabel ${MERGE_LABEL}`];
+
+  it.each([
+    ["a clean merge", {}],
+    ["an up-to-date branch", { STATUS: "uptodate" }],
+    ["a resolution", CONFLICTS("success")],
+  ] as const)("re-adds agent:merge with the loop's token, removing it first, after its own label is off, on %s", async (_, over) => {
+    published({ pushed: true, head: MERGE });
+    live({ headSha: MERGE, labels: [MERGE_LABEL, UPDATE_BRANCH_LABEL] });
+
+    await run(INPUTS(over));
+
+    expect(writes()).toEqual([`workflow removeLabel ${UPDATE_BRANCH_LABEL}`, ...HAND_BACK]);
+    expect(github.pullRequests.get(PR)?.labels).toEqual([MERGE_LABEL]);
+  });
+
+  it("hands back after a resolution whose review publish asked for, which the gate then disarms", async () => {
+    published({ pushed: true, head: MERGE, requested: true });
+    live({ headSha: MERGE, labels: [MERGE_LABEL, UPDATE_BRANCH_LABEL, REVIEW_LABEL] });
+
+    await run(INPUTS(CONFLICTS("success")));
+
+    expect(writes()).toEqual([`workflow removeLabel ${UPDATE_BRANCH_LABEL}`, ...HAND_BACK]);
+  });
+
+  it("hands back after asking for its own step again", async () => {
+    published({ pushed: true, head: MERGE });
+    live({ headSha: PUSHED, labels: [MERGE_LABEL, UPDATE_BRANCH_LABEL] });
+
+    await run();
+
+    expect(writes()).toEqual([`workflow removeLabel ${UPDATE_BRANCH_LABEL}`, `loop addLabel ${UPDATE_BRANCH_LABEL}`, ...HAND_BACK]);
+  });
+
+  it("re-adds nothing on a pull request without agent:merge", async () => {
+    published({ pushed: true, head: MERGE });
+    live({ headSha: MERGE, labels: [UPDATE_BRANCH_LABEL] });
+
+    await run();
+
+    expect(writes()).toEqual([`workflow removeLabel ${UPDATE_BRANCH_LABEL}`]);
+  });
+
+  it.each([
+    ["failed", CONFLICTS("failure")],
+    ["was cancelled", CONFLICTS("cancelled")],
+    ["failed at publish", { PUBLISH_OUTCOME: "failure" }],
+  ] as const)("re-adds nothing on a run that %s, leaving agent:blocked and the arm", async (_, over) => {
+    published();
+    live({ headSha: MERGE, labels: [MERGE_LABEL, UPDATE_BRANCH_LABEL] });
+
+    await run(INPUTS(over));
+
+    expect(writes()).toEqual(STOPPED_WRITES);
+    expect(github.pullRequests.get(PR)?.labels).toEqual([MERGE_LABEL, BLOCKED_LABEL]);
+  });
+
+  it("re-adds nothing on a refused run", async () => {
+    live({ headSha: MERGE, labels: [MERGE_LABEL] });
+
+    await run(INPUTS({ REFUSED: "true" }));
+
+    expect(made).toBeUndefined();
+  });
+
+  it("re-adds nothing with the workflow token alone, which would start nothing, and says so", async () => {
+    published({ pushed: true, head: MERGE });
+    live({ headSha: MERGE, labels: [MERGE_LABEL, UPDATE_BRANCH_LABEL] });
+
+    await run(INPUTS({ LOOP_TOKEN_SOURCE: "workflow" }));
+
+    expect(writes()).toEqual([`workflow removeLabel ${UPDATE_BRANCH_LABEL}`]);
+    expect(warnings().some((line) => line.includes(`carries ${MERGE_LABEL}`))).toBe(true);
+  });
+
+  it("warns, and fails nothing, where agent:merge cannot be added again", async () => {
+    published({ pushed: true, head: MERGE });
+    live({ headSha: MERGE, labels: [MERGE_LABEL, UPDATE_BRANCH_LABEL] });
+    github.fails = (write) => write.type === "addLabel";
+
+    await run();
+
+    expect(warnings().some((line) => line.includes("hand the refreshed head back to the merge gate"))).toBe(true);
   });
 });

@@ -122,6 +122,13 @@ export interface InstalledCaller {
    * `pull_request_target`, and which events such a file also starts on.
    */
   readonly events: readonly string[];
+  /**
+   * The activity types its file's `pull_request_target` lists, or `undefined`
+   * where it lists none, which GitHub reads as its defaults. Read for the
+   * `merge` caller (#589), whose gate a push re-starts only where the file
+   * lists `synchronize`.
+   */
+  readonly pullRequestTypes: readonly string[] | undefined;
 }
 
 /**
@@ -276,11 +283,13 @@ export const callersIn = (
   let top: unknown;
   let topDeclared = false;
   let events: readonly string[] = [];
+  let pullRequestTypes: readonly string[] | undefined;
   try {
     const document = parse(text) as
       | { readonly jobs?: unknown; readonly permissions?: unknown; readonly on?: unknown }
       | null;
     events = eventsOf(document?.on);
+    pullRequestTypes = typesOf(document?.on, "pull_request_target");
     const held = document?.jobs;
     if (typeof held === "object" && held !== null && !Array.isArray(held)) {
       jobs = held as Record<string, unknown>;
@@ -331,6 +340,7 @@ export const callersIn = (
         },
         secrets: secretsOf(job.secrets),
         events,
+        pullRequestTypes,
       },
     ];
   });
@@ -345,6 +355,15 @@ const eventsOf = (on: unknown): readonly string[] =>
       : typeof on === "object" && on !== null
         ? Object.keys(on)
         : [];
+
+/** The activity types `on:` lists for `event`, a string or a list, or `undefined` where it lists none. */
+const typesOf = (on: unknown, event: string): readonly string[] | undefined => {
+  if (typeof on !== "object" || on === null || Array.isArray(on)) return undefined;
+  const entry = (on as Record<string, unknown>)[event];
+  const types = typeof entry === "object" && entry !== null ? (entry as { readonly types?: unknown }).types : undefined;
+  if (typeof types === "string") return [types];
+  return Array.isArray(types) ? types.filter((type): type is string => typeof type === "string") : undefined;
+};
 
 /** Forward slashes, because the result is quoted back to a human. */
 const workflowFiles = (dir: string): readonly string[] => {

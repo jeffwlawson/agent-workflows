@@ -707,7 +707,9 @@ jobs:
       # (ADR 0005), after the agent finished, and in no other job. A mint that
       # fails fails the step: `update-branch:publish`, which runs only on one
       # that succeeded, is skipped, and `update-branch:conclude`, told the
-      # mint's outcome, says why.
+      # mint's outcome, says why. `account`, since a clean refresh carries the
+      # maintainer's `agent-merge` arm only where the loop token's account
+      # posted it (#589).
       - name: Resolve the loop's token
         id: token
         if: always()
@@ -717,6 +719,7 @@ jobs:
           private-key: ${{ secrets.AGENT_APP_PRIVATE_KEY }}
           agent-pat: ${{ secrets.AGENT_PAT }}
           github-token: ${{ secrets.GITHUB_TOKEN }}
+          account: "true"
 
       # **The one checkout**, of the head the run started from, wherever the
       # gate claimed the run: what `update-branch:publish` makes the clean
@@ -767,9 +770,9 @@ jobs:
           name: agent-update-branch
           path: ${{ runner.temp }}/agent-update-branch
 
-      # The success arm (#484): the push, the verdict carried over to a clean
-      # merge, the comment saying what the run did, then the review of a
-      # resolution. `update-branch/publish.ts` says why each is as it is.
+      # The success arm (#484): the push, the verdict and the `agent-merge`
+      # arm carried over to a clean merge (#589), the comment saying what the
+      # run did, then the review of a resolution. `update-branch/publish.ts` says why each is as it is.
       #
       # **What is pushed is never the agent's job's word alone.** A clean
       # merge is made again here, of the base commit the gate merged; a
@@ -782,7 +785,8 @@ jobs:
       # Given both tokens: `GH_TOKEN`, the workflow's, which it fetches,
       # reads, comments and carries the verdict with, since a status from any
       # other account is one the next round does not read as the loop's; and
-      # the loop's, which it pushes and labels with. Only where the gate
+      # the loop's, which it pushes, labels and carries the arm with, since an
+      # arm is read back only where the loop token's account posted it. Only where the gate
       # claimed the run and the merge has something to publish, on a mint
       # that succeeded, and never on a run that is being cancelled. Every
       # other ending is `update-branch:conclude`'s below. From `RUNNER_TEMP`,
@@ -798,6 +802,7 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           LOOP_TOKEN: ${{ steps.token.outputs.token }}
           LOOP_TOKEN_SOURCE: ${{ steps.token.outputs.source }}
+          LOOP_LOGIN: ${{ steps.token.outputs.login }}
           OUTPUT_DIR: ${{ runner.temp }}/publish
           UPDATE_BRANCH_DIR: ${{ runner.temp }}/agent-update-branch
           BUNDLE_DIR: ${{ runner.temp }}/agent-update-branch/bundle
@@ -814,7 +819,9 @@ jobs:
       # `agent:blocked`, in the loop's one order; and where the run finished
       # and the head moved on from the one it left, because somebody pushed,
       # `agent:update-branch` asked for again, never where publish asked for
-      # a review of its resolution, nor while another trigger label is on.
+      # a review of its resolution, nor while another trigger label is on;
+      # then, on a finished run carrying `agent:merge`, that label re-added
+      # with the loop's token, handing the head back to the merge gate (#589).
       # `update-branch/conclude.ts` says why each is as it is.
       #
       # `always()`: the ending is the point of it. Told the facts, not the

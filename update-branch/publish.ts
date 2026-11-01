@@ -11,7 +11,8 @@ import type { InputValues } from "../shared/env.js";
 import { readDirectory, text, type Parser } from "../shared/hand-over.js";
 import { waitForHead } from "../shared/head-wait.js";
 import { loopAccounts } from "../shared/loop-accounts.js";
-import { LOOP_COMMITTER, REVIEW_LABEL, UPDATE_BRANCH_LABEL, VERDICT_CONTEXT } from "../shared/record.js";
+import { armOn } from "../shared/merge-arm.js";
+import { armDescription, LOOP_COMMITTER, MERGE_CONTEXT, REVIEW_LABEL, UPDATE_BRANCH_LABEL, VERDICT_CONTEXT } from "../shared/record.js";
 import { newestVerdict } from "../shared/verdict-status.js";
 
 type Declared = (typeof COMMANDS)["update-branch:publish"];
@@ -88,8 +89,15 @@ export const publish = async (inputs: Inputs, io: Io): Promise<void> => {
     console.log(`Pushed ${tip} to ${inputs.BRANCH}.`);
   }
 
-  // Step 2: the verdict standing on the old head, carried on to a clean merge.
-  if (status === "clean" && tip !== undefined) await carryVerdict(io, workflow, accounts, started, tip);
+  // Step 2: the verdict standing on the old head, carried on to a clean
+  // merge, and the maintainer's arm beside it (#589).
+  if (status === "clean" && tip !== undefined) {
+    const statuses = await readStatuses(io, started, tip);
+    if (statuses !== undefined) {
+      await carryVerdict(workflow, accounts, statuses, started, tip);
+      await carryArm(inputs, loop, statuses, started, tip);
+    }
+  }
 
   // Step 3: what this run did, said on the pull request.
   const body =
@@ -215,6 +223,22 @@ const push = async (inputs: Inputs, loop: Writer, tip: string, started: string, 
 };
 
 /**
+ * The statuses on the old head, read once for both carries. **A read that
+ * failed is not "there is no verdict"** (#105): it warns, and carries
+ * neither.
+ */
+const readStatuses = async (io: Io, from: string, to: string): Promise<readonly CommitStatus[] | undefined> => {
+  try {
+    return await io.github.commitStatuses(from);
+  } catch (error) {
+    console.log(
+      `::warning::Could not read the statuses on ${from}, so no \`${VERDICT_CONTEXT}\` verdict was carried on to ${to} and this pull request now reads as unreviewed, which is not the same as its having none. No \`${MERGE_CONTEXT}\` arm was carried either, so an \`agent:merge\` on it disarms at the next gate. It is not the caller's \`statuses:\` grant: a caller granting less than this job declares fails the run before any job starts, so a token that got this far holds the write (jeffwlawson/agent-workflows docs/ADOPTING.md §4). What lands here is transient (a 5xx, a secondary rate limit, a dropped connection), and re-running this workflow recovers none of it: the branch is refreshed already. Any verdict that stood is still the one on ${from}; this read could not tell whether there was one; add \`${REVIEW_LABEL}\` for a fresh one. GitHub's reply: ${describe(error)}`,
+    );
+    return undefined;
+  }
+};
+
+/**
  * A verdict is per commit, so the merge commit carries none until something
  * posts one, and a clean refresh would otherwise wipe the review's answer off
  * every open pull request each time the base branch moves (#96, decision 6).
@@ -238,21 +262,12 @@ const push = async (inputs: Inputs, loop: Writer, tip: string, started: string, 
  * branch is refreshed by then, so the next run has nothing to merge.
  */
 const carryVerdict = async (
-  io: Io,
   workflow: Writer,
   accounts: ReturnType<typeof loopAccounts>,
+  statuses: readonly CommitStatus[],
   from: string,
   to: string,
 ): Promise<void> => {
-  let statuses: readonly CommitStatus[];
-  try {
-    statuses = await io.github.commitStatuses(from);
-  } catch (error) {
-    console.log(
-      `::warning::Could not read the statuses on ${from}, so no \`${VERDICT_CONTEXT}\` verdict was carried on to ${to} and this pull request now reads as unreviewed, which is not the same as its having none. It is not the caller's \`statuses:\` grant: a caller granting less than this job declares fails the run before any job starts, so a token that got this far holds the write (jeffwlawson/agent-workflows docs/ADOPTING.md §4). What lands here is transient (a 5xx, a secondary rate limit, a dropped connection), and re-running this workflow recovers none of it: the branch is refreshed already. Any verdict that stood is still the one on ${from}; this read could not tell whether there was one; add \`${REVIEW_LABEL}\` for a fresh one. GitHub's reply: ${describe(error)}`,
-    );
-    return;
-  }
   const verdict = newestVerdict(statuses, accounts);
   if (verdict === undefined) {
     console.log(`No ${VERDICT_CONTEXT} verdict of ours on ${from}, so there is nothing to carry over.`);
@@ -282,6 +297,65 @@ const carryVerdict = async (
 
 const STATES = ["error", "failure", "pending", "success"] as const;
 const isState = (state: string): state is CommitStatusWrite["state"] => (STATES as readonly string[]).includes(state);
+
+/**
+ * **The arm survives the refresh the up-to-date rule forces** (#589, ADR
+ * 0009): a clean merge adds only the base's code to the commit the maintainer
+ * armed, so the newest `agent-merge` the loop token's account posted on the
+ * old head is copied on to the merge commit, its state and link as they
+ * were, and its description with the human and the arm's time unchanged and
+ * its refresh count one higher, which the gate's cap reads. Read only off
+ * that account, as the gate reads it, so a count no pull request's branch can
+ * post is the only one copied.
+ *
+ * Posted with the **loop's** token, so the copy is still the loop token's: a
+ * status the workflow token posts is one any workflow in the pull request's
+ * branch could post too, and is no arm. With `LOOP_TOKEN_SOURCE` `workflow`,
+ * or no `LOOP_LOGIN` to read the arm by, it copies nothing and says so.
+ *
+ * Never stops the command, as the verdict's carry does not: the merge is
+ * pushed by then. A copy that fails warns; the next gate then finds no arm and
+ * disarms, naming the human.
+ */
+const carryArm = async (inputs: Inputs, loop: Writer, statuses: readonly CommitStatus[], from: string, to: string): Promise<void> => {
+  const arm = inputs.LOOP_LOGIN === "" ? undefined : armOn(statuses, inputs.LOOP_LOGIN);
+  if (arm === undefined) {
+    if (inputs.LOOP_LOGIN === "" && statuses.some((s) => s.context === MERGE_CONTEXT)) {
+      console.log(`::notice::No \`LOOP_LOGIN\` was given, so whether ${from} carries the loop's \`${MERGE_CONTEXT}\` arm could not be told, and none was carried on to ${to}.`);
+    } else {
+      console.log(`No ${MERGE_CONTEXT} arm of the loop's on ${from}, so there is none to carry over.`);
+    }
+    return;
+  }
+  if (inputs.LOOP_TOKEN_SOURCE !== "app" && inputs.LOOP_TOKEN_SOURCE !== "pat") {
+    console.log(
+      `::warning::${from} is armed to merge, but neither the loop's App nor AGENT_PAT is set, so the \`${MERGE_CONTEXT}\` arm was not carried on to ${to}: a copy posted with GITHUB_TOKEN is no arm. The next gate disarms it.`,
+    );
+    return;
+  }
+  if (arm.login === undefined) {
+    // A count it cannot read is one it cannot raise, and an arm carried
+    // without one would escape the cap.
+    console.log(`::warning::The \`${MERGE_CONTEXT}\` arm on ${from} names no one this can read, so its refresh count could not be raised, and it was not carried on to ${to}. The next gate disarms it.`);
+    return;
+  }
+  const description = armDescription({ login: arm.login, ...(arm.at === undefined ? {} : { at: arm.at }), refreshes: arm.refreshes + 1 });
+  try {
+    await loop.setCommitStatus({
+      sha: to,
+      context: MERGE_CONTEXT,
+      state: "success",
+      description,
+      ...(arm.status.targetUrl === null || arm.status.targetUrl === "" ? {} : { targetUrl: arm.status.targetUrl }),
+    });
+    console.log(`Carried the ${MERGE_CONTEXT} arm from ${from} on to ${to}, after ${arm.refreshes + 1} clean refreshes.`);
+  } catch (error) {
+    if (!(error instanceof WriteFailed)) throw error;
+    console.log(
+      `::warning::Could not carry the \`${MERGE_CONTEXT}\` arm from ${from} on to ${to}. The merge is pushed; what is missing is the maintainer's merge decision on it, so the next gate disarms it and asks for \`agent:merge\` again. GitHub's reply is in the write log. Check that the loop's App has **Commit statuses: write**, or that \`AGENT_PAT\` can write commit statuses here.`,
+    );
+  }
+};
 
 /**
  * The runner's own account of what it resolved, cleaned, so no HTML comment
@@ -335,12 +409,12 @@ const requestReview = async (inputs: Inputs, io: Io, pr: number, loop: Writer, w
 
 /**
  * What `update-branch:publish` may write, and how many of each (ADR 0005):
- * one push; the carried verdict, the one status; the comment saying what the
+ * one push; the carried verdict and the carried arm, two statuses; the comment saying what the
  * run did and the note that no review will start; this run's label and
  * `agent:review` off, and `agent:review` on. Anything else is refused and
  * stops it.
  */
-const LIMITS: Limits = { pushRef: 1, setCommitStatus: 1, comment: 2, removeLabel: 2, addLabel: 1 };
+const LIMITS: Limits = { pushRef: 1, setCommitStatus: 2, comment: 2, removeLabel: 2, addLabel: 1 };
 
 const commit = (value: string, name: string): string => {
   if (!/^[0-9a-f]{40}$/.test(value)) throw new Error(`${name} is ${JSON.stringify(value)}, which is not a full commit id.`);

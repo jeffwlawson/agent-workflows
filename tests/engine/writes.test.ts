@@ -615,6 +615,16 @@ describe("githubReader", () => {
     expect(sent).toHaveLength(2);
   });
 
+  it("reads when a status was set, where GitHub gives the time, which an arm's age falls back to (#589)", async () => {
+    const { transport } = recording(() => [
+      { context: "agent-merge", state: "success", target_url: null, description: "d", creator: { login: "bot" }, created_at: "2026-11-01T03:59:35Z" },
+    ]);
+
+    expect(await githubReader(REPO, transport).commitStatuses(SHA)).toEqual([
+      { context: "agent-merge", state: "success", targetUrl: null, description: "d", creator: "bot", createdAt: "2026-11-01T03:59:35Z" },
+    ]);
+  });
+
   it("reads every page of a pull request's thread ids", async () => {
     const { transport, sent } = recording((s) => {
       const after = "variables" in s ? s.variables["after"] : undefined;

@@ -269,11 +269,36 @@ export const FIX_ROUND_STATUS = {
  */
 export const MERGE_CONTEXT = "agent-merge";
 
-/** The arm's description: who armed it, as `@<login>`, which a disarm names back. */
-export const armDescription = (login: string): string => `Armed by @${login} to merge this commit.`;
+/**
+ * What an arm's description says (#589): who armed it, as `@<login>`, which a
+ * disarm names back; when, to the second, which the arm keeps across a carry;
+ * and how many clean refreshes it has survived, which the refresh cap reads.
+ */
+export interface ArmDescription {
+  readonly login: string;
+  /** When the arm was made, `YYYY-MM-DDTHH:MM:SSZ`. */
+  readonly at?: string;
+  readonly refreshes: number;
+}
 
-/** The login an arm's description names, its first group. */
-export const ARMED_BY = /^Armed by @([A-Za-z0-9][A-Za-z0-9-]*(?:\[bot\])?) to merge this commit\.$/;
+/** The arm's description, as the gate writes it and a clean refresh's carry copies it. */
+export const armDescription = ({ login, at, refreshes }: ArmDescription): string =>
+  `Armed by @${login}${at === undefined ? "" : ` at ${at}`} to merge this commit. Refreshes: ${refreshes}.`;
+
+/**
+ * The description read back: the human, the time and the count. An arm #588
+ * wrote names the human alone, and reads as count 0 with no time, which the
+ * reader takes from the status's own creation time. Anything else is
+ * `undefined`.
+ */
+export const readArmDescription = (description: string): ArmDescription | undefined => {
+  const match =
+    /^Armed by @([A-Za-z0-9][A-Za-z0-9-]*(?:\[bot\])?)(?: at ([0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z))? to merge this commit\.(?: Refreshes: ([0-9]+)\.)?$/.exec(
+      description,
+    );
+  if (match === null || match[1] === undefined) return undefined;
+  return { login: match[1], ...(match[2] === undefined ? {} : { at: match[2] }), refreshes: match[3] === undefined ? 0 : Number(match[3]) };
+};
 
 // Labels.
 
@@ -577,9 +602,22 @@ export const mergeBehindMark = (sha: string): string => `<!-- agent:merge-behind
 export const mergeRedComment = (head: string, reasons: readonly string[]): string =>
   `**\`${MERGE_LABEL}\` is waiting:** \`${head}\` is not green, so it was not merged. ${reasons.join(" ")} The arm stays, and a push disarms it. Once it is green, remove \`${MERGE_LABEL}\` and add it again to merge it.\n\n${mergeRedMark(head)}\n`;
 
-/** A head behind its base, said once: it waits, armed. */
+/**
+ * A head behind its base, said once (#589): `agent:update-branch` was asked
+ * for, and the arm stays, since a clean refresh carries it.
+ */
 export const mergeBehindComment = (head: string, base: string): string =>
-  `**\`${MERGE_LABEL}\` is waiting:** \`${head}\` is behind \`${base}\`, so it was not merged. The arm stays. Once it is current with \`${base}\`, remove \`${MERGE_LABEL}\` and add it again to merge it.\n\n${mergeBehindMark(head)}\n`;
+  `**\`${MERGE_LABEL}\` is waiting:** \`${head}\` is behind \`${base}\`, so it was not merged, and \`${UPDATE_BRANCH_LABEL}\` was asked for. The arm stays: a clean refresh carries it on to the merge commit, which merges once it is green. A refresh that has to resolve a conflict carries nothing, and disarms it.\n\n${mergeBehindMark(head)}\n`;
+
+/**
+ * The **refresh cap's** disarm (#589): the base moved past an armed pull
+ * request `cap` times while it waited, each refreshed cleanly, so the loop
+ * stops refreshing it rather than chase a base that does not stand still. It
+ * asks for no fresh merge-check: the head is the armed commit plus clean
+ * merges of the base, so re-adding the label re-arms it as it is.
+ */
+export const mergeRefreshCapComment = (head: string, base: string, login: string | undefined, cap: number): string =>
+  `**\`${MERGE_LABEL}\` disarmed:** ${login === undefined ? "This PR was armed" : `@${login} armed this PR`}, and \`${base}\` moved past it ${cap} times while it waited, each time refreshed cleanly, so \`${MERGE_LABEL}\` was taken off rather than refreshing it again, and nothing was merged. \`${head}\` is the armed commit plus clean merges of \`${base}\`, so adding \`${MERGE_LABEL}\` again re-arms it as it is.\n`;
 
 /**
  * A merge run that stopped, in the one pattern every stopped run's comment

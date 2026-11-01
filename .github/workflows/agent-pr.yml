@@ -26,10 +26,15 @@ name: Agent PR
 # `@main` would hand a job that runs with your secrets to whatever currently
 # sits on another repository's default branch (docs/ADOPTING.md §9).
 #
-# Two activity types, and `closed` is `follow-ups`' alone: it is **not** a
-# default `pull_request_target` type, so a file that listed only `labeled`
-# would file nothing on a merge and look exactly like one that did. Every job
-# of the others skips a `closed` event, so they spend nothing on one.
+# `closed` is `follow-ups`' alone: it is **not** a default
+# `pull_request_target` type, so a file that listed only `labeled` would file
+# nothing on a merge and look exactly like one that did.
+# `synchronize`, a push, is `merge`'s alone (#589): a push to a pull request
+# carrying `agent:merge` re-starts its gate, which merges a head a clean
+# refresh carried the arm on to and disarms any other, so the disarm is said
+# when the head moves; a file without the `merge` job leaves it out, since
+# nothing else answers it. Every job of the others skips a `closed` and a
+# `synchronize` event, so they spend nothing on one.
 on:
   pull_request_target:
     types: [labeled, closed]

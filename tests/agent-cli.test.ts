@@ -3583,8 +3583,8 @@ describe("doctor names the failures that otherwise look like something else", ()
    */
   it("does not flag a review caller whose file listens on closed", async () => {
     const root = await installed();
-    expect(fs.readFileSync(path.join(root, ...callerFileOf(root, "review").split("/")), "utf8")).toContain(
-      "types: [labeled, closed]",
+    expect(fs.readFileSync(path.join(root, ...callerFileOf(root, "review").split("/")), "utf8")).toMatch(
+      /types: \[labeled, closed(, synchronize)?\]/,
     );
 
     const { code, out, err } = await check(root, healthy());
@@ -4618,6 +4618,27 @@ describe("doctor names the failures that otherwise look like something else", ()
       expect(said[0]?.problem).toContain("cannot arm");
       expect(of(rule(root, { ...healthy(), secrets: ["CLAUDE_CODE_OAUTH_TOKEN", "AGENT_PAT", "AGENT_APP_ID", "AGENT_APP_PRIVATE_KEY"] }), "merge on AGENT_PAT")).toEqual([]);
       expect(of(rule(await withoutMerge(), healthy()), "merge on AGENT_PAT")).toEqual([]);
+    });
+
+    /**
+     * `synchronize` (#589), a caller *body* change: a push re-starts the
+     * merge gate only where the caller file lists it, and nothing diffs an
+     * adopter's caller against the reference, so `diagnose` reads it.
+     */
+    it("warns of a merge caller whose file lists no synchronize, with the fix, and of none that does", async () => {
+      const root = await withMerge();
+      expect(of(rule(root, healthy()), "merge without synchronize")).toEqual([]);
+
+      const pr = path.join(root, ".github", "workflows", "agent-pr.yml");
+      const text = fs.readFileSync(pr, "utf8");
+      expect(text).toContain("types: [labeled, closed, synchronize]");
+      fs.writeFileSync(pr, text.replace("types: [labeled, closed, synchronize]", "types: [labeled, closed]"));
+      const said = of(rule(root, healthy()), "merge without synchronize");
+      expect(said).toHaveLength(1);
+      expect(said[0]?.severity).toBe("warning");
+      expect(said[0]?.problem).toContain("lists no `synchronize`");
+      expect(said[0]?.fix).toContain("Add `synchronize` to the `types:` under `pull_request_target`");
+      expect(of(rule(await withoutMerge(), healthy()), "merge without synchronize")).toEqual([]);
     });
 
     /** Unreadable secrets are unknown, never a pass and never this error: the `secrets` warning says so. */

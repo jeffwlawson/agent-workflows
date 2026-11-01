@@ -6,10 +6,9 @@ import type { COMMANDS } from "../shared/contract.js";
 import type { InputValues } from "../shared/env.js";
 import { AGENT_CHECKS, isLoopStatus } from "../shared/loop-checks.js";
 import { isWorkflowBot, loopAccounts, type LoopAccounts } from "../shared/loop-accounts.js";
+import { armOn, sameAccount } from "../shared/merge-arm.js";
 import {
-  ARMED_BY,
   armDescription,
-  DEFAULT_LOOP_ACCOUNT,
   disarmComment,
   FIX_LABEL,
   MERGE_CONTEXT,
@@ -18,6 +17,7 @@ import {
   mergeBehindMark,
   mergeRedComment,
   mergeRedMark,
+  mergeRefreshCapComment,
   mergeRefusal,
   REVIEW_LABEL,
   UPDATE_BRANCH_LABEL,
@@ -44,17 +44,23 @@ export type Decision = "merge" | "wait" | "behind" | "red" | "disarmed" | "refus
  *   token's account. Nothing is armed or merged.
  * - **The arm**, on a label a person who can write added: `agent-merge`
  *   posted on the payload's head with the loop's token, its description
- *   naming them. Where the live head is already another commit, it disarms
- *   instead: a label added just after a push can carry the commit before it
- *   (#229). A label the loop's own account added never arms.
+ *   naming them, the time, and a refresh count of 0 (#589). Where the live
+ *   head is already another commit, it disarms instead: a label added just
+ *   after a push can carry the commit before it (#229). A label the loop's
+ *   own account added never arms, and neither does a push (`synchronize`).
  * - **The state of the head**, polled up to `CHECK_WAIT_SECONDS` while
  *   anything is pending: `disarmed` where the head carries no arm of the loop
  *   token's account (never `github-actions[bot]`'s, which any workflow in the
- *   pull request's branch can post as); `wait` while another trigger label is
- *   on, a check or the verdict is pending, or the bound runs out; `red` where
- *   a required check failed or the verdict is not an approval, said once per
- *   head, the arm left on; `behind` where the base's tip is not in the head's
- *   history, said once per head, the arm left on; and `merge` otherwise.
+ *   pull request's branch can post as), unless `agent:update-branch` is on,
+ *   which is a `wait`: that refresh's push starts a gate before its carry of
+ *   the arm may have landed, and its conclusion re-starts the gate; `wait`
+ *   while another trigger label is on, a check or the verdict is pending, or
+ *   the bound runs out; `red` where a required check failed or the verdict is
+ *   not an approval, said once per head, the arm left on; `behind` where the
+ *   base's tip is not in the head's history, said once per head, the arm left
+ *   on and `agent:update-branch` asked for with the loop's token, or
+ *   `disarmed` once the arm has survived `MAX_REFRESHES` clean refreshes; and
+ *   `merge` otherwise.
  *
  * `gate.json` is the decision and the head it checked, written as soon as it
  * is decided and again however this ends, as `fix:gate`'s is: a cancel
@@ -62,12 +68,12 @@ export type Decision = "merge" | "wait" | "behind" | "red" | "disarmed" | "refus
  *
  * The arm is the loop token's, since only that account cannot be posted as
  * from a pull request's branch. The labeller's permission is read with it too
- * (#77). Every other write is the workflow token's: nothing here has to start
- * a run.
+ * (#77), and the refresh is asked for with it, since a label the workflow
+ * token adds starts nothing. Every other write is the workflow token's.
  */
 export const gate = async (inputs: Inputs, io: Io): Promise<void> => {
   const pr = pullRequestNumber(inputs.PR_NUMBER);
-  const labelled = commit(inputs.HEAD_SHA, "HEAD_SHA");
+  const eventHead = commit(inputs.HEAD_SHA, "HEAD_SHA");
   const waitSeconds = seconds(inputs.CHECK_WAIT_SECONDS, "CHECK_WAIT_SECONDS");
   const pollSeconds = seconds(inputs.CHECK_POLL_SECONDS, "CHECK_POLL_SECONDS");
   const accounts = loopAccounts(inputs.AGENT_LOOP_LOGINS);
@@ -86,8 +92,13 @@ export const gate = async (inputs: Inputs, io: Io): Promise<void> => {
       return;
     }
 
-    const byLoop = sameAccount(inputs.SENDER, inputs.LOOP_LOGIN);
-    if (!byLoop) {
+    // A label the loop's own account added re-starts the gate and never arms,
+    // and a push (`synchronize`, #589) arms nothing either: it is what moved
+    // the head off the commit the maintainer decided on.
+    const labelled = inputs.ACTION === "labeled";
+    const byLoop = labelled && sameAccount(inputs.SENDER, inputs.LOOP_LOGIN);
+    const arming = labelled && !byLoop;
+    if (arming) {
       const permission = await io.loopGithub.permission(inputs.SENDER);
       if (!WRITERS.has(permission)) {
         await refuse(
@@ -104,25 +115,33 @@ export const gate = async (inputs: Inputs, io: Io): Promise<void> => {
 
     // The arm, on a writer's label only, and only on the head it was added
     // at: a live head that moved since is not the commit they decided on.
-    let armedAt: Arm | undefined;
-    if (!byLoop) {
+    let armedAt: Armed | undefined;
+    if (arming) {
       const live = await io.github.pullRequest(pr);
-      if (live.headSha !== labelled) {
-        await disarm(pr, workflow, live.headSha, { commit: labelled, login: inputs.SENDER });
+      if (live.headSha !== eventHead) {
+        await disarm(pr, workflow, live.headSha, { commit: eventHead, login: inputs.SENDER });
         decide("disarmed", live.headSha);
         return;
       }
+      // From #589 the arm says when it was made and how many clean refreshes
+      // it has survived, which a clean refresh's carry keeps and counts.
+      const at = new Date().toISOString().replace(/\.[0-9]+Z$/, "Z");
       try {
-        await loop.setCommitStatus({ sha: labelled, context: MERGE_CONTEXT, state: "success", description: armDescription(inputs.SENDER) });
+        await loop.setCommitStatus({
+          sha: eventHead,
+          context: MERGE_CONTEXT,
+          state: "success",
+          description: armDescription({ login: inputs.SENDER, at, refreshes: 0 }),
+        });
       } catch (error) {
         if (!(error instanceof WriteFailed)) throw error;
         throw new Error(
-          `Couldn't arm \`${labelled}\` for @${inputs.SENDER}: GitHub refused the \`${MERGE_CONTEXT}\` status, so nothing was merged. Check that the loop's App has **Commit statuses: write**, accepted on this installation, or that \`AGENT_PAT\` can write commit statuses here.`,
+          `Couldn't arm \`${eventHead}\` for @${inputs.SENDER}: GitHub refused the \`${MERGE_CONTEXT}\` status, so nothing was merged. Check that the loop's App has **Commit statuses: write**, accepted on this installation, or that \`AGENT_PAT\` can write commit statuses here.`,
           { cause: error },
         );
       }
-      armedAt = { commit: labelled, login: inputs.SENDER };
-      console.log(`Armed ${labelled} for @${inputs.SENDER}.`);
+      armedAt = { commit: eventHead, login: inputs.SENDER };
+      console.log(`Armed ${eventHead} for @${inputs.SENDER}.`);
     }
 
     const deadline = Date.now() + waitSeconds * 1000;
@@ -135,16 +154,28 @@ export const gate = async (inputs: Inputs, io: Io): Promise<void> => {
       }
       const head = live.headSha;
       const statuses = await io.github.commitStatuses(head);
-      const arm = armOf(statuses, inputs.LOOP_LOGIN, head);
+      const arm = armOn(statuses, inputs.LOOP_LOGIN);
       if (arm === undefined) {
-        // Who armed what, for the comment: the arm this run saw, or the one
-        // on the head the label was added at.
-        const earlier = armedAt ?? (head === labelled ? undefined : armOf(await io.github.commitStatuses(labelled), inputs.LOOP_LOGIN, labelled));
+        // A refresh is working on the pull request (#589): its own push starts
+        // a gate before its carry of the arm may have landed, and its
+        // conclusion re-starts the gate once it is done, which rules then.
+        if (live.labels.includes(UPDATE_BRANCH_LABEL)) {
+          console.log(`PR #${pr}'s head ${head} carries no arm yet, but ${UPDATE_BRANCH_LABEL} is on: that run hands back to this gate when it is done, so this one waits.`);
+          decide("wait", head);
+          return;
+        }
+        // Who armed what, for the comment: the arm this run saw, the one on
+        // the head the event named, or the newest on the pull request's
+        // earlier commits.
+        const earlier =
+          armedAt ??
+          (head === eventHead ? undefined : armedOn(eventHead, await io.github.commitStatuses(eventHead), inputs.LOOP_LOGIN)) ??
+          (await earlierArm(io.github, pr, head, inputs.LOOP_LOGIN));
         await disarm(pr, workflow, head, earlier, byLoop ? inputs.SENDER : undefined);
         decide("disarmed", head);
         return;
       }
-      armedAt = arm;
+      armedAt = arm.login === undefined ? { commit: head } : { commit: head, login: arm.login };
       const state = await stateOf(io.github, { pr, live, statuses, base: inputs.BASE_REF, accounts });
       if (state.kind === "red") {
         await sayOnce(io.github, workflow, pr, accounts, mergeRedMark(head), mergeRedComment(head, state.reasons));
@@ -152,7 +183,17 @@ export const gate = async (inputs: Inputs, io: Io): Promise<void> => {
         return;
       }
       if (state.kind === "behind") {
+        if (arm.refreshes >= MAX_REFRESHES) {
+          console.log(`PR #${pr} is behind ${inputs.BASE_REF} again after ${arm.refreshes} clean refreshes, so it is disarmed rather than refreshed again.`);
+          await tolerated(`Could not post the disarm comment on PR #${pr}.`, () =>
+            workflow.comment(pr, mergeRefreshCapComment(head, inputs.BASE_REF, arm.login, MAX_REFRESHES)),
+          );
+          await tolerated(undefined, () => workflow.removeLabel(pr, MERGE_LABEL));
+          decide("disarmed", head);
+          return;
+        }
         await sayOnce(io.github, workflow, pr, accounts, mergeBehindMark(head), mergeBehindComment(head, inputs.BASE_REF));
+        await refresh(pr, loop, head, inputs.BASE_REF);
         decide("behind", head);
         return;
       }
@@ -176,8 +217,67 @@ export const gate = async (inputs: Inputs, io: Io): Promise<void> => {
   }
 };
 
+/**
+ * How many clean refreshes an arm survives (#589): behind again after the
+ * third, the gate disarms rather than ask for a fourth, so a base that keeps
+ * moving cannot hold a pull request in a refresh loop. A constant, not a
+ * setting: a setting is a caller input, which lands in two releases, and this
+ * bounds a pathology rather than expressing a preference.
+ */
+export const MAX_REFRESHES = 3;
+
+/**
+ * The refresh the up-to-date rule forces (#589): `agent:update-branch`, with
+ * the loop's token, since a label added with the workflow token starts
+ * nothing, removed first, as every trigger label the loop adds (#236). Never
+ * while another trigger label is on: `stateOf` waits on that before it reads
+ * the base. A failed add stops the run, which names the way on.
+ */
+const refresh = async (pr: number, loop: Writer, head: string, base: string): Promise<void> => {
+  await tolerated(undefined, () => loop.removeLabel(pr, UPDATE_BRANCH_LABEL));
+  try {
+    await loop.addLabel(pr, UPDATE_BRANCH_LABEL);
+  } catch (error) {
+    if (!(error instanceof WriteFailed)) throw error;
+    throw new Error(
+      `\`${head}\` is behind \`${base}\`, and adding \`${UPDATE_BRANCH_LABEL}\` to refresh it failed, so it was neither refreshed nor merged. Add \`${UPDATE_BRANCH_LABEL}\` by hand, then \`${MERGE_LABEL}\` again.`,
+      { cause: error },
+    );
+  }
+  console.log(`PR #${pr} is behind ${base}: asked for ${UPDATE_BRANCH_LABEL}, with the arm kept.`);
+};
+
+/** How many of a pull request's commits before its head are read for the arm a disarm names. */
+const EARLIER_COMMITS = 20;
+
+/**
+ * The newest arm on the pull request's commits before `head`, newest first
+ * and at most `EARLIER_COMMITS` of them, for the human a disarm names: a push
+ * of any kind leaves the commit it moved off in the history. A read that
+ * fails names no one rather than stopping the disarm.
+ */
+const earlierArm = async (github: GitHubReader, pr: number, head: string, loopLogin: string): Promise<Armed | undefined> => {
+  try {
+    const commits = (await github.pullRequestCommits(pr)).filter((sha) => sha !== head).reverse().slice(0, EARLIER_COMMITS);
+    for (const sha of commits) {
+      const arm = armedOn(sha, await github.commitStatuses(sha), loopLogin);
+      if (arm !== undefined) return arm;
+    }
+  } catch (error) {
+    console.log(`::warning::Could not read PR #${pr}'s earlier commits for who armed it (${describe(error)}), so the disarm names no one.`);
+  }
+  return undefined;
+};
+
+/** The arm on `sha`, as the commit and who armed it. */
+const armedOn = (sha: string, statuses: readonly CommitStatus[], loopLogin: string): Armed | undefined => {
+  const arm = armOn(statuses, loopLogin);
+  if (arm === undefined) return undefined;
+  return arm.login === undefined ? { commit: sha } : { commit: sha, login: arm.login };
+};
+
 /** A commit the loop's account armed, and who armed it where its description names them. */
-interface Arm {
+interface Armed {
   readonly commit: string;
   readonly login?: string;
 }
@@ -200,22 +300,6 @@ const refusalOf = (inputs: Inputs): string | undefined => {
     return `Neither the loop's App nor \`AGENT_PAT\` is set, so nothing was armed or merged. An arm posted with \`GITHUB_TOKEN\` is one any workflow in this PR's branch could post too, and a merge made with it starts no workflow, so neither CI on the base nor the follow-ups would run. Set up the loop's App, or \`AGENT_PAT\`, and add \`${MERGE_LABEL}\` again.`;
   }
   return undefined;
-};
-
-/** Two REST logins naming one account: compared without regard to case, as GitHub compares them. */
-const sameAccount = (a: string, b: string): boolean => a !== "" && a.toLowerCase() === b.toLowerCase();
-
-/**
- * The arm standing on a commit: the newest `agent-merge` status the loop
- * token's account posted, where it is `success`. Anyone else's, and
- * `github-actions[bot]`'s above all, is no arm, whatever it says.
- */
-const armOf = (statuses: readonly CommitStatus[], loopLogin: string, sha: string): Arm | undefined => {
-  if (sameAccount(loopLogin, DEFAULT_LOOP_ACCOUNT)) return undefined;
-  const status = statuses.find((s) => s.context === MERGE_CONTEXT && sameAccount(s.creator, loopLogin));
-  if (status === undefined || status.state !== "success") return undefined;
-  const login = ARMED_BY.exec(status.description)?.[1];
-  return login === undefined ? { commit: sha } : { commit: sha, login };
 };
 
 /** Where an armed head stands, and why it is waiting or red. */
@@ -311,7 +395,7 @@ const refuse = async (pr: number, workflow: Writer, sentence: string): Promise<v
 };
 
 /** A disarm, in the same order: the comment naming who armed what, then `agent:merge` off. */
-const disarm = async (pr: number, workflow: Writer, head: string, armed: Arm | undefined, addedByLoop?: string): Promise<void> => {
+const disarm = async (pr: number, workflow: Writer, head: string, armed: Armed | undefined, addedByLoop?: string): Promise<void> => {
   console.log(`PR #${pr}'s head ${head} is not an armed commit, so nothing merges.`);
   await tolerated(`Could not post the disarm comment on PR #${pr}.`, () => workflow.comment(pr, disarmComment(head, armed, addedByLoop)));
   await tolerated(undefined, () => workflow.removeLabel(pr, MERGE_LABEL));
@@ -319,10 +403,11 @@ const disarm = async (pr: number, workflow: Writer, head: string, armed: Arm | u
 
 /**
  * What the gate may write, and how many of each (ADR 0005): one comment (a
- * refusal, a disarm, a red head or a behind one; never two), `agent:merge`
- * off, and the arm.
+ * refusal, a disarm, a red head or a behind one; never two), one label off
+ * (`agent:merge`, or `agent:update-branch` before it is added), the refresh
+ * asked for, and the arm.
  */
-const LIMITS: Limits = { comment: 1, removeLabel: 1, setCommitStatus: 1 };
+const LIMITS: Limits = { comment: 1, removeLabel: 1, addLabel: 1, setCommitStatus: 1 };
 
 const commit = (value: string, name: string): string => {
   if (!/^[0-9a-f]{40}$/.test(value)) throw new Error(`${name} is ${JSON.stringify(value)}, which is not a full commit id.`);

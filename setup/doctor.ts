@@ -1181,6 +1181,28 @@ export const diagnose = (
     }
   }
 
+  // The merge caller in a file whose trigger lists no `synchronize` (#589),
+  // a caller *body* change `diagnose` has to learn, since nothing diffs an
+  // adopter's caller against the reference: a push to an armed pull request
+  // then starts no gate, so the disarm is not said when the head moves, only
+  // at whatever re-starts the gate next. A warning: nothing merges that
+  // should not, since every gate checks the arm on the head it reads.
+  // `undefined` is GitHub's defaults, which include `synchronize`.
+  for (const caller of callers.filter((installed) => installed.workflow === "merge")) {
+    if (caller.pullRequestTypes === undefined || caller.pullRequestTypes.includes("synchronize")) continue;
+    add({
+      severity: "warning",
+      check: "merge without synchronize",
+      problem:
+        `${caller.file}'s \`${caller.jobId}\` job calls \`merge.yml\`, and the file's ` +
+        `\`pull_request_target\` lists no \`synchronize\`. A push to a pull request carrying ` +
+        `\`${MERGE_LABEL}\` then starts no gate, so a push the maintainer did not see disarms ` +
+        `nothing when it lands: \`${MERGE_LABEL}\` stays on, saying nothing, until something ` +
+        `else re-starts the gate.`,
+      fix: `Add \`synchronize\` to the \`types:\` under \`pull_request_target\` in ${caller.file}, as \`examples/callers/pr.yml\` lists it.`,
+    });
+  }
+
   if (facts.secrets === undefined) {
     add({
       severity: "warning",

@@ -106,6 +106,7 @@ each. A row that is a **warning** instead — printed, exit 0 — says so where 
 | `self-check` is the check run its job produces, byte for byte — **both** halves, and the calling half is that job's `name:` where it has one | §4 — a job that waits for itself for the whole of its 15-minute CI wait |
 | the labels exist | §3 — a transition that is a silent no-op |
 | where a `merge` caller is installed, the loop's App or `AGENT_PAT` is set: with neither, an error; and, as a note, that with the PAT alone its owner cannot arm | §3, *The merge decision*: the arm is a commit status only the loop token's account may post, so with only `GITHUB_TOKEN` the gate refuses every `agent:merge`, and nothing is armed or merged |
+| where a `merge` caller is installed, that its caller file's trigger lists `synchronize`: a warning where it does not | §3, *The merge decision*: a push re-starts the merge gate only on `synchronize`, so without it a push the maintainer did not see disarms nothing when it lands |
 | no retired label is still here, as a warning with the `gh label delete` that removes it | §3, *Retired labels*: nothing reads it, and it reads as a run in progress that is not |
 | the fix-round budget, `AGENT_MAX_FIX_ROUNDS`, is a whole number where it is set; that no review caller still passes the removed `auto-fix`; and, as a warning, that a budget above 0 (the default of 3 included) has the App or `AGENT_PAT` behind it | §3b — a variable the review refuses fails every review; GitHub fails every job in a caller that passes `auto-fix` before any starts, with no log; and without the App or the PAT no automatic round ever starts, and every verdict asks for `agent:fix` by hand |
 | whether the review caller configures the red check, as a note either way; and, as a warning, one that is half configured: a `red-check-command` with no `red-check-report` or no `red-check-test-globs`, named, or either of those with no command | §4, *The red check*: half configured, the check reports itself misconfigured on every review and the review reads what is red as unknown; with no command, the other two are read by nothing |
@@ -684,8 +685,11 @@ message is whatever your repository's squash setting makes it.
 
 **What it waits for.** A run checks the armed head and merges it only where all of these hold:
 
-- the head is **current with its base**. One that is behind is not merged: it waits, armed, and
-  says so once per head;
+- the head is **current with its base**. One that is behind is not merged: the loop adds
+  `agent:update-branch`, and a clean refresh carries the arm on to the merge commit, which merges
+  once it is green, with no step of yours. An arm survives three such refreshes: behind again after
+  the third, the loop takes `agent:merge` off and says so, and adding it again re-arms the head as it
+  is, with no fresh `/merge-check` needed, since it is your commit plus clean merges of the base;
 - every **required check is green**. A red head is said once per head, and the arm stays; a fix
   pushed after it is a new head, which disarms (below);
 - the newest **`agent-review` verdict is an approval**;
@@ -693,14 +697,17 @@ message is whatever your repository's squash setting makes it.
   nothing merges.
 
 A run waits up to 15 minutes for a pending check or verdict, and then ends with the label still on.
-**Nothing re-starts it in this release**: a pull request that is behind, red or still pending when
-its run ends keeps `agent:merge` and is merged by no later event. To have it checked again, remove
-`agent:merge` and add it back. Added by a person who can write, that arms the head as it is then,
-so check that head first.
+**What re-starts it**: a push to the pull request (the `merge` job needs `synchronize` in its caller
+file's trigger, which `doctor` checks), a refresh the loop asked for once it finishes, and a review
+that approves it. The loop re-adds `agent:merge` for the last two, and a label the loop adds never
+arms. A pull request that is red, or still pending when its run ends with none of those to come,
+keeps `agent:merge` and waits: to have it checked again, remove `agent:merge` and add it back.
+Added by a person who can write, that arms the head as it is then, so check that head first.
 
-**What disarms it.** A head that is not the armed commit. A fix round, a conflict an agent resolved,
-a push of yours, GitHub's *Update branch* button or a force-push each add code you did not decide
-on, so the next run takes `agent:merge` off and asks you, by name, for a `/merge-check` on the new
+**What disarms it.** A head that is not the armed commit or a clean refresh of it the loop made. A
+fix round, a conflict an agent resolved, a push of yours, GitHub's *Update branch* button or a
+force-push each add code you did not decide on, so the next run, the one the push starts, takes
+`agent:merge` off and asks you, by name, for a `/merge-check` on the new
 head and `agent:merge` again. It does not say which kind of push it was: the record cannot tell.
 
 **What it refuses.** A closed pull request, a draft, one from a fork, and a label added by someone
@@ -1211,7 +1218,8 @@ that drifts; a control behind a pinned `uses:` is one you get fixes to.
 ```
 
 **One caller file per side.** The pull-request side's file triggers on
-`pull_request_target: [labeled, closed]` and holds the `review`, `fix`, `update-branch`,
+`pull_request_target: [labeled, closed, synchronize]` (`synchronize` for the `merge` job alone, and
+left out with it) and holds the `review`, `fix`, `update-branch`,
 `follow-ups` and `merge` callers; the issue side's triggers on `issues: [labeled]` and holds `implement` and
 `implement-prd`. No caller carries a label `if:`: every reusable workflow's own guard decides
 whether an event is its label, as it always has, so one label starts one run of its side's file
@@ -1328,7 +1336,7 @@ name: Agent PR
 
 on:
   pull_request_target:      # `issues: types: [labeled]` for the issue side
-    types: [labeled, closed]
+    types: [labeled, closed, synchronize]
 
 permissions: {}             # nothing here; every grant is on its job
 

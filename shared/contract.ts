@@ -592,6 +592,7 @@ const UPDATE_BRANCH_PUBLISH = {
     BASE_SHA: REQUIRED,
     AGENT_RESULT: { required: true, accepts: RESULTS },
     CHECKOUT: REQUIRED,
+    LOOP_LOGIN: EMPTY,
     HEAD_WAIT_SECONDS: { required: false, default: "60" },
     HEAD_POLL_SECONDS: { required: false, default: "5" },
     UPDATE_BRANCH_DIR: readsFrom("update-branch", {
@@ -814,7 +815,7 @@ const MERGE_GATE = {
     LOOP_LOGIN: REQUIRED,
     PR_NUMBER: REQUIRED,
     BASE_REF: REQUIRED,
-    ACTION: { required: true, accepts: ["labeled"] },
+    ACTION: { required: true, accepts: ["labeled", "synchronize"] },
     SENDER: REQUIRED,
     HEAD_SHA: REQUIRED,
     HEAD_REPO: REQUIRED,
@@ -897,7 +898,9 @@ const MERGE_PUBLISH = {
  *   posted, and its round header's data where it has one.
  * - `review:conclude` ends every run, success included: the refusal's note,
  *   the error verdict and the failure comment, the ready mark, `agent:review`
- *   off, and the hand-off after it. It is told how the review job and the
+ *   off, and the hand-off after it: `agent:review` again, `agent:fix`, or,
+ *   on an approval of a pull request carrying `agent:merge`, that label
+ *   re-added with the loop's token (#589). It is told how the review job and the
  *   posting job's steps ended (`REVIEW_RESULT`, and `MINT_OUTCOME`,
  *   `DOWNLOAD_OUTCOME` and `PUBLISH_OUTCOME`, each a step's outcome, empty
  *   where it did not run), and the review job's outputs, and reads what
@@ -1077,13 +1080,17 @@ const MERGE_PUBLISH = {
  *   posting job's (`MOVED`, `REVIEW_URL`) and the mint's outcome, and reads
  *   the runner's park hand-over through `PARK_DIR`.
  * - `merge:gate` decides an `agent:merge` run (#588) from the record and
- *   the event's facts: `ACTION`, `SENDER`, the label's sender, `HEAD_SHA`,
- *   the payload's head, `PR_STATE`, `PR_MERGED`, `PR_DRAFT`, `HEAD_REPO`, the
+ *   the event's facts: `ACTION`, `labeled` or `synchronize` (#589), `SENDER`,
+ *   the label's sender or the pusher, `HEAD_SHA`, the payload's head, `PR_STATE`, `PR_MERGED`, `PR_DRAFT`, `HEAD_REPO`, the
  *   head's repository, and `BASE_REF`. A closed pull request, a draft, a fork,
  *   `LOOP_TOKEN_SOURCE` `workflow`, and a sender who can neither write nor is
  *   `LOOP_LOGIN`, the loop token's account, are refused on the pull request,
  *   `agent:merge` off. A writer's label arms the payload's head, posting
- *   `agent-merge` with the loop's token, or disarms where the live head moved.
+ *   `agent-merge` with the loop's token, or disarms where the live head moved;
+ *   a push, or the loop's own label, arms nothing. A head with no arm
+ *   disarms, but waits while `agent:update-branch` is on. A behind head gets
+ *   `agent:update-branch` with the loop's token, or is disarmed after its
+ *   arm's third clean refresh.
  *   Then it waits, bounded by `CHECK_WAIT_SECONDS` and polled every
  *   `CHECK_POLL_SECONDS`, while a required check or the verdict is pending or
  *   another trigger label is on. It reads the labeller's permission with the
@@ -1143,12 +1150,17 @@ const MERGE_PUBLISH = {
  *   `HEAD_POLL_SECONDS`. `AGENT_RESULT` is how the agent's job ended: on a
  *   conflict it does nothing on any ending but `success`, since the rest is
  *   `update-branch:conclude`'s. `AGENT_LOOP_LOGINS` is whose verdicts it
- *   copies. `published.json` is whether it pushed, the pushed head and
+ *   copies. On a clean merge it also copies the arm (#589), the newest
+ *   `agent-merge` `LOOP_LOGIN` posted on `HEAD_SHA`, its refresh count one
+ *   higher, with the loop's token; with `LOOP_LOGIN` empty or
+ *   `LOOP_TOKEN_SOURCE` `workflow` it copies none, and says so. `published.json` is whether it pushed, the pushed head and
  *   whether it asked for the review, written as each becomes true.
  * - `update-branch:conclude` ends every update-branch run, success included:
  *   the failure comment, `agent:update-branch` off and `agent:blocked` where
  *   the run stopped, and where it finished and the head moved on from the
- *   one it left, `agent:update-branch` asked for again. It is told how the
+ *   one it left, `agent:update-branch` asked for again; and where it
+ *   finished on a pull request carrying `agent:merge`, that label re-added
+ *   with the loop's token, so the gate rules on the head it left (#589). It is told how the
  *   gate and the agent's job ended (`REFUSED`, `GATE_RESULT`, the gate's
  *   reason where it failed after claiming the run, `GATE_REASON`, `STATUS`,
  *   what the gate's merge came to, `AGENT_RESULT`), whether the agent's job

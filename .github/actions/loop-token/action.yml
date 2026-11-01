@@ -59,8 +59,8 @@ inputs:
   account:
     description: >-
       `true` to report, as `login`, the account the token writes as. Only the
-      merge gate asks (#588): it reads an arm back only where that account
-      posted it. Asking costs a call with `AGENT_PAT`, so it is not made
+      merge gate (#588) and update-branch's publish job (#589) ask: each
+      reads an arm back only where that account posted it. Asking costs a call with `AGENT_PAT`, so it is not made
       unasked.
     required: false
     default: "false"

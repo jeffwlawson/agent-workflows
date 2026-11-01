@@ -25,6 +25,8 @@ export interface CommitStatus {
   readonly description: string;
   /** The login that set it. */
   readonly creator: string;
+  /** When it was set, as GitHub gives it, where the answer gave a time. */
+  readonly createdAt?: string;
 }
 
 /** A review on a pull request, as far as a read-back of one needs it. */
@@ -354,6 +356,7 @@ interface RawStatus {
   readonly target_url: string | null;
   readonly description: string | null;
   readonly creator: { readonly login: string } | null;
+  readonly created_at?: string;
 }
 
 interface RawReview {
@@ -677,6 +680,7 @@ export const githubReader = (repo: string, transport: Transport): GitHubReader =
             targetUrl: s.target_url,
             description: s.description ?? "",
             creator: s.creator?.login ?? "",
+            ...(typeof s.created_at === "string" ? { createdAt: s.created_at } : {}),
           })),
         );
         if (raw.length < 100) return statuses;

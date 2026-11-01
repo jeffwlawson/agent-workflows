@@ -11,6 +11,7 @@ import {
   BLOCKED_LABEL,
   FIX_LABEL,
   FIX_ROUND_STATUS,
+  MERGE_LABEL,
   PRD_BRANCH_PREFIX,
   REVIEW_LABEL,
   UPDATE_BRANCH_LABEL,
@@ -34,7 +35,9 @@ import { roundHeaderData } from "./hand-over.js";
  *   note that no automatic fix round is starting where one of #200's stops
  *   kept it from asking (#425), then `agent:review` off, and the hand-off:
  *   `agent:review` again where the head moved while the review ran, else
- *   `agent:fix` where it asked for a round.
+ *   `agent:fix` where it asked for a round, else, on an approval of a pull
+ *   request carrying `agent:merge`, that label re-added for the merge gate
+ *   (#589).
  *
  * "A failed hand-off is not a failed review" used to be step order: the error
  * verdict sat above the hand-off, so a hand-off that failed after the review
@@ -117,6 +120,8 @@ export const conclude = async (
 
   if (inputs.VERDICT === "changes recommended" && inputs.FIX_ROUND === "true") {
     await startFixRound(inputs, io, { pr, loop, live, reviewUrl, accounts });
+  } else if (inputs.VERDICT === "approval recommended") {
+    await handOffToMerge(inputs, pr, loop, live);
   }
 };
 
@@ -464,9 +469,46 @@ const startFixRound = async (
 };
 
 /**
+ * **The review's approval hands off to merge** (#589). The review waits for
+ * CI, so its approval is usually the last thing an armed pull request waits
+ * on, and nothing else would re-start the gate once it lands. So where the
+ * verdict posted is an approval, the head did not move, and `agent:merge` is
+ * on with no other trigger label, that label is re-added, removed first so
+ * the add fires (#236), with the loop's token, since a label the workflow
+ * token adds starts nothing. The gate's own rules then decide: a label the
+ * loop adds never arms. The fix-round hand-off and this one never both
+ * happen, since only *changes recommended* asks for a round.
+ *
+ * On a PRD PR only the final review's approval hands off: a slice round's is
+ * the slice's, not the pull request's.
+ */
+const handOffToMerge = async (inputs: Inputs, pr: number, loop: Writer, live: PullRequest | undefined): Promise<void> => {
+  if (live === undefined || live.state !== "open" || !live.labels.includes(MERGE_LABEL)) return;
+  if (inputs.BRANCH.startsWith(PRD_BRANCH_PREFIX) && inputs.ROUND !== "final") return;
+  const busy = live.labels.filter((label) => TRIGGERS.includes(label));
+  if (busy.length > 0) {
+    console.log(`PR #${pr} carries ${busy.join(",")}, so ${MERGE_LABEL} was not handed back: that run is not done, and the gate waits on it anyway.`);
+    return;
+  }
+  if (inputs.LOOP_TOKEN === "" || (inputs.LOOP_TOKEN_SOURCE !== "app" && inputs.LOOP_TOKEN_SOURCE !== "pat")) {
+    console.log(
+      `::warning::PR #${pr} carries ${MERGE_LABEL}, but neither the loop's App nor AGENT_PAT is set, so the approval was not handed to the merge gate: a label added with GITHUB_TOKEN starts nothing. Remove ${MERGE_LABEL} and add it again to re-start it.`,
+    );
+    return;
+  }
+  await tolerated(undefined, () => loop.removeLabel(pr, MERGE_LABEL));
+  await tolerated(
+    `PR #${pr} carries ${MERGE_LABEL}, and it could not be added again to hand the approval to the merge gate. Remove ${MERGE_LABEL} and add it again to re-start it.`,
+    () => loop.addLabel(pr, MERGE_LABEL),
+  );
+  console.log(`Handed PR #${pr}'s approval to the merge gate: ${MERGE_LABEL} re-added.`);
+};
+
+/**
  * What conclude may write, and how many of each (ADR 0005): three removals
- * (`agent:blocked`, `agent:review` and `agent:fix` before it is added), one
- * label added (`agent:blocked`, `agent:review` or `agent:fix`, never two),
+ * (`agent:blocked`, `agent:review`, and `agent:fix` or `agent:merge` before
+ * it is added), one label added (`agent:blocked`, `agent:review`, `agent:fix`
+ * or `agent:merge`, never two),
  * two comments (the note that a stop started no round, and the one that the
  * head moved with no token to ask again; every other comment ends the run
  * alone), one ready mark and one status, the error verdict.

@@ -26,13 +26,18 @@ name: Agent PR
 # `@main` would hand a job that runs with your secrets to whatever currently
 # sits on another repository's default branch (docs/ADOPTING.md §9).
 #
-# Two activity types, and `closed` is `follow-ups`' alone: it is **not** a
-# default `pull_request_target` type, so a file that listed only `labeled`
-# would file nothing on a merge and look exactly like one that did. Every job
-# of the others skips a `closed` event, so they spend nothing on one.
+# `closed` is `follow-ups`' alone: it is **not** a default
+# `pull_request_target` type, so a file that listed only `labeled` would file
+# nothing on a merge and look exactly like one that did.
+# `synchronize`, a push, is `merge`'s alone (#589): a push to a pull request
+# carrying `agent:merge` re-starts its gate, which merges a head a clean
+# refresh carried the arm on to and disarms any other, so the disarm is said
+# when the head moves; a file without the `merge` job leaves it out, since
+# nothing else answers it. Every job of the others skips a `closed` and a
+# `synchronize` event, so they spend nothing on one.
 on:
   pull_request_target:
-    types: [labeled, closed]
+    types: [labeled, closed, synchronize]
 
 # Nothing at the top level: every grant is on the job that spends it, so a job
 # added here later starts with nothing rather than with its neighbours' scopes.
@@ -240,7 +245,9 @@ jobs:
   # (ADR 0009, #588). Adding `agent:merge` to a ready pull request is the
   # maintainer's decision for the head they labelled, and the called job
   # squash-merges that head once it is current with its base, green and
-  # approved, or takes the label off and says why. Delete this job and the
+  # approved, refreshes it with `agent:update-branch` when it falls behind,
+  # or takes the label off and says why. It needs `synchronize` in the
+  # trigger above: without it a push disarms nothing until the next label. Delete this job and the
   # label does nothing: the loop never merges a pull request no human armed.
   #
   # Needs the loop's App, which must hold Commit statuses: write, or

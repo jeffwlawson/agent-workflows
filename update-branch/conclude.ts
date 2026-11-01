@@ -7,7 +7,7 @@ import { workflowRunUrl } from "../shared/common.js";
 import { COMMANDS, type DirectoryFiles, type DirectoryInput } from "../shared/contract.js";
 import type { InputValues } from "../shared/env.js";
 import { choice, json, matching, object, optional, readDirectory, text, type FileParsers, type HandOver } from "../shared/hand-over.js";
-import { BLOCKED_LABEL, FIX_LABEL, REVIEW_LABEL, UPDATE_BRANCH_LABEL } from "../shared/record.js";
+import { BLOCKED_LABEL, FIX_LABEL, MERGE_LABEL, REVIEW_LABEL, UPDATE_BRANCH_LABEL } from "../shared/record.js";
 
 type Declared = (typeof COMMANDS)["update-branch:conclude"];
 type Inputs = InputValues<Declared["inputs"]>;
@@ -26,8 +26,9 @@ type Io = CommandIo<Declared["outputs"]>;
  *   off; `agent:blocked`.
  * - **A run that finished**, `update-branch:publish` included:
  *   `agent:update-branch` off, and asked for again where the pull request's
- *   head moved on from the one this run left. Every other word of a finished
- *   run is publish's.
+ *   head moved on from the one this run left; then, on a pull request
+ *   carrying `agent:merge`, that label handed back to the merge gate (#589).
+ *   Every other word of a finished run is publish's.
  *
  * What ran and how it ended are inputs, each job's result and each step's
  * outcome as the adapter saw it, and this works out the ending from them.
@@ -84,19 +85,61 @@ export const conclude = async (inputs: Inputs, io: Io): Promise<void> => {
   }
 
   await removeTrigger(pr, workflow);
+  const live = await readLive(io, pr);
   if (published.unread) {
     console.log(`::warning::What update-branch:publish did could not be read, so whether it asked for a review could not be told, and ${UPDATE_BRANCH_LABEL} was not asked for again.`);
-    return;
-  }
-  // One hand-off or the other, never both: the review publish asked for is
-  // queued in this pull request's concurrency group, and a second request
-  // here would queue behind it and cancel it while pending, before it could
-  // take `agent:review` off.
-  if (state?.requested === true) {
+  } else if (state?.requested === true) {
+    // One hand-off or the other, never both: the review publish asked for is
+    // queued in this pull request's concurrency group, and a second request
+    // here would queue behind it and cancel it while pending, before it could
+    // take `agent:review` off.
     console.log("This run asked for the review of its resolution, so it asks for nothing more.");
+  } else {
+    await askAgainIfMoved(inputs, live, { pr, workflow, loop }, state?.head ?? started);
+  }
+  await handBackToMerge(inputs, live, pr, loop);
+};
+
+/**
+ * The pull request as it is now, once its label is off. A 404 is a pull
+ * request that is gone, and anything else is a read that failed.
+ */
+const readLive = async (io: Io, pr: number): Promise<Live> => {
+  try {
+    return await io.github.pullRequest(pr);
+  } catch (error) {
+    if (error instanceof GitHubError && error.status === 404) return "gone";
+    return { unread: describe(error) };
+  }
+};
+
+/** The pull request as `readLive` read it: itself, gone, or why it could not be read. */
+type Live = PullRequest | "gone" | { readonly unread: string };
+
+/**
+ * **The refresh hands back to the gate** (#589). A gate that asked for this
+ * refresh ended there, and the gate this run's own push started may have
+ * found the head before the arm was carried on to it, and waited. So on a
+ * run that finished, on a pull request carrying `agent:merge`, the label is
+ * re-added, removed first so the add fires (#236), with the loop's token,
+ * since a label the workflow token adds starts nothing. That gate then
+ * merges, waits, or disarms a resolution's head. A label the loop adds never
+ * arms. A run that stopped hands back nothing: `agent:blocked` and the arm
+ * are the maintainer's to act on.
+ */
+const handBackToMerge = async (inputs: Inputs, live: Live, pr: number, loop: Writer): Promise<void> => {
+  if (live === "gone" || "unread" in live || live.state !== "open" || !live.labels.includes(MERGE_LABEL)) return;
+  if (inputs.LOOP_TOKEN === "" || (inputs.LOOP_TOKEN_SOURCE !== "app" && inputs.LOOP_TOKEN_SOURCE !== "pat")) {
+    console.log(
+      `::warning::PR #${pr} carries ${MERGE_LABEL}, but neither the loop's App nor AGENT_PAT is set, so it was not handed back to the merge gate: a label added with GITHUB_TOKEN starts nothing. Remove ${MERGE_LABEL} and add it again to re-start it.`,
+    );
     return;
   }
-  await askAgainIfMoved(inputs, io, { pr, workflow, loop }, state?.head ?? started);
+  await tolerated(undefined, () => loop.removeLabel(pr, MERGE_LABEL));
+  await tolerated(
+    `PR #${pr} carries ${MERGE_LABEL}, and it could not be added again to hand the refreshed head back to the merge gate. Remove ${MERGE_LABEL} and add it again to re-start it.`,
+    () => loop.addLabel(pr, MERGE_LABEL),
+  );
 };
 
 /** The reasons a stopped run can give, each where its producer wrote one. */
@@ -249,25 +292,23 @@ const TRIGGERS = [REVIEW_LABEL, FIX_LABEL, UPDATE_BRANCH_LABEL];
  *
  * A pull request that cannot be read is not one whose head stayed put: a 404
  * is a pull request that is gone, and anything else is a read that failed,
- * and each is said in its own words. Neither blocks: the run finished.
+ * and each is said in its own words (`readLive`). Neither blocks: the run
+ * finished.
  */
 const askAgainIfMoved = async (
   inputs: Inputs,
-  io: Io,
+  live: Live,
   { pr, workflow, loop }: { pr: number; workflow: Writer; loop: Writer },
   left: string,
 ): Promise<void> => {
-  let live: PullRequest;
-  try {
-    live = await io.github.pullRequest(pr);
-  } catch (error) {
-    if (error instanceof GitHubError && error.status === 404) {
-      console.log(`PR #${pr} is not there any more, so there is nothing to ask for again.`);
-    } else {
-      console.log(
-        `::warning::Could not read PR #${pr} to tell whether its head moved on from ${left} while this run worked: ${describe(error)} If it did, add ${UPDATE_BRANCH_LABEL} by hand to refresh the new head.`,
-      );
-    }
+  if (live === "gone") {
+    console.log(`PR #${pr} is not there any more, so there is nothing to ask for again.`);
+    return;
+  }
+  if ("unread" in live) {
+    console.log(
+      `::warning::Could not read PR #${pr} to tell whether its head moved on from ${left} while this run worked: ${live.unread} If it did, add ${UPDATE_BRANCH_LABEL} by hand to refresh the new head.`,
+    );
     return;
   }
   if (live.state !== "open" || live.headSha === left) return;
@@ -300,10 +341,11 @@ const askAgainIfMoved = async (
 /**
  * What conclude may write, and how many of each (ADR 0005): two comments (the
  * failure comment, and the note that the head moved with no token to ask
- * again; never both), `agent:update-branch` off, and two labels added
- * (`agent:blocked`, or `agent:update-branch` asked for again; never both).
+ * again; never both), `agent:update-branch` off and `agent:merge` before it
+ * is added again, and two labels added (`agent:blocked`, or
+ * `agent:update-branch` asked for again and `agent:merge` handed back).
  */
-const LIMITS: Limits = { comment: 2, removeLabel: 1, addLabel: 2 };
+const LIMITS: Limits = { comment: 2, removeLabel: 2, addLabel: 2 };
 
 const FLAG = choice([true, false]);
 

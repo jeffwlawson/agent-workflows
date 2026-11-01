@@ -15,7 +15,9 @@ name: Agent Merge (reusable)
 #   it **arms** the head the label was added at, an `agent-merge` status posted
 #   with the loop's token; then it waits, bounded, for the head's required
 #   checks and its verdict, and decides: `merge`, `wait`, `behind`, `red`,
-#   `disarmed` or `refused`.
+#   `disarmed` or `refused`. On `behind` it has asked for `agent:update-branch`
+#   with the loop's token, whose clean refresh carries the arm and hands back
+#   (#589); a push, on `synchronize`, re-starts it and never arms.
 # - `merge:publish` squash-merges on `merge` alone, guarded on the head the
 #   gate checked, with the loop's token: a merge made with the workflow token
 #   starts no workflow, so neither CI on the base nor the follow-ups would run.
@@ -55,9 +57,12 @@ on:
 # On the workflow, as `update-branch.yml`'s is, and keyed the same way: a
 # workflow-level group is entered before any job's `if:` is evaluated, and a
 # group admits one pending run, cancelling the one it replaces, so every other
-# event takes a group of its own, keyed by its run id.
+# event takes a group of its own, keyed by its run id. The two events the job
+# answers share the group: `agent:merge` added, and a push to a pull request
+# carrying it (#589), so a gate the push starts waits behind the one running
+# rather than racing it.
 concurrency:
-  group: agent-merge-${{ github.event.pull_request.number }}${{ github.event.label.name != 'agent:merge' && format('-other-{0}', github.run_id) || '' }}
+  group: agent-merge-${{ github.event.pull_request.number }}${{ !(github.event.label.name == 'agent:merge' || (github.event.action == 'synchronize' && contains(github.event.pull_request.labels.*.name, 'agent:merge'))) && format('-other-{0}', github.run_id) || '' }}
   cancel-in-progress: false
 
 # Every job's `if:` opens with `vars.AGENT_ORCHESTRATOR != 'service'` (#455):
@@ -65,13 +70,19 @@ concurrency:
 # and every job here skips, so one orchestrator answers each label.
 jobs:
   merge:
-    # The fork guard, and the trigger label: `agent:merge` added. A fork pull
-    # request never reaches a step that names the loop's secrets. The gate
-    # refuses a fork too, for an orchestrator with no such condition.
+    # The fork guard, and the two events: `agent:merge` added, and a push
+    # (`synchronize`, #589) to a pull request carrying it, by the labels in
+    # the payload, so a disarm is said when the head moves rather than at the
+    # next event. A fork pull request never reaches a step that names the
+    # loop's secrets. The gate refuses a fork too, for an orchestrator with no
+    # such condition.
     if: >-
       vars.AGENT_ORCHESTRATOR != 'service' &&
       github.event.pull_request.head.repo.full_name == github.repository &&
-      github.event.action == 'labeled' && github.event.label.name == 'agent:merge'
+      (
+        ( github.event.action == 'labeled' && github.event.label.name == 'agent:merge' ) ||
+        ( github.event.action == 'synchronize' && contains(github.event.pull_request.labels.*.name, 'agent:merge') )
+      )
     runs-on: ubuntu-latest
     # Above the gate's bound, the review's CI wait of 15 minutes, with room
     # for the install, the merge and the ending.
@@ -145,6 +156,7 @@ jobs:
           LOOP_TOKEN_SOURCE: ${{ steps.token.outputs.source }}
           LOOP_LOGIN: ${{ steps.token.outputs.login }}
           BASE_REF: ${{ github.event.pull_request.base.ref }}
+          # `labeled` or `synchronize`: only a label arms.
           ACTION: ${{ github.event.action }}
           SENDER: ${{ github.event.sender.login }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}

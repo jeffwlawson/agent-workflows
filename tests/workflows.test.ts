@@ -742,14 +742,15 @@ const wiredCallers = (): readonly Caller[] =>
  * findings filed when the pull request merges, and **not** a default
  * `pull_request_target` activity type, so a file that listed only `labeled`
  * would file nothing on a merge and read exactly like one that did. Every job
- * of the other three PR-side reusables skips it.
+ * of the other PR-side reusables skips it. `synchronize` is `merge`'s (#589),
+ * and every other job skips that (`TYPES_OF_JOB`).
  */
 const CALLER_FILES: Readonly<
   Record<string, { readonly event: "pull_request_target" | "issues"; readonly types: readonly string[]; readonly jobs: readonly string[] }>
 > = {
   "pr.yml": {
     event: "pull_request_target",
-    types: ["labeled", "closed"],
+    types: ["labeled", "closed", "synchronize"],
     jobs: ["review", "fix", "update-branch", "follow-ups", "merge"],
   },
   "issue.yml": { event: "issues", types: ["labeled"], jobs: ["implement", "implement-prd"] },
@@ -757,6 +758,14 @@ const CALLER_FILES: Readonly<
 
 /** The table's entry for a caller file from either set. */
 const callerFileSpec = (file: string) => CALLER_FILES[path.basename(file).replace(/^agent-/, "")];
+
+/**
+ * The activity types a caller job alone answers, by its job id (#589): a
+ * copy of the caller file without that job leaves its types out, as the local
+ * copy does while the job waits for a release (`awaitingRelease`), since
+ * nothing else answers them.
+ */
+const TYPES_OF_JOB: Readonly<Record<string, readonly string[]>> = { merge: ["synchronize"] };
 
 /**
  * **The reusables the local callers wait for** (#588): those the release the
@@ -805,8 +814,9 @@ const awaitingJobs = (): readonly string[] => awaitingRelease().map((file) => pa
 
 /**
  * A caller file's text without the callers `ids` name, each with the comment
- * above it and the blank line before that: the reference copy as the local one
- * reads while it waits for a release.
+ * above it and the blank line before that, and the trigger types only they
+ * answer (`TYPES_OF_JOB`): the reference copy as the local one reads while it
+ * waits for a release.
  */
 const withoutJobs = (text: string, ids: readonly string[]): string => {
   let lines = text.split("\n");
@@ -824,6 +834,13 @@ const withoutJobs = (text: string, ids: readonly string[]): string => {
     const last = to >= lines.length;
     if (!last && lines[to - 1] === "") to -= 1;
     lines = [...lines.slice(0, from), ...lines.slice(to), ...(last ? [""] : [])];
+    const types = TYPES_OF_JOB[id] ?? [];
+    lines = lines.map((line) => {
+      const listed = /^( {4}types: \[)(.*)\]$/.exec(line);
+      if (listed === null) return line;
+      const kept = (listed[2] ?? "").split(", ").filter((type) => !types.includes(type));
+      return `${listed[1] ?? ""}${kept.join(", ")}]`;
+    });
   }
   return lines.join("\n");
 };
@@ -2278,8 +2295,10 @@ describe("agent-review starts fix rounds itself, within the fix-round budget", (
     // pushed. The PRD chain's advance is not a label on the pull request
     // under review at all: it goes on the PRD PR's **parent issue**, from
     // `review:advance`, which the `advance` job runs (#423).
-    expect([...added].sort()).toEqual(["agent:fix", "agent:review"]);
-    expect(addedBy("conclude.ts").filter((label) => triggers.has(label)).sort()).toEqual(["agent:fix", "agent:review"]);
+    // The third is the approval's hand-off to the merge gate (#589), which
+    // starts no run on this workflow's group and never arms.
+    expect([...added].sort()).toEqual(["agent:fix", "agent:merge", "agent:review"]);
+    expect(addedBy("conclude.ts").filter((label) => triggers.has(label)).sort()).toEqual(["agent:fix", "agent:merge", "agent:review"]);
     // …and never in YAML: the review job writes nothing at all (#257), and
     // the posting job's writes are its commands'.
     expect(fs.readFileSync(REVIEW, "utf8")).not.toContain("--add-label");
@@ -3633,7 +3652,42 @@ describe("each caller set holds one caller file per side", () => {
 
     expect(spec, file).toBeDefined();
     expect(Object.keys(on)).toEqual([spec?.event]);
-    expect(on[spec?.event ?? "issues"]?.types).toEqual(spec?.types);
+    // Less, in the local copy, the types only a caller it waits for answers.
+    const waiting = file.startsWith(WORKFLOW_DIR) ? awaitingJobs().flatMap((id) => TYPES_OF_JOB[id] ?? []) : [];
+    expect(on[spec?.event ?? "issues"]?.types).toEqual(spec?.types.filter((type) => !waiting.includes(type)));
+  });
+
+  /**
+   * `synchronize` is `merge`'s alone (#589): a push re-starts the merge gate
+   * on a pull request carrying `agent:merge`, and every other job a PR-side
+   * caller starts has to skip it, or every push to every pull request would
+   * start a review, a fix or a refresh. Ruled per job of each called
+   * workflow, by its condition: one that requires a label or a `closed` or
+   * `labeled` action skips it; one that needs a job that skips it skips it
+   * too, unless a status function in its condition overrides that without
+   * asking whether that need ran.
+   */
+  it("skips `synchronize` in every job a PR-side caller starts but the merge gate's", () => {
+    const pushed = (condition: string): boolean => {
+      const pieces = condition.replace(/\s+/g, " ").split(" || ");
+      return !pieces.every((piece) => /github\.event\.label\.name == '|github\.event\.action == '(closed|labeled)'/.test(piece));
+    };
+    const answers = (file: string): readonly string[] => {
+      const jobs = workflowOf(file).jobs;
+      const runs = (id: string): boolean => {
+        const job = jobs[id] as Job;
+        const condition = unskipped(job.if) ?? "";
+        if (!pushed(condition)) return false;
+        const needs = typeof job.needs === "string" ? [job.needs] : (job.needs ?? []);
+        const overrides = /\b(always|failure|cancelled)\(\)/.test(condition);
+        return needs.every((need) => runs(need) || (overrides && !condition.includes(`needs.${need}.result != 'skipped'`) && !condition.includes(`needs.${need}.outputs.`)));
+      };
+      return Object.keys(jobs).filter(runs);
+    };
+    const pr = path.join(CALLER_DIR, "pr.yml");
+    for (const caller of callersOf(pr)) {
+      expect(answers(targetOf(caller)), caller.id).toEqual(caller.id === "merge" ? ["merge"] : []);
+    }
   });
 
   /**
@@ -9653,7 +9707,7 @@ describe("the loop resolves its token in the jobs that write", () => {
         "agent-pat": "${{ secrets.AGENT_PAT }}",
         "github-token": "${{ secrets.GITHUB_TOKEN }}",
         ...(choosing ? { "choose-only": "true" } : {}),
-        ...(file === MERGE ? { account: "true" } : {}),
+        ...(file === MERGE || (file === path.join(WORKFLOW_DIR, "update-branch.yml") && id === "publish") ? { account: "true" } : {}),
       });
     }
   });
@@ -9892,13 +9946,15 @@ describe("the loop resolves its token in the jobs that write", () => {
     expect(login).toContain("steps.choose.outputs.source == 'app' && format('{0}[bot]', steps.mint.outputs.app-slug)");
     expect(login).toContain("steps.choose.outputs.source == 'pat' && steps.pat-account.outputs.login");
     expect(login).toContain(`steps.choose.outputs.source == 'workflow' && '${DEFAULT_LOOP_ACCOUNT}'`);
-    // Asked for in the merge gate's job alone.
+    // Asked for in the merge gate's job, and in update-branch's publish job,
+    // which carries the arm on to a clean refresh only where that account
+    // posted it (#589).
     const asking = runnerWorkflows.flatMap((file) =>
       Object.entries(workflowOf(file).jobs).flatMap(([id, job]) =>
         (job.steps ?? []).filter((step) => step.with?.["account"] !== undefined).map(() => `${path.basename(file)} ${id}`),
       ),
     );
-    expect(asking).toEqual(["merge.yml merge"]);
+    expect(asking.sort()).toEqual(["merge.yml merge", "update-branch.yml publish"]);
   });
 
   /** The choice needs no secret: its step is told only whether each is set. */
@@ -11601,10 +11657,11 @@ describe("the merge workflow arms, merges and disarms in one job that runs nothi
   const exec = (command: string): string =>
     `npm exec --prefix "$RUNNER_TEMP" --yes --package=@jeffwlawson/agent-workflows@${VERSION} -- agent-workflows ${command}`;
 
-  it("is one job, behind the skip, the fork guard and `agent:merge` added", () => {
+  /** A push re-starts it too (#589), where the payload's pull request carries `agent:merge`. */
+  it("is one job, behind the skip, the fork guard, and `agent:merge` added or a push to a pull request carrying it", () => {
     expect(Object.keys(workflowOf(MERGE).jobs)).toEqual(["merge"]);
     expect((job().if ?? "").replace(/\s+/g, " ").trim()).toBe(
-      `${SKIP} && github.event.pull_request.head.repo.full_name == github.repository && github.event.action == 'labeled' && github.event.label.name == 'agent:merge'`,
+      `${SKIP} && github.event.pull_request.head.repo.full_name == github.repository && ( ( github.event.action == 'labeled' && github.event.label.name == 'agent:merge' ) || ( github.event.action == 'synchronize' && contains(github.event.pull_request.labels.*.name, 'agent:merge') ) )`,
     );
   });
 
@@ -11681,11 +11738,13 @@ describe("the merge workflow arms, merges and disarms in one job that runs nothi
   /**
    * A group of its own per pull request, not the one review, fix and
    * update-branch share: the gate waits for the verdict a review posts, and
-   * holding the review's group would hold that review behind it.
+   * holding the review's group would hold that review behind it. Both events
+   * the job answers share it (#589); every other takes one of its own.
    */
   it("holds a workflow-level group of its own per pull request, first-come", () => {
     expect(workflowOf(MERGE).concurrency).toEqual({
-      group: "agent-merge-${{ github.event.pull_request.number }}${{ github.event.label.name != 'agent:merge' && format('-other-{0}', github.run_id) || '' }}",
+      group:
+        "agent-merge-${{ github.event.pull_request.number }}${{ !(github.event.label.name == 'agent:merge' || (github.event.action == 'synchronize' && contains(github.event.pull_request.labels.*.name, 'agent:merge'))) && format('-other-{0}', github.run_id) || '' }}",
       "cancel-in-progress": false,
     });
     expect(job().concurrency).toBeUndefined();

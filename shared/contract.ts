@@ -122,6 +122,9 @@ const EMPTY = { required: false, default: "" } as const satisfies Input;
  */
 const ROUND = { required: false, default: "", accepts: ["slice", "final"] } as const satisfies Input;
 
+/** An effort, as Claude Code takes it, or unset for its own default (#638). */
+const EFFORT = { required: false, default: "", accepts: ["low", "medium", "high", "xhigh", "max"] } as const satisfies Input;
+
 /**
  * **The loop's accounts** (#376, `docs/platform-spec.md` §4.1): a
  * comma-separated list of the logins the orchestrator posts the loop's
@@ -182,10 +185,17 @@ export const SANDBOX = {
  * name is computed from the runner's (`update-branch` reads
  * `AGENT_MODEL_UPDATE_BRANCH`), so each runner below names its own, and a test
  * holds the name to the one `agentModel` computes.
+ *
+ * The effort is resolved the same way (#638), from the runner's own
+ * `AGENT_EFFORT_<WORKFLOW>`, then `AGENT_EFFORT`, then none: unset passes no
+ * effort, and Claude Code uses its own default. `AGENT_PROMPT_CACHE_TTL` is
+ * handed to the agent as `CLAUDE_CODE_PROMPT_CACHE_TTL` only where it is set.
  */
 const AGENT = {
   CLAUDE_CODE_OAUTH_TOKEN: REQUIRED,
   AGENT_MODEL: EMPTY,
+  AGENT_EFFORT: EFFORT,
+  AGENT_PROMPT_CACHE_TTL: EMPTY,
   ...SANDBOX,
 } as const satisfies Inputs;
 
@@ -289,6 +299,7 @@ export const RUNNERS = {
       ...AGENT,
       ...LOOP_ACCOUNTS,
       AGENT_MODEL_IMPLEMENT: EMPTY,
+      AGENT_EFFORT_IMPLEMENT: EFFORT,
       ISSUE_NUMBER: REQUIRED,
       ISSUE_TITLE: REQUIRED,
       BRANCH: REQUIRED,
@@ -303,6 +314,7 @@ export const RUNNERS = {
       ...AGENT,
       ...LOOP_ACCOUNTS,
       AGENT_MODEL_IMPLEMENT_PRD: EMPTY,
+      AGENT_EFFORT_IMPLEMENT_PRD: EFFORT,
       ISSUE_NUMBER: REQUIRED,
       ISSUE_TITLE: REQUIRED,
       SUB_NUMBER: REQUIRED,
@@ -319,6 +331,7 @@ export const RUNNERS = {
       ...AGENT,
       ...LOOP_ACCOUNTS,
       AGENT_MODEL_REVIEW: EMPTY,
+      AGENT_EFFORT_REVIEW: EFFORT,
       PR_NUMBER: REQUIRED,
       BRANCH: REQUIRED,
       BASE_REF: REQUIRED,
@@ -349,6 +362,7 @@ export const RUNNERS = {
       ...AGENT,
       ...LOOP_ACCOUNTS,
       AGENT_MODEL_FIX: EMPTY,
+      AGENT_EFFORT_FIX: EFFORT,
       PR_NUMBER: REQUIRED,
       BRANCH: REQUIRED,
       BASE_REF: REQUIRED,
@@ -371,6 +385,7 @@ export const RUNNERS = {
       ...EVERY_SUBCOMMAND,
       ...AGENT,
       AGENT_MODEL_UPDATE_BRANCH: EMPTY,
+      AGENT_EFFORT_UPDATE_BRANCH: EFFORT,
       PR_NUMBER: REQUIRED,
       BRANCH: REQUIRED,
       BASE_REF: REQUIRED,

@@ -102,25 +102,62 @@ export type ModelInputs = Readonly<Record<string, string>>;
 
 export const agentModel = (workflow: string, inputs: ModelInputs): string => resolveModel(workflow, inputs).model;
 
+/** Workflow name → the env var that overrides its effort. `update-branch` → `AGENT_EFFORT_UPDATE_BRANCH`. */
+export const effortVar = (workflow: string): string =>
+  `AGENT_EFFORT_${workflow.toUpperCase().replace(/-/g, "_")}`;
+
+/** The efforts Claude Code takes, and so the values `AGENT_EFFORT` and its overrides accept. */
+export type Effort = "low" | "medium" | "high" | "xhigh" | "max";
+
+/**
+ * Resolve the effort, most specific wins: `AGENT_EFFORT_<WORKFLOW>`, then
+ * `AGENT_EFFORT`, then none at all, which leaves the effort to the installed
+ * Claude Code's default for the model, as every run had before #638. There is
+ * no baked effort: choosing one waits for the usage record and the evals.
+ * The values are the ones the contract lets through, so the cast is a
+ * narrowing `readInputs` already made.
+ */
+const resolveEffort = (workflow: string, inputs: ModelInputs): { readonly effort?: Effort; readonly source: string } => {
+  const perWorkflow = inputs[effortVar(workflow)];
+  if (perWorkflow) return { effort: perWorkflow as Effort, source: effortVar(workflow) };
+  const global = inputs["AGENT_EFFORT"];
+  if (global) return { effort: global as Effort, source: "AGENT_EFFORT" };
+  return { source: "default" };
+};
+
 /**
  * @param workflow Directory name under `agent-workflows/` — `implement`,
- *   `fix`, `review`, `update-branch`. Drives model selection, so it
+ *   `fix`, `review`, `update-branch`. Drives model and effort selection, so it
  *   must match the directory or the workflow silently gets the global default.
  * @param inputs The runner's inputs, as `readInputs` read them: the model
- *   token, and the model's two overrides.
+ *   token, the model's two overrides, the effort's two and the prompt cache's
+ *   TTL.
  */
 export const claudeAgent = (
   workflow: string,
-  inputs: ModelInputs & { readonly AGENT_MODEL: string; readonly CLAUDE_CODE_OAUTH_TOKEN: string },
+  inputs: ModelInputs & {
+    readonly AGENT_MODEL: string;
+    readonly AGENT_EFFORT: string;
+    readonly AGENT_PROMPT_CACHE_TTL: string;
+    readonly CLAUDE_CODE_OAUTH_TOKEN: string;
+  },
 ) => {
   const { model, source } = resolveModel(workflow, inputs);
   // Echoed so a run is self-documenting — "which model produced this?" is the
   // first question asked of any output that looks off, and the answer should
   // not require knowing what a repository variable was set to that week.
   console.log(`Agent model: ${model} (${source})`);
+  const { effort, source: effortSource } = resolveEffort(workflow, inputs);
+  console.log(effort === undefined ? "Agent effort: default" : `Agent effort: ${effort} (${effortSource})`);
+  // The TTL reaches the agent only where it is set: unset, Claude Code keeps
+  // its own, and no default is chosen here (#638), since a verify step that
+  // runs for minutes could outlast a short one mid-run.
+  const ttl = inputs.AGENT_PROMPT_CACHE_TTL;
   return sandcastle.claudeCode(model, {
+    ...(effort === undefined ? {} : { effort }),
     env: {
       CLAUDE_CODE_OAUTH_TOKEN: inputs.CLAUDE_CODE_OAUTH_TOKEN,
+      ...(ttl === "" ? {} : { CLAUDE_CODE_PROMPT_CACHE_TTL: ttl }),
     },
   });
 };

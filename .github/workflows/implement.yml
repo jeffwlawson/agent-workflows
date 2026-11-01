@@ -409,7 +409,7 @@ jobs:
           ${{ inputs.setup }}
 
       - name: Install Claude Code
-        run: npm install -g @anthropic-ai/claude-code
+        run: npm install -g @anthropic-ai/claude-code@2.1.316
 
       # The runner below runs from the install above and asks the registry for
       # nothing, so here this step's work is the Node it names; the registry
@@ -438,6 +438,11 @@ jobs:
           # own default. Change the model in Settings -> Variables, no commit.
           AGENT_MODEL: ${{ vars.AGENT_MODEL }}
           AGENT_MODEL_IMPLEMENT: ${{ vars.AGENT_MODEL_IMPLEMENT }}
+          # The effort and the prompt cache's TTL, the same way: unset passes
+          # neither, and Claude Code keeps its own defaults (#638).
+          AGENT_EFFORT: ${{ vars.AGENT_EFFORT }}
+          AGENT_EFFORT_IMPLEMENT: ${{ vars.AGENT_EFFORT_IMPLEMENT }}
+          AGENT_PROMPT_CACHE_TTL: ${{ vars.AGENT_PROMPT_CACHE_TTL }}
           BRANCH: ${{ needs.gate.outputs.branch }}
           OUTPUT_DIR: ${{ runner.temp }}
         # The binary *Install the package* linked, run by its path, from the

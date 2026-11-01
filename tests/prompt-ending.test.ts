@@ -1,5 +1,6 @@
 import * as fs from "node:fs";
 import { describe, expect, it } from "vitest";
+import { RUNNERS } from "../shared/contract.js";
 
 const read = (prompt: string): string => fs.readFileSync(prompt, "utf8").replace(/\s+/g, " ");
 
@@ -72,5 +73,27 @@ describe("implement treats CLAUDE.md as already loaded", () => {
 
   it("still asks for CONTEXT.md to be read", () => {
     expect(text).toContain("Read `CONTEXT.md` before changing code");
+  });
+});
+
+/**
+ * The same holds for every runner (#638): each starts `claude -p` in the
+ * checkout, which loads `CLAUDE.md` before the prompt is read, so a prompt
+ * asking for it again pays for a second copy on every run. Each says it is
+ * already loaded, and none asks for it to be read; the `CONTEXT.md` read stays.
+ */
+describe.each(Object.keys(RUNNERS).map((runner) => `${runner}/prompt.md`))("%s does not re-read CLAUDE.md", (prompt) => {
+  const text = fs.readFileSync(prompt, "utf8");
+
+  it("asks for no read of CLAUDE.md", () => {
+    // A sentence runs to a full stop that ends it, not the one in a file name.
+    expect(read(prompt)).not.toMatch(/\bRead\b(?:[^.]|\.(?!\s))*`CLAUDE\.md`/);
+    // Nor a list of what to read with it as an item.
+    expect(text).not.toMatch(/^\s*- `CLAUDE\.md`:/m);
+  });
+
+  it("says CLAUDE.md is already in context, and still asks for CONTEXT.md", () => {
+    expect(read(prompt)).toContain("`CLAUDE.md` is already in your context; do not read it again.");
+    expect(read(prompt)).toMatch(/Read `CONTEXT\.md`/);
   });
 });

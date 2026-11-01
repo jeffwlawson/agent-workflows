@@ -35,7 +35,7 @@ import {
   workflowRunUrl,
   writers,
 } from "../shared/common.js";
-import { agentModel, overrideVar } from "../shared/agent.js";
+import { agentModel, effortVar, overrideVar } from "../shared/agent.js";
 import { scrubGitHubTokens } from "../shared/env.js";
 import { COMMANDS, EVERY_SUBCOMMAND, RUNNERS, SANDBOX, TOKENLESS, type Input, type Inputs, type Outputs, type Runner, type RunnerInputs } from "../shared/contract.js";
 import { SUBPROCESS_TIMEOUT } from "../vitest.config.js";
@@ -1032,6 +1032,10 @@ describe("readInputs and input: a subcommand's declared inputs, read loudly", ()
   it.each(Object.keys(RUNNERS) as Runner[])("%s declares the inputs that start the agent", (runner) => {
     expect(RUNNERS[runner].inputs).toHaveProperty(overrideVar(runner), { required: false, default: "" });
     expect(RUNNERS[runner].inputs).toHaveProperty("AGENT_MODEL", { required: false, default: "" });
+    const effort = { required: false, default: "", accepts: ["low", "medium", "high", "xhigh", "max"] };
+    expect(RUNNERS[runner].inputs).toHaveProperty(effortVar(runner), effort);
+    expect(RUNNERS[runner].inputs).toHaveProperty("AGENT_EFFORT", effort);
+    expect(RUNNERS[runner].inputs).toHaveProperty("AGENT_PROMPT_CACHE_TTL", { required: false, default: "" });
     expect(RUNNERS[runner].inputs).toHaveProperty("CLAUDE_CODE_OAUTH_TOKEN", { required: true });
     for (const [name, declaration] of Object.entries(SANDBOX)) expect(RUNNERS[runner].inputs, name).toHaveProperty(name, declaration);
   });

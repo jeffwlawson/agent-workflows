@@ -27,7 +27,7 @@ The change under review: the PR's diff against its base branch, exactly what Git
 
 # HOW TO RESPOND TO FEEDBACK
 
-Read `CONTEXT.md` and `CLAUDE.md` first, then the files the comments refer to.
+Read `CONTEXT.md` first, then the files the comments refer to. `CLAUDE.md` is already in your context; do not read it again.
 
 For each piece of feedback, decide honestly:
 

@@ -105,10 +105,10 @@ A gate whose time is dominated by a few files is a finding about those files, no
   the model is producing a single turn with no output in between, often a long thinking block or a
   large file written in one call. In the transcript that is one turn, and it belongs in the
   generation bucket.
-- **Claude Code is installed unpinned.** Each agent workflow runs `npm install -g
-  @anthropic-ai/claude-code`, so two runs a week apart may be different versions. Record the
-  version for every run, from the install step's log or the `version` field on the transcript's
-  events, and compare runs of the same version, or say that you did not.
+- **Claude Code's version is pinned, but moves.** Each agent workflow installs one pinned
+  `@anthropic-ai/claude-code` (#638), so two runs of one release share a version, and two releases
+  may not. Record the version for every run, from the install step's log or the `version` field on
+  the transcript's events, and compare runs of the same version, or say that you did not.
 - **PR totals include fix rounds.** A PR's commits, diff size and wall-clock time span its
   implement run and every fix and update-branch round after it. Size and time one run (§3).
 

@@ -241,8 +241,9 @@ every runner that starts the agent. Which version, and how it gets there, is eac
 **`doctor` cannot check this.** The version is whatever is installed on the machine that runs the
 runner, at the time it runs, and the model is a repository variable that can change between runs.
 
-> **Actions orchestrator:** `npm install -g @anthropic-ai/claude-code` in the agent job, so the
-> latest release, on every run.
+> **Actions orchestrator:** `npm install -g @anthropic-ai/claude-code@<version>` in the agent job,
+> at one pinned version, the same in every reusable that installs it (#638): an unpinned install
+> would take the latest release, and with it whatever default effort that release gives the model.
 
 > **Service orchestrator:** the worker installs the CLI itself at start, into its own prefix, at
 > the version its required setting `CLAUDE_CODE_VERSION` names, and refuses to start without one,
@@ -636,6 +637,9 @@ runner requires.
 | `CLAUDE_CODE_OAUTH_TOKEN` | required | | The agent's model token. |
 | `AGENT_MODEL` | optional | `""` | The model for every runner, where set. Empty is the baked default. |
 | `AGENT_MODEL_IMPLEMENT` | optional | `""` | This runner's model, where set, over `AGENT_MODEL`. |
+| `AGENT_EFFORT` | optional | `""` | Accepts `low`, `medium`, `high`, `xhigh` or `max`: the effort for every runner, where set. Empty passes none, and Claude Code uses its own default. |
+| `AGENT_EFFORT_IMPLEMENT` | optional | `""` | Accepts the same: this runner's effort, where set, over `AGENT_EFFORT`. |
+| `AGENT_PROMPT_CACHE_TTL` | optional | `""` | Handed to the agent as `CLAUDE_CODE_PROMPT_CACHE_TTL`, where set. Empty hands nothing on. |
 | `AGENT_SANDBOX` | optional | `none` | Accepts `none` or `bwrap`: the agent's sandbox (§2.2, §3). Any other value fails the run, naming it. |
 | `AGENT_SANDBOX_RO_BINDS` | optional | `""` | Read-only binds for `bwrap` (§2.2). |
 | `AGENT_SANDBOX_PATH` | optional | `/usr/local/bin:/usr/bin:/bin` | `PATH` inside `bwrap` (§2.2). |
@@ -1172,6 +1176,9 @@ earlier run of this PRD left commits on `RESCUE_BRANCH`, that branch fetched to
 | `CLAUDE_CODE_OAUTH_TOKEN` | required | | The agent's model token. |
 | `AGENT_MODEL` | optional | `""` | The model for every runner, where set. |
 | `AGENT_MODEL_IMPLEMENT_PRD` | optional | `""` | This runner's model, where set, over `AGENT_MODEL`. |
+| `AGENT_EFFORT` | optional | `""` | Accepts `low`, `medium`, `high`, `xhigh` or `max`: the effort for every runner, where set. Empty passes none, and Claude Code uses its own default. |
+| `AGENT_EFFORT_IMPLEMENT_PRD` | optional | `""` | Accepts the same: this runner's effort, where set, over `AGENT_EFFORT`. |
+| `AGENT_PROMPT_CACHE_TTL` | optional | `""` | Handed to the agent as `CLAUDE_CODE_PROMPT_CACHE_TTL`, where set. Empty hands nothing on. |
 | `AGENT_SANDBOX` | optional | `none` | Accepts `none` or `bwrap`: the agent's sandbox (§2.2, §3). Any other value fails the run, naming it. |
 | `AGENT_SANDBOX_RO_BINDS` | optional | `""` | Read-only binds for `bwrap` (§2.2). |
 | `AGENT_SANDBOX_PATH` | optional | `/usr/local/bin:/usr/bin:/bin` | `PATH` inside `bwrap` (§2.2). |
@@ -1910,6 +1917,9 @@ so a review asks with or without a header.
 | `CLAUDE_CODE_OAUTH_TOKEN` | required | | The agent's model token. |
 | `AGENT_MODEL` | optional | `""` | The model for every runner, where set. |
 | `AGENT_MODEL_REVIEW` | optional | `""` | This runner's model, where set, over `AGENT_MODEL`. |
+| `AGENT_EFFORT` | optional | `""` | Accepts `low`, `medium`, `high`, `xhigh` or `max`: the effort for every runner, where set. Empty passes none, and Claude Code uses its own default. |
+| `AGENT_EFFORT_REVIEW` | optional | `""` | Accepts the same: this runner's effort, where set, over `AGENT_EFFORT`. |
+| `AGENT_PROMPT_CACHE_TTL` | optional | `""` | Handed to the agent as `CLAUDE_CODE_PROMPT_CACHE_TTL`, where set. Empty hands nothing on. |
 | `AGENT_SANDBOX` | optional | `none` | Accepts `none` or `bwrap`: the agent's sandbox (§2.2, §3). Any other value fails the run, naming it. |
 | `AGENT_SANDBOX_RO_BINDS` | optional | `""` | Read-only binds for `bwrap` (§2.2). |
 | `AGENT_SANDBOX_PATH` | optional | `/usr/local/bin:/usr/bin:/bin` | `PATH` inside `bwrap` (§2.2). |
@@ -2600,6 +2610,9 @@ diffing, which the orchestrator prepares, and `RESCUE_BRANCH` fetched to
 | `CLAUDE_CODE_OAUTH_TOKEN` | required | | The agent's model token. |
 | `AGENT_MODEL` | optional | `""` | The model for every runner, where set. |
 | `AGENT_MODEL_FIX` | optional | `""` | This runner's model, where set, over `AGENT_MODEL`. |
+| `AGENT_EFFORT` | optional | `""` | Accepts `low`, `medium`, `high`, `xhigh` or `max`: the effort for every runner, where set. Empty passes none, and Claude Code uses its own default. |
+| `AGENT_EFFORT_FIX` | optional | `""` | Accepts the same: this runner's effort, where set, over `AGENT_EFFORT`. |
+| `AGENT_PROMPT_CACHE_TTL` | optional | `""` | Handed to the agent as `CLAUDE_CODE_PROMPT_CACHE_TTL`, where set. Empty hands nothing on. |
 | `AGENT_SANDBOX` | optional | `none` | Accepts `none` or `bwrap`: the agent's sandbox (§2.2, §3). Any other value fails the run, naming it. |
 | `AGENT_SANDBOX_RO_BINDS` | optional | `""` | Read-only binds for `bwrap` (§2.2). |
 | `AGENT_SANDBOX_PATH` | optional | `/usr/local/bin:/usr/bin:/bin` | `PATH` inside `bwrap` (§2.2). |
@@ -3077,6 +3090,9 @@ copy-out that did not finish, fails the run, and nothing is pushed.
 | `CLAUDE_CODE_OAUTH_TOKEN` | required | | The agent's model token. |
 | `AGENT_MODEL` | optional | `""` | The model for every runner, where set. |
 | `AGENT_MODEL_UPDATE_BRANCH` | optional | `""` | This runner's model, where set, over `AGENT_MODEL`. |
+| `AGENT_EFFORT` | optional | `""` | Accepts `low`, `medium`, `high`, `xhigh` or `max`: the effort for every runner, where set. Empty passes none, and Claude Code uses its own default. |
+| `AGENT_EFFORT_UPDATE_BRANCH` | optional | `""` | Accepts the same: this runner's effort, where set, over `AGENT_EFFORT`. |
+| `AGENT_PROMPT_CACHE_TTL` | optional | `""` | Handed to the agent as `CLAUDE_CODE_PROMPT_CACHE_TTL`, where set. Empty hands nothing on. |
 | `AGENT_SANDBOX` | optional | `none` | Accepts `none` or `bwrap`: the agent's sandbox (§2.2, §3). Any other value fails the run, naming it. |
 | `AGENT_SANDBOX_RO_BINDS` | optional | `""` | Read-only binds for `bwrap` (§2.2). |
 | `AGENT_SANDBOX_PATH` | optional | `/usr/local/bin:/usr/bin:/bin` | `PATH` inside `bwrap` (§2.2). |

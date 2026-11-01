@@ -665,7 +665,7 @@ jobs:
           ${{ inputs.setup }}
 
       - name: Install Claude Code
-        run: npm install -g @anthropic-ai/claude-code
+        run: npm install -g @anthropic-ai/claude-code@2.1.316
 
       # The runner below runs from the install above and asks the registry for
       # nothing, so here this step's work is the Node it names; the registry
@@ -694,6 +694,11 @@ jobs:
           # own default. Change the model in Settings -> Variables, no commit.
           AGENT_MODEL: ${{ vars.AGENT_MODEL }}
           AGENT_MODEL_IMPLEMENT_PRD: ${{ vars.AGENT_MODEL_IMPLEMENT_PRD }}
+          # The effort and the prompt cache's TTL, the same way: unset passes
+          # neither, and Claude Code keeps its own defaults (#638).
+          AGENT_EFFORT: ${{ vars.AGENT_EFFORT }}
+          AGENT_EFFORT_IMPLEMENT_PRD: ${{ vars.AGENT_EFFORT_IMPLEMENT_PRD }}
+          AGENT_PROMPT_CACHE_TTL: ${{ vars.AGENT_PROMPT_CACHE_TTL }}
           # The PRD branch, which the agent commits on and the prompt names.
           BRANCH: ${{ needs.gate.outputs.prd_branch }}
           SUB_NUMBER: ${{ needs.gate.outputs.sub }}

@@ -1085,6 +1085,44 @@ describe("every reusable job skips on a service-served repository", () => {
   });
 });
 
+/**
+ * The agent's own runtime, pinned (#638): an unpinned install takes whatever
+ * Claude Code released last, so its default effort for the model, and so a
+ * run's cost, could move between two runs with nothing here changed. Held to
+ * one version across the reusables, like the runner pin, so bumping it is one
+ * decision rather than five.
+ */
+describe("every reusable that starts the agent installs one pinned Claude Code", () => {
+  const CLAUDE_CODE_INSTALL = /^npm install -g @anthropic-ai\/claude-code@(\d+\.\d+\.\d+)$/;
+  const agentRuns = (file: string): readonly Step[] => stepsOf(file).filter((s) => subcommandRun(s) === path.basename(file, ".yml"));
+  const starting = runnerWorkflows.filter((file) => agentRuns(file).length > 0);
+
+  it("finds the five that start it", () => {
+    expect(starting.map((file) => path.basename(file, ".yml")).sort()).toEqual(["fix", "implement", "implement-prd", "review", "update-branch"]);
+  });
+
+  it("installs it at one version, the same in each", () => {
+    const versions = starting.map((file) => {
+      const installs = stepsOf(file).filter((s) => (s.run ?? "").includes("@anthropic-ai/claude-code"));
+      expect(installs, file).toHaveLength(1);
+      const version = CLAUDE_CODE_INSTALL.exec((installs[0]?.run ?? "").trim())?.[1];
+      expect(version, `${file} installs Claude Code unpinned`).toBeDefined();
+      return version;
+    });
+    expect(new Set(versions).size, versions.join(", ")).toBe(1);
+  });
+
+  /** The effort and the TTL arrive as the model does: repository variables, `""` where unset. */
+  it.each(starting)("%s hands its runner the effort and the prompt cache's TTL", (file) => {
+    const workflow = path.basename(file, ".yml").toUpperCase().replace(/-/g, "_");
+    for (const step of agentRuns(file)) {
+      for (const name of ["AGENT_EFFORT", `AGENT_EFFORT_${workflow}`, "AGENT_PROMPT_CACHE_TTL"]) {
+        expect(step.env?.[name], name).toBe(`\${{ vars.${name} }}`);
+      }
+    }
+  });
+});
+
 describe("the loop works against a base ref it is told, never a literal", () => {
   /**
    * Where the base comes from, per event. A PR event carries the real base and
@@ -8049,9 +8087,9 @@ describe("every gh call reaches argv, never a shell", () => {
  * in it may name this repo's toolchain.
  *
  * The seam that replaces both already exists and is load-bearing: every prompt
- * reads `CONTEXT.md` and `CLAUDE.md` first, so what is specific to a repo lives
- * with the adopter rather than with the template. The prompts point at those two
- * files; the files answer.
+ * reads `CONTEXT.md` first and already has `CLAUDE.md` in its context (#638),
+ * so what is specific to a repo lives with the adopter rather than with the
+ * template. The prompts point at those two files; the files answer.
  *
  * These are deliberately mechanical. De-domaining is a one-off edit anyone can
  * do; *staying* de-domained is a habit, and the next prompt written under

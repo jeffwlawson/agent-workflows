@@ -1,6 +1,6 @@
 import { generateKeyPairSync } from "node:crypto";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { TOKEN_PERMISSIONS } from "../../service/dispatcher.js";
+import { SCAN_PERMISSIONS, TOKEN_PERMISSIONS } from "../../service/dispatcher.js";
 import { liveAppGitHub } from "../../service/github-app.js";
 
 /**
@@ -22,6 +22,12 @@ interface World {
   failing?: { path: RegExp; status: number };
   /** The App's own record, where it is not the loop's App's. */
   app?: unknown;
+  /** The repository's issues and pull requests as the issues list gives them, each with its labels' names. */
+  issues: { number: number; title: string; state: string; labels: string[]; pull?: boolean }[];
+  /** Each pull request's own record, by number. */
+  pulls: Record<number, unknown>;
+  /** Each item's events, oldest first, by number. */
+  events: Record<number, unknown[]>;
 }
 
 /**
@@ -47,12 +53,18 @@ let world: World;
 const asked: string[] = [];
 /** The permissions each token was asked for, in order. */
 const minted: Record<string, string>[] = [];
+/** The repositories each token was asked for, in order: `undefined` for the whole installation. */
+const mintedFor: (string[] | undefined)[] = [];
+/** Each request's path and query. */
+const queried: string[] = [];
 
 const reply = (status: number, body: unknown): Response => new Response(JSON.stringify(body), { status });
 
 const mintAnswer = (body: string | undefined): Response => {
-  const permissions = (JSON.parse(body ?? "{}") as { permissions?: Record<string, string> }).permissions ?? {};
+  const parsed = JSON.parse(body ?? "{}") as { permissions?: Record<string, string>; repositories?: string[] };
+  const permissions = parsed.permissions ?? {};
   minted.push(permissions);
+  mintedFor.push(parsed.repositories);
   const refused = Object.entries(permissions).some(
     ([name, level]) => GRANTED[name] === undefined || (LEVEL[level] ?? 3) > (LEVEL[GRANTED[name]] ?? 0),
   );
@@ -64,11 +76,34 @@ const mintAnswer = (body: string | undefined): Response => {
 const answer = (url: string, init?: RequestInit): Response => {
   const { pathname, searchParams } = new URL(url);
   asked.push(pathname);
+  queried.push(`${pathname}${searchParams.size === 0 ? "" : `?${searchParams.toString()}`}`);
+  const size = Number(searchParams.get("per_page"));
+  const page = Number(searchParams.get("page"));
+  const paged = <T>(all: readonly T[]): T[] => all.slice((page - 1) * size, page * size);
   if (world.failing?.path.test(pathname)) return reply(world.failing.status, { message: "no" });
   if (pathname === `/repos/${REPO}/installation`) return reply(200, { id: 1, account: { login: "owner", type: "User" } });
   if (pathname === "/app") return reply(200, world.app ?? { id: 1, slug: "loop-app", owner: { login: "Owner", type: "User" }, permissions: GRANTED, events: ["issues", "pull_request"] });
   if (pathname === "/app/installations/1/access_tokens") return mintAnswer(typeof init?.body === "string" ? init.body : undefined);
-  if (pathname === `/repos/${REPO}`) return reply(200, { owner: { type: world.organization === undefined ? "User" : "Organization" } });
+  if (pathname === `/repos/${REPO}`) return reply(200, { default_branch: "trunk", owner: { type: world.organization === undefined ? "User" : "Organization" } });
+  if (pathname === "/app/installations") return reply(200, paged([{ id: 1, account: { login: "owner" } }, { id: 2, account: { login: "elsewhere" } }]));
+  if (pathname === "/installation/repositories") {
+    const all = Array.from({ length: 101 }, (_, i) => ({ full_name: i === 0 ? REPO : `owner/repo-${i}` }));
+    return reply(200, { total_count: all.length, repositories: paged(all) });
+  }
+  if (pathname === `/repos/${REPO}/issues`) {
+    const label = searchParams.get("labels") ?? "";
+    const listed = world.issues
+      .filter((issue) => issue.labels.includes(label) && (searchParams.get("state") !== "open" || issue.state === "open"))
+      .map(({ labels, pull, ...issue }) => ({ ...issue, labels: labels.map((name) => ({ name })), ...(pull === true ? { pull_request: { url: "…" } } : {}) }));
+    return reply(200, paged(listed));
+  }
+  const pull = /^\/repos\/owner\/repo\/pulls\/(\d+)$/.exec(pathname);
+  if (pull !== null) {
+    const record = world.pulls[Number(pull[1])];
+    return record === undefined ? reply(404, { message: "Not Found" }) : reply(200, record);
+  }
+  const events = /^\/repos\/owner\/repo\/issues\/(\d+)\/events$/.exec(pathname);
+  if (events !== null) return reply(200, paged(world.events[Number(events[1])] ?? []));
   const own = /^\/repos\/owner\/repo\/actions\/variables\/(.+)$/.exec(pathname);
   if (own !== null) {
     const value = world.repository[own[1] ?? ""];
@@ -76,17 +111,17 @@ const answer = (url: string, init?: RequestInit): Response => {
   }
   if (pathname === `/repos/${REPO}/actions/organization-variables`) {
     const all = Object.entries(world.organization ?? {}).map(([name, value]) => ({ name, value, visibility: "all" }));
-    const size = Number(searchParams.get("per_page"));
-    const page = Number(searchParams.get("page"));
     return reply(200, { total_count: all.length, variables: all.slice((page - 1) * size, page * size) });
   }
   return reply(404, { message: "Not Found" });
 };
 
 beforeEach(() => {
-  world = { repository: {}, organization: {} };
+  world = { repository: {}, organization: {}, issues: [], pulls: {}, events: {} };
   asked.length = 0;
   minted.length = 0;
+  mintedFor.length = 0;
+  queried.length = 0;
   vi.stubGlobal("fetch", async (url: string, init?: RequestInit) => answer(url, init));
 });
 afterEach(() => {
@@ -184,5 +219,98 @@ describe("liveAppGitHub: the tokens it mints, by the names GitHub gives permissi
 
   it.each(Object.entries(TOKEN_PERMISSIONS))("mints a worker's `%s` token", async (_, permissions) => {
     await expect(liveAppGitHub("1", KEY).mint(REPO, permissions)).resolves.toMatchObject({ token: "ghs_reader" });
+  });
+});
+
+/** A pull request's own record, as GitHub answers it. */
+const PULL = {
+  number: 7,
+  state: "open",
+  merged: false,
+  head: { ref: "agent/issue-7-a-thing", sha: "a".repeat(40), repo: { full_name: REPO } },
+  base: { ref: "main" },
+};
+
+/** A `labeled` event, as the issue events API lists it. */
+const labeledBy = (login: string | null, label: string, event = "labeled") => ({ event, actor: login === null ? null : { login }, label: { name: label } });
+
+describe("liveAppGitHub: what the scan reads (#581)", () => {
+  it("lists the App's installations, then an installation's repositories past the first page, with a token for the whole installation reading metadata alone", async () => {
+    const github = liveAppGitHub("1", KEY);
+
+    expect(await github.installations()).toEqual(["owner", "elsewhere"]);
+    const repositories = await github.repositories("Owner");
+
+    expect(repositories).toHaveLength(101);
+    expect(repositories[0]).toBe(REPO);
+    expect(minted).toEqual([{ metadata: "read" }]);
+    expect(mintedFor).toEqual([undefined]);
+  });
+
+  it("refuses to list the repositories of an installation it has not listed", async () => {
+    await expect(liveAppGitHub("1", KEY).repositories("owner")).rejects.toThrow(/no installation on owner was listed/);
+  });
+
+  it("lists the open issues and pull requests carrying a label, a pull request as its own record reads it, with a token reading issues and pull requests besides", async () => {
+    world.issues = [
+      { number: 12, title: "Add a thing", state: "open", labels: ["agent:review"] },
+      { number: 7, title: "A thing", state: "open", labels: ["agent:review"], pull: true },
+      { number: 8, title: "Another", state: "open", labels: ["agent:fix"], pull: true },
+      { number: 9, title: "Closed", state: "closed", labels: ["agent:review"] },
+    ];
+    world.pulls = { 7: PULL };
+
+    expect(await liveAppGitHub("1", KEY).labelled(REPO, "agent:review")).toEqual([
+      { type: "issues", number: 12, title: "Add a thing", state: "open" },
+      { type: "pull_request", number: 7, state: "open", merged: false, branch: PULL.head.ref, headSha: PULL.head.sha, headRepo: REPO, baseRef: "main" },
+    ]);
+    expect(queried).toContain(`/repos/${REPO}/issues?state=open&labels=agent%3Areview&per_page=100&page=1`);
+    expect(minted).toEqual([SCAN_PERMISSIONS]);
+    expect(mintedFor).toEqual([["repo"]]);
+  });
+
+  it("reads a pull request whose head repository was deleted as having none", async () => {
+    world.issues = [{ number: 7, title: "A thing", state: "open", labels: ["agent:review"], pull: true }];
+    world.pulls = { 7: { ...PULL, head: { ...PULL.head, repo: null } } };
+
+    expect(await liveAppGitHub("1", KEY).labelled(REPO, "agent:review")).toMatchObject([{ number: 7, headRepo: undefined }]);
+  });
+
+  it("lists past the first page", async () => {
+    world.issues = Array.from({ length: 150 }, (_, i) => ({ number: i + 1, title: `Issue ${i + 1}`, state: "open", labels: ["agent:implement"] }));
+
+    expect(await liveAppGitHub("1", KEY).labelled(REPO, "agent:implement")).toHaveLength(150);
+  });
+
+  it("throws, rather than listing fewer, where a pull request's own record could not be read", async () => {
+    world.issues = [{ number: 7, title: "A thing", state: "open", labels: ["agent:review"], pull: true }];
+
+    await expect(liveAppGitHub("1", KEY).labelled(REPO, "agent:review")).rejects.toThrow(/owner\/repo#7 answered 404/);
+  });
+
+  it("names the actor of the latest `labeled` event for the label, past the first page, and no other event's", async () => {
+    world.events = {
+      7: [
+        labeledBy("first", "agent:review"),
+        ...Array.from({ length: 120 }, () => labeledBy("someone", "agent:fix")),
+        labeledBy("latest", "agent:review"),
+        labeledBy("remover", "agent:review", "unlabeled"),
+        labeledBy("other", "agent:fix"),
+      ],
+    };
+
+    expect(await liveAppGitHub("1", KEY).labeller(REPO, 7, "agent:review")).toBe("latest");
+  });
+
+  it("names no one where no `labeled` event for the label is found, or its actor is gone", async () => {
+    world.events = { 7: [labeledBy("other", "agent:fix")], 8: [labeledBy("first", "agent:review"), labeledBy(null, "agent:review")] };
+    const github = liveAppGitHub("1", KEY);
+
+    expect(await github.labeller(REPO, 7, "agent:review")).toBeUndefined();
+    expect(await github.labeller(REPO, 8, "agent:review")).toBeUndefined();
+  });
+
+  it("reads the repository's default branch", async () => {
+    expect(await liveAppGitHub("1", KEY).defaultBranch(REPO)).toBe("trunk");
   });
 });

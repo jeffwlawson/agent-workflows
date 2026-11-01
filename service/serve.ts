@@ -8,8 +8,8 @@ import { appGaps, createDispatcher, parseOwners, type AppRecord, type DoorReques
 import { liveAppGitHub } from "./github-app.js";
 import type { Job } from "./job.js";
 import type { DISPATCHER, WORKER } from "./settings.js";
-import { jobDoor, oneAtATime, runJob, SUMMARY_FILE } from "./worker.js";
-import { installCli, liveGit, liveLauncher, liveSandbox, liveTokens, routeThroughProxy } from "./worker-live.js";
+import { heldDoor, jobDoor, oneAtATime, runJob, SUMMARY_FILE } from "./worker.js";
+import { announceStart, installCli, liveGit, liveLauncher, liveSandbox, liveTokens, routeThroughProxy } from "./worker-live.js";
 
 /**
  * The service's two processes behind HTTP. The dispatcher's two doors, each
@@ -52,14 +52,16 @@ const read = (request: IncomingMessage): Promise<Buffer | undefined> =>
 const headersOf = (request: IncomingMessage): DoorRequest["headers"] =>
   Object.fromEntries(Object.entries(request.headers).map(([name, value]) => [name, Array.isArray(value) ? value[0] : value]));
 
-/** A door: `POST <path>` to `handle`, `GET /health` to `ok`, anything else `404`. */
-const door = (path: string, handle: (request: DoorRequest) => Promise<DoorResponse>, log: (line: string) => void): Server =>
+/** A door: `POST <path>` to its handler, for each path `routes` names, `GET /health` to `ok`, anything else `404`. */
+const door = (routes: Readonly<Record<string, (request: DoorRequest) => Promise<DoorResponse>>>, log: (line: string) => void): Server =>
   createServer((request, response) => {
     const reply = ({ status, body }: DoorResponse): void => {
       response.writeHead(status, { "content-type": "application/json" }).end(`${body}\n`);
     };
     if (request.method === "GET" && request.url === "/health") return reply({ status: 200, body: '"ok"' });
-    if (request.method !== "POST" || request.url !== path) return reply({ status: 404, body: '"not found"' });
+    const path = request.url ?? "";
+    const handle = Object.hasOwn(routes, path) ? routes[path] : undefined;
+    if (request.method !== "POST" || handle === undefined) return reply({ status: 404, body: '"not found"' });
     read(request)
       .then(async (body) => reply(body === undefined ? { status: 413, body: '"too large"' } : await handle({ headers: headersOf(request), body })))
       .catch((error: unknown) => {
@@ -116,6 +118,12 @@ export const serveDispatcher = async (
     github,
     owners,
     postJob: async (body, headers) => (await fetch(settings.WORKER_URL, { method: "POST", headers, body })).status,
+    // The worker's held door, beside its job door: `/held` where `WORKER_URL` ends `/jobs`.
+    askHeld: async (body, headers) => {
+      const response = await fetch(new URL("held", settings.WORKER_URL), { method: "POST", headers, body });
+      return { status: response.status, body: await response.text() };
+    },
+    log,
     webhookSecret: settings.GITHUB_WEBHOOK_SECRET,
     workerSecret: settings.WORKER_SECRET,
     deadlineMarginMinutes: margin,
@@ -123,22 +131,30 @@ export const serveDispatcher = async (
   });
 
   const webhook = door(
-    "/github",
-    async (request) => {
-      const { response, outcome } = dispatcher.delivery(request);
-      const name = `${request.headers["x-github-delivery"] ?? "-"} ${request.headers["x-github-event"] ?? "-"}`;
-      void outcome.then((line) => log(`delivery ${name}: ${line}`));
-      return response;
+    {
+      "/github": async (request) => {
+        const { response, outcome } = dispatcher.delivery(request);
+        const name = `${request.headers["x-github-delivery"] ?? "-"} ${request.headers["x-github-event"] ?? "-"}`;
+        void outcome.then((line) => log(`delivery ${name}: ${line}`));
+        return response;
+      },
     },
     log,
   );
   const tokens = door(
-    "/token",
-    async (request) => {
-      const response = await dispatcher.token(request);
-      // The body is a token where it was granted, and never logged.
-      log(`token request: ${response.status}${response.status === 200 ? "" : ` ${response.body}`}`);
-      return response;
+    {
+      "/token": async (request) => {
+        const response = await dispatcher.token(request);
+        // The body is a token where it was granted, and never logged.
+        log(`token request: ${response.status}${response.status === 200 ? "" : ` ${response.body}`}`);
+        return response;
+      },
+      // The worker's start (#581), on the door only the worker reaches.
+      "/started": async (request) => {
+        const { response } = dispatcher.started(request);
+        log(`the worker's start: ${response.status}${response.status === 202 ? ", scanning" : ` ${response.body}`}`);
+        return response;
+      },
     },
     log,
   );
@@ -150,6 +166,9 @@ export const serveDispatcher = async (
       `tokens at http://${settings.TOKEN_HOST}:${tokenPort}/token; jobs to ${settings.WORKER_URL}; ` +
       `serving installations on ${owners.join(", ")}`,
   );
+  // A restart strands no labelled work (#581): what nothing holds a job for is dispatched again.
+  log("scanning for labelled work nothing holds a job for");
+  void dispatcher.scan();
 };
 
 /**
@@ -202,17 +221,26 @@ export const serveWorker = async (settings: InputValues<typeof WORKER>, stdout: 
     log(`job ${job.id}: ended. ${phases.map(({ name, outcome }) => `${name}: ${outcome}`).join("; ")}. Its summary: ${path.join(runDir, SUMMARY_FILE)}`);
   };
   const queue = oneAtATime(work, (error) => log(`a job failed: ${error instanceof Error ? error.message : String(error)}`));
-  const accept = jobDoor({ secret: settings.WORKER_SECRET, version: VERSION, accept: queue });
+  const accept = jobDoor({ secret: settings.WORKER_SECRET, version: VERSION, accept: queue.add });
+  const held = heldDoor({ secret: settings.WORKER_SECRET, held: queue.held });
 
   const jobs = door(
-    "/jobs",
-    async (request) => {
-      const response = accept(request);
-      log(`job request: ${response.status} ${response.body}`);
-      return response;
+    {
+      "/jobs": async (request) => {
+        const response = accept(request);
+        log(`job request: ${response.status} ${response.body}`);
+        return response;
+      },
+      "/held": async (request) => {
+        const response = held(request);
+        log(`held request: ${response.status}`);
+        return response;
+      },
     },
     log,
   );
   await listen(jobs, settings.JOBS_HOST, port);
   log(`worker ${VERSION} listening: jobs at http://${settings.JOBS_HOST}:${port}/jobs; tokens from ${settings.DISPATCHER_TOKEN_URL}`);
+  // Listening first, so the scan the dispatcher answers with can ask what is held here.
+  log(`the worker's start, announced: ${await announceStart(settings.DISPATCHER_TOKEN_URL, settings.WORKER_SECRET, VERSION)}`);
 };

@@ -7,7 +7,8 @@ import * as path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { SANDBOX_WORKTREE } from "../../engine/bwrap-args.js";
 import { RELAY_PORT } from "../../engine/proxy-relay.js";
-import { installCli, liveGit, liveSandbox, liveTokens, routeThroughProxy, SETUP_SHELL } from "../../service/worker-live.js";
+import { announceStart, installCli, liveGit, liveSandbox, liveTokens, routeThroughProxy, SETUP_SHELL } from "../../service/worker-live.js";
+import { sign, SIGNATURE_HEADER } from "../../service/job.js";
 import { gitEnvironment, hostEnvironment, PROXY_VARIABLES, type HostEnvironment } from "../../shared/env.js";
 import { SUBPROCESS_TIMEOUT } from "../../vitest.config.js";
 
@@ -573,5 +574,34 @@ describe("the checkout the service makes", () => {
     expect(config).not.toContain(Buffer.from("x-access-token:the-token").toString("base64"));
     expect(config).not.toContain("extraHeader");
     expect(config).not.toContain("the-token");
+  });
+});
+
+/** The worker's start, announced at the dispatcher's start door beside its token door (#581), over a stand-in `fetch`. */
+describe("announceStart", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it("posts a signed announcement to `/started` beside the token door, and says the dispatcher is scanning", async () => {
+    const asked: { url: string; signed: boolean }[] = [];
+    vi.stubGlobal("fetch", async (url: URL, init: RequestInit) => {
+      const body = String(init.body);
+      asked.push({ url: url.toString(), signed: (init.headers as Record<string, string>)[SIGNATURE_HEADER] === sign("secret", body) });
+      return new Response("{}", { status: 202 });
+    });
+
+    expect(await announceStart(`http://${DOOR}/token`, "secret", "9.9.9")).toBe("the dispatcher is scanning");
+    expect(asked).toEqual([{ url: `http://${DOOR}/started`, signed: true }]);
+  });
+
+  it("says so, and does not throw, where the dispatcher refuses it or cannot be reached", async () => {
+    vi.stubGlobal("fetch", async () => new Response("{}", { status: 401 }));
+    expect(await announceStart(`http://${DOOR}/token`, "secret", "9.9.9")).toBe("the dispatcher answered 401");
+
+    vi.stubGlobal("fetch", async () => {
+      throw new Error("connect ECONNREFUSED");
+    });
+    expect(await announceStart(`http://${DOOR}/token`, "secret", "9.9.9")).toBe("the dispatcher could not be reached: connect ECONNREFUSED; it scans at its own start");
   });
 });

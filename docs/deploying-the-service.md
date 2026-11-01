@@ -303,7 +303,10 @@ reads: the worker answers what it holds and drops nothing, so a script of your o
 signed with `WORKER_SECRET` as a job is, without emptying its queue. Either way the question
 carries the time it was `asked`, and the worker refuses one more than 5 minutes old or more than
 a minute ahead of its own clock, so a captured question cannot be replayed later to drop jobs;
-keep both hosts' clocks synchronised. The same answer lets the dispatcher forget
+keep both hosts' clocks synchronised. A refused question skips the scan, and both logs name the
+refusal (`scan: skipped: the worker refused to say which jobs it holds: …` in the dispatcher's).
+Asking again meets the same refusal, so nothing scans again, the worker's start included, until
+the clock or the secret is mended. The same answer lets the dispatcher forget
 every job it dispatched that the worker no longer holds, which after a worker's restart is every
 job it held before.
 

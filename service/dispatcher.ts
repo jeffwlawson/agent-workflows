@@ -364,6 +364,9 @@ const json = (body: Buffer): unknown => {
 
 const answer = (status: number, body: unknown): DoorResponse => ({ status, body: JSON.stringify(body) });
 
+/** A held-door question the worker answered with a refusal, which asking again meets too. */
+class Refused extends Error {}
+
 const message = (error: unknown): string => (error instanceof Error ? error.message : String(error));
 
 /**
@@ -775,13 +778,20 @@ export const createDispatcher = (edges: DispatcherEdges) => {
    * instance (#597), and the worker drops every job it holds queued from
    * another before it answers, so a scan after a dispatcher's restart
    * dispatches their items again rather than skipping them for jobs no
-   * dispatcher would mint for.
+   * dispatcher would mint for. A question the worker refuses throws
+   * `Refused`, naming the refusal its answer carries (#601): asking again,
+   * at the worker's start, meets the same refusal, so its reason is the only
+   * place a person can learn why the scan stopped.
    */
   const askWorker = async (): Promise<readonly HeldJob[]> => {
     const answered = [...jobs].filter(([, job]) => job.posted).map(([id]) => id);
     const body = JSON.stringify({ asked: now().toISOString(), instance });
     const reply = await edges.askHeld(body, { "content-type": "application/json", [SIGNATURE_HEADER]: sign(edges.workerSecret, body) });
-    if (reply.status !== 200) throw new Error(`the worker answered ${reply.status}`);
+    if (reply.status !== 200) {
+      const said = json(Buffer.from(reply.body));
+      const refusal = typeof said === "object" && said !== null ? (said as Readonly<Record<string, unknown>>).refusal : undefined;
+      throw new Refused(`the worker answered ${reply.status}${typeof refusal === "string" && refusal !== "" ? `: ${refusal}` : ""}`);
+    }
     const held = parseHeld(json(Buffer.from(reply.body)));
     if (typeof held === "string") throw new Error(`the worker's answer is not a list of jobs: ${held}`);
     const ids = new Set(held.map((job) => job.id));
@@ -922,7 +932,10 @@ export const createDispatcher = (edges: DispatcherEdges) => {
    * One pass of the scan: the worker asked what it holds, then each
    * repository of each installation served. A worker that cannot be reached
    * skips the pass, since nothing could say what it holds, and its own start
-   * announcement scans again. Nothing here throws: each failure is logged,
+   * announcement scans again. One that refuses the question skips it too,
+   * naming the refusal, and nothing scans again until a person mends the cause
+   * (#601): a skewed clock or a wrong secret refuses every question alike.
+   * Nothing here throws: each failure is logged,
    * and the rest of the pass goes on.
    */
   const pass = async (): Promise<void> => {
@@ -930,6 +943,7 @@ export const createDispatcher = (edges: DispatcherEdges) => {
     try {
       held = await askWorker();
     } catch (error) {
+      if (error instanceof Refused) return edges.log(`scan: skipped: the worker refused to say which jobs it holds: ${error.message}`);
       return edges.log(`scan: skipped: the worker could not say which jobs it holds: ${message(error)}. Its start scans again`);
     }
     let accounts: readonly string[];

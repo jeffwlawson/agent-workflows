@@ -2329,7 +2329,7 @@ export const heldDoor =
 export interface Queue<T> {
   /** Puts `item` at the back. */
   readonly add: (item: T) => void;
-  /** Every item queued or running, in the order they arrived: one leaves once its work has ended. */
+  /** Every item queued or running, in the order they arrived: one leaves once its work has ended, or when it is dropped before its turn. */
   readonly held: () => readonly T[];
   /**
    * Takes every queued item `dropped` matches out of the queue, so its work

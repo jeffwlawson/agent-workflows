@@ -19,6 +19,8 @@ import {
   DEFAULT_FIX_MINUTES,
   DEFAULT_REVIEW_MINUTES,
   FOLLOW_UPS_MINUTES,
+  HELD_REQUEST_MAX_AGE_MINUTES,
+  HELD_REQUEST_MAX_SKEW_MINUTES,
   heldOf,
   IMPLEMENT_PRD_OTHER_MINUTES,
   JOB_KINDS,
@@ -94,6 +96,8 @@ const setup = (
     scanLimit?: number;
     /** Whether the worker is the real queue behind its real doors, each job's work held until a test ends it (#597). */
     queue?: boolean;
+    /** How many minutes the worker's clock runs ahead of the dispatcher's, behind where negative (#601). */
+    workerAhead?: number;
   } = {},
 ) => {
   const repository: Repository = {
@@ -135,7 +139,7 @@ const setup = (
     () => {},
   );
   const jobs = jobDoor({ secret: WORKER_SECRET, version: "9.9.9", accept: queue.add });
-  const held = heldDoor({ secret: WORKER_SECRET, held: queue.held, drop: queue.drop, now: () => clock });
+  const held = heldDoor({ secret: WORKER_SECRET, held: queue.held, drop: queue.drop, now: () => new Date(clock.getTime() + (options.workerAhead ?? 0) * MINUTE_MS) });
   const github: AppGitHub = {
     app: async () => ({ slug: "loop-app", owner: APP_OWNER, permissions: {}, events: [] }),
     installation: async (repo) =>
@@ -1633,9 +1637,25 @@ describe("a dispatcher's restart, with the worker still up", () => {
     s.restart("someone-elses-secret");
     await s.dispatcher.scan();
 
-    expect(s.lines).toContain("scan: skipped: the worker could not say which jobs it holds: the worker answered 401. Its start scans again");
+    expect(s.lines).toContain("scan: skipped: the worker refused to say which jobs it holds: the worker answered 401: bad signature");
     expect(ids(s.queue.held())).toEqual(["job-1", "job-2", "job-3"]);
     expect(s.posted).toHaveLength(3);
+  });
+
+  it.each<[string, number, string]>([
+    ["ahead", HELD_REQUEST_MAX_AGE_MINUTES + 1, `more than ${HELD_REQUEST_MAX_AGE_MINUTES} minutes ago by this worker's clock`],
+    ["behind", -HELD_REQUEST_MAX_SKEW_MINUTES - 1, `more than ${HELD_REQUEST_MAX_SKEW_MINUTES} minute ahead of this worker's clock`],
+  ])("logs the held door's refusal where the worker's clock runs %s, at the start scan and the announcement's alike, and drops nothing (#601)", async (_name, workerAhead, refused) => {
+    const s = setup({ queue: true, workerAhead });
+    s.repository.items = [pullItem([REVIEW_LABEL])];
+
+    await s.dispatcher.scan();
+    await announce(s);
+
+    const line = `scan: skipped: the worker refused to say which jobs it holds: the worker answered 400: \`asked\` is ${START.toISOString()}, ${refused}`;
+    expect(s.lines.filter((logged) => logged.startsWith("scan: skipped: the worker"))).toEqual([line, line]);
+    expect(s.lines.some((logged) => logged.includes("Its start scans again"))).toBe(false);
+    expect(s.posted).toEqual([]);
   });
 });
 

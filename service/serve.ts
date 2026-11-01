@@ -247,7 +247,8 @@ export const serveWorker = async (settings: InputValues<typeof WORKER>, stdout: 
       },
       "/held": async (request) => {
         const response = held(request);
-        log(`held request: ${response.status}`);
+        // A refusal's reason is logged, since the dispatcher's scan stops on it (#601); a list of jobs is not.
+        log(`held request: ${response.status}${response.status === 200 ? "" : ` ${response.body}`}`);
         return response;
       },
     },

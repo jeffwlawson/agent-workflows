@@ -1,0 +1,27 @@
+# What every fix case is replayed with. A case's replay.yaml and inputs/
+# override any of these.
+#
+# The inputs below are a fix run with nothing to resume and no conversation
+# comment owed an answer, as fix/fix.ts renders them.
+
+execution:
+  max_turns: 200
+  timeout_seconds: 2400
+  allowed_tools: [Read, Glob, Grep, Bash, Write, Edit]
+
+inputs:
+  RESUME: ""
+  CONVERSATION: "(none)"
+
+# Appended after the rendered prompt. Nothing pushes here, and the runner's
+# second phase, which turns the run into structured output, does not run, so
+# the change and the outcomes have to be in the run for a grader to read.
+note: |
+  # EVAL REPLAY
+
+  This fix run is a replay, run to measure the brief above. Nothing is pushed and GitHub is not
+  reachable; the branch was checked out at `{{HEAD}}`, and `origin/{{BRANCH}}` still points there.
+
+  When you are done, run `git log --stat origin/{{BRANCH}}..HEAD` and `git diff origin/{{BRANCH}}..HEAD`
+  so their output is in this run. Then, in your **final message**, before `<promise>COMPLETE</promise>`,
+  give each thread's outcome (addressed or declined) and the reply you would post on it.

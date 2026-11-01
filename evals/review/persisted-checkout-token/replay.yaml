@@ -1,0 +1,21 @@
+# PR #572, as the loop's review approved it.
+#
+# The head is 3586dd7, where the agent-review status turned success at
+# 2026-10-31T22:37Z. The merge-check that followed, on the same head, found the
+# job had gained `contents: write` while its checkout still persisted its token
+# (fixed in e6c5824, "persist no checkout token"). The merged head, 8ebca15,
+# already holds that fix. The base is the merge-base the review's three-dot diff
+# was taken from.
+pr: 572
+repository: https://github.com/jeffwlawson/agent-workflows.git
+base_ref: main
+base: 44cbf2c839a9a950ee23513855dd1cbd70a75f99
+head: 3586dd7c3c2713f26f71e44a25ca5b2a21e53d2f
+# Issue #561's body, as it stands since; it has no brief comment.
+brief: inputs/LINKED_ISSUE.md
+inputs:
+  PR_NUMBER: "572"
+  BRANCH: agent/issue-561-attach-the-packed-tarball-and-its-sha-256-to-each-
+  PR_TITLE: "feat(publish): attach the packed tarball and its SHA-256 to each GitHub Release"
+  ISSUE_NUMBER: "561"
+  ISSUE_TITLE: Attach the packed tarball and its SHA-256 to each GitHub Release

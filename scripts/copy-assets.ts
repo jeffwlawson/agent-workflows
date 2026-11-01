@@ -32,8 +32,12 @@ import { fileURLToPath } from "node:url";
  * `friction.md`, `ADOPTING.md` and `parity.md` to every consumer — 30 kB to
  * 102 kB — and the walk that exists so a new prompt is never forgotten quietly
  * becomes a walk that publishes the internal log.
+ *
+ * `evals` is the same shape (#617): the golden-PR cases for the review and fix
+ * prompts are Markdown in folders beside the runners, run by hand from a
+ * checkout, and no runner reads them.
  */
-const SKIPPED_DIRS = new Set(["dist", "node_modules", "output", "docs"]);
+const SKIPPED_DIRS = new Set(["dist", "node_modules", "output", "docs", "evals"]);
 
 /**
  * What counts as an asset: a prompt, a reference caller, or the `bwrap`

@@ -681,6 +681,15 @@ describe("the release hook stays out of what ships", () => {
   it("leaves the bundled-dependencies check out of the build too", () => {
     expect(compiled()).not.toContain(path.join("scripts", "bundled-tree.ts"));
   });
+
+  // And the golden-PR evals' runner (#617), with the cases it reads: run by
+  // hand from a checkout, and nothing built reaches either.
+  it("leaves the prompt evals out of the build", () => {
+    const program = compiled();
+
+    expect(program).not.toContain(path.join("scripts", "eval-prompts.ts"));
+    expect(program.filter((file) => file.startsWith(`evals${path.sep}`))).toEqual([]);
+  });
 });
 
 /**

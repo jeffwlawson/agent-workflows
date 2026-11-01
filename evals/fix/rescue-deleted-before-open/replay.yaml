@@ -1,0 +1,17 @@
+# PR #570's fourth review round: one finding open, on one thread.
+#
+# The head is b41cecd, a merge of main, where the review (agent-review failure
+# at 2026-10-31T22:58Z) raised that implement:publish deletes the rescue
+# before the pull request is opened. The fix run that answered it pushed
+# ba76218 ("delete the rescue only once the pull request is open"), which the
+# next review verified. The thread id is made up: no reply is posted.
+pr: 570
+repository: https://github.com/jeffwlawson/agent-workflows.git
+base_ref: main
+base: 8e5d3a1ad41f0746890e52e3036d1a7c43ad279e
+head: b41cecd7707e3749e0ffe5178eb07081f44be5a4
+# The finding the fix is graded against, as the thread carried it.
+brief: inputs/INLINE_COMMENTS.md
+inputs:
+  PR_NUMBER: "570"
+  BRANCH: agent/issue-270-an-implement-run-that-hits-its-time-limit-can-lose

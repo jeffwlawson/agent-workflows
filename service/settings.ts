@@ -41,6 +41,12 @@ const REQUIRED = { required: true } as const;
  *   dispatcher serves besides the App owner's own. Empty is none, so an App
  *   installed on a stranger's account serves nothing there, even where the
  *   stranger's repository opts in.
+ * - `SCAN_DISPATCH_LIMIT`: how many times the scan dispatches an item for a
+ *   label that stays on across scans, before it leaves the item for a person
+ *   and says so on it once (#596): a job that ends the worker's process keeps
+ *   its label, and every restart's scan would dispatch it again. At least `1`:
+ *   `0` is refused at start, since it would not turn the scan off, only make
+ *   it comment on every labelled item it finds.
  */
 export const DISPATCHER = {
   GITHUB_APP_ID: REQUIRED,
@@ -54,6 +60,7 @@ export const DISPATCHER = {
   TOKEN_PORT: { required: false, default: "8791" },
   JOB_DEADLINE_MARGIN_MINUTES: { required: false, default: "60" },
   EXTRA_OWNERS: { required: false, default: "" },
+  SCAN_DISPATCH_LIMIT: { required: false, default: "2" },
 } as const satisfies Inputs;
 
 /**

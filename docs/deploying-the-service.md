@@ -124,7 +124,7 @@ Repository permissions:
 | Variables | `actions_variables` | read | `AGENT_ORCHESTRATOR`, re-read at every token, and the variables the service reads, `AGENT_SETUP` among them: the repository's own, else its organization's shared with it, as `vars` resolves them |
 | Contents | `contents` | write | the checkout and the pull request's history, read by every phase; a push, by a `push` token only |
 | Pull requests | `pull_requests` | write | the review, its threads, the title and summary, and the ready mark; a scan reads an open pull request's head and base |
-| Issues | `issues` | write | comments and labels, the issue an implement job builds, and a PRD's parent; a scan reads the open items carrying a trigger label and their `labeled` events |
+| Issues | `issues` | write | comments and labels, the issue an implement job builds, and a PRD's parent; a scan reads the open items carrying a trigger label and their `labeled` events, and comments on one it stops dispatching |
 | Checks | `checks` | read | CI's result, which the review's verdict reads |
 | Commit statuses | `statuses` | write | the verdict and the fix-round statuses |
 | Workflows | `workflows` | write | a push touching `.github/workflows/**` is refused without it, *after* the agent has done all its work |
@@ -245,6 +245,7 @@ so does an App whose own record cannot be read, since that is where the App's ow
 | `TOKEN_PORT` | optional | `8791` | the token door's port; the worker asks at `POST /token`, and announces its start at `POST /started` |
 | `JOB_DEADLINE_MARGIN_MINUTES` | optional | `60` | added to a job's own time limit for its deadline, review's (its CI wait and `AGENT_REVIEW_TIMEOUT_MINUTES`) or fix's, update-branch's and implement's (`AGENT_TIMEOUT_MINUTES`), or implement-prd's (35 minutes and `AGENT_TIMEOUT_MINUTES`), or follow-ups' (10 minutes), covering the phases around the runner's and the time a job waits in the worker's queue |
 | `EXTRA_OWNERS` | optional | `""` | accounts, comma-separated, whose installations the dispatcher serves besides the App owner's; empty is none. An installation on any other account is refused |
+| `SCAN_DISPATCH_LIMIT` | optional | `2` | how many times the scan dispatches an item for a label that stays on across scans before it leaves the item for a person, and comments once to say so (*The scan's limit*, below). At least `1`: `0` is refused at start, since it would not turn the scan off |
 
 Each door also answers `GET /health` with `200`.
 
@@ -255,6 +256,9 @@ Each door also answers `GET /health` with `200`.
 - **The jobs it dispatched are held in memory.** A dispatcher restarted mid-job refuses that job's
   next token request as unknown, and the job ends there. The scan at its start skips that item,
   since the worker still holds the job; remove the label and add it again.
+- **The scan's counts are held in memory.** A restarted dispatcher forgets how many times its scans
+  have dispatched each item (*The scan's limit*, below), so each item's count starts from zero
+  again, and the comment saying the scan stopped may be posted once more.
 
 **What a restart recovers: the scan.** At its start, and again whenever the worker announces its
 own start, the dispatcher scans for labelled work nothing holds a job for, one pass at a time (a
@@ -287,9 +291,25 @@ A label still on an item with nothing held for it is a run that never reached it
 the loop's commands take the trigger label off however a decided run ends. Two limits follow:
 
 - a run that ended because the dispatcher **granted no token** leaves its label on by design
-  (adding it again is the retry), so a scan after it dispatches it once more, once per start;
+  (adding it again is the retry), so a scan after it dispatches it once more, once per start, up
+  to the scan's limit;
 - a job **running in the worker when only the dispatcher restarted** is skipped, since the worker
   still holds it, and dies at its next token request, as above.
+
+**The scan's limit.** A job that ends the worker's *process*, rather than a phase that fails
+cleanly, leaves its label on; the worker is restarted, its start makes the dispatcher scan, and the
+scan dispatches the item again, which ends the process again. So the dispatcher counts the
+dispatches its scans make, whatever started the scan, per item and label: another item, and
+another label on the same item, count apart. Past `SCAN_DISPATCH_LIMIT` (default `2`) a crashing
+job is tried no more: each later scan skips the item with a line naming it, the label and the
+limit, and the first one comments once on the item, naming the label to remove and add again by
+hand. A comment that cannot be posted is logged, the scan goes on, and the next scan tries it
+again. The comment is posted with a token minted for it alone; the scan's reads stay read-only.
+That label's delivery, from a person adding it again or from the App, passes the same checks as
+any, is dispatched, and resets the count, so the scan answers the item again up to the limit. A
+delivery's own dispatch is never counted. An item a scan no longer lists with the label had its
+job end and the label taken off, so its count is forgotten, and a label added to it later is
+counted from zero.
 
 Every line a scan logs starts `scan:`, with the item and the reason it was dispatched, skipped or
 refused; a repository or a listing that cannot be read is logged and the scan goes on.
@@ -542,7 +562,10 @@ The job door also answers `GET /health` with `200`.
 - **The worker's queue is in memory too**: a worker restarted mid-job loses that job and the ones
   waiting behind it. Its start announcement makes the dispatcher scan, which dispatches each of
   them again, the running one and the queued ones alike, since each item keeps its label. Where
-  the dispatcher is down when the worker starts, its own start scans instead.
+  the dispatcher is down when the worker starts, its own start scans instead. A job that itself
+  ends the worker's process is dispatched again by the scan up to `SCAN_DISPATCH_LIMIT`'s number of
+  times, and then left for a person, with a comment on its item saying so (*The scan's limit*,
+  above).
 - **Each piece restarts itself, in order.** Run both processes under something that restarts them
   at boot and after a crash (a container's restart policy, a systemd unit), with the worker
   started after its proxy, and the firewall around the worker's host in place before the worker's

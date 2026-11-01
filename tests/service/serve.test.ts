@@ -2,7 +2,7 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { serveWorker } from "../../service/serve.js";
+import { serveDispatcher, serveWorker } from "../../service/serve.js";
 
 let scratch: string;
 
@@ -84,5 +84,43 @@ describe("the worker's start", () => {
     await expect(serveWorker({ ...SETTINGS, WORK_DIR: file, ...given }, (text) => lines.push(text))).rejects.toThrow(/ENOTDIR|EEXIST/);
 
     expect(lines.join("")).toContain("installing the agent's CLI");
+  });
+});
+
+describe("the dispatcher's start", () => {
+  const DISPATCHER_SETTINGS = {
+    GITHUB_APP_ID: "1",
+    GITHUB_WEBHOOK_SECRET: "the-webhook-secret",
+    WORKER_URL: "http://192.0.2.2:8787/jobs",
+    WORKER_SECRET: "secret",
+    WEBHOOK_HOST: "127.0.0.1",
+    WEBHOOK_PORT: "8790",
+    TOKEN_HOST: "127.0.0.1",
+    TOKEN_PORT: "8791",
+    JOB_DEADLINE_MARGIN_MINUTES: "60",
+    EXTRA_OWNERS: "",
+  } as const;
+
+  // #596: a limit of 0 would not turn the scan off, only stop it dispatching.
+  it.each([
+    ["0", /`SCAN_DISPATCH_LIMIT` is `0`.*at least 1/],
+    ["two", /`SCAN_DISPATCH_LIMIT` is `two`, which is not a whole number/],
+  ])("refuses a SCAN_DISPATCH_LIMIT of %s, naming the setting, before it reads the App's key", async (limit, refusal) => {
+    const lines: string[] = [];
+    const key = path.join(scratch, "no-such-key.pem");
+
+    await expect(
+      serveDispatcher({ ...DISPATCHER_SETTINGS, GITHUB_APP_PRIVATE_KEY_FILE: key, SCAN_DISPATCH_LIMIT: limit }, (text) => lines.push(text)),
+    ).rejects.toThrow(refusal);
+
+    expect(lines).toEqual([]);
+  });
+
+  it("starts past a SCAN_DISPATCH_LIMIT of 1, as far as reading the App's key", async () => {
+    const key = path.join(scratch, "no-such-key.pem");
+
+    await expect(serveDispatcher({ ...DISPATCHER_SETTINGS, GITHUB_APP_PRIVATE_KEY_FILE: key, SCAN_DISPATCH_LIMIT: "1" }, () => {})).rejects.toThrow(
+      /`GITHUB_APP_PRIVATE_KEY_FILE` names/,
+    );
   });
 });

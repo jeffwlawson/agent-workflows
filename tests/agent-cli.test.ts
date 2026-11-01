@@ -711,6 +711,7 @@ describe("the CLI starts the dispatcher", () => {
         TOKEN_PORT: "9001",
         JOB_DEADLINE_MARGIN_MINUTES: "60",
         EXTRA_OWNERS: "",
+        SCAN_DISPATCH_LIMIT: "2",
       },
       expect.any(Function),
     );

@@ -31,7 +31,7 @@ import {
   verifySignature,
   type Job,
 } from "../../service/job.js";
-import { heldDoor, jobDoor, oneAtATime } from "../../service/worker.js";
+import { heldDoor, jobDoor, lanes } from "../../service/worker.js";
 import { STUB_LABELS } from "../../shared/follow-up-plan.js";
 import {
   FIX_LABEL,
@@ -130,7 +130,7 @@ const setup = (
   /** The real worker, where `queue` says so: each job whose work started, and the way to end the one running. */
   const ran: Job[] = [];
   const finishes: (() => void)[] = [];
-  const queue = oneAtATime<Job>(
+  const queue = lanes(
     (job) =>
       new Promise<void>((resolve) => {
         ran.push(job);
@@ -1533,8 +1533,9 @@ const STOPPED = (where: string, label: string) =>
  * A dispatcher's restart alone (#597): the worker still holds the jobs the old
  * instance queued, whose ids no dispatcher running now knows. The new
  * instance's start scan names it at the held door, the worker drops every job
- * it holds queued from another, never the running one, and the scan
- * dispatches their items again. Driven over the real queue and doors.
+ * it holds queued from another, never one that has started, running in
+ * either lane or waiting for the agent lane, and the scan dispatches their
+ * items again. Driven over the real queue and doors.
  */
 describe("a dispatcher's restart, with the worker still up", () => {
   const ids = (jobs: readonly Job[]) => jobs.map((job) => job.id);

@@ -656,8 +656,8 @@ dispatched as its delivery would have been, the actor of the label's latest `lab
 standing in for the sender. `agent:follow-ups` is a marker, not a run, and is never scanned.
 A job carries its dispatcher's **instance**, an id fresh at each start (#597), which the scan's
 question at the worker names: the worker drops every job it holds queued from another instance,
-whose id no dispatcher running now knows, so a dispatcher's restart alone loses only the running
-job, and the scan dispatches the dropped jobs' items again.
+whose id no dispatcher running now knows, so a dispatcher's restart alone loses only the jobs
+that had started (#582: one running in each lane, and any update-branch waiting for the agent lane), and the scan dispatches the dropped jobs' items again.
 A scan's dispatches are counted per item and label (#596), so a job that ends the worker's process,
 and keeps its label through every restart, is dispatched at most `SCAN_DISPATCH_LIMIT` times and
 then left for a person, with one comment on the item; that label's delivery resets the count.

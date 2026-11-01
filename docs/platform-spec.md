@@ -3123,7 +3123,7 @@ neither.
 >   always passes the App's, so on the service it never fires: conclude adds `agent:update-branch`
 >   again, as the App. Its guard against re-requesting while another trigger label is on is
 >   reasoned from Actions' concurrency group, whose waiting slot holds one run and cancels the run
->   it replaces. The worker queues jobs one at a time and cancels none, so on the service that
+>   it replaces. The worker runs one job at a time per pull request and cancels none, so on the service that
 >   reason does not hold: the guard is harmless there, and only leaves the re-request to a person
 >   where another label's job is still to run.
 >
@@ -3569,8 +3569,8 @@ PR of the parent's and every sub-issue's, each under its issue. Then, only where
 >
 > **Concurrency relies on one worker.** Actions holds this job in the pull request's concurrency
 > group, so a label added while a merge's run files cannot file twice. The service has no lock of
-> its own: the worker's queue runs one job at a time, so a second run starts only once the first
-> has ended, finds the checklist it posted and the marker it took off, and ends silently. A deployment with more than one
+> its own: the worker's queue runs one job at a time for each pull request, whatever lane each
+> runs in, so a second run starts only once the first has ended, finds the checklist it posted and the marker it took off, and ends silently. A deployment with more than one
 > worker would lose that guarantee.
 
 ### `follow-ups:file`

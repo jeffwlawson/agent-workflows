@@ -32,7 +32,8 @@ import {
   IMPLEMENT_PRD_POSTING_MINUTES,
   heldDoor,
   jobDoor,
-  oneAtATime,
+  lanes,
+  LANES,
   REDACTED,
   runJob,
   SETUP_PHASE,
@@ -40,6 +41,7 @@ import {
   SUMMARY_FILE,
   type JobEdges,
   type Launch,
+  type Phase,
   type SandboxRun,
   type Subcommand,
 } from "../../service/worker.js";
@@ -2625,7 +2627,7 @@ describe("the held door", () => {
   const queued = () => {
     const ran: Job[] = [];
     const releases: (() => void)[] = [];
-    const queue = oneAtATime<Job>(
+    const queue = lanes(
       (job) =>
         new Promise<void>((resolve) => {
           ran.push(job);
@@ -2752,59 +2754,391 @@ describe("the held door", () => {
 
   it("holds a job from the moment it is queued until its work has ended, running or waiting, thrown or not", async () => {
     const releases: (() => void)[] = [];
-    const queue = oneAtATime<string>(
-      (item) => new Promise<void>((resolve, reject) => releases.push(() => (item === "throws" ? reject(new Error("no")) : resolve()))),
+    const queue = lanes(
+      (job) => new Promise<void>((resolve, reject) => releases.push(() => (job.id === "throws" ? reject(new Error("no")) : resolve()))),
       () => {},
     );
     const settle = () => new Promise((resolve) => setImmediate(resolve));
 
-    queue.add("throws");
-    queue.add("second");
-    expect(queue.held()).toEqual(["throws", "second"]);
+    queue.add({ ...JOB, id: "throws" });
+    queue.add({ ...JOB, id: "second" });
+    expect(queue.held().map((job) => job.id)).toEqual(["throws", "second"]);
 
     await settle();
     releases[0]?.();
     await settle();
-    expect(queue.held()).toEqual(["second"]);
+    expect(queue.held().map((job) => job.id)).toEqual(["second"]);
 
     releases[1]?.();
     await settle();
     expect(queue.held()).toEqual([]);
   });
 
-  it("drops a waiting item so its work never starts, keeps the running one, and runs the rest in order, behind one that throws", async () => {
+  it("drops a waiting job so its work never starts, keeps the running one, and runs the rest in order, behind one that throws", async () => {
     const started: string[] = [];
     const releases: (() => void)[] = [];
     const errors: unknown[] = [];
-    const queue = oneAtATime<string>(
-      (item) =>
+    const queue = lanes(
+      (job) =>
         new Promise<void>((resolve, reject) => {
-          started.push(item);
-          releases.push(() => (item === "throws" ? reject(new Error("no")) : resolve()));
+          started.push(job.id);
+          releases.push(() => (job.id === "throws" ? reject(new Error("no")) : resolve()));
         }),
       (error) => errors.push(error),
     );
     const settle = () => new Promise((resolve) => setImmediate(resolve));
+    const ids = () => queue.held().map((job) => job.id);
 
-    queue.add("throws");
-    queue.add("dropped");
-    queue.add("kept");
-    queue.add("dropped too");
+    for (const id of ["throws", "dropped", "kept", "dropped too"]) queue.add({ ...JOB, id });
     await settle();
 
-    expect(queue.drop((item) => item !== "kept")).toEqual(["dropped", "dropped too"]);
-    expect(queue.held()).toEqual(["throws", "kept"]);
+    expect(queue.drop((job) => job.id !== "kept").map((job) => job.id)).toEqual(["dropped", "dropped too"]);
+    expect(ids()).toEqual(["throws", "kept"]);
 
     releases[0]?.();
     await settle();
     expect(errors).toHaveLength(1);
     expect(started).toEqual(["throws", "kept"]);
-    expect(queue.held()).toEqual(["kept"]);
+    expect(ids()).toEqual(["kept"]);
     expect(queue.drop(() => true)).toEqual([]);
 
     releases[1]?.();
     await settle();
     expect(started).toEqual(["throws", "kept"]);
+    expect(queue.held()).toEqual([]);
+  });
+});
+
+/**
+ * The worker's two lanes (#582): a light lane for jobs that start no agent,
+ * beside the agent lane, which still runs one agent job at a time in arrival
+ * order, and beneath both a chain per pull request or issue. Each job's work
+ * here is a fake that ends when the test says so; an update-branch job's asks
+ * for the agent lane where the test says its merge conflicted.
+ */
+describe("the worker's queue", () => {
+  const settle = () => new Promise((resolve) => setImmediate(resolve));
+  const review = (id: string, pr = 7, branch = `agent/issue-${pr}-a-thing`): ReviewJob => ({ ...JOB, id, pr, branch });
+  const implement = (id: string, issue = 12): ImplementJob => ({ ...IMPLEMENT_JOB, id, issue });
+  const followUps = (id: string, pr = 7): FollowUpsJob => ({ ...FOLLOW_UPS_JOB, id, pr });
+  const updateBranch = (id: string, pr = 7, branch = `agent/issue-${pr}-a-thing`): UpdateBranchJob => ({ ...UPDATE_BRANCH_JOB, id, pr, branch });
+  const implementPrd = (id: string, issue: number): ImplementPrdJob => ({ ...PRD_JOB, id, issue });
+
+  /** A queue whose jobs' work waits for the test: each start, each agent part's start and each end, in order. */
+  const queued = () => {
+    const events: string[] = [];
+    const errors: unknown[] = [];
+    const ends = new Map<string, () => void>();
+    const throws = new Map<string, () => void>();
+    const agentLanes = new Map<string, () => Promise<void>>();
+    const running = new Set<string>();
+    /** The most jobs the agent lane ever ran at once: agent jobs, and hand-offs in their agent part. */
+    let agentParts = 0;
+    let mostAgentParts = 0;
+    const inAgentLane = new Set<string>();
+    const enter = (id: string): void => {
+      inAgentLane.add(id);
+      agentParts += 1;
+      mostAgentParts = Math.max(mostAgentParts, agentParts);
+    };
+    const queue = lanes(
+      (job, agentLane) =>
+        new Promise<void>((resolve, reject) => {
+          events.push(`${job.id} starts`);
+          running.add(job.id);
+          if (LANES[job.workflow] === "agent") enter(job.id);
+          agentLanes.set(job.id, agentLane);
+          const leave = (): void => {
+            running.delete(job.id);
+            if (inAgentLane.delete(job.id)) agentParts -= 1;
+          };
+          ends.set(job.id, () => {
+            leave();
+            events.push(`${job.id} ends`);
+            resolve();
+          });
+          throws.set(job.id, () => {
+            leave();
+            events.push(`${job.id} throws`);
+            reject(new Error(`${job.id} threw`));
+          });
+        }),
+      (error) => errors.push(error),
+    );
+    return {
+      queue,
+      events,
+      errors,
+      running,
+      mostAgentParts: () => mostAgentParts,
+      end: async (id: string) => {
+        ends.get(id)?.();
+        await settle();
+      },
+      throw: async (id: string) => {
+        throws.get(id)?.();
+        await settle();
+      },
+      /** An update-branch job's merge conflicted: it asks for the agent lane, and notes when it has it. */
+      conflict: async (id: string) => {
+        void agentLanes.get(id)?.().then(() => {
+          enter(id);
+          events.push(`${id} has the agent lane`);
+        });
+        await settle();
+      },
+    };
+  };
+
+  it("classes each kind by what it can do: follow-ups is light, update-branch hands off, and every other kind starts an agent", () => {
+    expect(LANES).toEqual({
+      review: "agent",
+      fix: "agent",
+      "update-branch": "hand-off",
+      implement: "agent",
+      "implement-prd": "agent",
+      "follow-ups": "light",
+    });
+  });
+
+  it("starts a follow-ups job and a clean update-branch queued behind a long agent job at once, and ends both before it", async () => {
+    const w = queued();
+    w.queue.add(implement("build"));
+    w.queue.add(followUps("file", 8));
+    w.queue.add(updateBranch("refresh", 9));
+    await settle();
+
+    expect(w.events).toEqual(["build starts", "file starts"]);
+    await w.end("file");
+    await w.end("refresh");
+    expect(w.events).toEqual(["build starts", "file starts", "file ends", "refresh starts", "refresh ends"]);
+    expect(w.running).toEqual(new Set(["build"]));
+
+    await w.end("build");
+    expect(w.events.at(-1)).toBe("build ends");
+    expect(w.queue.held()).toEqual([]);
+  });
+
+  it("never runs two agent jobs at once, and runs them in the order they arrived, whatever runs beside them", async () => {
+    const w = queued();
+    w.queue.add(implement("first", 12));
+    w.queue.add(review("second", 20));
+    w.queue.add(followUps("light", 30));
+    w.queue.add(implement("third", 13));
+    await settle();
+    expect(w.running).toEqual(new Set(["first", "light"]));
+
+    await w.end("light");
+    await w.end("first");
+    await w.end("second");
+    await w.end("third");
+    expect(w.events.filter((event) => event.endsWith("starts"))).toEqual(["first starts", "light starts", "second starts", "third starts"]);
+    expect(w.mostAgentParts()).toBe(1);
+  });
+
+  it("runs two jobs for one item in the order they arrived and never together, whatever their kinds", async () => {
+    const w = queued();
+    // A review on the pull request, then its follow-ups after the merge, then a refresh: one item, three lanes' worth.
+    w.queue.add(review("review", 7));
+    w.queue.add(followUps("file", 7));
+    w.queue.add(updateBranch("refresh", 7));
+    w.queue.add(followUps("other", 8));
+    await settle();
+    // The light lane passes over the follow-ups waiting on its item, so another item's still starts.
+    expect(w.running).toEqual(new Set(["review", "other"]));
+
+    await w.end("other");
+    expect(w.running).toEqual(new Set(["review"]));
+    await w.end("review");
+    expect(w.running).toEqual(new Set(["file"]));
+    await w.end("file");
+    expect(w.running).toEqual(new Set(["refresh"]));
+    await w.end("refresh");
+    expect(w.events).toEqual([
+      "review starts",
+      "other starts",
+      "other ends",
+      "review ends",
+      "file starts",
+      "file ends",
+      "refresh starts",
+      "refresh ends",
+    ]);
+  });
+
+  it("runs a refresh after an agent job for its item, when that job arrived first, whichever lane either runs in", async () => {
+    const w = queued();
+    w.queue.add(updateBranch("refresh", 7));
+    w.queue.add(review("review", 7));
+    await settle();
+    expect(w.running).toEqual(new Set(["refresh"]));
+
+    // A clean merge: it ends without the agent lane, and the review starts.
+    await w.end("refresh");
+    expect(w.running).toEqual(new Set(["review"]));
+  });
+
+  it("holds an update-branch whose merge conflicts back from the agent lane while an agent job runs, as an agent job waits", async () => {
+    const w = queued();
+    w.queue.add(implement("build"));
+    w.queue.add(updateBranch("refresh", 9));
+    w.queue.add(followUps("file", 8));
+    await settle();
+    expect(w.events).toEqual(["build starts", "refresh starts"]);
+
+    await w.conflict("refresh");
+    // Handed off: the light lane is free for the next job, and the agent part waits.
+    expect(w.events).toEqual(["build starts", "refresh starts", "file starts"]);
+
+    await w.end("file");
+    await w.end("build");
+    expect(w.events.slice(-2)).toEqual(["build ends", "refresh has the agent lane"]);
+    await w.end("refresh");
+    expect(w.mostAgentParts()).toBe(1);
+    expect(w.queue.held()).toEqual([]);
+  });
+
+  it("keeps a hand-off's place in the agent lane: an agent job that arrived after it waits for its merge, and then for its agent", async () => {
+    const w = queued();
+    w.queue.add(updateBranch("refresh", 9));
+    w.queue.add(implement("build"));
+    await settle();
+    expect(w.running).toEqual(new Set(["refresh"]));
+
+    await w.conflict("refresh");
+    expect(w.events).toEqual(["refresh starts", "refresh has the agent lane"]);
+    expect(w.running).toEqual(new Set(["refresh"]));
+
+    await w.end("refresh");
+    expect(w.running).toEqual(new Set(["build"]));
+  });
+
+  it("frees a hand-off's place in the agent lane where its merge was clean, so the agent job behind it starts", async () => {
+    const w = queued();
+    w.queue.add(updateBranch("refresh", 9));
+    w.queue.add(implement("build"));
+    await settle();
+
+    await w.end("refresh");
+    expect(w.events).toEqual(["refresh starts", "refresh ends", "build starts"]);
+  });
+
+  it("puts a PRD PR's refresh in line behind its parent's slice build, since both push to the PRD branch", async () => {
+    const w = queued();
+    w.queue.add(implementPrd("slice", 585));
+    w.queue.add(updateBranch("refresh", 599, "agent/prd-585-the-two-lane-worker"));
+    w.queue.add(updateBranch("other", 600, "agent/prd-586-another-chain"));
+    await settle();
+    // Another chain's refresh is not held back: only the chain the slice is building.
+    expect(w.running).toEqual(new Set(["slice", "other"]));
+
+    await w.end("other");
+    expect(w.running).toEqual(new Set(["slice"]));
+    await w.end("slice");
+    expect(w.running).toEqual(new Set(["refresh"]));
+  });
+
+  it("puts a parent's slice build in line behind a refresh of its PRD PR that arrived first", async () => {
+    const w = queued();
+    w.queue.add(updateBranch("refresh", 599, "agent/prd-585-the-two-lane-worker"));
+    w.queue.add(implementPrd("slice", 585));
+    await settle();
+    expect(w.running).toEqual(new Set(["refresh"]));
+
+    await w.end("refresh");
+    expect(w.running).toEqual(new Set(["slice"]));
+  });
+
+  it("puts an issue branch's PR in line with its issue's implement job, and keeps a PRD PR's own chain by its number too", async () => {
+    const w = queued();
+    w.queue.add(implement("build", 12));
+    w.queue.add(updateBranch("refresh", 40, "agent/issue-12-a-thing"));
+    w.queue.add(updateBranch("prd refresh", 599, "agent/prd-585-x"));
+    w.queue.add(followUps("file", 599));
+    await settle();
+    // The follow-ups names no branch, and still waits for the refresh on its own pull request.
+    expect(w.running).toEqual(new Set(["build", "prd refresh"]));
+
+    await w.end("prd refresh");
+    expect(w.running).toEqual(new Set(["build", "file"]));
+    await w.end("build");
+    expect(w.running).toEqual(new Set(["file"]));
+    await w.end("file");
+    expect(w.running).toEqual(new Set(["refresh"]));
+  });
+
+  it("goes on behind a job that throws, in its lane and in its item's chain", async () => {
+    const w = queued();
+    w.queue.add(implement("build", 12));
+    w.queue.add(followUps("file", 7));
+    w.queue.add(review("review", 7));
+    w.queue.add(followUps("next", 8));
+    w.queue.add(implement("later", 13));
+    await settle();
+
+    await w.throw("file");
+    // The light lane takes the next light job, and the review behind it on its item waits only for the agent lane.
+    expect(w.running).toEqual(new Set(["build", "next"]));
+    await w.throw("build");
+    expect(w.running).toEqual(new Set(["review", "next"]));
+    await w.end("review");
+    expect(w.running).toEqual(new Set(["later", "next"]));
+    expect(w.errors.map((error) => (error as Error).message)).toEqual(["file threw", "build threw"]);
+  });
+
+  it("never drops a hand-off waiting for the agent lane: its work has started", async () => {
+    const w = queued();
+    w.queue.add(implement("build"));
+    w.queue.add(updateBranch("refresh", 9));
+    await settle();
+    await w.conflict("refresh");
+
+    expect(w.queue.drop(() => true)).toEqual([]);
+    expect(w.queue.held().map((job) => job.id)).toEqual(["build", "refresh"]);
+  });
+
+  it("leaves a job's deadline as dispatched, and a conflicted refresh that reaches the agent lane past it ends at its next token, as a late job does", async () => {
+    // The dispatcher's clock: it refuses every token once the job's deadline has passed.
+    let clock = new Date("2026-10-11T13:00:00.000Z");
+    const s = setup(UB_CONFLICTS);
+    const refresh = { ...updateBranch("refresh", 9), deadline: "2026-10-11T14:00:00.000Z" };
+    const handed: Job[] = [];
+    const releases: (() => void)[] = [];
+    let phases: readonly Phase[] = [];
+    const queue = lanes(async (job, agentLane) => {
+      handed.push(job);
+      if (job.workflow !== "update-branch") return new Promise<void>((resolve) => releases.push(resolve));
+      phases = await runJob(job, {
+        ...s.edges,
+        token: async (kind) => {
+          if (clock.getTime() >= Date.parse(job.deadline)) {
+            s.asked.push(kind);
+            s.events.push(`${kind} token refused`);
+            throw new Error(`the dispatcher answered 403: job ${job.id} is past its deadline, ${job.deadline}`);
+          }
+          return s.edges.token(kind);
+        },
+        agentLane,
+      });
+    }, () => {});
+
+    queue.add(implement("build"));
+    queue.add(refresh);
+    await settle();
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    // The gate and the merge ran beside the build, inside the deadline; the agent's job waits.
+    expect(s.events).toEqual(["write token", "update-branch:gate", "checkout", "update-branch:merge"]);
+
+    clock = new Date("2026-10-11T14:30:00.000Z");
+    releases[0]?.();
+    await new Promise((resolve) => setTimeout(resolve, 50));
+
+    expect(handed.map((job) => job.deadline)).toEqual([IMPLEMENT_JOB.deadline, "2026-10-11T14:00:00.000Z"]);
+    expect(handed[1]).toBe(refresh);
+    // Late: no agent, nothing published, and nothing can say so on the pull request but the worker's log.
+    expect(s.events.slice(4)).toEqual(["read token refused", "push token refused", "write token refused"]);
+    expect(phases.at(-1)?.name).toBe("update-branch:conclude");
+    expect(phases.at(-1)?.outcome).toMatch(/^not run: the dispatcher granted no token/);
     expect(queue.held()).toEqual([]);
   });
 });

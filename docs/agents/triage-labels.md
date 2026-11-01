@@ -182,9 +182,10 @@ The refusal says: *"Label the issues they produce instead."* That path is:
    ([`ticket-shape.md`](./ticket-shape.md)).
 4. A human adds `agent:implement` to the PRD.
 5. Once the slices are published and verified natively **and every child ticket is closed**,
-   **close the map** — `gh issue close <map> --reason completed --comment "Sliced into PRD
-   #<prd>"`. After `/to-tickets`, not before: slicing is the map's last consumer and the step most
-   likely to surface a decision the PRD under-specifies, and the map is where that ticket would go.
+   **close the map**: `gh issue comment <map> --body "Sliced into PRD #<prd>"`, then
+   `gh issue close <map> --reason completed`, comment first as in
+   [*Close*](./issue-tracker.md#conventions). After `/to-tickets`, not before: slicing is the
+   map's last consumer and the step most likely to surface a decision the PRD under-specifies, and the map is where that ticket would go.
    An open child under a closed map is not a state this path produces — the frontier query reads
    children regardless of the map's own state, so a later `/wayfinder` session would be handed a
    frontier on a route that has left planning. Close the child, or reopen the map.
@@ -195,8 +196,8 @@ produced its own fix. These are filed as they surface: top-level issues, never s
 map, each linking it, and each triaged on its own. Steps 2 and 3 do not apply, because a PRD over
 unrelated changes would chain them into one sequence for no reason, and step 4 becomes promoting
 each issue as its turn comes. Step 5 still holds, with its precondition unchanged: close the map
-once every child ticket is closed, and say what it produced instead of naming a PRD
-(`--comment "Produced top-level issues; no PRD"`).
+once every child ticket is closed, and say what it produced instead of naming a PRD, in the
+comment posted before closing (`--body "Produced top-level issues; no PRD"`).
 
 Closing is bookkeeping, not disposal. **A map and its tickets are never implementable at any point
 in their lives** — that is what the refusal above is about, and it holds whether they are open or

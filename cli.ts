@@ -401,10 +401,10 @@ export const SUBCOMMANDS: Readonly<Record<string, Subcommand>> = {
     async () => (await import("./implement-prd/catch-up.js")).catchUp,
     "Merge the default branch into a PRD branch before a slice is built, and push it, or park the chain on a conflict (no model).",
   ),
-  "implement:prepare": command(
+  "implement:prepare": fetchingCommand(
     "implement:prepare",
     async () => (await import("./implement/prepare.js")).prepare,
-    "Create the agent's branch at the base commit the gate read, as the loop's committer (no model).",
+    "Create the agent's branch at the base commit the gate read, as the loop's committer, and fetch an earlier stopped run's rescue (no model).",
   ),
   "implement:bundle": command(
     "implement:bundle",

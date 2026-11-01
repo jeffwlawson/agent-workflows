@@ -140,11 +140,11 @@ The inputs every runner reads, set once for any of them:
 |---|---|---|---|
 | `OUTPUT_DIR` | required | | The directory the runner writes its files into (§2.3). |
 | `GH_REPO` | required | | The repository, `owner/name`. Required rather than left to whatever `gh` infers. |
-| `GH_TOKEN` | required | | The token `gh` reads. The runners only read with it, `fix:prepare` reads and fetches the rescue branch with it, and `update-branch:merge`, `update-branch:prepare` and `update-branch:publish` fetch the base branch with it; `follow-ups:file` posts the post-merge checklist, files its issues, posts its report and takes `agent:follow-ups` off with it, through the writer, `follow-ups:conclude` posts its failure comment with it, `implement:gate` makes its refusals, its start comment and its label transitions with it, `implement:publish` the link on the issue with it, `implement:conclude` its failure comment, `agent:implement` off and `agent:blocked` on, `implement-prd:gate` its refusals, its start comments, its label transitions, the approved slice's note and the PRD PR's building row, `implement-prd:catch-up` fetches the PRD branch and the base branch with it and parks the chain with it, `implement-prd:prepare` reads and fetches the PRD branch and the rescue branch with it, `implement-prd:publish` fetches the base branch and the PRD branch and reads the rescue branch's tip, the open pull requests from the PRD branch and a reused PRD PR's rounds and head with it, `implement-prd:conclude` its set-aside note, its failure comment, `agent:implement` off and `agent:blocked` on, and fetches the base branch and the PRD branch and reads the rescue branch's tip and the PRD PR's rounds with it, and `review:publish` posts the review, the summary and the verdict with it, `review:conclude` its comments, its error verdict and the labels nothing fires on, `review:advance` a PRD PR's progress list and its notes there, `fix:gate` its refusals and its label transitions, `fix:publish` its thread replies, its comments and notes, and the rescue branch's deletion, `fix:conclude` its failure comment, the rescue-set-aside note where `fix:publish` did not post it, and `agent:fix` off and `agent:blocked` on, `update-branch:gate` its refusal and its label transitions, `update-branch:publish` the verdict it carries over, its comment, and the comment that no review will start, and `update-branch:conclude` its failure comment, `agent:update-branch` off and `agent:blocked` on, and the comment that no refresh of a moved head will start. |
+| `GH_TOKEN` | required | | The token `gh` reads. The runners only read with it, `fix:prepare` reads and fetches the rescue branch with it, and `update-branch:merge`, `update-branch:prepare` and `update-branch:publish` fetch the base branch with it; `follow-ups:file` posts the post-merge checklist, files its issues, posts its report and takes `agent:follow-ups` off with it, through the writer, `follow-ups:conclude` posts its failure comment with it, `implement:gate` makes its refusals, its start comment and its label transitions with it, `implement:prepare` reads and fetches the rescue branch with it, `implement:publish` the link on the issue with it and reads the rescue branch's tip, `implement:conclude` its set-aside note, its failure comment, `agent:implement` off and `agent:blocked` on, and reads the rescue branch's tip with it, `implement-prd:gate` its refusals, its start comments, its label transitions, the approved slice's note and the PRD PR's building row, `implement-prd:catch-up` fetches the PRD branch and the base branch with it and parks the chain with it, `implement-prd:prepare` reads and fetches the PRD branch and the rescue branch with it, `implement-prd:publish` fetches the base branch and the PRD branch and reads the rescue branch's tip, the open pull requests from the PRD branch and a reused PRD PR's rounds and head with it, `implement-prd:conclude` its set-aside note, its failure comment, `agent:implement` off and `agent:blocked` on, and fetches the base branch and the PRD branch and reads the rescue branch's tip and the PRD PR's rounds with it, and `review:publish` posts the review, the summary and the verdict with it, `review:conclude` its comments, its error verdict and the labels nothing fires on, `review:advance` a PRD PR's progress list and its notes there, `fix:gate` its refusals and its label transitions, `fix:publish` its thread replies, its comments and notes, and the rescue branch's deletion, `fix:conclude` its failure comment, the rescue-set-aside note where `fix:publish` did not post it, and `agent:fix` off and `agent:blocked` on, `update-branch:gate` its refusal and its label transitions, `update-branch:publish` the verdict it carries over, its comment, and the comment that no review will start, and `update-branch:conclude` its failure comment, `agent:update-branch` off and `agent:blocked` on, and the comment that no refresh of a moved head will start. |
 
 A command that runs where no token is held, as the red check's two do beside the pull request's own
-code, `fix:bundle`, `update-branch:bundle`, `implement:bundle` and `implement-prd:bundle` do after the agent and
-`implement:prepare` does before it, reads `OUTPUT_DIR` alone of these: it reads no repository, so it declares neither `GH_REPO`
+code, and `fix:bundle`, `update-branch:bundle`, `implement:bundle` and `implement-prd:bundle` do after the agent,
+reads `OUTPUT_DIR` alone of these: it reads no repository, so it declares neither `GH_REPO`
 nor `GH_TOKEN`, and an orchestrator hands it neither.
 
 Every runner starts the agent, so every runner reads the inputs that choose its sandbox (§3). An
@@ -523,8 +523,9 @@ only a status whose creator is the loop's identity (§4.1).
 | `agent/issue-<n>-<slug>` | The branch, and so the pull request's head, an `implement` run builds issue `<n>` on. `<slug>` is the issue's title, lowercased in ASCII alone, every run of anything but `[a-z0-9]` one `-`, the ends trimmed, then cut to 50, which can leave a trailing `-`. A retry lands on the branch an earlier run named. | named by `implement:gate`, as `ISSUE_BRANCH_PREFIX` and `issueBranch` in `shared/record.ts` spell it; pushed by `implement:publish`, from `implement:bundle`'s `branch.bundle`, leased on the tip the gate read | `implement:gate`, for its tip |
 | `agent/prd-<parent>-<slug>` | A PRD branch, and so a PRD PR, of parent issue `<parent>`. A pull request whose head does not match is an ordinary one. Found by its stable half, `agent/prd-<parent>-`, so a retitled parent keeps its chain; `<slug>` is made as an issue branch's is, and names only a branch that does not exist yet. | named by `implement-prd:gate`, as `prdBranchStem` and `prdBranch` in `shared/record.ts` spell it; pushed by `implement-prd:catch-up`, its merge of the default branch, and `implement-prd:publish`, a slice | `review`, `fix`; `implement-prd:gate`, for its tip and the slices on it |
 | `agent/rescue/fix-<n>` | An earlier stopped fix run's commits on pull request `<n>`, its `RESCUE_BRANCH` (§9). Deleted, under a lease, by a run that succeeds. | `fix:conclude`, from `fix:bundle`'s `branch.bundle`; deleted by `fix:publish` | `fix:prepare`, which fetches it for the runner as `refs/rescue/…` |
+| `agent/rescue/issue-<n>` | An earlier stopped implement run's commits on issue `<n>`, its `RESCUE_BRANCH` (§6). Keyed to the number alone, so a retitled issue still finds it. Deleted, under a lease, by a run that pushes. | `implement:conclude`, from `implement:bundle`'s `branch.bundle`, leased on its tip as read, as `issueRescueBranch` in `shared/record.ts` spells it; deleted by `implement:publish` | `implement:prepare`, which fetches it for the runner as `refs/rescue/…` |
 | `agent/rescue/prd-<parent>` | An earlier stopped implement-prd run's commits on PRD parent `<parent>`, its `RESCUE_BRANCH` (§7). Deleted, under a lease, by a run that pushes its slice. | `implement-prd:conclude`, from `implement-prd:bundle`'s `branch.bundle`, leased on its tip as read; deleted by `implement-prd:publish` | `implement-prd:prepare`, which fetches it for the runner as `refs/rescue/…` |
-| `refs/rescue/<RESCUE_BRANCH>` | An earlier stopped run's commits, fetched for the runner to resume from (§7, §9). | `fix:prepare` for `fix`, and `implement-prd:prepare` for `implement-prd`, from the rescue branch | `implement-prd`, `fix` |
+| `refs/rescue/<RESCUE_BRANCH>` | An earlier stopped run's commits, fetched for the runner to resume from (§6, §7, §9). | `fix:prepare` for `fix`, `implement-prd:prepare` for `implement-prd`, and `implement:prepare` for `implement`, from the rescue branch | `implement`, `implement-prd`, `fix` |
 
 **Label events.**
 
@@ -580,7 +581,15 @@ Builds one issue as commits on a new branch from the default branch, and fails w
 made none. It fails with the agent's reason, whether or not it made commits, where the agent
 reports that the issue no longer matches the code. Preconditions: the default
 branch checked out, at `BASE_REF`, and a new branch named `BRANCH` created from it and checked out:
-from the commit the orchestrator read the default branch at, where it read one (`implement:prepare`).
+from the commit the orchestrator read the default branch at, where it read one (`implement:prepare`);
+and, where an earlier run of this issue left commits on `RESCUE_BRANCH`, that branch fetched to
+`refs/rescue/<RESCUE_BRANCH>` for the runner to resume from.
+
+**A resume** (#270): where the rescue builds on the commit `BRANCH` was created at, the runner
+fast-forwards onto it before the agent starts, and the prompt opens by saying the commits are
+unverified and to run the verify command first. Where it does not, the base having moved since it
+was saved, it is set aside, and `rescue_ignored.json` says so. Its commits count toward the ones the
+runner requires.
 
 ### Inputs
 
@@ -598,20 +607,24 @@ from the commit the orchestrator read the default branch at, where it read one (
 | `ISSUE_TITLE` | required | | Its title. |
 | `BRANCH` | required | | The branch checked out for the work. |
 | `BASE_REF` | required | | The branch it was cut from, which the runner counts its commits against. |
+| `RESCUE_BRANCH` | required | | Where an earlier run of this issue that stopped left its commits. |
 
 ### Outputs
 
 | Output | When it is written |
 |---|---|
-| | Nothing beyond §2.4. The result is the commits on `BRANCH`. |
+| `rescue_ignored.json` | Where a rescue branch was found and set aside because the base moved since it was saved: `branch`, the rescue branch, and `movedPast`, its tip. `implement:conclude` says so. |
+
+The result is the commits on `BRANCH`.
 
 **`doctor` cannot check this.** These tables are the runner's, held to its declaration by the
 build, and an orchestrator other than Actions sets its environment in its own code.
 
 ### What it reads from the record
 
-The issue's body and comments, through `isTrustedAuthor` (§4.1): a body or comment by an author
-it does not trust is left out of what the agent is shown. Nothing else of the record.
+- The issue's body and comments, through `isTrustedAuthor` (§4.1): a body or comment by an author
+  it does not trust is left out of what the agent is shown.
+- `refs/rescue/<RESCUE_BRANCH>`, where it exists, to resume from.
 
 **`doctor` cannot check this.** The record is written by the orchestrator's posting code, for the reason §4.3 gives.
 
@@ -621,14 +634,18 @@ it does not trust is left out of what the agent is shown. Nothing else of the re
 > those facts into the job's outputs, which every later job reads, and the job's last step starts
 > the agent's clock. The agent's job checks out the default branch, installs the package once,
 > before the adopter's `setup`, with the one step there handed the registry token, and runs
-> `implement:prepare`, which creates `BRANCH` at the gate's base commit, then the runner, by the
-> install's path, and on its success `implement:bundle`; it hands the bundle and every reason file
-> to the publish job as one artifact, and its last step measures whether it ran out of time, as its
-> `timed-out` output. A publish job mints the loop's token, checks the default branch out and runs
-> `implement:publish`, which checks the bundle, pushes `BRANCH`, opens a draft pull request into
-> the default branch, links it on the issue, and adds `agent:review` to it; then, `always()`,
-> `implement:conclude`, which ends every run: the failure comment and `agent:blocked` where the run
-> stopped, and `agent:implement` off wherever the gate decided the run was its own.
+> `implement:prepare`, which creates `BRANCH` at the gate's base commit and fetches the rescue
+> branch, then the runner, by the install's path, and, however it ended, `implement:bundle`; it
+> hands the bundle, every reason file and the rescue it set aside to the publish job as one
+> artifact, and its last step measures whether it ran out of time, as its `timed-out` output, beside
+> the bundle step's outcome, as its `bundled` output. `RESCUE_BRANCH` is `agent/rescue/issue-<n>`, set on the agent's job and the publish job. A publish
+> job mints the loop's token, checks the default branch out and runs, where the agent's job
+> succeeded, `implement:publish`, which checks the bundle, pushes `BRANCH`, opens a draft pull
+> request into the default branch, deletes the rescue branch, links it on the issue, and adds
+> `agent:review` to it; then, `always()`, `implement:conclude`, which ends every run: the set-aside
+> note, a stopped run's commits rescued to the rescue branch where nothing was pushed, the failure
+> comment and `agent:blocked` where the run stopped, and `agent:implement` off wherever the gate
+> decided the run was its own.
 
 > **Service orchestrator:** the worker runs the gate job's, the agent's job's and the publish job's
 > subcommands, in the order above and under each job's and step's `if:` in `implement.yml`, not
@@ -655,20 +672,24 @@ it does not trust is left out of what the agent is shown. Nothing else of the re
 >   claimed the run and then failed, as at the probe, since the job needs the gate's success.
 > - **The agent's job**, where the gate succeeded and claimed the run: a `read` token; a checkout
 >   of the base branch, by name, with the repository's tags, as `implement.yml`'s, with no token stored in it;
->   `implement:prepare`, handed no token, which creates `BRANCH` there at `base`, the commit the
->   gate read the base branch at; the repository's setup,
+>   `implement:prepare`, with the same `read` token, which creates `BRANCH` there at `base`, the
+>   commit the gate read the base branch at, and fetches the rescue branch; the repository's setup,
 >   `AGENT_SETUP`, in the bwrap sandbox with no token, where Actions runs the caller's `setup:`; a
 >   fresh `read` token, then the runner in the sandbox its settings name, with it as `GH_TOKEN`;
->   and `implement:bundle`, handed no token, only where every step before it succeeded, as the
->   bundle step's `if: success()`.
+>   and `implement:bundle`, handed no token, however those ended, as the bundle step's
+>   `always()`, under a time limit of its own, since the agent's may have fired.
 > - **The publish job**, wherever the gate did not refuse: a `push` token, since the job holds
->   `contents: write`. `implement:publish` runs only where the agent's job succeeded and the steps
->   before it in the publish job did, the mint and the checkout among them: in a checkout of the
->   base branch, by name, of its own, pointed at `implement:bundle`'s directory, it pushes `BRANCH`, opens the draft pull
->   request as the App, links it on the issue and adds `agent:review` with the App's token. Then
->   `implement:conclude`, however the run ended, pointed at publish's, prepare's, the runner's and
->   bundle's directories. Both hold `push`, publish as both `GH_TOKEN` and `LOOP_TOKEN`, with
->   `LOOP_TOKEN_SOURCE` `app`; the runner never holds a token that writes.
+>   `contents: write`, or a `write` token where that is refused, and, where the gate claimed the
+>   run, a checkout of the base branch, by name, of its own, made with it, which the bundle is
+>   checked in. `implement:publish` runs only where the agent's job succeeded and the steps before
+>   it in the publish job did, the mint and the checkout among them: pointed at
+>   `implement:bundle`'s directory, it pushes `BRANCH`, opens the draft pull request as the App,
+>   deletes the rescue branch, links it on the issue and adds `agent:review` with the App's token.
+>   Then `implement:conclude`, however the run ended, in the same checkout, pointed at publish's,
+>   prepare's, the runner's and bundle's directories. Publish holds `push` as both `GH_TOKEN` and
+>   `LOOP_TOKEN`, with `LOOP_TOKEN_SOURCE` `app`; conclude holds it as both too, or the `write`
+>   token as `GH_TOKEN` and no `LOOP_TOKEN` where `push` was refused, so it rescues nothing then.
+>   The runner never holds a token that writes.
 >
 > Where `implement.yml` passes something the service does not have, it passes the nearest
 > equivalent:
@@ -678,6 +699,8 @@ it does not trust is left out of what the agent is shown. Nothing else of the re
 > - **The gate job's outputs are its files.** `REFUSED` is read from `gate.json` as for `fix`;
 >   `BRANCH`, `BASE_SHA` and `BRANCH_TIP` are its `branch`, `base` and `tip`; `GATE_REASON` is
 >   `implement:gate`'s `failure_reason.txt`.
+> - **`RESCUE_BRANCH` is `agent/rescue/issue-<n>`**, as `issueRescueBranch` in `shared/record.ts`
+>   spells it, the name `implement.yml` gives it.
 > - **`RUN_URL` is the App's own page**, `https://github.com/apps/<slug>`: the service has no run
 >   page, and the commands require a link, which the start comment, the pull request's frame, the
 >   link on the issue and the failure comment give where Actions links its workflow run.
@@ -685,8 +708,10 @@ it does not trust is left out of what the agent is shown. Nothing else of the re
 >   job's steps share `AGENT_TIMEOUT_MINUTES` (30 where unset or not a positive integer), and one
 >   still running at it is ended with every process it started: the agent's job is then
 >   `cancelled`, with `TIMED_OUT` `true` and `TIMEOUT_MINUTES` the limit, which on Actions the job's
->   last step measures. Publish's checkout and `implement:publish` share the publish job's 15
->   minutes, and `implement:conclude` gets 15 of its own. The dispatcher's deadline for the job is
+>   last step measures. `implement:bundle` gets 5 minutes of its own after it, as `fix:bundle`
+>   does; one still running at it is `BUNDLE_OUTCOME` `cancelled`, as the step's outcome is on
+>   Actions, so conclude says the commits went unsaved. Publish's checkout and `implement:publish` share the publish job's 15 minutes, and
+>   `implement:conclude` gets 15 of its own. The dispatcher's deadline for the job is
 >   the agent's limit plus its margin.
 > - **A phase not started leaves its reason** where `implement:conclude` reads the next one: a
 >   `read` token not granted, or a checkout that failed, as `implement:prepare`'s
@@ -791,14 +816,22 @@ Creates the agent's branch: `BRANCH`, in `CHECKOUT`, at `BASE_SHA`, the commit t
 `BASE_REF` at, checked out, with the loop's committer, `sandcastle-agent[bot]` and its noreply
 address, as the checkout's identity, so the agent's commits are made by it. Not the default
 branch's tip, which may have moved since the gate read it: the agent builds on exactly the base the
-publish job checks its commits against. It runs no model, reads no repository, holds no token, and
-writes nothing to the record.
+publish job checks its commits against. Then it fetches the rescue an earlier stopped run of this
+issue left (#270). It runs no model, reads with `GH_TOKEN`, and writes nothing to the record.
 
 - **A checkout without the base commit.** Where `CHECKOUT` does not hold `BASE_SHA`, the default
   branch rewritten since the gate read it, it fails with `` The checkout of `<BASE_REF>` doesn't
   hold <BASE_SHA>, the commit this run found it at, so no branch was made for the agent. ``, and
   creates no branch.
 - **A failure of git.** Fails the command, naming the branch and the commit.
+- **The rescue**, as `fix:prepare` fetches it: `RESCUE_BRANCH`'s tip is read from the repository's
+  branches, and where it exists the branch is fetched into `CHECKOUT` as
+  `refs/rescue/<RESCUE_BRANCH>`, outside `refs/remotes/`, so its commits count as this run's. A 404
+  is no rescue, and fetches nothing. **An unreadable answer stops the run**, rather than reading as
+  no rescue, since a run that started over without the rescue, and succeeded, would delete it: it
+  fails with `` Couldn't check whether an earlier run left commits on `<RESCUE_BRANCH>`, so this run
+  stopped rather than start over without them. ``, and a rescue that is there but cannot be fetched
+  fails it too, naming the branch.
 
 #### Inputs
 
@@ -808,37 +841,42 @@ writes nothing to the record.
 | `BRANCH` | required | | The branch to create: `implement:gate`'s `branch`. |
 | `BASE_REF` | required | | The branch the work is cut from, named in the refusal. |
 | `BASE_SHA` | required | | The commit `implement:gate` read `BASE_REF` at, which the branch is created at. |
+| `RESCUE_BRANCH` | required | | Where an earlier run of this issue that stopped left its commits, fetched where it exists. |
 
 #### Outputs
 
 | Output | When it is written |
 |---|---|
-| | Nothing beyond §2.4. The result is the branch it checked out. |
+| | Nothing beyond §2.4. The result is the branch it checked out, and the rescue it fetched. |
 
 **`doctor` cannot check this.** These tables are the command's, for the reason §6 gives.
 
 #### What it reads from the record
 
-Nothing. Its inputs are the checkout and the gate's facts.
+- `RESCUE_BRANCH`'s tip; a 404 is no rescue.
+
+**`doctor` cannot check this.** The record is written by the orchestrator's posting code, for the reason §4.3 gives.
 
 > **Actions orchestrator:** the agent's job, after the checkout of the default branch and before
 > the adopter's toolchain and `setup`, from the package installed early in that job, run from
-> `RUNNER_TEMP`. It is handed no token: the job's `GH_TOKEN` is set empty for it. `CHECKOUT` is the
-> workspace, and `BRANCH` and `BASE_SHA` the gate job's `branch` and `base` outputs. `OUTPUT_DIR`
+> `RUNNER_TEMP`. It is handed the job's `GH_TOKEN`, read-only there, which meets no git config
+> entry or hook of the adopter's this early. `CHECKOUT` is the workspace, `RESCUE_BRANCH` the job's,
+> and `BRANCH` and `BASE_SHA` the gate job's `branch` and `base` outputs. `OUTPUT_DIR`
 > is a directory of its own under `runner.temp`, which the job's upload carries, for the failure
 > comment.
 
 ### `implement:bundle`
 
-Bundles the agent's commits for whatever pushes them: the commits on `refs/heads/<BRANCH>` in the
-checkout ahead of `BASE_SHA`, the gate's base commit, as a thin bundle holding exactly that one ref,
-with `BASE_SHA` its prerequisite. Bundled as `fix:bundle` bundles. It runs no model, reads no
-repository, holds no token, and writes nothing to the record.
+Bundles the agent's commits for whatever pushes or rescues them: the commits on
+`refs/heads/<BRANCH>` in the checkout ahead of `BASE_SHA`, the gate's base commit, as a thin bundle
+holding exactly that one ref, with `BASE_SHA` its prerequisite. Bundled as `fix:bundle` bundles,
+commits the run resumed from a rescue among them. It runs no model, reads no repository, holds no
+token, and writes nothing to the record.
 
-- **Nothing to bundle is a refusal.** It runs only where the agent succeeded, and the runner fails
-  a run that made no commits, so no commits ahead of `BASE_SHA`, or no `refs/heads/<BRANCH>` at
-  all, fails the command with a sentence naming the branch.
-- **A failure of git.** Fails the command, naming the branch.
+- **Nothing to bundle.** It runs however the agent ended (#270), so no commits ahead of `BASE_SHA`,
+  or no `refs/heads/<BRANCH>` at all, writes nothing and succeeds, which whatever reads the bundle
+  reads as nothing to push or rescue.
+- **A failure of git.** Fails the command, naming the branch and `BASE_SHA`.
 
 #### Inputs
 
@@ -860,13 +898,13 @@ repository, holds no token, and writes nothing to the record.
 
 Nothing. Its inputs are the checkout and the gate's facts.
 
-> **Actions orchestrator:** the agent's job, where the runner succeeded, after it and the
+> **Actions orchestrator:** the agent's job, `always()`, after the runner and the
 > transcript, from the package installed early in that job, run from `RUNNER_TEMP`, where `npm
 > exec` finds that install without asking the registry. It is handed no token: the job's
 > `GH_TOKEN` is set empty for it. `CHECKOUT` is the workspace, and `BRANCH` and `BASE_SHA` the gate
 > job's `branch` and `base` outputs. `OUTPUT_DIR` is a directory of its own under `runner.temp`,
-> which the job's upload carries beside the runner's reason file; the publish job checks the bundle
-> before it pushes anything from it.
+> which the job's upload carries beside the runner's files; the publish job checks the bundle
+> before it pushes or rescues anything from it.
 
 ### `implement:publish`
 
@@ -889,7 +927,11 @@ A check that fails fails the command, and nothing is written.
 The order: the push of the bundle's tip to `refs/heads/<BRANCH>` with the loop's token, leased on
 `BRANCH_TIP`, or on the branch not existing where it is empty, so a retry replaces a branch an
 earlier run left and a branch someone pushed to during the run is refused; the draft pull request
-from `BRANCH` into `BASE_REF`, with the loop's token; `` **`agent:implement` opened PR #<pr>:** ``
+from `BRANCH` into `BASE_REF`, with the loop's token; `RESCUE_BRANCH` deleted, with the loop's
+token, leased on its tip as read, where it exists (#270): what the run resumed from is in what it
+pushed, and the pull request now holds it, whereas an open that failed sends the retry back to the
+base, whose push replaces `BRANCH`, leaving the rescue the one copy; a deletion that fails, or a tip
+that cannot be read, is a warning; `` **`agent:implement` opened PR #<pr>:** ``
 and a link to `RUN_URL` on the issue, with `GH_TOKEN`, tolerated; a bounded wait for the pull
 request to show the pushed head; `agent:implement` off the issue, tolerated; and `agent:review` off
 the pull request, tolerated, and on, with the loop's token, warning where `LOOP_TOKEN_SOURCE` is
@@ -916,6 +958,7 @@ add fails the command, naming it.
 | `BRANCH` | required | | The agent's branch: `implement:gate`'s `branch`, which the bundle has to hold and the push moves. |
 | `BASE_SHA` | required | | The commit `implement:gate` read `BASE_REF` at, which the bundle has to build on. |
 | `BRANCH_TIP` | optional | `""` | `implement:gate`'s `tip`, which the push is leased on. Empty is a branch that did not exist, and the push is leased on its still not existing. |
+| `RESCUE_BRANCH` | required | | The rescue branch, deleted once the push lands. |
 | `RUN_URL` | required | | The run's page, which the frame and the link on the issue name. |
 | `CHECKOUT` | required | | A checkout of the repository holding `BASE_SHA`, the bundle is checked in and pushed from. |
 | `HEAD_WAIT_SECONDS` | optional | `60` | How long to wait for the pull request to show the pushed head before the review is asked for anyway. |
@@ -933,6 +976,7 @@ add fails the command, naming it.
 
 #### What it reads from the record
 
+- `RESCUE_BRANCH`'s tip, for the deletion's lease; a 404 is none.
 - The open pull requests from `BRANCH` into `BASE_REF`, on a server error opening one.
 - The pull request it opened, for whether it shows the pushed head yet.
 
@@ -949,20 +993,37 @@ add fails the command, naming it.
 
 ### `implement:conclude`
 
-Ends every implement run, success included, in the loop's one order: the failure comment, then
-`agent:implement` off, then `agent:blocked`. It runs no model and needs no checkout. It is told how
+Ends every implement run, success included, in the loop's one order: every result posted, then
+`agent:implement` off, then `agent:blocked` where the run stopped. It runs no model, and works in a
+checkout only to check a stopped run's bundle before it rescues it. It is told how
 the run went rather than reading it off which steps ran: the gate's decision, result and reason,
 the agent's job's result, whether that job ran out of time, and the outcome of each step the
 orchestrator ran before it, and it works out the ending from them. Each is one of:
 
 - **A refusal or a deferral** (`REFUSED` is `true`): nothing, since the gate said it and took the
   label off, or says nothing by design.
+- **A rescue the runner set aside** (#270), on any other ending: `` **`agent:implement` started
+  fresh:** `` and that the earlier run's commits on `RESCUE_BRANCH` were not built on, since
+  `` `<BASE_REF>` `` has moved since, first, with `GH_TOKEN`. A `rescue_ignored.json` naming another
+  branch is a warning and is skipped.
 - **A run that finished**: the gate, the agent's job and every step before this one.
   `agent:implement` off, even where `implement:publish` took it off before it asked for the
   review, since that removal is tolerated and may have failed. Every other word of it is publish's.
-- **A run that stopped**, after a gate that decided the run was its own (`REFUSED` is `false`): the
-  failure comment, `` **`agent:implement` stopped:** `` and the reason as a sentence, the run's
-  link, and the retry; then `agent:implement` off, then `agent:blocked`.
+- **A run that stopped**, after a gate that decided the run was its own (`REFUSED` is `false`): its
+  commits rescued, where `published.json` does not say it pushed; the failure comment,
+  `` **`agent:implement` stopped:** `` and the reason as a sentence, the run's link, and the retry;
+  then `agent:implement` off, then `agent:blocked`.
+
+**The rescue** (#270): where `BUNDLE_DIR` holds `branch.bundle`, its tip is pushed to
+`refs/heads/<RESCUE_BRANCH>` with `LOOP_TOKEN`, leased on the rescue's tip as read, or on there
+being none, so a retry that stops again replaces the rescue it started from and holds everything it
+held. Never `BRANCH`, no pull request, no review and no label. No bundle is no commits ahead of
+`BASE_SHA`, and nothing is pushed. The bundle is checked in `CHECKOUT` as `implement:publish`
+checks it, against `BRANCH` and `BASE_SHA`. An empty `LOOP_TOKEN` or a mint that did not succeed,
+a bundle that fails a check, a rescue's tip that cannot be read, a push that fails, and, with no
+bundle, a `failure_reason.txt` in `BUNDLE_DIR`, a `DOWNLOAD_OUTCOME` of `failure`, or a
+`BUNDLE_OUTCOME` of `failure` or `cancelled` (a bundle step ended before it wrote anything), each
+rescue nothing, with a warning, and the comment says the commits were not saved, and why.
 - **A gate that did not decide** (`REFUSED` is empty): the same comment and `agent:blocked`, and
   `agent:implement` is **left on**: that run may have been the event `implement-prd` answers, which
   holds the label while it works.
@@ -977,19 +1038,37 @@ so adding `agent:implement` again would be refused. Fix the problem above, then 
 to PR #<pr>. `` where `published.json` names a pull request; after a gate that did not decide,
 `` To try again, remove `agent:implement` if it is still on this issue, then add it. ``, since
 adding a label already there fires nothing; and `` To try again, add `agent:implement`. ``
-otherwise.
+otherwise. Where it rescued the commits, the plain retry is `` Its commits so far are saved on
+`<RESCUE_BRANCH>`. To resume from them, add `agent:implement`. ``, and any other is followed by
+`` Its commits so far are saved on `<RESCUE_BRANCH>`, and adding `agent:implement` resumes from
+them. ``; where they went unsaved, the retry is followed by `` Its commits were not saved on
+`<RESCUE_BRANCH>`: `` and why: `` the loop's token was not minted, so there was nothing to push
+them with. ``, `` they could not be checked against `<BASE_REF>` before the push, and the workflow
+run's log says why. ``, `` GitHub would not say whether the branch already holds commits, so
+pushing could have overwritten them. ``, `` GitHub refused the push, and the workflow run's log
+says why. ``, `` the agent's job could not bundle them, and the workflow run's log says why. ``,
+`` the agent's job was stopped before it finished bundling them, and the workflow run's log says
+why. `` or
+`` what the agent's job handed over could not be fetched, so there were none to push. ``
 
 Each directory is read on its own, so a file that does not read is a warning and is read as not
-written, and costs the comment no reason another producer gave. Every write is tolerated: one
-GitHub refuses is a warning, so a run that cannot comment still takes its label off. Every write is
-made with `GH_TOKEN`.
+written, and costs the comment no reason another producer gave; the runner's two files are read
+each on its own. Every write is tolerated: one GitHub refuses is a warning, so a run that cannot
+comment still takes its label off. Every write but the rescue is made with `GH_TOKEN`.
 
 #### Inputs
 
 | Input | Kind | Default | What it is |
 |---|---|---|---|
+| `LOOP_TOKEN` | optional | `""` | The loop's token, which the rescue is pushed with. Empty where it was not minted, and nothing is rescued. |
+| `LOOP_TOKEN_SOURCE` | optional | `""` | Where `LOOP_TOKEN` came from: `app`, `pat` or `workflow`. |
 | `ISSUE_NUMBER` | required | | The issue. |
+| `BASE_REF` | required | | The default branch, named in the set-aside note and the bundle's check. |
 | `RUN_URL` | required | | The run's page, which the failure comment links. |
+| `RESCUE_BRANCH` | required | | Where a stopped run's commits are pushed, and the rescue the runner set aside has to name. |
+| `CHECKOUT` | required | | A checkout of the repository holding `BASE_SHA`, which the bundle is checked in and rescued from. |
+| `BRANCH` | optional | `""` | `implement:gate`'s `branch`, which the bundle has to hold. Empty where the gate did not decide. |
+| `BASE_SHA` | optional | `""` | `implement:gate`'s `base`, which the bundle has to build on. |
 | `REFUSED` | optional | `""` | Accepts `true` or `false`: `false` where the gate claimed the run, `true` where it refused or deferred. Empty is a gate that died before it decided. |
 | `GATE_RESULT` | required | | How the gate's job ended: `success`, `failure`, `cancelled` or `skipped`. |
 | `GATE_REASON` | optional | `""` | The sentence `implement:gate` failed with, where it wrote one. |
@@ -999,10 +1078,11 @@ made with `GH_TOKEN`.
 | `MINT_OUTCOME` | optional | `""` | The outcome of minting the loop's token: `success`, `failure`, `cancelled` or `skipped`. Empty is not run. |
 | `DOWNLOAD_OUTCOME` | optional | `""` | The same, for fetching the agent's hand-over. |
 | `PUBLISH_OUTCOME` | optional | `""` | The same, for `implement:publish`. |
+| `BUNDLE_OUTCOME` | optional | `""` | The same, for `implement:bundle`, in the agent's job. With no bundle, `failure` or `cancelled` is commits not saved rather than none. |
 | `PUBLISH_DIR` | directory | | `implement:publish`'s `OUTPUT_DIR`. Reads `published.json` (where written) and `failure_reason.txt` (where written). |
 | `PREPARE_DIR` | directory | | `implement:prepare`'s `OUTPUT_DIR`. Reads `failure_reason.txt` (where written). |
-| `IMPLEMENT_DIR` | directory | | The `implement` runner's `OUTPUT_DIR`. Reads `failure_reason.txt` (where written). |
-| `BUNDLE_DIR` | directory | | `implement:bundle`'s `OUTPUT_DIR`. Reads `failure_reason.txt` (where written). |
+| `IMPLEMENT_DIR` | directory | | The `implement` runner's `OUTPUT_DIR`. Reads `failure_reason.txt` (where written) and `rescue_ignored.json` (where written). |
+| `BUNDLE_DIR` | directory | | `implement:bundle`'s `OUTPUT_DIR`. Reads `branch.bundle` (where written) and `failure_reason.txt` (where written). |
 
 #### Outputs
 
@@ -1014,7 +1094,7 @@ made with `GH_TOKEN`.
 
 #### What it reads from the record
 
-Nothing: what it says comes from its inputs and its directories.
+- `RESCUE_BRANCH`'s tip, for the rescue's lease; a 404 is none.
 
 **`doctor` cannot check this.** The record is written by the orchestrator's posting code, for the reason §4.3 gives.
 
@@ -1022,11 +1102,14 @@ Nothing: what it says comes from its inputs and its directories.
 > `RUNNER_TEMP`, as are the Node setup and the upload around it, and the checkout and the download
 > wherever the gate claimed the run. It is told the gate's `refused` output, result and
 > `failure-reason` output, which the gate job's glue step copies from `implement:gate`'s reason
-> file, the agent's job's result and its `timed-out` output, the limit as `AGENT_TIMEOUT_MINUTES` or
-> 30, and the outcomes of the mint, the download and `implement:publish`. `PUBLISH_DIR` is
+> file, the agent's job's result, its `timed-out` output and its `bundled` output, the bundle step's
+> outcome, the limit as `AGENT_TIMEOUT_MINUTES` or 30, and the outcomes of the mint, the download and
+> `implement:publish`. `PUBLISH_DIR` is
 > `implement:publish`'s `OUTPUT_DIR`, and `PREPARE_DIR`, `IMPLEMENT_DIR` and `BUNDLE_DIR` where the
 > agent's artifact is downloaded, a directory of its own under `runner.temp`, so the mint's reason
-> file is never read as the runner's. It is handed the workflow token alone. Both commands' write
+> file is never read as the runner's. `CHECKOUT` is the publish job's one checkout, `RESCUE_BRANCH`
+> the job's, and `BRANCH` and `BASE_SHA` the gate job's `branch` and `base` outputs. It is handed
+> the workflow token as `GH_TOKEN` and the loop's, empty where the mint failed. Both commands' write
 > logs are uploaded `always()`.
 
 ## 7. `implement-prd`

@@ -88,16 +88,16 @@ the first.
 
 Repository permissions:
 
-| Permission | Access | Why |
-|---|---|---|
-| Metadata | read | every API call, and a label's sender's permission |
-| Variables (`actions_variables` in the API) | read | `AGENT_ORCHESTRATOR`, re-read at every token, and the variables the service reads, `AGENT_SETUP` among them: the repository's own, else its organization's shared with it, as `vars` resolves them |
-| Contents | write | the checkout and the pull request's history, read by every phase; a push, by a `push` token only |
-| Pull requests | write | the review, its threads, the title and summary, and the ready mark |
-| Issues | write | comments and labels, the issue an implement job builds, and a PRD's parent |
-| Checks | read | CI's result, which the review's verdict reads |
-| Commit statuses | write | the verdict and the fix-round statuses |
-| Workflows | write | a push touching `.github/workflows/**` is refused without it, *after* the agent has done all its work |
+| Permission | In the API | Access | Why |
+|---|---|---|---|
+| Metadata | `metadata` | read | every API call, and a label's sender's permission |
+| Variables | `actions_variables` | read | `AGENT_ORCHESTRATOR`, re-read at every token, and the variables the service reads, `AGENT_SETUP` among them: the repository's own, else its organization's shared with it, as `vars` resolves them |
+| Contents | `contents` | write | the checkout and the pull request's history, read by every phase; a push, by a `push` token only |
+| Pull requests | `pull_requests` | write | the review, its threads, the title and summary, and the ready mark |
+| Issues | `issues` | write | comments and labels, the issue an implement job builds, and a PRD's parent |
+| Checks | `checks` | read | CI's result, which the review's verdict reads |
+| Commit statuses | `statuses` | write | the verdict and the fix-round statuses |
+| Workflows | `workflows` | write | a push touching `.github/workflows/**` is refused without it, *after* the agent has done all its work |
 
 The worker asks for one of three kinds of token at each phase: `read`, which every phase reads
 with and the only one the runner is ever handed; `write`, which adds the pull request, issue and
@@ -108,8 +108,12 @@ why it is a kind of its own rather than a wider `write`, and why it is acceptabl
 Actions (ADOPTING §2), neither the App's key nor a `push` token is ever where the agent runs. The
 key stays with the dispatcher, and a token reaches a subcommand only where its phase was handed it.
 
-A permission the App lacks fails the mint of the token that asks for it, so it is named in the
-dispatcher's log as the job's phase starts, rather than surfacing as a failed write mid-run.
+The dispatcher reads what the App is granted and subscribed to off the App's own record at start,
+and logs a `warning:` line for each gap: a permission not granted, or granted below the access
+this table needs, naming the access it holds and the tokens whose mint it fails, and an event
+under *The webhook* the App is not subscribed to. A gap warns and the dispatcher starts regardless,
+since review alone needs less than the whole table; a token the gap fails is refused when a phase
+asks for it, `422`, with `the App lacks a permission it asks for` in the log.
 
 Under *Where can this GitHub App be installed?*, choose **Only on this account**. A public App
 can be installed by anyone, on their own repositories, and every one of those would otherwise be a
@@ -128,8 +132,9 @@ In the App's settings, under *Webhook*:
 - **Active**, with the **Webhook URL** the address your dispatcher's webhook door is reached at
   from the internet, ending `/github`;
 - a **Webhook secret**, which is the dispatcher's `GITHUB_WEBHOOK_SECRET`;
-- under *Subscribe to events*, **Pull request** and **Issues**. An issue's label reaches the
-  dispatcher only on an `issues` delivery, so without **Issues** nothing answers `agent:implement`.
+- under *Subscribe to events*, **Pull request** (`pull_request`) and **Issues** (`issues`). An
+  issue's label reaches the dispatcher only on an `issues` delivery, so without **Issues** nothing
+  answers `agent:implement`.
 
 GitHub's *Recent Deliveries* page shows each delivery and the dispatcher's answer: `202` for every
 delivery whose signature verified, whatever became of it, and `401` for one that did not. What
@@ -235,9 +240,10 @@ checkout is made with, to post the round's ending without a rescue. For update-b
 for `update-branch:bundle`; and `push` for `update-branch:publish` and `update-branch:conclude`, with
 `write` for conclude where `push` is refused, as fix's. For implement: `write` for
 `implement:gate`, which posts its refusals and the start comment and probes the label; `read` for
-the checkout of the base, and a fresh `read` for the runner; none for `implement:prepare` and
-`implement:bundle`; and `push` for `implement:publish` and `implement:conclude`, with `write` for
-conclude where `push` is refused. For implement-prd: `write` for `implement-prd:gate`; `push` for
+the checkout of the base and `implement:prepare`, which fetches a stopped run's rescue branch, and
+a fresh `read` for the runner; none for `implement:bundle`; and `push` for the publish checkout,
+`implement:publish` and `implement:conclude`, with `write` for the checkout and conclude where
+`push` is refused, to post the run's ending without a rescue. For implement-prd: `write` for `implement-prd:gate`; `push` for
 the catch-up's checkout and `implement-prd:catch-up`, which pushes the merge of the default branch
 into the PRD branch, before any agent runs; `read` for the agent's checkout and
 `implement-prd:prepare`, and a fresh `read` for the runner; none for `implement-prd:bundle`; and
@@ -306,11 +312,13 @@ the head moved on while the job ran and no other trigger label is on.
 
 An implement job runs `implement:gate`, and ends there where it refused the issue or deferred a PRD
 to implement-prd. Where it claimed the run, the agent's job checks out the commit the gate read the
-default branch at, and runs `implement:prepare`, which creates the agent's branch there, the setup,
-the runner, and `implement:bundle` where those succeeded. Where they did, `implement:publish`, in a
-checkout of the base of its own, pushes the branch, opens the draft pull request as the App, links
-it on the issue and adds `agent:review` as the App, which the dispatcher answers as the App's own
-label: the pull request then flows into review. `implement:conclude` ends every run. The service
+default branch at, and runs `implement:prepare`, which creates the agent's branch there and fetches
+a stopped run's rescue branch, the setup, the runner, and `implement:bundle`, however those ended.
+Where they succeeded, `implement:publish`, in a checkout of the base of its own, pushes the branch,
+opens the draft pull request as the App, deletes the rescue branch, links it on the issue and adds
+`agent:review` as the App, which the dispatcher answers as the App's own label: the pull request
+then flows into review. `implement:conclude` ends every run, in the same checkout, pushing a stopped
+run's commits to `agent/rescue/issue-<n>` for the next run to resume from. The service
 has no run page, so the link the implement commands give where Actions links its workflow run (the
 start comment, the pull request's frame, the link on the issue and the failure comment) is the
 App's own page, `https://github.com/apps/<slug>`. Review's, fix's and update-branch's failure
@@ -379,8 +387,9 @@ update-branch job's gate, checkout and merge share 15 minutes; the agent's job's
 out; publish's checkout and `update-branch:publish` share 15 minutes, and `update-branch:conclude`
 gets 15. An implement job's gate gets 10 minutes; the agent's job's steps share
 `AGENT_TIMEOUT_MINUTES` (30 where unset), and a build ended at it publishes nothing and says it
-timed out; publish's checkout and `implement:publish` share 15 minutes, and `implement:conclude`
-gets 15. An implement-prd job's gate gets 10 minutes, and the catch-up's checkout and
+timed out; `implement:bundle` gets 5 of its own, so a build stopped at its limit still hands its
+commits over for the rescue; publish's checkout and `implement:publish` share 15 minutes, and
+`implement:conclude` gets 15. An implement-prd job's gate gets 10 minutes, and the catch-up's checkout and
 `implement-prd:catch-up` 10 together; the agent's job's steps share `AGENT_TIMEOUT_MINUTES` (30 where
 unset); `implement-prd:bundle` gets 5 of its own, so a build stopped at its limit still hands its
 commits over for the rescue; publish's checkout and `implement-prd:publish` share 15 minutes, and

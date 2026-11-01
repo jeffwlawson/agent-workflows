@@ -1,5 +1,6 @@
 import * as path from "node:path";
 import { GitError } from "../engine/git.js";
+import { GitHubError } from "../engine/github.js";
 import { ReadBackFailed, WriteFailed, type Lease, type Limits, type Writer } from "../engine/writer.js";
 import { checkBundle } from "../shared/bundle.js";
 import { describe, inWriteLog, issueNumber, seconds, tolerated } from "../shared/command-helpers.js";
@@ -44,6 +45,13 @@ interface Published {
  * not existing where the gate found none: a retry still replaces what an
  * earlier failed run left, and a push someone else made during the run is
  * refused rather than overwritten.
+ *
+ * **The rescue branch is deleted once the pull request is open** (#270),
+ * leased on its tip as read: the commits a run resumed from are in what it
+ * pushed, and a rescue left behind is one the next run would set aside. Not
+ * between the push and the open: an open that fails sends the retry back to
+ * the base, whose push replaces `BRANCH`, so the rescue is all that is left
+ * of those commits. A deletion that fails is a warning, never a stop.
  *
  * **A server error opening the pull request is read back** (#329): the open
  * pull request from exactly this head into exactly this base is this run's,
@@ -101,6 +109,12 @@ export const publish = async (inputs: Inputs, io: Io): Promise<void> => {
   const pr = await openPullRequest(inputs, issue, loop);
   state.pr = pr;
   record();
+
+  // The rescue, only once the pull request holds what it resumed from: a
+  // failed open leaves `published.json` with no `pr`, the retry cuts `BRANCH`
+  // afresh at the base and pushes over it, and the rescue is then the one
+  // copy of those commits (#270).
+  await deleteRescue(io, loop, inputs.RESCUE_BRANCH);
 
   // Step 3: the success outcome, said on the issue with the run link (#205),
   // before the review is asked for. A warning where it cannot be posted: the
@@ -194,13 +208,37 @@ const requestReview = async (inputs: Inputs, io: Io, issue: number, pr: number, 
 };
 
 /**
- * What `implement:publish` may write, and how many of each (ADR 0005): one
- * push, one pull request and one `agent:review`, with the loop's token; the
- * link on the issue; and two label removals, `agent:implement` off the issue
- * and `agent:review` off the pull request before it goes on. Anything else is
- * refused and stops it.
+ * The rescue branch, deleted under a lease on its tip as read here, so one
+ * rewritten during the run is not removed. Never stops the command: a branch
+ * left behind is set aside by the next run, whose base has moved past it.
  */
-const LIMITS: Limits = { pushRef: 1, openPullRequest: 1, addLabel: 1, comment: 1, removeLabel: 2 };
+const deleteRescue = async (io: Io, loop: Writer, rescue: string): Promise<void> => {
+  let tip: string;
+  try {
+    tip = await io.github.branchTip(rescue);
+  } catch (error) {
+    if (error instanceof GitHubError && error.status === 404) {
+      console.log(`No ${rescue} to delete.`);
+    } else {
+      console.log(`::warning::Could not read ${rescue}, so it was not deleted. The next run sets it aside; delete it by hand: ${describe(error)}`);
+    }
+    return;
+  }
+  const deleted = await tolerated(
+    inWriteLog(`Could not delete ${rescue}. The next run sets it aside; delete it by hand.`),
+    () => loop.deleteRef({ ref: `refs/heads/${rescue}`, lease: { tip } }),
+  );
+  if (deleted) console.log(`Deleted ${rescue}: this run succeeded.`);
+};
+
+/**
+ * What `implement:publish` may write, and how many of each (ADR 0005): one
+ * push, the rescue branch's deletion, one pull request and one
+ * `agent:review`, with the loop's token; the link on the issue; and two
+ * label removals, `agent:implement` off the issue and `agent:review` off the
+ * pull request before it goes on. Anything else is refused and stops it.
+ */
+const LIMITS: Limits = { pushRef: 1, deleteRef: 1, openPullRequest: 1, addLabel: 1, comment: 1, removeLabel: 2 };
 
 /** A file read for being there, and nothing more: the bundle's bytes are git's to check. */
 const present: Parser<true> = () => true;

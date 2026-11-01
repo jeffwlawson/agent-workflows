@@ -153,13 +153,15 @@ describe("the resume prompt section", () => {
 });
 
 /**
- * Each prompt the rescue serves (#303): the section a resumed run opens with,
+ * Each prompt the rescue serves (#303, and implement's since #270): the section a resumed run opens with,
  * and the line asking for the first commit as soon as the work passes, since
  * only committed work survives a run stopped at its limit.
  */
 describe.each([
   { prompt: "fix/prompt.md", runner: "fix/fix.ts" },
   { prompt: "implement-prd/prompt.md", runner: "implement-prd/implement-prd.ts" },
+  // #270.
+  { prompt: "implement/prompt.md", runner: "implement/implement.ts" },
 ])("$prompt resumes and commits early", ({ prompt, runner }) => {
   const text = fs.readFileSync(prompt, "utf8");
 

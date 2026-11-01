@@ -223,7 +223,7 @@ jobs:
           OUTPUT_DIR: ${{ runner.temp }}
         # `npm exec --prefix` rather than a bare `npx`: see the long note on
         # the runner step below.
-        run: npm exec --prefix "$RUNNER_TEMP" --yes --package=@jeffwlawson/agent-workflows@0.9.2 -- agent-workflows implement:gate
+        run: npm exec --prefix "$RUNNER_TEMP" --yes --package=@jeffwlawson/agent-workflows@0.9.3 -- agent-workflows implement:gate
 
       # Glue only Actions can do (ADR 0003): the gate's decision and facts,
       # copied into the step outputs `proceed`, `branch`, `base` and `tip`,
@@ -274,10 +274,14 @@ jobs:
     # one fails the job before any step, which `doctor` reports.
     # `implement:conclude` names the same figure.
     timeout-minutes: ${{ fromJSON(vars.AGENT_TIMEOUT_MINUTES || '30') }}
-    # Its one output: whether it ran out of time. See *Measure how the agent's
-    # job ended*. Everything else it hands over is the artifact.
+    # Its two outputs: whether it ran out of time, see *Measure how the
+    # agent's job ended*, and how the bundle step ended (#270), which Actions
+    # sets and the agent cannot: a bundle step stopped before it wrote
+    # anything leaves no file, which `implement:conclude` must not read as no
+    # commits. Everything else it hands over is the artifact.
     outputs:
       timed-out: ${{ steps.outcome.outputs.timed-out }}
+      bundled: ${{ steps.bundle.outcome }}
     # **Read-only, and no PAT or App secret named anywhere in this job.** Not
     # even in a step that never runs: a secret is delivered to every job whose
     # text names it.
@@ -297,6 +301,11 @@ jobs:
       ISSUE_NUMBER: ${{ github.event.issue.number }}
       ISSUE_TITLE: ${{ github.event.issue.title }}
       BASE_REF: ${{ inputs.default-branch }}
+      # Where a run of this issue that stopped before it finished left its
+      # commits, and where this one looks for them (#270). Fixed, and keyed to
+      # the issue's number rather than its branch, so the retry of a retitled
+      # issue still finds it by name: the publish job names the same branch.
+      RESCUE_BRANCH: agent/rescue/issue-${{ github.event.issue.number }}
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       GH_REPO: ${{ github.repository }}
 
@@ -307,8 +316,9 @@ jobs:
           ref: ${{ inputs.default-branch }}
           fetch-depth: 0
           # No credential is left in the checkout for the agent's git, or
-          # anything else it runs, to find. Nothing in this job fetches or
-          # pushes after it: the publish job pushes, from a checkout of its own.
+          # anything else it runs, to find. Nothing in this job pushes: the
+          # publish job pushes, from a checkout of its own. The one fetch
+          # after it, of the rescue, passes its token itself.
           persist-credentials: false
 
       # The package, installed once and early, as `fix.yml`'s agent job
@@ -349,26 +359,34 @@ jobs:
         env:
           NPM_CONFIG_USERCONFIG: ${{ steps.npmrc.outputs.userconfig }}
           NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: npm install --prefix "$RUNNER_TEMP" --no-save @jeffwlawson/agent-workflows@0.9.2
+        run: npm install --prefix "$RUNNER_TEMP" --no-save @jeffwlawson/agent-workflows@0.9.3
 
       # The agent's branch, created at the commit the gate read the base at,
       # not the base branch's tip a moment later, so the agent builds on
       # exactly the base `publish` checks its commits against, and checked out
       # with the loop's committer as the identity. A checkout that does not
       # hold that commit, the base rewritten since the gate read it, stops the
-      # run with a sentence. From the install above, with no token: it reads
-      # nothing but the checkout. Its reason file goes in a directory of its
+      # run with a sentence. And the rescue branch an earlier run left (#270),
+      # where there is one, fetched to `refs/rescue/` for the runner to resume
+      # from: outside `refs/remotes/`, so the agent's git counts rescued
+      # commits as this run's. **An unreadable answer stops the run**, rather
+      # than reading as "no rescue": a run that started over without it, and
+      # succeeded, would delete it. `implement/prepare.ts` says why each is as
+      # it is.
+      #
+      # From the install above, before anything of the adopter's runs, so the
+      # job's `GH_TOKEN`, read-only here, meets no git config entry or hook the
+      # adopter's code left behind. Its reason file goes in a directory of its
       # own, which the hand-over below carries.
       - name: Create branch
         working-directory: ${{ runner.temp }}
         env:
           NPM_CONFIG_USERCONFIG: ${{ steps.npmrc.outputs.userconfig }}
-          GH_TOKEN: ""
           OUTPUT_DIR: ${{ runner.temp }}/prepare
           CHECKOUT: ${{ github.workspace }}
           BRANCH: ${{ needs.gate.outputs.branch }}
           BASE_SHA: ${{ needs.gate.outputs.base }}
-        run: npm exec --prefix "$RUNNER_TEMP" --yes --package=@jeffwlawson/agent-workflows@0.9.2 -- agent-workflows implement:prepare
+        run: npm exec --prefix "$RUNNER_TEMP" --yes --package=@jeffwlawson/agent-workflows@0.9.3 -- agent-workflows implement:prepare
 
       # Both setup steps are the adopter's toolchain, so both are skippable.
       # `npm install -g @anthropic-ai/claude-code` below is not: that is the
@@ -510,14 +528,18 @@ jobs:
       # The agent's commits, as the one thing `publish` pushes:
       # `implement:bundle` bundles the branch `gate` named, thin, the commit
       # the gate read the base at being its prerequisite, which `publish` has
-      # from its own checkout. Where the runner succeeded, after the
-      # transcript, from the install above, run from `RUNNER_TEMP` and working
-      # in the checkout, and **with no token**: the agent and the adopter's
-      # code have run, and the job's `GH_TOKEN` is set empty for it. Into a
-      # directory of its own, which the hand-over below carries beside the
-      # runner's reason file.
+      # from its own checkout. `always()` (#270): a run that failed, was
+      # cancelled or timed out hands its commits over too, for `publish` to
+      # rescue to a side branch rather than push; the run that resumes from
+      # them pushes them. No commits is no bundle, which `publish` reads as
+      # nothing to push or rescue. After the transcript, from the install
+      # above, run from `RUNNER_TEMP` and working in the checkout, and **with
+      # no token**: the agent and the adopter's code have run, and the job's
+      # `GH_TOKEN` is set empty for it. Into a directory of its own, which the
+      # hand-over below carries beside the runner's files.
       - name: Bundle the branch
-        if: success()
+        id: bundle
+        if: always()
         working-directory: ${{ runner.temp }}
         env:
           NPM_CONFIG_USERCONFIG: ${{ steps.npmrc.outputs.userconfig }}
@@ -526,14 +548,14 @@ jobs:
           CHECKOUT: ${{ github.workspace }}
           BRANCH: ${{ needs.gate.outputs.branch }}
           BASE_SHA: ${{ needs.gate.outputs.base }}
-        run: npm exec --prefix "$RUNNER_TEMP" --yes --package=@jeffwlawson/agent-workflows@0.9.2 -- agent-workflows implement:bundle
+        run: npm exec --prefix "$RUNNER_TEMP" --yes --package=@jeffwlawson/agent-workflows@0.9.3 -- agent-workflows implement:bundle
 
       # `implement:prepare`'s reason file on a failure, under `prepare/`;
       # `implement:bundle`'s files, the bundle and its reason file on a
-      # failure, under `bundle/`; and the runner's reason file at the top:
-      # exactly the files each declares. One artifact, `always()`, because a
-      # failed run is one of the outcomes `publish` reports, and any of them
-      # may be missing. The paths' common directory is `runner.temp`, so
+      # failure, under `bundle/`; and the runner's reason file and the rescue
+      # it set aside, as data, at the top: exactly the files each declares.
+      # One artifact, `always()`, because a failed run is one of the outcomes
+      # `publish` reports, and any of them may be missing. The paths' common directory is `runner.temp`, so
       # `prepare/` and `bundle/` stay as they are in the artifact and where
       # `publish` downloads it. Uploading needs no scope: the artifact service
       # takes the runner's own token, so this job stays read-only.
@@ -542,8 +564,9 @@ jobs:
       #
       # What this job hands over is the agent's to write, whatever a step here
       # meant it to be. So `publish` takes nothing from it but this artifact,
-      # which it checks, and `timed-out`, which decides nothing (see the step
-      # after this one).
+      # which it checks, `timed-out`, which decides nothing (see the step
+      # after this one), and `bundled`, the bundle step's outcome, which only
+      # picks between two sentences where there is no bundle.
       - name: Hand the branch to the publish job
         if: always()
         uses: actions/upload-artifact@v7
@@ -554,6 +577,7 @@ jobs:
             ${{ runner.temp }}/bundle/branch.bundle
             ${{ runner.temp }}/bundle/failure_reason.txt
             ${{ runner.temp }}/failure_reason.txt
+            ${{ runner.temp }}/rescue_ignored.json
           if-no-files-found: ignore
           retention-days: 7
           overwrite: true
@@ -616,6 +640,10 @@ jobs:
       ISSUE_NUMBER: ${{ github.event.issue.number }}
       GH_REPO: ${{ github.repository }}
       RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+      # The branch the agent's job resumes from, which `implement:publish`
+      # deletes once it has pushed and `implement:conclude` rescues a stopped
+      # run's commits to (#270).
+      RESCUE_BRANCH: agent/rescue/issue-${{ github.event.issue.number }}
 
     steps:
       # The token every write below that the workflow token cannot make is
@@ -626,7 +654,7 @@ jobs:
       - name: Resolve the loop's token
         id: token
         if: always()
-        uses: jeffwlawson/agent-workflows/.github/actions/loop-token@v0.9.2
+        uses: jeffwlawson/agent-workflows/.github/actions/loop-token@v0.9.3
         with:
           app-id: ${{ secrets.AGENT_APP_ID }}
           private-key: ${{ secrets.AGENT_APP_PRIVATE_KEY }}
@@ -635,7 +663,8 @@ jobs:
 
       # **The one checkout**, of the base branch, wherever the gate claimed
       # the run: what `implement:publish` checks the bundle in and pushes
-      # from. Nothing the agent touched is on this runner, and no credential
+      # from, and `implement:conclude` checks a stopped run's bundle in before
+      # it rescues it. Nothing the agent touched is on this runner, and no credential
       # is left in it: the push passes its token itself. `always()` wherever
       # the gate claimed the run, so no ending ever checks an empty workspace
       # (#473's last bug).
@@ -680,8 +709,10 @@ jobs:
           path: ${{ runner.temp }}/agent-implement
 
       # The success path (#492): the bundle checked, the push, the draft PR
-      # with its frame, the link on the issue, and the review request, in that
-      # order. `implement/publish.ts` says why each is as it is.
+      # with its frame, the rescue branch deleted under a lease on its tip
+      # once the PR holds its commits (#270), the link on the issue, and the
+      # review request, in that order.
+      # `implement/publish.ts` says why each is as it is.
       #
       # **The bundle is checked before anything is pushed from it**, against
       # facts `gate` established and the agent could not reach: it is intact,
@@ -718,14 +749,17 @@ jobs:
           BRANCH: ${{ needs.gate.outputs.branch }}
           BASE_SHA: ${{ needs.gate.outputs.base }}
           BRANCH_TIP: ${{ needs.gate.outputs.tip }}
-        run: npm exec --prefix "$RUNNER_TEMP" --yes --package=@jeffwlawson/agent-workflows@0.9.2 -- agent-workflows implement:publish
+        run: npm exec --prefix "$RUNNER_TEMP" --yes --package=@jeffwlawson/agent-workflows@0.9.3 -- agent-workflows implement:publish
 
       # Every ending, success included, and the label however the run ended
-      # (#493): the failure comment with the reason and the retry the ending
-      # calls for (#220, #253), naming the PR where publish opened one before
-      # it stopped, then `agent:implement` off where the gate decided the run
-      # was its own (#236), then `agent:blocked`, in the loop's one order.
-      # `implement/conclude.ts` says why each is as it is.
+      # (#493): the rescue the runner set aside, said on the issue (#270); a
+      # stopped run's commits rescued to the rescue branch, leased on its tip,
+      # where nothing was pushed to the issue's branch (#270); the failure
+      # comment with the reason and the retry the ending calls for (#220,
+      # #253), naming the PR where publish opened one before it stopped and
+      # the rescue where it saved one, then `agent:implement` off where the
+      # gate decided the run was its own (#236), then `agent:blocked`, in the
+      # loop's one order. `implement/conclude.ts` says why each is as it is.
       #
       # `always()`: the ending is the point of it. Told the facts, not the
       # conclusions: how the gate and the agent's job ended, the gate's
@@ -736,14 +770,22 @@ jobs:
       # runner's and `implement:bundle`'s from the hand-over, each from its
       # own producer's directory and each on its own.
       #
-      # Given the workflow's token, which every write it makes is made with.
-      # From `RUNNER_TEMP`, so no `.npmrc` of the checkout is read.
+      # Given both tokens: the workflow's, which it comments and labels with,
+      # and the loop's, which it rescues with, and which is empty where the
+      # mint failed. From `RUNNER_TEMP`, so no `.npmrc` of the checkout is
+      # read, and working in the checkout.
       - name: Conclude the run
         if: always()
         working-directory: ${{ runner.temp }}
         env:
           NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          LOOP_TOKEN: ${{ steps.token.outputs.token }}
+          LOOP_TOKEN_SOURCE: ${{ steps.token.outputs.source }}
+          BASE_REF: ${{ inputs.default-branch }}
+          CHECKOUT: ${{ github.workspace }}
+          BRANCH: ${{ needs.gate.outputs.branch }}
+          BASE_SHA: ${{ needs.gate.outputs.base }}
           OUTPUT_DIR: ${{ runner.temp }}/conclude
           PUBLISH_DIR: ${{ runner.temp }}/publish
           PREPARE_DIR: ${{ runner.temp }}/agent-implement/prepare
@@ -761,7 +803,8 @@ jobs:
           MINT_OUTCOME: ${{ steps.token.outcome }}
           DOWNLOAD_OUTCOME: ${{ steps.fetch.outcome }}
           PUBLISH_OUTCOME: ${{ steps.publish.outcome }}
-        run: npm exec --prefix "$RUNNER_TEMP" --yes --package=@jeffwlawson/agent-workflows@0.9.2 -- agent-workflows implement:conclude
+          BUNDLE_OUTCOME: ${{ needs.implement.outputs.bundled }}
+        run: npm exec --prefix "$RUNNER_TEMP" --yes --package=@jeffwlawson/agent-workflows@0.9.3 -- agent-workflows implement:conclude
 
       # Every write the two commands made, one line each as it landed, and a
       # last line for how each ended (ADR 0005), kept for whoever audits the

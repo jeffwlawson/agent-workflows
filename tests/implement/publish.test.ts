@@ -36,6 +36,9 @@ const TIP = "d".repeat(40);
 /** What an earlier failed run left on the branch, as the gate read it. */
 const LEFT = "e".repeat(40);
 const RUN_URL = "https://github.com/o/r/actions/runs/99";
+const RESCUE = `agent/rescue/issue-${ISSUE}`;
+/** What an earlier stopped run saved on the rescue branch. */
+const RESCUED = "c".repeat(40);
 
 let root: string;
 let bundleDir: string;
@@ -87,6 +90,7 @@ const INPUTS = (over: Partial<Inputs> = {}): Inputs => ({
   BRANCH,
   BASE_SHA: BASE,
   BRANCH_TIP: "",
+  RESCUE_BRANCH: RESCUE,
   RUN_URL,
   CHECKOUT: "/checkout",
   HEAD_WAIT_SECONDS: "0",
@@ -194,7 +198,7 @@ describe("implement:publish on a bundle that checks out", () => {
   it("asks for nothing beyond its limits", async () => {
     await run();
 
-    expect(asked).toEqual({ pushRef: 1, openPullRequest: 1, addLabel: 1, comment: 1, removeLabel: 2 });
+    expect(asked).toEqual({ pushRef: 1, deleteRef: 1, openPullRequest: 1, addLabel: 1, comment: 1, removeLabel: 2 });
   });
 
   it("warns where the loop's token is the workflow's, since the label it adds then starts nothing", async () => {
@@ -219,6 +223,73 @@ describe("implement:publish on a bundle that checks out", () => {
 
     await expect(run()).rejects.toThrow("Couldn't add `agent:review` to PR #1, so no review was requested.");
     expect(files.get("published.json")).toEqual({ pushed: true, head: TIP, pr: 1, requested: false });
+  });
+});
+
+/**
+ * A run that pushed leaves no rescue branch behind (#270): what it resumed
+ * from is in what it pushed. Deleted once the pull request is open, under a
+ * lease on its tip as read, and never a reason to stop.
+ */
+describe("implement:publish deletes the rescue branch once it has opened the PR", () => {
+  it("deletes the rescue after the PR opens, leased on its tip, and goes on to link it", async () => {
+    github.branches.set(RESCUE, RESCUED);
+
+    await run();
+
+    expect(writes().slice(0, 4)).toEqual(["loop pushRef", "loop openPullRequest", "loop deleteRef", "workflow comment"]);
+    expect(made?.writes[2]?.args).toEqual([{ ref: `refs/heads/${RESCUE}`, lease: { tip: RESCUED } }]);
+    expect(github.branches.has(RESCUE)).toBe(false);
+    expect(logged()).toContain(`Deleted ${RESCUE}: this run succeeded.`);
+  });
+
+  it("deletes nothing where there is no rescue branch", async () => {
+    await run();
+
+    expect(writes()).not.toContain("loop deleteRef");
+    expect(logged()).toContain(`No ${RESCUE} to delete.`);
+  });
+
+  it("warns, and still opens the PR, where the rescue cannot be deleted", async () => {
+    github.branches.set(RESCUE, RESCUED);
+    github.fails = (write) => write.type === "deleteRef";
+
+    await run();
+
+    expect(github.branches.get(RESCUE)).toBe(RESCUED);
+    expect(warnings()[0]).toMatch(/^::warning::Could not delete agent\/rescue\/issue-12\./);
+    expect(files.get("published.json")).toEqual({ pushed: true, head: TIP, pr: 1, requested: true });
+  });
+
+  it("deletes nothing where the push was refused", async () => {
+    github.branches.set(RESCUE, RESCUED);
+    github.fails = (write) => write.type === "pushRef";
+
+    await expect(run()).rejects.toThrow();
+    expect(github.branches.get(RESCUE)).toBe(RESCUED);
+    expect(writes()).toEqual(["loop pushRef"]);
+  });
+
+  /**
+   * A failed open leaves `published.json` with no `pr`, so the retry cuts
+   * `BRANCH` afresh at the base and its push replaces what this run pushed:
+   * the rescue is then the one copy of those commits, and is kept.
+   */
+  it.each([
+    ["GitHub refuses it", (write: { type: string }) => write.type === "openPullRequest"],
+    [
+      "a server error's read-back fails too",
+      (write: { type: string }, call: string) =>
+        write.type !== "openPullRequest" ? false : call === "POST pulls" ? { status: 502, landed: true } : { status: 503, landed: false },
+    ],
+  ] as const)("keeps the rescue where opening the PR fails because %s", async (_name, fails) => {
+    github.branches.set(RESCUE, RESCUED);
+    github.fails = fails;
+
+    await expect(run()).rejects.toThrow();
+    expect(github.branches.get(RESCUE)).toBe(RESCUED);
+    expect(writes()).toEqual(["loop pushRef", "loop openPullRequest"]);
+    expect(files.get("published.json")).toEqual({ pushed: true, head: TIP, requested: false });
   });
 });
 

@@ -5,10 +5,11 @@ import { describe } from "./command-helpers.js";
 import { git } from "./common.js";
 
 /**
- * Rescue and resume (#303): a fix or implement-prd run that stops before it
- * finishes (its time limit, a cancel, a failure) leaves the commits it made on
- * a side branch with a fixed name, and the next run of the same label starts
- * from them where they still build on the head it starts from.
+ * Rescue and resume (#303): a fix, implement-prd or implement (#270) run that
+ * stops before it finishes (its time limit, a cancel, a failure) leaves the
+ * commits it made on a side branch with a fixed name, and the next run of the
+ * same label starts from them where they still build on the head it starts
+ * from.
  *
  * The publish job pushes the rescue and deletes it; the agent's job fetches it
  * to `rescueRef(branch)`, and the runner decides here whether to build on it.
@@ -26,9 +27,9 @@ export const rescueRef = (branch: string): string => `refs/rescue/${branch}`;
 /**
  * The agent's job's half (#303): the rescue branch `branch`, where an earlier
  * stopped run left one, fetched into the checkout as `rescueRef(branch)` for
- * the runner to resume from, as `fix:prepare` and `implement-prd:prepare`
- * fetch it. The runner decides whether it still builds on the head; this only
- * fetches it.
+ * the runner to resume from, as `fix:prepare`, `implement-prd:prepare` and
+ * `implement:prepare` fetch it. The runner decides whether it still builds on
+ * the head; this only fetches it.
  *
  * **An unreadable answer stops the run**, rather than reading as "no
  * rescue": a run that started over without the rescue, and succeeded, would

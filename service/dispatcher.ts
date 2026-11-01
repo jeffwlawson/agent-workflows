@@ -33,6 +33,10 @@ export interface AppRecord {
   readonly slug: string;
   /** The login of the account that owns the App. */
   readonly owner: string;
+  /** The repository permissions the App is granted, by the names GitHub gives them, each to its access. */
+  readonly permissions: Readonly<Record<string, string>>;
+  /** The webhook events the App is subscribed to. */
+  readonly events: readonly string[];
 }
 
 /** What the dispatcher asks of GitHub, as its App. */
@@ -120,6 +124,35 @@ export const TOKEN_PERMISSIONS: Readonly<Record<TokenKind, Readonly<Record<strin
 };
 
 /**
+ * The permissions the dispatcher's own reads mint with, a repository's
+ * variables and a sender's permission. `actions_variables` is GitHub's name
+ * for the App's "Variables" permission; a token asking for `variables` is
+ * refused, 422.
+ */
+export const READER_PERMISSIONS: Readonly<Record<string, string>> = { metadata: "read", actions_variables: "read" };
+
+/** Access levels, lowest first: a grant at a later one covers a need at an earlier one. */
+const ACCESS = ["read", "write", "admin"];
+
+const covers = (held: string | undefined, needed: string): boolean => held !== undefined && ACCESS.indexOf(held) >= ACCESS.indexOf(needed);
+
+/** Each token the dispatcher mints, by what it is called in a gap's line, to the permissions it asks for. */
+const MINTS: readonly (readonly [string, Readonly<Record<string, string>>])[] = [
+  ["the dispatcher's reads", READER_PERMISSIONS],
+  ...Object.entries(TOKEN_PERMISSIONS).map(([kind, permissions]) => [`\`${kind}\` tokens`, permissions] as const),
+];
+
+/**
+ * What the service needs of the App, and the one declaration of it: each
+ * permission at the highest access a token it mints asks for it at, which the
+ * deployment guide's Permissions table is held equal to.
+ */
+export const SERVICE_APP_PERMISSIONS: Readonly<Record<string, string>> = MINTS.reduce<Record<string, string>>((needed, [, permissions]) => {
+  for (const [name, access] of Object.entries(permissions)) if (!covers(needed[name], access)) needed[name] = access;
+  return needed;
+}, {});
+
+/**
  * The job kind each trigger label the service answers starts (ADR 0008), by
  * the event it is answered on: a label is answered on the event type it
  * belongs to, and on no other. `agent:implement` on a pull request starts
@@ -159,6 +192,36 @@ export const SERVICE_LABELS: readonly string[] = Object.values(LABEL_KINDS).flat
 /** What `label` starts in one event's map, or `undefined` where it starts nothing there, an inherited property's name included. */
 const kindOf = <K>(kinds: Readonly<Record<string, K>>, label: string): K | undefined =>
   Object.hasOwn(kinds, label) ? kinds[label] : undefined;
+
+/**
+ * The webhook events the App must be subscribed to: the ones a trigger label
+ * is answered on, which the deployment guide's event list is held equal to.
+ */
+export const SERVICE_APP_EVENTS: readonly string[] = Object.keys(LABEL_KINDS);
+
+/**
+ * Each way the App's own record falls short of what the service needs, one
+ * line each: a permission not granted or granted below the access needed,
+ * with the tokens whose mint it fails, and an event the App is not subscribed
+ * to. Empty where the record meets the whole set. A gap is the operator's to
+ * close, and the dispatcher starts regardless: review alone needs less.
+ */
+export const appGaps = (record: Pick<AppRecord, "permissions" | "events">): string[] => [
+  ...Object.entries(SERVICE_APP_PERMISSIONS).flatMap(([name, needed]) => {
+    const held = Object.hasOwn(record.permissions, name) ? record.permissions[name] : undefined;
+    if (covers(held, needed)) return [];
+    const failing = MINTS.filter(([, permissions]) => {
+      const asked = permissions[name];
+      return asked !== undefined && !covers(held, asked);
+    }).map(([what]) => what);
+    return [
+      `the App's \`${name}\` permission needs ${needed}, ${held === undefined ? "not granted" : `holds ${held}`}: ${failing.join(", ")} will be refused, 422`,
+    ];
+  }),
+  ...SERVICE_APP_EVENTS.filter((event) => !record.events.includes(event)).map(
+    (event) => `the App is not subscribed to the \`${event}\` event: no delivery of it reaches the dispatcher`,
+  ),
+];
 
 /** The permissions a label's sender needs on the repository: the loop's author gate. */
 const WRITERS = ["admin", "maintain", "write"];

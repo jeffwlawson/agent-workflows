@@ -298,7 +298,12 @@ have run and ended, and the label may be one a later run added again, as a fix r
 job, since a label added again is asked for again. A worker that cannot be reached skips the whole scan, logged; its own start
 announcement scans again. The question names the dispatcher's instance, and the worker drops
 every job it holds queued from another before answering, so after a dispatcher's restart the scan
-dispatches those items again rather than skipping them. The same answer lets the dispatcher forget
+dispatches those items again rather than skipping them. A question that names no instance only
+reads: the worker answers what it holds and drops nothing, so a script of your own can ask it,
+signed with `WORKER_SECRET` as a job is, without emptying its queue. Either way the question
+carries the time it was `asked`, and the worker refuses one more than 5 minutes old or more than
+a minute ahead of its own clock, so a captured question cannot be replayed later to drop jobs;
+keep both hosts' clocks synchronised. The same answer lets the dispatcher forget
 every job it dispatched that the worker no longer holds, which after a worker's restart is every
 job it held before.
 

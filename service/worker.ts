@@ -9,6 +9,8 @@ import type { DoorRequest, DoorResponse } from "./dispatcher.js";
 import {
   FOLLOW_UPS_MINUTES,
   fixTimeLimit,
+  HELD_REQUEST_MAX_AGE_MINUTES,
+  HELD_REQUEST_MAX_SKEW_MINUTES,
   heldOf,
   parseHeldRequest,
   parseJob,
@@ -2261,11 +2263,14 @@ export const jobDoor =
     } catch {
       return answer(400, { refusal: "the body is not JSON" });
     }
+    // The release first (#601): a job from another reads as malformed wherever the format moved, and the mismatch is the cause.
+    const { version, id } = typeof body === "object" && body !== null ? (body as Readonly<Record<string, unknown>>) : {};
+    if (typeof version === "string" && version !== "" && version !== edges.version) {
+      const which = typeof id === "string" && id !== "" ? `job ${id}` : "the job";
+      return answer(409, { refusal: `${which} is from a dispatcher at ${version}, and this worker is at ${edges.version}` });
+    }
     const job = parseJob(body);
     if (typeof job === "string") return answer(400, { refusal: job });
-    if (job.version !== edges.version) {
-      return answer(409, { refusal: `job ${job.id} is from a dispatcher at ${job.version}, and this worker is at ${edges.version}` });
-    }
     edges.accept(job);
     return answer(202, { accepted: job.id });
   };
@@ -2277,6 +2282,8 @@ export interface HeldDoorEdges {
   readonly held: () => readonly Job[];
   /** Takes every queued job `dropped` matches out of the queue, never the running one, so it never runs. */
   readonly drop: (dropped: (job: Job) => boolean) => readonly Job[];
+  /** The worker's clock, which a question's `asked` is held to. */
+  readonly now?: () => Date;
 }
 
 /**
@@ -2284,12 +2291,15 @@ export interface HeldDoorEdges {
  * shared secret as a job is, which jobs the worker has queued or is running,
  * so a label a job is already held for is not dispatched twice. A request
  * whose signature does not verify is refused, `401`, and one that is not the
- * question, `400`. The question names the dispatcher instance asking (#597):
- * every job queued from another is dropped first, since no dispatcher running
- * now would mint for it, and the scan dispatches its item again. The running
- * job is not: this door cannot stop it, and it ends at its next token
- * request. Every other request is answered `200` with each job still held:
- * its id, kind, repository and number.
+ * question, `400`, as is one asked more than `HELD_REQUEST_MAX_AGE_MINUTES`
+ * ago or `HELD_REQUEST_MAX_SKEW_MINUTES` ahead (#601), so a captured question
+ * cannot be replayed later to empty the queue. The question names the
+ * dispatcher instance asking (#597): every job queued from another is
+ * dropped first, since no dispatcher running now would mint for it, and the
+ * scan dispatches its item again. The running job is not: this door cannot
+ * stop it, and it ends at its next token request. A question naming no
+ * instance drops nothing (#601): it only reads. Every other request is
+ * answered `200` with each job still held: its id, kind, repository and number.
  */
 export const heldDoor =
   (edges: HeldDoorEdges) =>
@@ -2303,7 +2313,15 @@ export const heldDoor =
     }
     const asked = parseHeldRequest(body);
     if (typeof asked === "string") return answer(400, { refusal: asked });
-    edges.drop((job) => job.instance !== asked.instance);
+    const age = ((edges.now ?? (() => new Date()))().getTime() - Date.parse(asked.asked)) / 60_000;
+    if (age > HELD_REQUEST_MAX_AGE_MINUTES) {
+      return answer(400, { refusal: `\`asked\` is ${asked.asked}, more than ${HELD_REQUEST_MAX_AGE_MINUTES} minutes ago by this worker's clock` });
+    }
+    if (-age > HELD_REQUEST_MAX_SKEW_MINUTES) {
+      return answer(400, { refusal: `\`asked\` is ${asked.asked}, more than ${HELD_REQUEST_MAX_SKEW_MINUTES} minute ahead of this worker's clock` });
+    }
+    const { instance } = asked;
+    if (instance !== undefined) edges.drop((job) => job.instance !== instance);
     return answer(200, { jobs: edges.held().map(heldOf) });
   };
 

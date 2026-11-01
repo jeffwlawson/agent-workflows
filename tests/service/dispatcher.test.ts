@@ -135,7 +135,7 @@ const setup = (
     () => {},
   );
   const jobs = jobDoor({ secret: WORKER_SECRET, version: "9.9.9", accept: queue.add });
-  const held = heldDoor({ secret: WORKER_SECRET, held: queue.held, drop: queue.drop });
+  const held = heldDoor({ secret: WORKER_SECRET, held: queue.held, drop: queue.drop, now: () => clock });
   const github: AppGitHub = {
     app: async () => ({ slug: "loop-app", owner: APP_OWNER, permissions: {}, events: [] }),
     installation: async (repo) =>

@@ -8,6 +8,9 @@ import { issueRescueBranch } from "../../shared/record.js";
 import {
   DEFAULT_FIX_MINUTES,
   DEFAULT_REVIEW_MINUTES,
+  heldOf,
+  HELD_REQUEST_MAX_AGE_MINUTES,
+  HELD_REQUEST_MAX_SKEW_MINUTES,
   parseHeld,
   sign,
   SIGNATURE_HEADER,
@@ -1599,6 +1602,19 @@ describe("the job door", () => {
     expect(d.accepted).toEqual([]);
   });
 
+  it.each<[string, unknown, string]>([
+    ["lacks a field its own release requires", { ...JOB, version: "9.9.8", instance: undefined }, "job job-1 is from a dispatcher at 9.9.8, and this worker is at 9.9.9"],
+    ["is malformed by this release's format", { ...JOB, version: "9.9.8", workflow: "deploy", pr: "seven" }, "job job-1 is from a dispatcher at 9.9.8, and this worker is at 9.9.9"],
+    ["carries no id", { ...JOB, version: "9.9.8", id: undefined }, "the job is from a dispatcher at 9.9.8, and this worker is at 9.9.9"],
+  ])("refuses a job from another release that %s as from another release, not as malformed (#601)", (_name, job, refusal) => {
+    const d = door();
+    const response = d.handle(request(job));
+
+    expect(response.status).toBe(409);
+    expect(JSON.parse(response.body)).toEqual({ refusal });
+    expect(d.accepted).toEqual([]);
+  });
+
   it("refuses a job whose signature does not verify", () => {
     const d = door();
 
@@ -2599,6 +2615,8 @@ describe("the worker's follow-ups job", () => {
  */
 describe("the held door", () => {
   const SECRET = "the-worker-secret";
+  const NOW = new Date("2026-10-31T12:00:00.000Z");
+  const now = () => NOW;
   const ask = (handle: ReturnType<typeof heldDoor>, secret = SECRET, question: unknown = { asked: "2026-10-31T12:00:00.000Z", instance: "dispatcher-1" }) => {
     const body = Buffer.from(JSON.stringify(question));
     return handle({ headers: { [SIGNATURE_HEADER]: sign(secret, body) }, body });
@@ -2615,12 +2633,12 @@ describe("the held door", () => {
         }),
       () => {},
     );
-    return { queue, ran, releases, handle: heldDoor({ secret: SECRET, held: queue.held, drop: queue.drop }) };
+    return { queue, ran, releases, handle: heldDoor({ secret: SECRET, held: queue.held, drop: queue.drop, now }) };
   };
   const settle = () => new Promise((resolve) => setImmediate(resolve));
 
   it("answers each held job's id, kind, repository and number, which the dispatcher reads back", () => {
-    const response = ask(heldDoor({ secret: SECRET, held: () => [JOB, IMPLEMENT_JOB, FOLLOW_UPS_JOB], drop: () => [] }));
+    const response = ask(heldDoor({ secret: SECRET, held: () => [JOB, IMPLEMENT_JOB, FOLLOW_UPS_JOB], drop: () => [], now }));
 
     expect(response.status).toBe(200);
     expect(parseHeld(JSON.parse(response.body))).toEqual([
@@ -2642,7 +2660,8 @@ describe("the held door", () => {
   });
 
   it.each<[string, unknown, string]>([
-    ["no instance", { asked: "2026-10-31T12:00:00.000Z" }, "`instance` is not a dispatcher instance's id, up to 64 letters, digits, `-` and `_`"],
+    ["a non-string instance", { asked: "2026-10-31T12:00:00.000Z", instance: 1 }, "`instance` is not a dispatcher instance's id, up to 64 letters, digits, `-` and `_`"],
+    ["an empty instance", { asked: "2026-10-31T12:00:00.000Z", instance: "" }, "`instance` is not a dispatcher instance's id, up to 64 letters, digits, `-` and `_`"],
     ["a malformed instance", { asked: "2026-10-31T12:00:00.000Z", instance: "not one; at all" }, "`instance` is not a dispatcher instance's id, up to 64 letters, digits, `-` and `_`"],
     ["no time", { instance: "dispatcher-1" }, "`asked` is not a time"],
   ])("refuses a question with %s, naming the field, and drops nothing", (_name, question, refusal) => {
@@ -2692,6 +2711,43 @@ describe("the held door", () => {
     w.releases[0]?.();
     await settle();
     expect(w.ran.map((job) => job.id)).toEqual(["job-1", "job-2"]);
+  });
+
+  it("only reads where the question names no instance: answers every job held and drops none (#601)", async () => {
+    const w = queued();
+    w.queue.add({ ...JOB, instance: "dispatcher-0" });
+    w.queue.add({ ...IMPLEMENT_JOB, id: "job-2", instance: "dispatcher-0" });
+    w.queue.add({ ...FOLLOW_UPS_JOB, id: "job-3", instance: "dispatcher-1" });
+    await settle();
+
+    const response = ask(w.handle, SECRET, { asked: NOW.toISOString() });
+
+    expect(response.status).toBe(200);
+    expect(parseHeld(JSON.parse(response.body))).toEqual(w.queue.held().map(heldOf));
+    expect(w.queue.held().map((job) => job.id)).toEqual(["job-1", "job-2", "job-3"]);
+  });
+
+  it.each<[string, number, string | undefined]>([
+    ["asked just inside the age allowed", -HELD_REQUEST_MAX_AGE_MINUTES, undefined],
+    ["asked just past the age allowed, a replay", -HELD_REQUEST_MAX_AGE_MINUTES - 0.01, `more than ${HELD_REQUEST_MAX_AGE_MINUTES} minutes ago by this worker's clock`],
+    ["asked ahead within the skew allowed", HELD_REQUEST_MAX_SKEW_MINUTES, undefined],
+    ["asked further ahead than the skew allowed", HELD_REQUEST_MAX_SKEW_MINUTES + 0.01, `more than ${HELD_REQUEST_MAX_SKEW_MINUTES} minute ahead of this worker's clock`],
+  ])("holds a question %s to the worker's clock, and drops nothing on one it refuses (#601)", async (_name, minutes, refused) => {
+    const w = queued();
+    w.queue.add({ ...JOB, instance: "dispatcher-0" });
+    w.queue.add({ ...IMPLEMENT_JOB, id: "job-2", instance: "dispatcher-0" });
+    await settle();
+    const asked = new Date(NOW.getTime() + minutes * 60 * 1000).toISOString();
+    const response = ask(w.handle, SECRET, { asked, instance: "dispatcher-1" });
+
+    if (refused === undefined) {
+      expect(response.status).toBe(200);
+      expect(w.queue.held().map((job) => job.id)).toEqual(["job-1"]);
+    } else {
+      expect(response.status).toBe(400);
+      expect(JSON.parse(response.body)).toEqual({ refusal: `\`asked\` is ${asked}, ${refused}` });
+      expect(w.queue.held().map((job) => job.id)).toEqual(["job-1", "job-2"]);
+    }
   });
 
   it("holds a job from the moment it is queued until its work has ended, running or waiting, thrown or not", async () => {

@@ -383,18 +383,29 @@ export interface HeldJob {
 /**
  * The dispatcher's question at the worker's held door: when it asked, and
  * which dispatcher instance is asking (#597), so the worker can drop every job
- * queued by another, which no dispatcher running now knows.
+ * queued by another, which no dispatcher running now knows. A question
+ * naming no instance only reads (#601): it is answered and drops nothing, so
+ * a person's script can ask what the worker holds without emptying its queue.
  */
 export interface HeldRequest {
   readonly asked: string;
-  readonly instance: string;
+  readonly instance?: string;
 }
+
+/**
+ * How far a held door's `asked` may lie from the worker's clock, in minutes:
+ * older than the first is a replay, since the question drops jobs (#601), and
+ * later than the second is more than the two boxes' clocks should disagree.
+ */
+export const HELD_REQUEST_MAX_AGE_MINUTES = 5;
+export const HELD_REQUEST_MAX_SKEW_MINUTES = 1;
 
 /** A held door's request read off the wire, or the reason it is not one. */
 export const parseHeldRequest = (value: unknown): HeldRequest | string => {
   if (!isObject(value)) return "the request is not an object";
   const { asked, instance } = value;
   if (typeof asked !== "string" || Number.isNaN(Date.parse(asked))) return "`asked` is not a time";
+  if (instance === undefined) return { asked };
   if (typeof instance !== "string" || !INSTANCE.test(instance)) return INSTANCE_REFUSAL;
   return { asked, instance };
 };

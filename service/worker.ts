@@ -2309,8 +2309,9 @@ export interface HeldDoorEdges {
  * cannot be replayed later to empty the queue. The question names the
  * dispatcher instance asking (#597): every job queued from another is
  * dropped first, since no dispatcher running now would mint for it, and the
- * scan dispatches its item again. The running job is not: this door cannot
- * stop it, and it ends at its next token request. A question naming no
+ * scan dispatches its item again. A job that has started is not, running in
+ * either lane (`lanes`) or waiting for the agent lane: this door cannot stop
+ * it, and it ends at its next token request. A question naming no
  * instance drops nothing (#601): it only reads. Every other request is
  * answered `200` with each job still held: its id, kind, repository and number.
  */

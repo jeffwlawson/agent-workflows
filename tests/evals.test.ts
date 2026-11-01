@@ -139,8 +139,9 @@ describe("an eval run's report", () => {
       { name: "clean", pr: 2, head: "e".repeat(40), clean: true },
     ],
   };
-  const run = (passed: Record<string, boolean>, error?: string) => ({
-    ...(error === undefined ? {} : { error }),
+  // As the tool writes a run: `error` on every one, `null` where it finished.
+  const run = (passed: Record<string, boolean>, error: string | null = null) => ({
+    error,
     graders: Object.entries(passed).map(([name, ok]) => ({ name, passed: ok })),
   });
   const result: EvalResult = {

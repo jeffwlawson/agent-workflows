@@ -294,13 +294,17 @@ export interface EvalResult {
     readonly graders: readonly { readonly name: string; readonly graderMarkdown?: string }[];
     readonly arms: {
       readonly with?: readonly {
-        readonly error?: string;
+        /** `null` on a run that finished: the tool writes the field on every run. */
+        readonly error: string | null;
         readonly costUsd?: number;
         readonly graders: readonly { readonly name: string; readonly passed: boolean }[];
       }[];
     };
   }[];
 }
+
+/** A run that did not finish, as the tool records it: an error string, never `null`. */
+const erroredRun = (run: { readonly error: string | null }): boolean => typeof run.error === "string";
 
 const percent = (n: number, of: number): string => (of === 0 ? "n/a" : `${Math.round((100 * n) / of)}%`);
 const oneLine = (text: string | undefined, max = 90): string => {
@@ -333,7 +337,7 @@ export const report = (meta: StageMeta, result: EvalResult): string => {
   for (const c of result.cases) {
     const known = meta.cases.find((m) => m.name === c.name);
     const runs = c.arms.with ?? [];
-    const errored = runs.filter((run) => run.error !== undefined).length;
+    const errored = runs.filter(erroredRun).length;
     const runsCell = `${runs.length}${errored > 0 ? ` (${errored} errored)` : ""}`;
     for (const grader of c.graders) {
       const passed = runs.filter((run) => run.graders.some((g) => g.name === grader.name && g.passed)).length;
@@ -343,7 +347,7 @@ export const report = (meta: StageMeta, result: EvalResult): string => {
     }
     if (known?.clean === true) {
       // Of the runs that finished: one that errored raised nothing, false or not.
-      const completed = runs.filter((run) => run.error === undefined);
+      const completed = runs.filter((run) => !erroredRun(run));
       const raised = completed.filter((run) => c.graders.some((g) => !run.graders.some((rg) => rg.name === g.name && rg.passed))).length;
       clean.push(`- **${c.name}:** ${raised} of ${completed.length} completed runs raised a false finding (${percent(raised, completed.length)}).`);
     }

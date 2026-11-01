@@ -116,6 +116,13 @@ interface JobBase {
   readonly id: string;
   /** The release of the dispatcher that wrote it. */
   readonly version: string;
+  /**
+   * The dispatcher instance that wrote it: an id fresh at each dispatcher
+   * start (#597). The dispatcher names its own at the worker's held door, and
+   * the worker drops every job it holds queued that carries another's, since
+   * no dispatcher running now knows that job's id.
+   */
+  readonly instance: string;
   /** When the dispatcher stops minting for it, as an ISO time. */
   readonly deadline: string;
   /** `owner/name`. */
@@ -261,6 +268,9 @@ const isObject = (value: unknown): value is Readonly<Record<string, unknown>> =>
 
 const REPO = /^[\w.-]+\/[\w.-]+$/;
 const SHA = /^[0-9a-f]{40}$/;
+/** A dispatcher instance's id, as `instance` carries it: a UUID, or any short token of the same characters. */
+const INSTANCE = /^[\w-]{1,64}$/;
+const INSTANCE_REFUSAL = "`instance` is not a dispatcher instance's id, up to 64 letters, digits, `-` and `_`";
 
 type Fields = Readonly<Record<string, unknown>>;
 
@@ -337,14 +347,15 @@ const PARSERS: Readonly<Record<JobKind, (base: Omit<JobBase, "workflow">, value:
  */
 export const parseJob = (value: unknown): Job | string => {
   if (!isObject(value)) return "the job is not an object";
-  const { workflow, id, version, deadline, repo, appLogin } = value;
+  const { workflow, id, version, instance, deadline, repo, appLogin } = value;
   if (!JOB_KINDS.some((known) => known === workflow)) return `\`workflow\` is not one of ${JOB_KINDS.map((k) => `\`${k}\``).join(", ")}`;
   if (typeof id !== "string" || id === "") return "`id` is not a non-empty string";
   if (typeof version !== "string" || version === "") return "`version` is not a non-empty string";
+  if (typeof instance !== "string" || !INSTANCE.test(instance)) return INSTANCE_REFUSAL;
   if (typeof deadline !== "string" || Number.isNaN(Date.parse(deadline))) return "`deadline` is not a time";
   if (typeof repo !== "string" || !REPO.test(repo)) return "`repo` is not `owner/name`";
   if (typeof appLogin !== "string" || appLogin === "") return "`appLogin` is not a non-empty string";
-  return PARSERS[workflow as JobKind]({ id, version, deadline, repo, appLogin }, value);
+  return PARSERS[workflow as JobKind]({ id, version, instance, deadline, repo, appLogin }, value);
 };
 
 /** A token request read off the wire, or the reason it is not one. */
@@ -368,6 +379,36 @@ export interface HeldJob {
   /** The issue's number, or the pull request's. */
   readonly number: number;
 }
+
+/**
+ * The dispatcher's question at the worker's held door: when it asked, and
+ * which dispatcher instance is asking (#597), so the worker can drop every job
+ * queued by another, which no dispatcher running now knows. A question
+ * naming no instance only reads (#601): it is answered and drops nothing, so
+ * a person's script can ask what the worker holds without emptying its queue.
+ */
+export interface HeldRequest {
+  readonly asked: string;
+  readonly instance?: string;
+}
+
+/**
+ * How far a held door's `asked` may lie from the worker's clock, in minutes:
+ * older than the first is a replay, since the question drops jobs (#601), and
+ * later than the second is more than the two boxes' clocks should disagree.
+ */
+export const HELD_REQUEST_MAX_AGE_MINUTES = 5;
+export const HELD_REQUEST_MAX_SKEW_MINUTES = 1;
+
+/** A held door's request read off the wire, or the reason it is not one. */
+export const parseHeldRequest = (value: unknown): HeldRequest | string => {
+  if (!isObject(value)) return "the request is not an object";
+  const { asked, instance } = value;
+  if (typeof asked !== "string" || Number.isNaN(Date.parse(asked))) return "`asked` is not a time";
+  if (instance === undefined) return { asked };
+  if (typeof instance !== "string" || !INSTANCE.test(instance)) return INSTANCE_REFUSAL;
+  return { asked, instance };
+};
 
 /** What the worker answers of `job` when asked what it holds. */
 export const heldOf = (job: Job): HeldJob => ({ id: job.id, workflow: job.workflow, repo: job.repo, number: "issue" in job ? job.issue : job.pr });

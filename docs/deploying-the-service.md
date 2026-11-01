@@ -263,9 +263,14 @@ Each door also answers `GET /health` with `200`.
 
 - **A delivery that arrives while the dispatcher is down is lost.** GitHub does not redeliver on
   its own; redeliver it from the App's *Recent Deliveries*, or remove the label and add it again.
-- **The jobs it dispatched are held in memory.** A dispatcher restarted mid-job refuses that job's
-  next token request as unknown, and the job ends there. The scan at its start skips that item,
-  since the worker still holds the job; remove the label and add it again.
+- **The jobs it dispatched are held in memory, and only the running one is lost to a restart.** Each
+  job carries the id of the dispatcher instance that sent it, fresh at each start, and the scan at
+  a restarted dispatcher's start names its own at the worker's held door. The worker drops every
+  job it holds *queued* from another instance before it answers, so none of them runs, and the
+  scan dispatches their items again, in the order it lists them, behind the running job. The
+  running job is not dropped, since the held door cannot stop it: it ends at its next token
+  request, which the new dispatcher refuses as unknown, and the scan skips its item while the
+  worker still holds it. Remove that item's label and add it again.
 - **The scan's counts are held in memory.** A restarted dispatcher forgets how many times its scans
   have dispatched each item (*The scan's limit*, below), so each item's count starts from zero
   again, and the comment saying the scan stopped may be posted once more.
@@ -294,8 +299,19 @@ arrived, or the worker has not taken it yet. One the worker took before the deli
 have run and ended, and the label may be one a later run added again, as a fix round adds
 `agent:review`, so that delivery is dispatched. A delivery is never skipped for another delivery's
 job, since a label added again is asked for again. A worker that cannot be reached skips the whole scan, logged; its own start
-announcement scans again. The same answer lets the dispatcher forget every job it dispatched that
-the worker no longer holds, which after a worker's restart is every job it held before.
+announcement scans again. The question names the dispatcher's instance, and the worker drops
+every job it holds queued from another before answering, so after a dispatcher's restart the scan
+dispatches those items again rather than skipping them. A question that names no instance only
+reads: the worker answers what it holds and drops nothing, so a script of your own can ask it,
+signed with `WORKER_SECRET` as a job is, without emptying its queue. Either way the question
+carries the time it was `asked`, and the worker refuses one more than 5 minutes old or more than
+a minute ahead of its own clock, so a captured question cannot be replayed later to drop jobs;
+keep both hosts' clocks synchronised. A refused question skips the scan, and both logs name the
+refusal (`scan: skipped: the worker refused to say which jobs it holds: …` in the dispatcher's).
+Asking again meets the same refusal, so nothing scans again, the worker's start included, until
+the clock or the secret is mended. The same answer lets the dispatcher forget
+every job it dispatched that the worker no longer holds, which after a worker's restart is every
+job it held before.
 
 A label still on an item with nothing held for it is a run that never reached its ending, since
 the loop's commands take the trigger label off however a decided run ends. Two limits follow:
@@ -304,7 +320,8 @@ the loop's commands take the trigger label off however a decided run ends. Two l
   (adding it again is the retry), so a scan after it dispatches it once more, once per start, up
   to the scan's limit;
 - a job **running in the worker when only the dispatcher restarted** is skipped, since the worker
-  still holds it, and dies at its next token request, as above.
+  still holds it, and dies at its next token request, as above. The jobs queued behind it are not:
+  the worker drops them at the scan's question, and the scan dispatches their items again.
 
 **The scan's limit.** A job that ends the worker's *process*, rather than a phase that fails
 cleanly, leaves its label on; the worker is restarted, its start makes the dispatcher scan, and the
@@ -571,6 +588,9 @@ The job door also answers `GET /health` with `200`.
   *Recent Deliveries*, or remove the label and add it again. A label a lost delivery added
   to an open item is picked up by the scan at the dispatcher's start (*What it does not keep*,
   above). What a scan does not list stays lost: a merge's follow-ups, above all.
+- **A dispatcher restarted alone** recovers the jobs the worker holds queued from it: its start
+  scan has the worker drop them and dispatches their items again. Only the job running at the time
+  is lost, and keeps its label until a person adds it again (*What it does not keep*, above).
 - **The worker's queue is in memory too**: a worker restarted mid-job loses that job and the ones
   waiting behind it. Its start announcement makes the dispatcher scan, which dispatches each of
   them again, the running one and the queued ones alike, since each item keeps its label. Where

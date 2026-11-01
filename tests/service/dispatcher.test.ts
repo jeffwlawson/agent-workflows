@@ -19,6 +19,8 @@ import {
   DEFAULT_FIX_MINUTES,
   DEFAULT_REVIEW_MINUTES,
   FOLLOW_UPS_MINUTES,
+  HELD_REQUEST_MAX_AGE_MINUTES,
+  HELD_REQUEST_MAX_SKEW_MINUTES,
   heldOf,
   IMPLEMENT_PRD_OTHER_MINUTES,
   JOB_KINDS,
@@ -29,6 +31,7 @@ import {
   verifySignature,
   type Job,
 } from "../../service/job.js";
+import { heldDoor, jobDoor, oneAtATime } from "../../service/worker.js";
 import { STUB_LABELS } from "../../shared/follow-up-plan.js";
 import {
   FIX_LABEL,
@@ -84,7 +87,18 @@ interface Installations {
 const APP_OWNER = "owner";
 
 const setup = (
-  options: { workerStatus?: number; owners?: readonly string[]; holdPosts?: boolean; holdLabeller?: boolean; holdPermission?: boolean; scanLimit?: number } = {},
+  options: {
+    workerStatus?: number;
+    owners?: readonly string[];
+    holdPosts?: boolean;
+    holdLabeller?: boolean;
+    holdPermission?: boolean;
+    scanLimit?: number;
+    /** Whether the worker is the real queue behind its real doors, each job's work held until a test ends it (#597). */
+    queue?: boolean;
+    /** How many minutes the worker's clock runs ahead of the dispatcher's, behind where negative (#601). */
+    workerAhead?: number;
+  } = {},
 ) => {
   const repository: Repository = {
     installed: true,
@@ -112,6 +126,20 @@ const setup = (
   const commenting = { fails: false };
   let clock = START;
   let ids = 0;
+  let starts = 0;
+  /** The real worker, where `queue` says so: each job whose work started, and the way to end the one running. */
+  const ran: Job[] = [];
+  const finishes: (() => void)[] = [];
+  const queue = oneAtATime<Job>(
+    (job) =>
+      new Promise<void>((resolve) => {
+        ran.push(job);
+        finishes.push(resolve);
+      }),
+    () => {},
+  );
+  const jobs = jobDoor({ secret: WORKER_SECRET, version: "9.9.9", accept: queue.add });
+  const held = heldDoor({ secret: WORKER_SECRET, held: queue.held, drop: queue.drop, now: () => new Date(clock.getTime() + (options.workerAhead ?? 0) * MINUTE_MS) });
   const github: AppGitHub = {
     app: async () => ({ slug: "loop-app", owner: APP_OWNER, permissions: {}, events: [] }),
     installation: async (repo) =>
@@ -153,33 +181,48 @@ const setup = (
       comments.push({ repo, number, body, token });
     },
   };
-  const dispatcher = createDispatcher({
-    github,
-    postJob: async (body, headers) => {
-      posted.push({ body, headers });
-      if (options.holdPosts === true) await new Promise<void>((resolve) => heldPosts.push(resolve));
-      const status = options.workerStatus ?? 202;
-      if (status === 202) worker.holds.push(parseJob(JSON.parse(body)) as Job);
-      return status;
+  const start = (workerSecret = WORKER_SECRET) =>
+    createDispatcher({
+      github,
+      postJob: async (body, headers) => {
+        posted.push({ body, headers });
+        if (options.holdPosts === true) await new Promise<void>((resolve) => heldPosts.push(resolve));
+        if (options.queue === true) return jobs({ headers, body: Buffer.from(body) }).status;
+        const status = options.workerStatus ?? 202;
+        if (status === 202) worker.holds.push(parseJob(JSON.parse(body)) as Job);
+        return status;
+      },
+      askHeld: async (body, headers) => {
+        worker.asked += 1;
+        if (worker.down) throw new Error("connect ECONNREFUSED");
+        if (options.queue === true) return held({ headers, body: Buffer.from(body) });
+        if (!verifySignature(WORKER_SECRET, body, headers[SIGNATURE_HEADER])) return { status: 401, body: "{}" };
+        return { status: 200, body: JSON.stringify({ jobs: worker.holds.map(heldOf) }) };
+      },
+      log: (line) => lines.push(line),
+      webhookSecret: WEBHOOK_SECRET,
+      workerSecret,
+      owners: options.owners ?? [APP_OWNER],
+      deadlineMarginMinutes: MARGIN,
+      scanLimit: options.scanLimit ?? 2,
+      version: "9.9.9",
+      instance: `dispatcher-${(starts += 1)}`,
+      now: () => clock,
+      newId: () => `job-${(ids += 1)}`,
+    });
+  const s = {
+    dispatcher: start(),
+    /** A restart of the dispatcher alone: a new instance, remembering no job, over the same GitHub and worker. */
+    restart: (workerSecret?: string) => {
+      s.dispatcher = start(workerSecret);
     },
-    askHeld: async (body, headers) => {
-      worker.asked += 1;
-      if (worker.down) throw new Error("connect ECONNREFUSED");
-      if (!verifySignature(WORKER_SECRET, body, headers[SIGNATURE_HEADER])) return { status: 401, body: "{}" };
-      return { status: 200, body: JSON.stringify({ jobs: worker.holds.map(heldOf) }) };
+    queue,
+    ran,
+    /** Ends the job whose work is running, and lets the queue move on. */
+    finish: async () => {
+      finishes.shift()?.();
+      await new Promise((resolve) => setImmediate(resolve));
     },
-    log: (line) => lines.push(line),
-    webhookSecret: WEBHOOK_SECRET,
-    workerSecret: WORKER_SECRET,
-    owners: options.owners ?? [APP_OWNER],
-    deadlineMarginMinutes: MARGIN,
-    scanLimit: options.scanLimit ?? 2,
-    version: "9.9.9",
-    now: () => clock,
-    newId: () => `job-${(ids += 1)}`,
-  });
-  return {
-    dispatcher,
     repository,
     installations,
     worker,
@@ -196,6 +239,7 @@ const setup = (
       clock = new Date(clock.getTime() + minutes * MINUTE_MS);
     },
   };
+  return s;
 };
 
 /** A `pull_request` `labeled` delivery, as GitHub sends it, with `change` laid over its parts. */
@@ -312,6 +356,7 @@ describe("the webhook door", () => {
       workflow: "review",
       id: "job-1",
       version: "9.9.9",
+      instance: "dispatcher-1",
       deadline: new Date(START.getTime() + (CI_WAIT_SECONDS / 60 + DEFAULT_REVIEW_MINUTES + MARGIN) * MINUTE_MS).toISOString(),
       repo: REPO,
       pr: 7,
@@ -744,6 +789,7 @@ describe("the issue route", () => {
       expect(s.posted, sender).toHaveLength(2);
       const issue = {
         version: "9.9.9",
+        instance: "dispatcher-1",
         repo: REPO,
         issue: 12,
         title: "Add a thing",
@@ -951,6 +997,7 @@ describe("the follow-ups route", () => {
       workflow: "follow-ups",
       id: "job-1",
       version: "9.9.9",
+      instance: "dispatcher-1",
       deadline: new Date(START.getTime() + (FOLLOW_UPS_MINUTES + MARGIN) * MINUTE_MS).toISOString(),
       repo: REPO,
       pr: 7,
@@ -1481,6 +1528,136 @@ const crash = async (s: ReturnType<typeof setup>) => {
 
 const STOPPED = (where: string, label: string) =>
   `scan: skipped on ${where}: a scan has dispatched it for \`${label}\` 2 times, SCAN_DISPATCH_LIMIT's 2, so it is left for a person to add \`${label}\` again`;
+
+/**
+ * A dispatcher's restart alone (#597): the worker still holds the jobs the old
+ * instance queued, whose ids no dispatcher running now knows. The new
+ * instance's start scan names it at the held door, the worker drops every job
+ * it holds queued from another, never the running one, and the scan
+ * dispatches their items again. Driven over the real queue and doors.
+ */
+describe("a dispatcher's restart, with the worker still up", () => {
+  const ids = (jobs: readonly Job[]) => jobs.map((job) => job.id);
+  const tick = () => new Promise((resolve) => setImmediate(resolve));
+
+  /**
+   * A worker running a fix job whose label has since come off, job-1, with an
+   * issue's implement and implement-prd jobs queued behind it, job-2 and job-3,
+   * whose label is still on: all three from the first instance.
+   */
+  const busy = async () => {
+    const s = setup({ queue: true });
+    await deliver(s, labelled({ label: FIX_LABEL }));
+    await deliver(s, issueLabelled(), undefined, "issues");
+    s.repository.items = [issueItem([IMPLEMENT_LABEL])];
+    await tick();
+    expect(ids(s.ran)).toEqual(["job-1"]);
+    expect(ids(s.queue.held())).toEqual(["job-1", "job-2", "job-3"]);
+    return s;
+  };
+
+  it("drops each job queued from the previous instance, never runs it, and dispatches its item again, which runs once", async () => {
+    const s = await busy();
+
+    s.restart();
+    await s.dispatcher.scan();
+
+    expect(ids(s.queue.held())).toEqual(["job-1", "job-4", "job-5"]);
+    expect(s.queue.held().map((job) => job.instance)).toEqual(["dispatcher-1", "dispatcher-2", "dispatcher-2"]);
+    expect(linesOn(s, "owner/repo#12")).toEqual([
+      expect.stringMatching(/^scan: dispatched owner\/repo#12 to implement as job job-4, deadline [^;]+; dispatched owner\/repo#12 to implement-prd as job job-5, /),
+    ]);
+    expect((await s.dispatcher.token(tokenRequest({ jobId: "job-4", kind: "read" }))).status).toBe(200);
+
+    await s.finish();
+    await s.finish();
+    await s.finish();
+    expect(ids(s.ran)).toEqual(["job-1", "job-4", "job-5"]);
+    expect(s.queue.held()).toEqual([]);
+  });
+
+  it("never drops a job queued from the current instance, whichever scan or delivery asked", async () => {
+    const s = setup({ queue: true });
+    await deliver(s, labelled({ label: FIX_LABEL }));
+    s.restart();
+    await s.dispatcher.scan();
+    await deliver(s, issueLabelled(), undefined, "issues");
+    s.repository.items = [issueItem([IMPLEMENT_LABEL])];
+
+    await s.dispatcher.scan();
+    await announce(s);
+
+    expect(ids(s.queue.held())).toEqual(["job-1", "job-2", "job-3"]);
+    expect(s.posted).toHaveLength(3);
+    expect(linesOn(s, "owner/repo#12")).toEqual(Array(2).fill("scan: skipped on owner/repo#12: the worker holds a job for it"));
+  });
+
+  it("keeps the running job, skipping its item, and dispatches the queued ones again in order behind it", async () => {
+    const s = setup({ queue: true });
+    s.repository.items = [pullItem([REVIEW_LABEL]), issueItem([IMPLEMENT_LABEL])];
+    await deliver(s, labelled());
+    await deliver(s, issueLabelled(), undefined, "issues");
+    await tick();
+
+    s.restart();
+    await s.dispatcher.scan();
+
+    expect(ids(s.queue.held())).toEqual(["job-1", "job-4", "job-5"]);
+    expect(s.queue.held().map((job) => job.workflow)).toEqual(["review", "implement", "implement-prd"]);
+    expect(linesOn(s, "owner/repo#7")).toEqual(["scan: skipped on owner/repo#7: the worker holds a job for it"]);
+    // The running job ends at its next token request, as it did before.
+    expect((await s.dispatcher.token(tokenRequest({ jobId: "job-1", kind: "write" }))).status).toBe(404);
+
+    await s.finish();
+    await s.finish();
+    await s.finish();
+    expect(ids(s.ran)).toEqual(["job-1", "job-4", "job-5"]);
+  });
+
+  it("skips the pass, logged, and drops nothing where the worker cannot be reached at its start; the next scan recovers them", async () => {
+    const s = await busy();
+
+    s.restart();
+    s.worker.down = true;
+    await s.dispatcher.scan();
+
+    expect(s.lines).toContain("scan: skipped: the worker could not say which jobs it holds: connect ECONNREFUSED. Its start scans again");
+    expect(ids(s.queue.held())).toEqual(["job-1", "job-2", "job-3"]);
+    expect(s.posted).toHaveLength(3);
+
+    s.worker.down = false;
+    await announce(s);
+
+    expect(ids(s.queue.held())).toEqual(["job-1", "job-4", "job-5"]);
+  });
+
+  it("skips the pass and drops nothing where the held door refuses the question's signature", async () => {
+    const s = await busy();
+
+    s.restart("someone-elses-secret");
+    await s.dispatcher.scan();
+
+    expect(s.lines).toContain("scan: skipped: the worker refused to say which jobs it holds: the worker answered 401: bad signature");
+    expect(ids(s.queue.held())).toEqual(["job-1", "job-2", "job-3"]);
+    expect(s.posted).toHaveLength(3);
+  });
+
+  it.each<[string, number, string]>([
+    ["ahead", HELD_REQUEST_MAX_AGE_MINUTES + 1, `more than ${HELD_REQUEST_MAX_AGE_MINUTES} minutes ago by this worker's clock`],
+    ["behind", -HELD_REQUEST_MAX_SKEW_MINUTES - 1, `more than ${HELD_REQUEST_MAX_SKEW_MINUTES} minute ahead of this worker's clock`],
+  ])("logs the held door's refusal where the worker's clock runs %s, at the start scan and the announcement's alike, and drops nothing (#601)", async (_name, workerAhead, refused) => {
+    const s = setup({ queue: true, workerAhead });
+    s.repository.items = [pullItem([REVIEW_LABEL])];
+
+    await s.dispatcher.scan();
+    await announce(s);
+
+    const line = `scan: skipped: the worker refused to say which jobs it holds: the worker answered 400: \`asked\` is ${START.toISOString()}, ${refused}`;
+    expect(s.lines.filter((logged) => logged.startsWith("scan: skipped: the worker"))).toEqual([line, line]);
+    expect(s.lines.some((logged) => logged.includes("Its start scans again"))).toBe(false);
+    expect(s.posted).toEqual([]);
+  });
+});
 
 /**
  * The scan's limit (#596): a job that ends the worker's process keeps its

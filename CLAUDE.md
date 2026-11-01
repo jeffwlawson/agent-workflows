@@ -188,8 +188,7 @@ each caller in the two caller files
 of each of the two caller sets, and the `uses:` ref a reusable's step names a composite action in
 `.github/actions/` with (nine of those: `loop-token` once in each of `implement.yml`, `fix.yml`,
 `update-branch.yml` and `merge.yml`, twice in `implement-prd.yml` and three times in `review.yml`,
-so sixty-two pins in the eleven files, with the local caller set one caller short until the
-release after this one, below). Fix's runner, update-branch's, implement's and implement-prd's carry no pin of their own: each
+so sixty-three pins in the eleven files). Fix's runner, update-branch's, implement's and implement-prd's carry no pin of their own: each
 runs its job's early install's binary by its path, from the checkout, because `npm exec` finds an install under its `--prefix`
 only from that directory (#486's fix round). It
 runs from the `version` lifecycle script, which npm fires *after* the manifest is bumped and
@@ -207,8 +206,8 @@ unmerged tag too, but only after the push; v0.7.9 was first cut in a worktree on
 It refuses rather than doing part of the job. Both caller sets must hold the same caller files,
 each set must call every reusable exactly once (the local set may leave out only a reusable the
 release its callers pin does not have yet, asked of git at that tag, so the release that first
-ships `merge.yml` is cut with `agent-pr.yml` one job short and the next is refused until it is
-in), and each file must carry exactly the pins expected of it, one recognisable pin per site, so
+ships a reusable is cut with the local caller one job short, as v0.9.5 was for `merge.yml`, and
+the next is refused until it is in), and each file must carry exactly the pins expected of it, one recognisable pin per site, so
 an eighth workflow whose caller is missing from either
 set, or a caller file missing from either, stops the release instead of quietly propagating to
 what it found. A step naming a composite action, and a caller naming a reusable workflow, is

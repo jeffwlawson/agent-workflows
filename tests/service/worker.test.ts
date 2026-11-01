@@ -8,6 +8,7 @@ import { issueRescueBranch } from "../../shared/record.js";
 import {
   DEFAULT_FIX_MINUTES,
   DEFAULT_REVIEW_MINUTES,
+  parseHeld,
   sign,
   SIGNATURE_HEADER,
   FOLLOW_UPS_MINUTES,
@@ -26,7 +27,9 @@ import {
   IMPLEMENT_POSTING_MINUTES,
   IMPLEMENT_PRD_GATE_MINUTES,
   IMPLEMENT_PRD_POSTING_MINUTES,
+  heldDoor,
   jobDoor,
+  oneAtATime,
   REDACTED,
   runJob,
   SETUP_PHASE,
@@ -2568,5 +2571,58 @@ describe("the worker's follow-ups job", () => {
     const malformed = send({ ...FOLLOW_UPS_JOB, pr: 0 });
     expect(malformed.status).toBe(400);
     expect(JSON.parse(malformed.body)).toEqual({ refusal: "`pr` is not a positive integer" });
+  });
+});
+
+/**
+ * What the worker holds (#581): the queue knows each job queued or running,
+ * and the held door answers the dispatcher's scan with them, signed with the
+ * shared secret as the job door is.
+ */
+describe("the held door", () => {
+  const SECRET = "the-worker-secret";
+  const ask = (handle: ReturnType<typeof heldDoor>, secret = SECRET) => {
+    const body = Buffer.from(JSON.stringify({ asked: "2026-10-31T12:00:00.000Z" }));
+    return handle({ headers: { [SIGNATURE_HEADER]: sign(secret, body) }, body });
+  };
+
+  it("answers each held job's id, kind, repository and number, which the dispatcher reads back", () => {
+    const response = ask(heldDoor({ secret: SECRET, held: () => [JOB, IMPLEMENT_JOB, FOLLOW_UPS_JOB] }));
+
+    expect(response.status).toBe(200);
+    expect(parseHeld(JSON.parse(response.body))).toEqual([
+      { id: JOB.id, workflow: "review", repo: JOB.repo, number: JOB.pr },
+      { id: IMPLEMENT_JOB.id, workflow: "implement", repo: IMPLEMENT_JOB.repo, number: IMPLEMENT_JOB.issue },
+      { id: FOLLOW_UPS_JOB.id, workflow: "follow-ups", repo: FOLLOW_UPS_JOB.repo, number: FOLLOW_UPS_JOB.pr },
+    ]);
+  });
+
+  it("refuses a request whose signature does not verify, and names no job", () => {
+    const response = ask(heldDoor({ secret: SECRET, held: () => [JOB] }), "someone-elses-secret");
+
+    expect(response.status).toBe(401);
+    expect(response.body).not.toContain(JOB.repo);
+  });
+
+  it("holds a job from the moment it is queued until its work has ended, running or waiting, thrown or not", async () => {
+    const releases: (() => void)[] = [];
+    const queue = oneAtATime<string>(
+      (item) => new Promise<void>((resolve, reject) => releases.push(() => (item === "throws" ? reject(new Error("no")) : resolve()))),
+      () => {},
+    );
+    const settle = () => new Promise((resolve) => setImmediate(resolve));
+
+    queue.add("throws");
+    queue.add("second");
+    expect(queue.held()).toEqual(["throws", "second"]);
+
+    await settle();
+    releases[0]?.();
+    await settle();
+    expect(queue.held()).toEqual(["second"]);
+
+    releases[1]?.();
+    await settle();
+    expect(queue.held()).toEqual([]);
   });
 });

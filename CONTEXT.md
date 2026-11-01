@@ -649,6 +649,11 @@ asks for one at the other door at the start of each phase, `read`, `write`, `res
 mints one for that job's repository alone, before its deadline, after reading the opt-in again, so
 deleting the variable stops a job in flight at its next phase. The job's format is one module,
 `service/job.ts`, which both processes import, so it only has to hold within one release.
+Neither process keeps its jobs past a restart, so the dispatcher **scans** (#581) at its start and
+at the worker's: since a trigger label is on while its run works, one on an open item with no job
+held for it, by the worker or the dispatcher, is a run that never reached its ending, and is
+dispatched as its delivery would have been, the actor of the label's latest `labeled` event
+standing in for the sender. `agent:follow-ups` is a marker, not a run, and is never scanned.
 
 The **worker** (#457) runs each job the way its workflow's reusable runs it, `review.yml` for a
 `review` job, `fix.yml` for a `fix` job, `update-branch.yml` for an `update-branch` job and

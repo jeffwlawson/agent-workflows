@@ -1,5 +1,5 @@
 import { createSign } from "node:crypto";
-import { READER_PERMISSIONS, type AppGitHub, type AppRecord } from "./dispatcher.js";
+import { READER_PERMISSIONS, SCAN_PERMISSIONS, type AppGitHub, type AppRecord, type Labelled } from "./dispatcher.js";
 import type { TokenGrant } from "./job.js";
 
 /**
@@ -7,7 +7,11 @@ import type { TokenGrant } from "./job.js";
  * with a JWT signed by its key, and as one installation with a token minted
  * from it. Its own reads, a repository's variables and a sender's permission,
  * go through a token that can read metadata and variables and nothing else,
- * minted per repository and reused while it has a while to run.
+ * minted per repository and reused while it has a while to run. The scan's
+ * reads (#581) go through one that can read issues and pull requests besides,
+ * minted and reused the same way, but for listing an installation's
+ * repositories, which needs a token for the whole installation that reads
+ * metadata alone.
  */
 
 const API = "https://api.github.com";
@@ -17,6 +21,9 @@ const REUSE_MARGIN_MS = 5 * 60_000;
 
 /** The most variables GitHub lists on one page. */
 const VARIABLES_PAGE = 30;
+
+/** The most of anything else the scan lists on one page: GitHub's own limit. */
+const PAGE = 100;
 
 interface Reply {
   readonly status: number;
@@ -69,31 +76,61 @@ export const liveAppGitHub = (appId: string, privateKey: string): AppGitHub => {
     return { id, account: login };
   };
 
-  const mint = async (repo: string, permissions: Readonly<Record<string, string>>): Promise<TokenGrant> => {
-    const id = (await installation(repo))?.id;
-    if (id === undefined) throw new Error(`the App is not installed on ${repo}`);
-    const name = repo.slice(repo.indexOf("/") + 1);
+  /** A token from installation `id`, with `permissions`, for `repositories` where given, else the whole installation; `what` names it in a throw. */
+  const installationToken = async (
+    id: number,
+    permissions: Readonly<Record<string, string>>,
+    what: string,
+    repositories?: readonly string[],
+  ): Promise<TokenGrant> => {
     const reply = await api(`/app/installations/${id}/access_tokens`, jwt(), {
       method: "POST",
-      body: { repositories: [name], permissions },
+      body: { ...(repositories === undefined ? {} : { repositories }), permissions },
     });
     const token = field(reply, "token");
     const expiresAt = field(reply, "expires_at");
     if (reply.status !== 201 || typeof token !== "string" || typeof expiresAt !== "string") {
       // 422 is GitHub refusing a permission the App was not granted.
-      throw new Error(`minting a token for ${repo} answered ${reply.status}${reply.status === 422 ? ": the App lacks a permission it asks for" : ""}`);
+      throw new Error(`minting a token for ${what} answered ${reply.status}${reply.status === 422 ? ": the App lacks a permission it asks for" : ""}`);
     }
     return { token, expiresAt };
   };
 
+  const mint = async (repo: string, permissions: Readonly<Record<string, string>>): Promise<TokenGrant> => {
+    const id = (await installation(repo))?.id;
+    if (id === undefined) throw new Error(`the App is not installed on ${repo}`);
+    return installationToken(id, permissions, repo, [repo.slice(repo.indexOf("/") + 1)]);
+  };
+
+  /** A token reading `repo` with `permissions`, reused while it has a while to run. */
   const readers = new Map<string, TokenGrant>();
-  const reader = async (repo: string): Promise<string> => {
-    const held = readers.get(repo);
+  const readerOf = async (repo: string, permissions: Readonly<Record<string, string>>): Promise<string> => {
+    const key = `${repo} ${JSON.stringify(permissions)}`;
+    const held = readers.get(key);
     if (held !== undefined && Date.parse(held.expiresAt) - Date.now() > REUSE_MARGIN_MS) return held.token;
-    const grant = await mint(repo, READER_PERMISSIONS);
-    readers.set(repo, grant);
+    const grant = await mint(repo, permissions);
+    readers.set(key, grant);
     return grant.token;
   };
+  const reader = (repo: string): Promise<string> => readerOf(repo, READER_PERMISSIONS);
+  const scanner = (repo: string): Promise<string> => readerOf(repo, SCAN_PERMISSIONS);
+
+  /** Every page of a list at `path` (which carries no query of its own), each page's entries read off by `entries`. */
+  const pages = async (path: string, auth: () => Promise<string> | string, entries: (reply: Reply) => unknown, what: string): Promise<unknown[]> => {
+    const all: unknown[] = [];
+    for (let page = 1; ; page += 1) {
+      const reply = await api(`${path}${path.includes("?") ? "&" : "?"}per_page=${PAGE}&page=${page}`, await auth());
+      const listed = entries(reply);
+      if (reply.status !== 200 || !Array.isArray(listed)) throw new Error(`reading ${what} answered ${reply.status}`);
+      all.push(...(listed as unknown[]));
+      if (listed.length < PAGE) return all;
+    }
+  };
+
+  const record = (value: unknown): Record<string, unknown> => (typeof value === "object" && value !== null ? (value as Record<string, unknown>) : {});
+
+  /** Each installation's id, by its account's login lower-cased, as the last listing read it. */
+  const installationIds = new Map<string, number>();
 
   /**
    * An organization variable shared with `repo`, or `undefined` where there is
@@ -170,5 +207,75 @@ export const liveAppGitHub = (appId: string, privateKey: string): AppGitHub => {
       return permission;
     },
     mint,
+    installations: async () => {
+      const listed = await pages("/app/installations", jwt, (reply) => reply.json, "the App's installations");
+      const accounts: string[] = [];
+      for (const entry of listed) {
+        const { id, account } = record(entry);
+        const login = record(account)["login"];
+        if (typeof id !== "number" || typeof login !== "string") continue;
+        installationIds.set(login.toLowerCase(), id);
+        accounts.push(login);
+      }
+      return accounts;
+    },
+    repositories: async (account) => {
+      const id = installationIds.get(account.toLowerCase());
+      if (id === undefined) throw new Error(`no installation on ${account} was listed`);
+      const token = (await installationToken(id, { metadata: "read" }, `the installation on ${account}`)).token;
+      const listed = await pages("/installation/repositories", () => token, (reply) => field(reply, "repositories"), `the repositories of the installation on ${account}`);
+      return listed.map((entry) => record(entry)["full_name"]).filter((name): name is string => typeof name === "string");
+    },
+    labelled: async (repo, label) => {
+      const query = new URLSearchParams({ state: "open", labels: label });
+      const listed = await pages(`/repos/${repo}/issues?${query.toString()}`, () => scanner(repo), (reply) => reply.json, `${repo}'s items labelled \`${label}\``);
+      const items: Labelled[] = [];
+      for (const entry of listed) {
+        const { number, title, state, pull_request: pull } = record(entry);
+        if (typeof number !== "number" || typeof state !== "string") continue;
+        if (pull === undefined || pull === null) {
+          if (typeof title === "string") items.push({ type: "issues", number, title, state });
+          continue;
+        }
+        // The issues list carries no head or base: the pull request's own record does, read now.
+        const reply = await api(`/repos/${repo}/pulls/${number}`, await scanner(repo));
+        const { state: pullState, merged, head, base } = record(reply.json);
+        const { ref: branch, sha: headSha, repo: headRepo } = record(head);
+        const baseRef = record(base)["ref"];
+        if (reply.status !== 200 || typeof pullState !== "string" || typeof branch !== "string" || typeof headSha !== "string" || typeof baseRef !== "string") {
+          throw new Error(`reading ${repo}#${number} answered ${reply.status}`);
+        }
+        const headName = record(headRepo)["full_name"];
+        items.push({
+          type: "pull_request",
+          number,
+          state: pullState,
+          merged: merged === true,
+          branch,
+          headSha,
+          headRepo: typeof headName === "string" ? headName : undefined,
+          baseRef,
+        });
+      }
+      return items;
+    },
+    labeller: async (repo, number, label) => {
+      const listed = await pages(`/repos/${repo}/issues/${number}/events`, () => scanner(repo), (reply) => reply.json, `${repo}#${number}'s events`);
+      let actor: string | undefined;
+      // Oldest first, so the last one found is the latest.
+      for (const entry of listed) {
+        const event = record(entry);
+        if (event["event"] !== "labeled" || record(event["label"])["name"] !== label) continue;
+        const login = record(event["actor"])["login"];
+        actor = typeof login === "string" ? login : undefined;
+      }
+      return actor;
+    },
+    defaultBranch: async (repo) => {
+      const reply = await api(`/repos/${repo}`, await scanner(repo));
+      const branch = field(reply, "default_branch");
+      if (reply.status !== 200 || typeof branch !== "string") throw new Error(`reading ${repo}'s default branch answered ${reply.status}`);
+      return branch;
+    },
   };
 };

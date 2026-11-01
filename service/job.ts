@@ -355,3 +355,36 @@ export const parseTokenRequest = (value: unknown): TokenRequest | string => {
   if (!TOKEN_KINDS.some((known) => known === kind)) return `\`kind\` is not one of ${TOKEN_KINDS.map((k) => `\`${k}\``).join(", ")}`;
   return { jobId, kind: kind as TokenKind };
 };
+
+/**
+ * A job the worker holds, queued or running, as it answers the dispatcher's
+ * scan (#581): its id, its kind, and the issue or pull request it is on.
+ * Nothing that grants anything, and nothing a scan does not compare.
+ */
+export interface HeldJob {
+  readonly id: string;
+  readonly workflow: JobKind;
+  readonly repo: string;
+  /** The issue's number, or the pull request's. */
+  readonly number: number;
+}
+
+/** What the worker answers of `job` when asked what it holds. */
+export const heldOf = (job: Job): HeldJob => ({ id: job.id, workflow: job.workflow, repo: job.repo, number: "issue" in job ? job.issue : job.pr });
+
+/** The worker's answer to what it holds, read off the wire, or the reason it is not one. */
+export const parseHeld = (value: unknown): readonly HeldJob[] | string => {
+  const jobs = isObject(value) ? value["jobs"] : undefined;
+  if (!Array.isArray(jobs)) return "`jobs` is not a list";
+  const held: HeldJob[] = [];
+  for (const entry of jobs as unknown[]) {
+    if (!isObject(entry)) return "a held job is not an object";
+    const { id, workflow, repo, number } = entry;
+    if (typeof id !== "string" || id === "") return "a held job's `id` is not a non-empty string";
+    if (!JOB_KINDS.some((known) => known === workflow)) return "a held job's `workflow` is not a kind this release runs";
+    if (typeof repo !== "string" || !REPO.test(repo)) return "a held job's `repo` is not `owner/name`";
+    if (typeof number !== "number" || !Number.isInteger(number) || number <= 0) return "a held job's `number` is not a positive integer";
+    held.push({ id, workflow: workflow as JobKind, repo, number });
+  }
+  return held;
+};

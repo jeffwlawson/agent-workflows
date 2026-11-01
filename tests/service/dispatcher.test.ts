@@ -1,7 +1,33 @@
 import { describe, expect, it } from "vitest";
 import { CI_WAIT_SECONDS } from "../../review/collect-checks.js";
-import { appGaps, createDispatcher, LABEL_KINDS, SERVICE_APP_EVENTS, SERVICE_APP_PERMISSIONS, parseOwners, SERVICE_LABELS, TOKEN_PERMISSIONS, type AppGitHub } from "../../service/dispatcher.js";
-import { DEFAULT_FIX_MINUTES, DEFAULT_REVIEW_MINUTES, FOLLOW_UPS_MINUTES, IMPLEMENT_PRD_OTHER_MINUTES, JOB_KINDS, parseJob, TOKEN_KINDS, sign, SIGNATURE_HEADER, verifySignature, type Job } from "../../service/job.js";
+import {
+  appGaps,
+  createDispatcher,
+  LABEL_KINDS,
+  parseOwners,
+  READER_PERMISSIONS,
+  SCAN_PERMISSIONS,
+  SERVICE_APP_EVENTS,
+  SERVICE_APP_PERMISSIONS,
+  SERVICE_LABELS,
+  TOKEN_PERMISSIONS,
+  type AppGitHub,
+  type Labelled,
+} from "../../service/dispatcher.js";
+import {
+  DEFAULT_FIX_MINUTES,
+  DEFAULT_REVIEW_MINUTES,
+  FOLLOW_UPS_MINUTES,
+  heldOf,
+  IMPLEMENT_PRD_OTHER_MINUTES,
+  JOB_KINDS,
+  parseJob,
+  sign,
+  SIGNATURE_HEADER,
+  TOKEN_KINDS,
+  verifySignature,
+  type Job,
+} from "../../service/job.js";
 import { STUB_LABELS } from "../../shared/follow-up-plan.js";
 import {
   FIX_LABEL,
@@ -38,18 +64,42 @@ interface Repository {
   permissions: Record<string, string>;
   /** Whether reading a variable fails, as a GitHub outage does. */
   unreadable?: boolean;
+  /** The open items carrying each label, as a scan lists them, with who added each label last. */
+  items: (Labelled & { labels: string[]; labellers: Record<string, string> })[];
+}
+
+/** The world a scan reads beyond the one repository: each installation's account to its repositories. */
+interface Installations {
+  accounts: Record<string, string[]>;
+  /** The repositories whose items could not be listed. */
+  unlistable: string[];
+  /** Each account whose repositories were listed. */
+  listed: string[];
+  /** Each label a listing was asked for. */
+  labels: string[];
 }
 
 /** The App's owner, which is the repository's owner too, unless a test says otherwise. */
 const APP_OWNER = "owner";
 
-const setup = (options: { workerStatus?: number; owners?: readonly string[] } = {}) => {
+const setup = (options: { workerStatus?: number; owners?: readonly string[]; holdPosts?: boolean; holdLabeller?: boolean; holdPermission?: boolean } = {}) => {
   const repository: Repository = {
     installed: true,
     account: APP_OWNER,
     variables: { [ORCHESTRATOR_VARIABLE]: SERVICE_ORCHESTRATOR, AGENT_MODEL: "a-model", AGENT_MAX_FIX_ROUNDS: "2" },
     permissions: { maintainer: "write", triager: "triage" },
+    items: [],
   };
+  const installations: Installations = { accounts: { [APP_OWNER]: [REPO] }, unlistable: [], listed: [], labels: [] };
+  /** The worker: what it holds, every job posted to it until it restarts, and whether it can be reached. */
+  const worker = { holds: [] as Job[], down: false, asked: 0 };
+  /** Each post held back until a test lets it through, where `holdPosts` says so. */
+  const heldPosts: (() => void)[] = [];
+  /** Each `labeled` event read held back until a test lets it through, where `holdLabeller` says so. */
+  const heldLabellers: (() => void)[] = [];
+  /** Each permission look-up held back until a test lets it through, where `holdPermission` says so. */
+  const heldPermissions: (() => void)[] = [];
+  const lines: string[] = [];
   const minted: { repo: string; permissions: Readonly<Record<string, string>> }[] = [];
   const posted: { body: string; headers: Readonly<Record<string, string>> }[] = [];
   /** Each login whose permission was looked up. */
@@ -58,26 +108,57 @@ const setup = (options: { workerStatus?: number; owners?: readonly string[] } = 
   let ids = 0;
   const github: AppGitHub = {
     app: async () => ({ slug: "loop-app", owner: APP_OWNER, permissions: {}, events: [] }),
-    installation: async (repo) => (repo === REPO && repository.installed ? repository.account : undefined),
+    installation: async (repo) =>
+      repo === REPO
+        ? repository.installed
+          ? repository.account
+          : undefined
+        : Object.entries(installations.accounts).find(([, repos]) => repos.includes(repo))?.[0],
     variable: async (repo, name) => {
-      if (repository.unreadable === true) throw new Error("GitHub answered 503");
+      if (repository.unreadable === true && repo === REPO) throw new Error("GitHub answered 503");
       return repo === REPO ? repository.variables[name] : undefined;
     },
     permission: async (repo, login) => {
       looked.push(login);
+      if (options.holdPermission === true) await new Promise<void>((resolve) => heldPermissions.push(resolve));
       return repo === REPO ? repository.permissions[login] : undefined;
     },
     mint: async (repo, permissions) => {
       minted.push({ repo, permissions });
       return { token: `minted-token-${minted.length}`, expiresAt: "2026-10-11T13:00:00Z" };
     },
+    installations: async () => Object.keys(installations.accounts),
+    repositories: async (account) => {
+      installations.listed.push(account);
+      return installations.accounts[account] ?? [];
+    },
+    labelled: async (repo, label) => {
+      installations.labels.push(label);
+      if (installations.unlistable.includes(repo)) throw new Error("GitHub answered 502");
+      return repo === REPO ? repository.items.filter((item) => item.labels.includes(label)) : [];
+    },
+    labeller: async (repo, number, label) => {
+      if (options.holdLabeller === true) await new Promise<void>((resolve) => heldLabellers.push(resolve));
+      return repo === REPO ? repository.items.find((item) => item.number === number)?.labellers[label] : undefined;
+    },
+    defaultBranch: async () => "main",
   };
   const dispatcher = createDispatcher({
     github,
     postJob: async (body, headers) => {
       posted.push({ body, headers });
-      return options.workerStatus ?? 202;
+      if (options.holdPosts === true) await new Promise<void>((resolve) => heldPosts.push(resolve));
+      const status = options.workerStatus ?? 202;
+      if (status === 202) worker.holds.push(parseJob(JSON.parse(body)) as Job);
+      return status;
     },
+    askHeld: async (body, headers) => {
+      worker.asked += 1;
+      if (worker.down) throw new Error("connect ECONNREFUSED");
+      if (!verifySignature(WORKER_SECRET, body, headers[SIGNATURE_HEADER])) return { status: 401, body: "{}" };
+      return { status: 200, body: JSON.stringify({ jobs: worker.holds.map(heldOf) }) };
+    },
+    log: (line) => lines.push(line),
     webhookSecret: WEBHOOK_SECRET,
     workerSecret: WORKER_SECRET,
     owners: options.owners ?? [APP_OWNER],
@@ -89,6 +170,12 @@ const setup = (options: { workerStatus?: number; owners?: readonly string[] } = 
   return {
     dispatcher,
     repository,
+    installations,
+    worker,
+    heldPosts,
+    heldLabellers,
+    heldPermissions,
+    lines,
     minted,
     posted,
     looked,
@@ -974,7 +1061,7 @@ describe("the App's permissions and events, checked at start (#560)", () => {
     const { actions_variables: _, ...rest } = FULL.permissions;
 
     expect(appGaps({ ...FULL, permissions: rest })).toEqual([
-      "the App's `actions_variables` permission needs read, not granted: the dispatcher's reads will be refused, 422",
+      "the App's `actions_variables` permission needs read, not granted: the dispatcher's reads, the scan's reads will be refused, 422",
     ]);
   });
 
@@ -998,5 +1085,377 @@ describe("the App's permissions and events, checked at start (#560)", () => {
 
   it("reads a record granting nothing as every permission and every event missing", () => {
     expect(appGaps({ permissions: {}, events: [] })).toHaveLength(Object.keys(SERVICE_APP_PERMISSIONS).length + SERVICE_APP_EVENTS.length);
+  });
+});
+
+/** An open pull request as a scan lists it, carrying `labels`, each added last by `labeller`, with `change` laid over it. */
+const pullItem = (labels: string[], change: Partial<Extract<Labelled, { type: "pull_request" }>> = {}, labeller = "maintainer") => ({
+  type: "pull_request" as const,
+  number: 7,
+  state: "open",
+  merged: false,
+  branch: "agent/issue-7-a-thing",
+  headSha: HEAD,
+  headRepo: REPO as string | undefined,
+  baseRef: "main",
+  ...change,
+  labels,
+  labellers: Object.fromEntries(labels.map((label) => [label, labeller])),
+});
+
+/** An open issue as a scan lists it, as `issueLabelled` delivers it. */
+const issueItem = (labels: string[], labeller = "maintainer") => ({
+  type: "issues" as const,
+  number: 12,
+  title: "Add a thing",
+  state: "open",
+  labels,
+  labellers: Object.fromEntries(labels.map((label) => [label, labeller])),
+});
+
+/** Every job posted to the worker, in the order posted. */
+const jobsPosted = (s: ReturnType<typeof setup>): Job[] => s.posted.map(({ body }) => parseJob(JSON.parse(body)) as Job);
+
+/** A job without its id, which is all that tells two jobs made the same way apart. */
+const unnamed = ({ id: _, ...job }: Job) => job;
+
+/** The worker's start, announced at the start door, and the scan it starts, worked through. */
+const announce = async (s: ReturnType<typeof setup>, secret = WORKER_SECRET) => {
+  const body = Buffer.from(JSON.stringify({ version: "9.9.9", started: START.toISOString() }));
+  const { response, scanned } = s.dispatcher.started({ headers: { [SIGNATURE_HEADER]: sign(secret, body) }, body });
+  await scanned;
+  return response;
+};
+
+/** The scan's lines about one item. */
+const linesOn = (s: ReturnType<typeof setup>, where: string) => s.lines.filter((line) => line.includes(`${where}:`) || line.includes(`${where} `));
+
+/**
+ * The scan (#581): after a restart, the open items carrying a trigger label
+ * nothing holds a job for are dispatched as their label's delivery would
+ * have dispatched them, with the actor of the item's latest `labeled` event
+ * standing in for the delivery's sender.
+ */
+describe("the scan after a restart", () => {
+  it.each([REVIEW_LABEL, FIX_LABEL, UPDATE_BRANCH_LABEL])("dispatches an open pull request's %s at a dispatcher's start, as the job its label's delivery makes", async (label) => {
+    const delivered = setup();
+    const expected = await dispatched(delivered, labelled({ label }));
+    const s = setup();
+    s.repository.items = [pullItem([label])];
+
+    await s.dispatcher.scan();
+
+    expect(jobsPosted(s).map(unnamed)).toEqual([unnamed(expected)]);
+    expect(s.lines).toContain(`scan: dispatched owner/repo#7 at ${HEAD} as job job-1, deadline ${expected.deadline}`);
+    expect(s.lines.at(-1)).toBe("scan: done");
+  });
+
+  it("dispatches an open issue's agent:implement as the implement and implement-prd jobs its delivery makes", async () => {
+    const delivered = setup();
+    const expected = await dispatchedIssue(delivered);
+    const s = setup();
+    s.repository.items = [issueItem([IMPLEMENT_LABEL])];
+
+    await s.dispatcher.scan();
+
+    expect(jobsPosted(s).map(unnamed)).toEqual(expected.map(unnamed));
+  });
+
+  it("takes a label the App added last as the App's, and looks no permission up for it", async () => {
+    const s = setup();
+    s.repository.items = [pullItem([REVIEW_LABEL], {}, "loop-app[bot]")];
+
+    await s.dispatcher.scan();
+
+    expect(jobsPosted(s).map((job) => job.workflow)).toEqual(["review"]);
+    expect(s.looked).toEqual([]);
+  });
+
+  it("dispatches, at a worker's start, every job the restart dropped, running or queued, and forgets the ones it held", async () => {
+    const s = setup();
+    s.repository.items = [pullItem([REVIEW_LABEL]), issueItem([IMPLEMENT_LABEL])];
+    await deliver(s, labelled());
+    await deliver(s, issueLabelled(), undefined, "issues");
+    expect(s.posted).toHaveLength(3);
+
+    // The worker restarts: it holds nothing it held before.
+    s.worker.holds = [];
+    expect((await announce(s)).status).toBe(202);
+
+    expect(jobsPosted(s).slice(3).map((job) => job.workflow)).toEqual(["review", "implement", "implement-prd"]);
+    expect((await s.dispatcher.token(tokenRequest({ jobId: "job-1", kind: "read" }))).status).toBe(404);
+    expect((await s.dispatcher.token(tokenRequest({ jobId: "job-4", kind: "read" }))).status).toBe(200);
+  });
+
+  it("skips an item whose job the worker holds, queued or running, in a scan and between two scans", async () => {
+    const s = setup();
+    s.repository.items = [pullItem([REVIEW_LABEL])];
+    await deliver(s, labelled());
+
+    await s.dispatcher.scan();
+    await announce(s);
+
+    expect(s.posted).toHaveLength(1);
+    expect(linesOn(s, "owner/repo#7")).toEqual(Array(2).fill("scan: skipped on owner/repo#7: the worker holds a job for it"));
+  });
+
+  it("dispatches a scanned item once, however many scans follow", async () => {
+    const s = setup();
+    s.repository.items = [pullItem([REVIEW_LABEL])];
+
+    await s.dispatcher.scan();
+    await s.dispatcher.scan();
+
+    expect(s.posted).toHaveLength(1);
+  });
+
+  it("skips an item the dispatcher has dispatched a job for whose post the worker has not answered yet", async () => {
+    const s = setup({ holdPosts: true });
+    s.repository.items = [pullItem([REVIEW_LABEL])];
+    const pending = deliver(s, labelled());
+    while (s.heldPosts.length === 0) await new Promise((resolve) => setImmediate(resolve));
+
+    await s.dispatcher.scan();
+    s.heldPosts.forEach((release) => release());
+    await pending;
+
+    expect(s.posted).toHaveLength(1);
+    expect(s.lines).toContain("scan: skipped on owner/repo#7: the dispatcher has dispatched a job for it");
+    expect((await s.dispatcher.token(tokenRequest({ jobId: "job-1", kind: "read" }))).status).toBe(200);
+  });
+
+  it("dispatches once where a delivery for the item lands while the scan reads who labelled it, the delivery first", async () => {
+    const s = setup({ holdLabeller: true });
+    s.repository.items = [pullItem([REVIEW_LABEL])];
+    const scanned = s.dispatcher.scan();
+    while (s.heldLabellers.length === 0) await new Promise((resolve) => setImmediate(resolve));
+
+    expect((await deliver(s, labelled())).outcome).toMatch(/^dispatched /);
+    s.heldLabellers.forEach((release) => release());
+    await scanned;
+
+    expect(s.posted).toHaveLength(1);
+    expect(s.lines).toContain(`scan: skipped on owner/repo#7 at ${HEAD}: the dispatcher has dispatched a job for it`);
+  });
+
+  it("dispatches once where a delivery for the item lands while the scan's post is in flight, the scan first", async () => {
+    const s = setup({ holdPosts: true });
+    s.repository.items = [pullItem([REVIEW_LABEL])];
+    const scanned = s.dispatcher.scan();
+    while (s.heldPosts.length === 0) await new Promise((resolve) => setImmediate(resolve));
+
+    expect((await deliver(s, labelled())).outcome).toBe(`skipped on owner/repo#7 at ${HEAD}: a scan has dispatched a job for it`);
+    s.heldPosts.forEach((release) => release());
+    await scanned;
+
+    expect(jobsPosted(s).map((job) => job.workflow)).toEqual(["review"]);
+  });
+
+  it("dispatches once where a delivery arrives before the scan's dispatch and decides after the worker has taken it", async () => {
+    const s = setup({ holdPermission: true });
+    s.repository.items = [pullItem([REVIEW_LABEL], {}, "loop-app[bot]"), issueItem([IMPLEMENT_LABEL], "loop-app[bot]")];
+    const pending = deliver(s, labelled());
+    while (s.heldPermissions.length === 0) await new Promise((resolve) => setImmediate(resolve));
+
+    await s.dispatcher.scan();
+    s.heldPermissions.forEach((release) => release());
+
+    expect((await pending).outcome).toBe(`skipped on owner/repo#7 at ${HEAD}: a scan has dispatched a job for it`);
+    expect(jobsPosted(s).map((job) => job.workflow)).toEqual(["review", "implement", "implement-prd"]);
+  });
+
+  it.each([
+    ["a pull request's", () => pullItem([REVIEW_LABEL]), () => labelled(), undefined, ["review"]],
+    ["an issue's", () => issueItem([IMPLEMENT_LABEL]), () => issueLabelled(), "issues", ["implement", "implement-prd"]],
+  ])("dispatches %s label added again after a scan's job for it has ended, which nothing skips until a deadline", async (_, item, payload, event, kinds) => {
+    const s = setup();
+    s.repository.items = [item()];
+    await s.dispatcher.scan();
+    // The scan's job ran and ended, and a later run's ending added the label again.
+    s.worker.holds = [];
+
+    expect((await deliver(s, payload(), undefined, event)).outcome).toMatch(/^dispatched /);
+    expect(jobsPosted(s).map((job) => job.workflow)).toEqual([...kinds, ...kinds]);
+  });
+
+  it("still dispatches a delivery for an item a delivery already dispatched: a label added again is asked for again", async () => {
+    const s = setup();
+    await deliver(s, labelled());
+
+    expect((await deliver(s, labelled())).outcome).toMatch(/^dispatched /);
+    expect(s.posted).toHaveLength(2);
+  });
+
+  it("does not skip an issue's other kind's job: either one held skips the label", async () => {
+    const s = setup();
+    s.repository.items = [issueItem([IMPLEMENT_LABEL])];
+    await deliver(s, issueLabelled(), undefined, "issues");
+    // The implement-prd job ran and ended; the implement one is still queued.
+    s.worker.holds = s.worker.holds.filter((job) => job.workflow === "implement");
+
+    await s.dispatcher.scan();
+
+    expect(s.posted).toHaveLength(2);
+    expect(s.lines).toContain("scan: skipped on owner/repo#12: the worker holds a job for it");
+  });
+
+  it("refuses an item whose label was added last by someone who cannot write, as a delivery's sender is refused", async () => {
+    const s = setup();
+    s.repository.items = [pullItem([REVIEW_LABEL], {}, "triager"), { ...issueItem([IMPLEMENT_LABEL], "a-stranger") }];
+
+    await s.dispatcher.scan();
+
+    expect(s.posted).toEqual([]);
+    expect(s.lines).toContain("scan: refused on owner/repo#7: triager cannot write to owner/repo, and added `agent:review` last");
+    expect(s.lines).toContain("scan: refused on owner/repo#12: a-stranger cannot write to owner/repo, and added `agent:implement` last");
+  });
+
+  it("skips an item with no `labeled` event for its label, rather than dispatching on a guess", async () => {
+    const s = setup();
+    s.repository.items = [{ ...pullItem([REVIEW_LABEL]), labellers: {} }];
+
+    await s.dispatcher.scan();
+
+    expect(s.posted).toEqual([]);
+    expect(s.lines).toContain("scan: skipped on owner/repo#7: no `labeled` event for `agent:review` was found, so there is no one it was asked by to check");
+  });
+
+  it("refuses a repository that has not opted in, and reads none of its items", async () => {
+    const s = setup();
+    s.repository.items = [pullItem([REVIEW_LABEL])];
+    delete s.repository.variables[ORCHESTRATOR_VARIABLE];
+
+    await s.dispatcher.scan();
+
+    expect(s.posted).toEqual([]);
+    expect(s.installations.labels).toEqual([]);
+    expect(s.lines).toContain(`scan: refused on owner/repo: ${ORCHESTRATOR_VARIABLE} is unset, not \`${SERVICE_ORCHESTRATOR}\``);
+  });
+
+  it("refuses an installation on a foreign account, and lists none of its repositories", async () => {
+    const s = setup();
+    s.installations.accounts["stranger"] = ["stranger/repo"];
+
+    await s.dispatcher.scan();
+
+    expect(s.installations.listed).toEqual([APP_OWNER]);
+    expect(s.lines).toContain(
+      "scan: refused the installation on stranger: the App's installation is on stranger, which is neither the App's owner nor an account EXTRA_OWNERS lists",
+    );
+  });
+
+  it.each([
+    ["a fork's pull request", { headRepo: "someone/fork" }, "the head is on a fork"],
+    ["a pull request whose head repository is gone", { headRepo: undefined }, "the head is on a fork"],
+    ["a closed pull request", { state: "closed" }, "the pull request is closed, not open"],
+  ])("refuses %s, as a delivery is refused", async (_, change, reason) => {
+    const s = setup();
+    s.repository.items = [pullItem([REVIEW_LABEL], change)];
+
+    await s.dispatcher.scan();
+
+    expect(s.posted).toEqual([]);
+    expect(s.lines).toContain(`scan: refused on owner/repo#7: ${reason}`);
+  });
+
+  it("never dispatches agent:follow-ups, and never lists it", async () => {
+    const s = setup();
+    s.repository.items = [pullItem([FOLLOW_UPS_LABEL], { state: "closed", merged: true }), { ...pullItem([FOLLOW_UPS_LABEL]), number: 8 }];
+
+    await s.dispatcher.scan();
+
+    expect(s.posted).toEqual([]);
+    expect(s.installations.labels).not.toContain(FOLLOW_UPS_LABEL);
+    expect([...s.installations.labels].sort()).toEqual([REVIEW_LABEL, FIX_LABEL, UPDATE_BRANCH_LABEL, IMPLEMENT_LABEL].sort());
+  });
+
+  it("dispatches nothing for an item with no trigger label on it, a run's ending having taken it off or left agent:blocked", async () => {
+    const s = setup();
+    s.repository.items = [pullItem(["agent:blocked"]), issueItem([])];
+
+    await s.dispatcher.scan();
+
+    expect(s.posted).toEqual([]);
+  });
+
+  it("ignores a label listed on the other event's item: agent:implement on a pull request", async () => {
+    const s = setup();
+    s.repository.items = [pullItem([IMPLEMENT_LABEL])];
+
+    await s.dispatcher.scan();
+
+    expect(s.posted).toEqual([]);
+    expect(s.lines).toContain("scan: ignored on owner/repo#7: `agent:implement` is not a label a scan answers on a pull request");
+  });
+
+  it("logs a repository it cannot read, and goes on to the rest of the scan", async () => {
+    const s = setup();
+    s.installations.accounts[APP_OWNER] = [REPO, "owner/other"];
+    s.repository.unreadable = true;
+
+    await s.dispatcher.scan();
+
+    expect(s.lines).toContain("scan: failed on owner/repo: GitHub answered 503");
+    expect(s.lines).toContain(`scan: refused on owner/other: ${ORCHESTRATOR_VARIABLE} is unset, not \`${SERVICE_ORCHESTRATOR}\``);
+    expect(s.lines.at(-1)).toBe("scan: done");
+  });
+
+  it("logs each label whose items cannot be listed, and lists the others", async () => {
+    const s = setup();
+    s.installations.unlistable = [REPO];
+
+    await s.dispatcher.scan();
+
+    expect(s.lines.filter((line) => line.startsWith("scan: failed on owner/repo: its "))).toHaveLength(4);
+    expect(s.lines.at(-1)).toBe("scan: done");
+  });
+
+  it("skips the scan where the worker cannot be reached, reads nothing of GitHub, and scans again at the worker's start", async () => {
+    const s = setup();
+    s.repository.items = [pullItem([REVIEW_LABEL])];
+    s.worker.down = true;
+
+    await s.dispatcher.scan();
+
+    expect(s.posted).toEqual([]);
+    expect(s.installations.listed).toEqual([]);
+    expect(s.lines).toEqual(["scan: skipped: the worker could not say which jobs it holds: connect ECONNREFUSED. Its start scans again"]);
+
+    s.worker.down = false;
+    await announce(s);
+
+    expect(s.posted).toHaveLength(1);
+  });
+
+  it("refuses a start announcement whose signature does not verify, and scans nothing", async () => {
+    const s = setup();
+    s.repository.items = [pullItem([REVIEW_LABEL])];
+
+    expect((await announce(s, "someone-elses-secret")).status).toBe(401);
+    expect(s.worker.asked).toBe(0);
+    expect(s.posted).toEqual([]);
+  });
+
+  it("runs one pass at a time: a request while one waits is folded into it, and one while a pass runs waits behind it", async () => {
+    const s = setup({ holdPosts: true });
+    s.repository.items = [pullItem([REVIEW_LABEL])];
+
+    const first = s.dispatcher.scan();
+    expect(s.dispatcher.scan()).toBe(first);
+    while (s.heldPosts.length === 0) await new Promise((resolve) => setImmediate(resolve));
+    const second = s.dispatcher.scan();
+    expect(s.dispatcher.scan()).toBe(second);
+    expect(s.worker.asked).toBe(1);
+
+    s.heldPosts.forEach((release) => release());
+    await second;
+
+    expect(s.worker.asked).toBe(2);
+    expect(s.posted).toHaveLength(1);
+  });
+
+  it("reads with the dispatcher's reads and issues and pull requests read, which the App already needs", () => {
+    expect(SCAN_PERMISSIONS).toEqual({ ...READER_PERMISSIONS, issues: "read", pull_requests: "read" });
+    for (const name of Object.keys(SCAN_PERMISSIONS)) expect(SERVICE_APP_PERMISSIONS).toHaveProperty(name);
   });
 });

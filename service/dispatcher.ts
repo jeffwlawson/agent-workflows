@@ -1,12 +1,14 @@
 import { randomUUID } from "node:crypto";
 import { FIX_LABEL, FOLLOW_UPS_LABEL, IMPLEMENT_LABEL, ORCHESTRATOR_VARIABLE, REVIEW_LABEL, SERVICE_ORCHESTRATOR, UPDATE_BRANCH_LABEL } from "../shared/record.js";
 import {
+  parseHeld,
   parseTokenRequest,
   REPOSITORY_VARIABLES,
   SIGNATURE_HEADER,
   sign,
   TIME_LIMITS,
   verifySignature,
+  type HeldJob,
   type Job,
   type JobKind,
   type RepositoryVariable,
@@ -39,6 +41,30 @@ export interface AppRecord {
   readonly events: readonly string[];
 }
 
+/**
+ * An open issue or pull request carrying a label, as the scan lists it
+ * (#581): what a label's delivery would have carried of it, read now. `type`
+ * is the event its labels are answered on.
+ */
+export type Labelled =
+  | {
+      readonly type: "issues";
+      readonly number: number;
+      readonly title: string;
+      readonly state: string;
+    }
+  | {
+      readonly type: "pull_request";
+      readonly number: number;
+      readonly state: string;
+      readonly merged: boolean;
+      readonly branch: string;
+      readonly headSha: string;
+      /** The head's repository, `owner/name`, or `undefined` where it was deleted. */
+      readonly headRepo: string | undefined;
+      readonly baseRef: string;
+    };
+
 /** What the dispatcher asks of GitHub, as its App. */
 export interface AppGitHub {
   /** The App's own record. */
@@ -58,14 +84,34 @@ export interface AppGitHub {
   permission(repo: string, login: string): Promise<string | undefined>;
   /** A token for `repo` alone, with `permissions`. */
   mint(repo: string, permissions: Readonly<Record<string, string>>): Promise<TokenGrant>;
+  /** The login of each account the App is installed on. */
+  installations(): Promise<readonly string[]>;
+  /** The repositories the App's installation on `account` reaches, each `owner/name`. */
+  repositories(account: string): Promise<readonly string[]>;
+  /** The open issues and pull requests on `repo` carrying `label`, each as it reads now. */
+  labelled(repo: string, label: string): Promise<readonly Labelled[]>;
+  /**
+   * The login of the actor of the latest `labeled` event for `label` on
+   * `repo`'s issue or pull request `number`, or `undefined` where there is none.
+   */
+  labeller(repo: string, number: number, label: string): Promise<string | undefined>;
+  /** `repo`'s default branch. */
+  defaultBranch(repo: string): Promise<string>;
 }
 
 /** Where a job goes: posts the signed body, and answers with the HTTP status the worker gave. */
 export type WorkerPost = (body: string, headers: Readonly<Record<string, string>>) => Promise<number>;
 
+/** The worker's held door: posts the signed body, and answers with the worker's status and body. */
+export type WorkerQuery = (body: string, headers: Readonly<Record<string, string>>) => Promise<{ readonly status: number; readonly body: string }>;
+
 export interface DispatcherEdges {
   readonly github: AppGitHub;
   readonly postJob: WorkerPost;
+  /** Asks the worker which jobs it holds, queued or running. */
+  readonly askHeld: WorkerQuery;
+  /** Where the scan's lines go, one per item it decided on. */
+  readonly log: (line: string) => void;
   /** The App's webhook secret. */
   readonly webhookSecret: string;
   /** The secret shared with the worker. */
@@ -137,6 +183,12 @@ export const TOKEN_PERMISSIONS: Readonly<Record<TokenKind, Readonly<Record<strin
  */
 export const READER_PERMISSIONS: Readonly<Record<string, string>> = { metadata: "read", actions_variables: "read" };
 
+/**
+ * The permissions the scan's reads mint with (#581): the dispatcher's own
+ * reads, and the open issues and pull requests, their labels and events.
+ */
+export const SCAN_PERMISSIONS: Readonly<Record<string, string>> = { ...READER_PERMISSIONS, issues: "read", pull_requests: "read" };
+
 /** Access levels, lowest first: a grant at a later one covers a need at an earlier one. */
 const ACCESS = ["read", "write", "admin"];
 
@@ -145,6 +197,7 @@ const covers = (held: string | undefined, needed: string): boolean => held !== u
 /** Each token the dispatcher mints, by what it is called in a gap's line, to the permissions it asks for. */
 const MINTS: readonly (readonly [string, Readonly<Record<string, string>>])[] = [
   ["the dispatcher's reads", READER_PERMISSIONS],
+  ["the scan's reads", SCAN_PERMISSIONS],
   ...Object.entries(TOKEN_PERMISSIONS).map(([kind, permissions]) => [`\`${kind}\` tokens`, permissions] as const),
 ];
 
@@ -194,6 +247,14 @@ export const LABEL_KINDS: {
  * labels nothing answers there.
  */
 export const SERVICE_LABELS: readonly string[] = Object.values(LABEL_KINDS).flatMap((kinds) => Object.keys(kinds));
+
+/**
+ * The trigger labels a scan lists (#581): every one but `agent:follow-ups`,
+ * a marker that stays on until the pull request is merged and filed, not a
+ * label that says a run is working; a merge's follow-ups job comes from the
+ * merge's own delivery.
+ */
+const SCAN_LABELS: readonly string[] = SERVICE_LABELS.filter((label) => label !== FOLLOW_UPS_LABEL);
 
 /** What `label` starts in one event's map, or `undefined` where it starts nothing there, an inherited property's name included. */
 const kindOf = <K>(kinds: Readonly<Record<string, K>>, label: string): K | undefined =>
@@ -283,10 +344,32 @@ const json = (body: Buffer): unknown => {
 
 const answer = (status: number, body: unknown): DoorResponse => ({ status, body: JSON.stringify(body) });
 
-/** What the dispatcher remembers of a job it dispatched: enough to mint for it, and no more. */
+const message = (error: unknown): string => (error instanceof Error ? error.message : String(error));
+
+/**
+ * What the dispatcher remembers of a job it dispatched: enough to mint for
+ * it, to tell a scan what it is on, whether the worker has answered its
+ * post yet, and whether a scan dispatched it.
+ */
 interface Dispatched {
   readonly repo: string;
   readonly deadline: Date;
+  readonly workflow: JobKind;
+  readonly number: number;
+  readonly posted: boolean;
+  readonly scanned: boolean;
+  /** Its place among every job the dispatcher has reserved, first `1`. */
+  readonly order: number;
+}
+
+/** Who a dispatch is for: a scan, or a delivery, with the reservations made before it arrived. */
+const SCAN = "scan";
+type Origin = typeof SCAN | { readonly arrived: number };
+
+/** A scan's door's answer, sent at once, and the scan it starts. */
+export interface Announcement {
+  readonly response: DoorResponse;
+  readonly scanned: Promise<void>;
 }
 
 /**
@@ -313,6 +396,8 @@ export const createDispatcher = (edges: DispatcherEdges) => {
       : `the App's installation is on ${account}, which is neither the App's owner nor an account EXTRA_OWNERS lists`;
   const newId = edges.newId ?? randomUUID;
   const jobs = new Map<string, Dispatched>();
+  /** How many jobs have been reserved so far, which a delivery notes at its arrival. */
+  let reservations = 0;
 
   /**
    * Forget every job past its deadline, which no request can be granted for
@@ -356,8 +441,23 @@ export const createDispatcher = (edges: DispatcherEdges) => {
   /**
    * Posts a job of `fields`' kind to the worker: the repository's variables
    * read, and its deadline from its kind's own time limit.
+   *
+   * A scan's job and a delivery's for the same item and kind are one job, not
+   * two, where both answer the same label: one a delivery in flight carries
+   * is the one a scan lists. So the dispatch a scan makes skips where the
+   * dispatcher remembers any job of its kind on its item, and a delivery's
+   * skips where it remembers one a scan made that answers its label too: one
+   * reserved after the delivery arrived, or whose post the worker has not
+   * answered yet, so whose run cannot have ended and had the label added
+   * again. A scan's job the worker took before the delivery arrived does not
+   * skip it: that label may be the one a later run's ending added again, as
+   * fix's does `agent:review` (#581's second review). That check and the
+   * reservation are one synchronous step, after the last await, so whichever
+   * of the two reaches it first is the one dispatched (#581's review). A
+   * delivery is never deduplicated against another delivery: a label added
+   * again is asked for again.
    */
-  const dispatch = async (fields: Dispatchable, login: string, where: string, at: string): Promise<string> => {
+  const dispatch = async (fields: Dispatchable, login: string, where: string, at: string, origin: Origin): Promise<string> => {
     const variables = Object.fromEntries(
       await Promise.all(REPOSITORY_VARIABLES.map(async (name) => [name, (await edges.github.variable(fields.repo, name)) ?? ""] as const)),
     ) as Record<RepositoryVariable, string>;
@@ -366,9 +466,17 @@ export const createDispatcher = (edges: DispatcherEdges) => {
     const job = { ...fields, id: newId(), version: edges.version, deadline: deadline.toISOString(), appLogin: login, variables } as Job;
 
     prune();
+    const scanned = origin === SCAN;
+    const answers = (held: Dispatched): boolean => scanned || (held.scanned && (!held.posted || held.order > origin.arrived));
+    const same = [...jobs.values()].find(
+      (held) => held.repo === job.repo && held.number === ("issue" in job ? job.issue : job.pr) && held.workflow === job.workflow && answers(held),
+    );
+    if (same !== undefined) return `skipped on ${where}${at}: ${same.scanned ? "a scan" : "the dispatcher"} has dispatched a job for it`;
     // Known before the worker hears of it, so its first token request cannot
     // arrive ahead of the job it names.
-    jobs.set(job.id, { repo: job.repo, deadline });
+    reservations += 1;
+    const entry = { repo: job.repo, deadline, workflow: job.workflow, number: "issue" in job ? job.issue : job.pr, scanned, order: reservations };
+    jobs.set(job.id, { ...entry, posted: false });
     const body = JSON.stringify(job);
     let status: number;
     try {
@@ -381,7 +489,34 @@ export const createDispatcher = (edges: DispatcherEdges) => {
       jobs.delete(job.id);
       return `failed on ${where}: the worker answered ${status}`;
     }
+    if (jobs.has(job.id)) jobs.set(job.id, { ...entry, posted: true });
     return `dispatched ${where}${at} as job ${job.id}, deadline ${job.deadline}`;
+  };
+
+  /**
+   * Why a pull request is not answered for `kind`, past the opt-in, or
+   * `undefined` where it is: its head is in the repository, and it is open,
+   * but for `agent:follow-ups`, which is answered on a closed one.
+   */
+  const pullRefusal = (repo: string, kind: JobKind, state: string, headRepo: unknown): string | undefined => {
+    if (headRepo !== repo) return "the head is on a fork";
+    if (kind === "follow-ups") {
+      if (state !== "closed") return `the pull request is ${state}, and \`${FOLLOW_UPS_LABEL}\` is answered on a closed one`;
+    } else if (state !== "open") return `the pull request is ${state}, not open`;
+    return undefined;
+  };
+
+  /** Dispatches a job of each kind an issue's label starts, in turn; the line is each dispatch's. */
+  const dispatchIssue = async (
+    kinds: readonly ("implement" | "implement-prd")[],
+    fields: { readonly repo: string; readonly issue: number; readonly title: string; readonly state: string; readonly baseRef: string },
+    login: string,
+    where: string,
+    origin: Origin,
+  ): Promise<string> => {
+    const outcomes: string[] = [];
+    for (const kind of kinds) outcomes.push(await dispatch({ workflow: kind, ...fields }, login, where, ` to ${kind}`, origin));
+    return outcomes.join("; ");
   };
 
   /**
@@ -397,7 +532,7 @@ export const createDispatcher = (edges: DispatcherEdges) => {
    * auto-merge can send the event as a bot the gate would refuse, which would
    * drop the follow-ups without a word. Actions' job checks no sender either.
    */
-  const merge = async (p: LabelEvent): Promise<string> => {
+  const merge = async (p: LabelEvent, origin: Origin): Promise<string> => {
     const repo = p.repository?.full_name;
     const pr = p.pull_request?.number;
     if (typeof repo !== "string" || typeof pr !== "number") return "refused: the delivery is missing a field a job needs";
@@ -408,7 +543,7 @@ export const createDispatcher = (edges: DispatcherEdges) => {
     if (why !== undefined) return `refused on ${where}: ${why}`;
     if (p.pull_request.head?.repo?.full_name !== repo) return `refused on ${where}: the head is on a fork`;
     const login = appLogin((await edges.github.app()).slug);
-    return dispatch({ workflow: "follow-ups", repo, pr }, login, where, " on its merge");
+    return dispatch({ workflow: "follow-ups", repo, pr }, login, where, " on its merge", origin);
   };
 
   /**
@@ -423,9 +558,9 @@ export const createDispatcher = (edges: DispatcherEdges) => {
    * which is answered on a closed one, merged or not, as `follow-ups.yml`'s
    * condition answers it, author gate and all; a close is a merge's route.
    */
-  const pullRequest = async (payload: unknown): Promise<string> => {
+  const pullRequest = async (payload: unknown, origin: Origin): Promise<string> => {
     const p = (payload ?? {}) as LabelEvent;
-    if (p.action === "closed") return merge(p);
+    if (p.action === "closed") return merge(p, origin);
     if (p.action !== "labeled") return `ignored: a pull request \`${String(p.action)}\`, not labelled or closed`;
     const label = p.label?.name;
     const repo = p.repository?.full_name;
@@ -452,19 +587,18 @@ export const createDispatcher = (edges: DispatcherEdges) => {
     if (kind === undefined) return `ignored on ${where}: \`${label}\` is not a label this release's service answers on a pull request`;
     const why = await unserved(repo);
     if (why !== undefined) return `refused on ${where}: ${why}`;
-    if (p.pull_request?.head?.repo?.full_name !== repo) return `refused on ${where}: the head is on a fork`;
-    if (kind === "follow-ups") {
-      if (state !== "closed") return `refused on ${where}: the pull request is ${state}, and \`${FOLLOW_UPS_LABEL}\` is answered on a closed one`;
-    } else if (state !== "open") return `refused on ${where}: the pull request is ${state}, not open`;
+    const refusal = pullRefusal(repo, kind, state, p.pull_request?.head?.repo?.full_name);
+    if (refusal !== undefined) return `refused on ${where}: ${refusal}`;
     const login = appLogin((await edges.github.app()).slug);
     const distrust = await untrusted(repo, sender, login);
     if (distrust !== undefined) return `refused on ${where}: ${distrust}`;
-    if (kind === "follow-ups") return dispatch({ workflow: kind, repo, pr }, login, where, " on its label");
+    if (kind === "follow-ups") return dispatch({ workflow: kind, repo, pr }, login, where, " on its label", origin);
     return dispatch(
       { workflow: kind, repo, pr, branch, headSha, baseRef, state, merged: p.pull_request?.merged === true },
       login,
       where,
       ` at ${headSha}`,
+      origin,
     );
   };
 
@@ -480,7 +614,7 @@ export const createDispatcher = (edges: DispatcherEdges) => {
    * An `issues` delivery about a pull request is ignored: a pull request's
    * labels are answered on its own route. The line logged is each dispatch's.
    */
-  const issue = async (payload: unknown): Promise<string> => {
+  const issue = async (payload: unknown, origin: Origin): Promise<string> => {
     const p = (payload ?? {}) as IssueLabelEvent;
     if (p.action !== "labeled") return `ignored: an issue \`${String(p.action)}\`, not labelled`;
     const label = p.label?.name;
@@ -512,16 +646,14 @@ export const createDispatcher = (edges: DispatcherEdges) => {
     const login = appLogin((await edges.github.app()).slug);
     const distrust = await untrusted(repo, sender, login);
     if (distrust !== undefined) return `refused on ${where}: ${distrust}`;
-    const outcomes: string[] = [];
-    for (const kind of kinds) outcomes.push(await dispatch({ workflow: kind, repo, issue: number, title, state, baseRef }, login, where, ` to ${kind}`));
-    return outcomes.join("; ");
+    return dispatchIssue(kinds, { repo, issue: number, title, state, baseRef }, login, where, origin);
   };
 
   /** Whether a delivery is a job, routed by its event type; otherwise the reason it is not, which is logged. */
-  const decide = async (event: string | undefined, payload: unknown): Promise<string> => {
+  const decide = async (event: string | undefined, payload: unknown, origin: Origin): Promise<string> => {
     if (event === "ping") return "ping: answered";
-    if (event === "pull_request") return pullRequest(payload);
-    if (event === "issues") return issue(payload);
+    if (event === "pull_request") return pullRequest(payload, origin);
+    if (event === "issues") return issue(payload, origin);
     return `ignored: \`${event ?? "unnamed"}\` is neither a pull request's nor an issue's event`;
   };
 
@@ -539,7 +671,7 @@ export const createDispatcher = (edges: DispatcherEdges) => {
     const outcome =
       payload === undefined
         ? Promise.resolve("refused: the body is not JSON")
-        : decide(event, payload).catch(
+        : decide(event, payload, { arrived: reservations }).catch(
             (error: unknown) => `failed: ${error instanceof Error ? error.message : String(error)}`,
           );
     return { response: answer(202, { accepted: true }), outcome };
@@ -581,7 +713,180 @@ export const createDispatcher = (edges: DispatcherEdges) => {
     }
   };
 
-  return { delivery, token };
+  /**
+   * The jobs the worker holds, queued or running, read off its held door, and
+   * the dispatcher's own remembered ones it can forget for it: every job whose
+   * post the worker had answered before it was asked and which it no longer
+   * holds has ended, or was dropped by a restart, and asks for no token again.
+   * One whose post is still in flight is kept.
+   */
+  const askWorker = async (): Promise<readonly HeldJob[]> => {
+    const answered = [...jobs].filter(([, job]) => job.posted).map(([id]) => id);
+    const body = JSON.stringify({ asked: now().toISOString() });
+    const reply = await edges.askHeld(body, { "content-type": "application/json", [SIGNATURE_HEADER]: sign(edges.workerSecret, body) });
+    if (reply.status !== 200) throw new Error(`the worker answered ${reply.status}`);
+    const held = parseHeld(json(Buffer.from(reply.body)));
+    if (typeof held === "string") throw new Error(`the worker's answer is not a list of jobs: ${held}`);
+    const ids = new Set(held.map((job) => job.id));
+    for (const id of answered) if (!ids.has(id)) jobs.delete(id);
+    return held;
+  };
+
+  /**
+   * Why `repo`'s item `number` is skipped for `kinds`, or `undefined` where it
+   * is not: the worker holds a job of one of the kinds for it, or the
+   * dispatcher has dispatched one whose post it has not forgotten.
+   */
+  const heldFor = (repo: string, number: number, kinds: readonly JobKind[], held: readonly HeldJob[]): string | undefined => {
+    prune();
+    const holding = (job: { readonly workflow: JobKind; readonly repo: string; readonly number: number }): boolean =>
+      job.repo === repo && job.number === number && kinds.includes(job.workflow);
+    if (held.some(holding)) return "the worker holds a job for it";
+    if ([...jobs.values()].some(holding)) return "the dispatcher has dispatched a job for it";
+    return undefined;
+  };
+
+  /**
+   * Why a scanned item's label is not answered, or `undefined` where it is.
+   * The actor of the item's latest `labeled` event for it stands in for a
+   * delivery's sender, held to `untrusted` as a sender is, and refused as one
+   * is; with no such event the item is skipped, since a scan never dispatches
+   * on a guess. The line is the whole outcome, `where` and all.
+   */
+  const unasked = async (repo: string, number: number, label: string, login: string, where: string): Promise<string | undefined> => {
+    const sender = await edges.github.labeller(repo, number, label);
+    if (sender === undefined) return `skipped on ${where}: no \`labeled\` event for \`${label}\` was found, so there is no one it was asked by to check`;
+    const distrust = await untrusted(repo, sender, login);
+    return distrust === undefined ? undefined : `refused on ${where}: ${distrust}, and added \`${label}\` last`;
+  };
+
+  /**
+   * One item a scan lists, decided as its label's delivery would be past the
+   * opt-in, which its repository passed, and built into the same job. An item
+   * the system already holds a job for, of a kind its label starts, is skipped.
+   */
+  const rescan = async (repo: string, label: string, item: Labelled, held: readonly HeldJob[], login: string, baseRef: () => Promise<string>): Promise<string> => {
+    const where = `${repo}#${item.number}`;
+    if (item.type === "issues") {
+      const kinds = kindOf(LABEL_KINDS.issues, label);
+      if (kinds === undefined) return `ignored on ${where}: \`${label}\` is not a label a scan answers on an issue`;
+      const skip = heldFor(repo, item.number, kinds, held);
+      if (skip !== undefined) return `skipped on ${where}: ${skip}`;
+      const refusal = await unasked(repo, item.number, label, login, where);
+      if (refusal !== undefined) return refusal;
+      return dispatchIssue(kinds, { repo, issue: item.number, title: item.title, state: item.state, baseRef: await baseRef() }, login, where, SCAN);
+    }
+    const kind = kindOf(LABEL_KINDS.pull_request, label);
+    if (kind === undefined || kind === "follow-ups") return `ignored on ${where}: \`${label}\` is not a label a scan answers on a pull request`;
+    const skip = heldFor(repo, item.number, [kind], held);
+    if (skip !== undefined) return `skipped on ${where}: ${skip}`;
+    const refusal = pullRefusal(repo, kind, item.state, item.headRepo);
+    if (refusal !== undefined) return `refused on ${where}: ${refusal}`;
+    const unanswered = await unasked(repo, item.number, label, login, where);
+    if (unanswered !== undefined) return unanswered;
+    const { number: pr, branch, headSha, baseRef: base, state, merged } = item;
+    return dispatch({ workflow: kind, repo, pr, branch, headSha, baseRef: base, state, merged }, login, where, ` at ${headSha}`, SCAN);
+  };
+
+  /** One repository's part of a scan: refused where it is not served, and each labelled item decided otherwise. */
+  const scanRepository = async (repo: string, held: readonly HeldJob[], login: string): Promise<void> => {
+    const why = await unserved(repo);
+    if (why !== undefined) return edges.log(`scan: refused on ${repo}: ${why}`);
+    let branch: Promise<string> | undefined;
+    const baseRef = (): Promise<string> => (branch ??= edges.github.defaultBranch(repo));
+    for (const label of SCAN_LABELS) {
+      let items: readonly Labelled[];
+      try {
+        items = await edges.github.labelled(repo, label);
+      } catch (error) {
+        edges.log(`scan: failed on ${repo}: its \`${label}\` items could not be listed: ${message(error)}`);
+        continue;
+      }
+      for (const item of items) {
+        const line = await rescan(repo, label, item, held, login, baseRef).catch((error: unknown) => `failed on ${repo}#${item.number}: ${message(error)}`);
+        edges.log(`scan: ${line}`);
+      }
+    }
+  };
+
+  /**
+   * One pass of the scan: the worker asked what it holds, then each
+   * repository of each installation served. A worker that cannot be reached
+   * skips the pass, since nothing could say what it holds, and its own start
+   * announcement scans again. Nothing here throws: each failure is logged,
+   * and the rest of the pass goes on.
+   */
+  const pass = async (): Promise<void> => {
+    let held: readonly HeldJob[];
+    try {
+      held = await askWorker();
+    } catch (error) {
+      return edges.log(`scan: skipped: the worker could not say which jobs it holds: ${message(error)}. Its start scans again`);
+    }
+    let accounts: readonly string[];
+    let login: string;
+    try {
+      accounts = await edges.github.installations();
+      login = appLogin((await edges.github.app()).slug);
+    } catch (error) {
+      return edges.log(`scan: skipped: the App's installations could not be read: ${message(error)}`);
+    }
+    for (const account of accounts) {
+      const stranger = foreign(account);
+      if (stranger !== undefined) {
+        edges.log(`scan: refused the installation on ${account}: ${stranger}`);
+        continue;
+      }
+      let repos: readonly string[];
+      try {
+        repos = await edges.github.repositories(account);
+      } catch (error) {
+        edges.log(`scan: failed on the installation on ${account}: its repositories could not be listed: ${message(error)}`);
+        continue;
+      }
+      for (const repo of repos) {
+        await scanRepository(repo, held, login).catch((error: unknown) => edges.log(`scan: failed on ${repo}: ${message(error)}`));
+      }
+    }
+    edges.log("scan: done");
+  };
+
+  let tail: Promise<void> = Promise.resolve();
+  let waiting: Promise<void> | undefined;
+
+  /**
+   * **The scan** (#581): every open item carrying a trigger label a scan
+   * answers, in every repository served, dispatched where nothing holds a job
+   * for it, so a restart does not strand labelled work. One pass at a time: a
+   * request while one runs queues a pass behind it, and a request while that
+   * one waits is folded into it.
+   */
+  const scan = (): Promise<void> => {
+    if (waiting !== undefined) return waiting;
+    const queued = tail.then(() => {
+      waiting = undefined;
+      return pass();
+    });
+    waiting = queued;
+    tail = queued;
+    return queued;
+  };
+
+  /**
+   * **The start door** (#581), beside the token door: the worker announces
+   * its start here, signed with the shared secret. One whose signature does
+   * not verify is refused, `401`; every other is answered `202` at once, and
+   * a scan follows, whose ask of the worker forgets the jobs the restart
+   * dropped.
+   */
+  const started = (request: DoorRequest): Announcement => {
+    if (!verifySignature(edges.workerSecret, request.body, text(request.headers, SIGNATURE_HEADER))) {
+      return { response: answer(401, { refusal: "bad signature" }), scanned: Promise.resolve() };
+    }
+    return { response: answer(202, { accepted: true }), scanned: scan() };
+  };
+
+  return { delivery, token, scan, started };
 };
 
 export type Dispatcher = ReturnType<typeof createDispatcher>;

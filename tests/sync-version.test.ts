@@ -748,6 +748,12 @@ describe("the release hook stays out of what ships", () => {
     expect(compiled()).not.toContain(path.join("scripts", "bundled-tree.ts"));
   });
 
+  // The Release's body (#621): run from source by `publish.yml`, release
+  // policy rather than anything an adopter's install runs.
+  it("leaves the release notes out of the build", () => {
+    expect(compiled()).not.toContain(path.join("scripts", "release-notes.ts"));
+  });
+
   // And the golden-PR evals' runner (#617), with the cases it reads: run by
   // hand from a checkout, and nothing built reaches either.
   it("leaves the prompt evals out of the build", () => {

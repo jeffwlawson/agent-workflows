@@ -7886,6 +7886,25 @@ describe("the runner package is published from a tag push", () => {
   });
 
   /**
+   * The Release's body (#621): the install sentence and the *Adopter action*
+   * section `scripts/release-notes.ts` builds from the tag's history, passed to
+   * `gh release create` by file, and built only where the Release is absent,
+   * so a re-run that finds it present leaves its body alone.
+   */
+  it("builds the Release body with the release-notes script, only on creation, and passes it by file", () => {
+    const release = stepsOf(FILE).find((s) => (s.run ?? "").includes("gh release create"));
+    const run = release?.run ?? "";
+    const created = /if ! gh release view "\$TAG" >\/dev\/null 2>&1; then\n([\s\S]*?)\n\s*fi\n/.exec(run)?.[1] ?? "";
+
+    expect(created).toMatch(/node scripts\/release-notes\.ts "\$TAG" > "\$notes"/);
+    expect(created).toMatch(/gh release create "\$TAG" --verify-tag --title "\$TAG" --notes-file "\$notes"/);
+    expect(run).not.toMatch(/--notes /);
+    expect(run.match(/release-notes\.ts/g)).toHaveLength(1);
+    expect(run.match(/gh release create/g)).toHaveLength(1);
+    expect(stepsOf(FILE).find((s) => (s.uses ?? "").startsWith("actions/checkout@"))?.with?.["fetch-depth"]).toBe(0);
+  });
+
+  /**
    * The Release steps name no repository or owner: the repository and the tag
    * come from the run's own context, so the workflow reads the same in a fork.
    */

@@ -70,6 +70,11 @@ before you edit; it holds the steps, and the tests it names are what fails when 
   writer writes nothing, for every caller, and stderr is the whole report: no `/tmp` fallback.
   A runner checks it at start with the other inputs every runner reads (`readInputs` over
   `shared/contract.ts`), so in practice only `doctor` and the CLI's refusals, run by hand, meet it.
+- **A change an adopter must act on carries an `Adopter-Action:` trailer** (#621): a caller edit,
+  a new caller input or secret, an App permission or event subscription, a repository variable, or
+  a default that changes behaviour on upgrade. The form is `Adopter-Action: <one imperative
+  sentence: what to do, and where>`, at the start of its own line in the commit message; the
+  Release lists each under *Adopter action* ([*Releasing*](./docs/agents/releasing.md)).
 - TypeScript is strict, including `noUncheckedIndexedAccess` and `exactOptionalPropertyTypes`. With
   the latter, build optional properties conditionally (`...(x === undefined ? {} : { x })`) rather
   than assigning `undefined`.

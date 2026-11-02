@@ -212,6 +212,13 @@ jobs:
       # Release lacks them, so a re-run where both exist changes nothing and
       # never uploads a second copy. The repository and the tag are the run's
       # own, named by nothing here.
+      #
+      # The body is the install sentence and an *Adopter action* section (#621),
+      # which `scripts/release-notes.ts` reads from the `Adopter-Action:` lines
+      # in the commits since the previous `v*` tag (the checkout's
+      # `fetch-depth: 0` is what has them). It is written only where the Release
+      # is created: a re-run that finds the Release keeps its body, so a hand
+      # edit of a wrong or missing action survives.
       - name: Attach the tarball to the Release
         env:
           GH_TOKEN: ${{ github.token }}
@@ -221,8 +228,9 @@ jobs:
         run: |
           set -euo pipefail
           if ! gh release view "$TAG" >/dev/null 2>&1; then
-            gh release create "$TAG" --verify-tag --title "$TAG" \
-              --notes "Install without a registry token: npm install the tarball attached below, by its URL. Check it against the .sha256 beside it first."
+            notes="${RUNNER_TEMP}/release-notes.md"
+            node scripts/release-notes.ts "$TAG" > "$notes"
+            gh release create "$TAG" --verify-tag --title "$TAG" --notes-file "$notes"
           fi
           attached=$(gh release view "$TAG" --json assets --jq '.assets[].name')
           for file in "$TARBALL" "${TARBALL}.sha256"; do

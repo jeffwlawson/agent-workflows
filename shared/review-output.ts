@@ -1182,15 +1182,23 @@ const minorSentence = (verdict: Verdict, count: number): string | undefined => {
  * A minor finding's location as the body shows it (#616): a link to the line
  * at the reviewed commit where publish could name the commit, and code
  * otherwise.
+ *
+ * Every shape a location takes: `path:line` and `path:start-end` (a carried
+ * thread's anchor over a range, `locationOf` in `shared/pr-feedback.ts`) link
+ * to the line or the range; `path:?` (a thread whose line GitHub no longer
+ * reports) and a bare `path` (a file-level thread) link to the file; and
+ * `unknown`, a thread with no path, links to nothing.
  */
 const locationLink = (location: string, blobBase: string | undefined): string => {
   const shown = `\`${oneLine(location)}\``;
   if (blobBase === undefined) return shown;
-  const match = /^(.+?)(?::(\d+))?$/.exec(oneLine(location));
-  const file = match?.[1];
-  if (file === undefined || /\s/.test(file)) return shown;
-  const line = match?.[2];
-  return `[${shown}](${blobBase}/${file.split("/").map(encodeURIComponent).join("/")}${line === undefined ? "" : `#L${line}`})`;
+  const match = /^(.+?):(?:(\d+)(?:-(\d+))?|\?)$/.exec(oneLine(location));
+  const file = match === null ? oneLine(location) : match[1];
+  if (file === undefined || file === "" || file === "unknown" || /\s/.test(file)) return shown;
+  const start = match?.[2];
+  const end = match?.[3];
+  const fragment = start === undefined ? "" : end === undefined ? `#L${start}` : `#L${start}-L${end}`;
+  return `[${shown}](${blobBase}/${file.split("/").map(encodeURIComponent).join("/")}${fragment})`;
 };
 
 /**

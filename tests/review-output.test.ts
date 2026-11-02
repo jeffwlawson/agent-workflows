@@ -30,6 +30,7 @@ import {
   recordFollowUps,
   renderFollowUpsBlock,
   renderFollowUpsGroup,
+  renderMinorFindingsGroup,
   renderNotChecked,
   RESOLVED_GROUP,
   reviewBodyHandOver,
@@ -4086,6 +4087,26 @@ describe("the body over minor findings", () => {
       "<summary><b>Follow-ups</b> (1) · out of scope, each filed as its own issue on merge; remove <code>agent:follow-ups</code> to skip</summary>",
     );
     expect(body.indexOf("<summary><b>Follow-ups</b>")).toBeGreaterThan(minorAt);
+  });
+
+  /**
+   * Every shape a location takes, a carried thread's anchor (`locationOf` in
+   * `shared/pr-feedback.ts`) included: a line or a range links to it, an
+   * unknown line or a file-level thread links to the file, and no path links
+   * to nothing.
+   */
+  it.each([
+    ["src/a.ts:10", "https://github.com/o/r/blob/abc123/src/a.ts#L10"],
+    ["src/a.ts:10-12", "https://github.com/o/r/blob/abc123/src/a.ts#L10-L12"],
+    ["src/a.ts:?", "https://github.com/o/r/blob/abc123/src/a.ts"],
+    ["src/a.ts", "https://github.com/o/r/blob/abc123/src/a.ts"],
+    ["src/my file.ts:3", undefined],
+    ["unknown", undefined],
+    ["unknown:?", undefined],
+  ] as const)("links a location of %j to the file or line it names", (location, href) => {
+    const group = renderMinorFindingsGroup([minor(1, { location })], false, "https://github.com/o/r/blob/abc123") ?? "";
+    const shown = `\`${location}\``;
+    expect(group).toContain(`- ${severityBadge("low")} ${href === undefined ? shown : `[${shown}](${href})`} minor 1`);
   });
 
   it("puts them where Open would be when nothing is open, and does not count them", () => {

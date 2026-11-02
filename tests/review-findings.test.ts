@@ -552,9 +552,11 @@ describe("the thread a finding opens", () => {
 });
 
 /**
- * Severity is display and ordering (#109, decision 9), and the properties worth
- * holding are the ones that keep it from becoming anything else: it never loses
- * a review, it never *invents* a rating that reads as the model's, and it
+ * Severity orders the record and decides one thing, through the repository's
+ * fix threshold (#616, amending #109 decision 9): whether a review's open
+ * findings are threads or minor findings. The properties worth holding here
+ * are the ones that keep it from deciding more than that: it never loses a
+ * review, it never *invents* a rating that reads as the model's, and it
  * survives a round so the record can sort a carried finding beside a fresh one.
  */
 describe("severity", () => {

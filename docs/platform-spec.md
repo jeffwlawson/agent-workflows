@@ -4006,13 +4006,18 @@ no fresh merge-check, since the head is the armed commit plus clean merges of th
 >
 > **Coalescing.** Per pull request at most one `merge` job runs and at most one waits. The worker's
 > job door holds the rule, since it is what knows a job has started: a merge job for a pull request
-> with one queued and not yet started is absorbed by it and logged so, and one for a pull request
-> whose merge job is running queues one successor, which later ones are absorbed by. This departs,
-> for `merge` only, from the dispatcher's rule that a delivery is never deduplicated against
-> another: a gate decides from the record, read when it starts, so two queued gates on one pull
-> request decide the same thing. The one exception is the start that may arm: a person's
-> `agent:merge` replaces the job queued rather than being absorbed by it, since the head its
-> delivery named is the one fact a delivery carries. A delivery is never absorbed into the running
+> with one queued and not yet started whose deadline is no earlier than its own is absorbed by it
+> and logged so, and one for a pull request whose merge job is running queues one successor, which
+> later ones are absorbed by on the same terms. This departs, for `merge` only, from the
+> dispatcher's rule that a delivery is never deduplicated against another: a gate decides from the
+> record, read when it starts, so two queued gates on one pull request decide the same thing. There
+> are two exceptions, each logged `replaced merge job …`. A delivery whose deadline is later than
+> the queued job's replaces it (#645): a queued job can pass its deadline behind the jobs before it
+> for its pull request and end at its first token request with nothing written, losing the fresher
+> delivery it absorbed until the next push, check, status or restart. And the start that may arm: a
+> person's `agent:merge` replaces the job queued whatever its deadline, since the head its delivery
+> named is the one fact a delivery carries, and a queued job that arms is never replaced by one that
+> does not. A delivery is never absorbed into the running
 > job: a gate that read a pending check just before the check completed ends `wait`, and the
 > absorbed delivery was the one that would have started it again.
 >

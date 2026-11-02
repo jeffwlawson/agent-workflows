@@ -442,7 +442,7 @@ Jobs run in two lanes, each one job at a time, beneath a chain per pull request 
   ends, or asks for the lane, so an agent job that arrived after it waits for the whole of it: its
   gate and merge, then its agent if it conflicted, or its publish and conclude
   (`UPDATE_BRANCH_POSTING_MINUTES`) if it was clean. None that arrived before it waits behind it.
-  One wait is added to a single queue's: where its item is still busy when the light lane comes
+  One wait is added to strict arrival order: where its item is still busy when the light lane comes
   free, the light lane starts a later light job, and the hand-off, with the agent jobs after it,
   waits for that one job to end. Its phases still run in their one
   order; the hand-off only waits between the merge and the agent's job, whose time limit starts once
@@ -510,7 +510,7 @@ round starts only once the review has finished, through the agent lane and the i
 The fix threshold is the repository's `AGENT_FIX_MIN_SEVERITY` (#616), read as on Actions: the worker
 hands it to `review:gate`, which refuses a value that is not `low`, `medium` or `high`, and the
 threshold the gate settled to the review runner. A review whose open findings are all below it
-records them as minor findings, approves and asks for no round, so the serial worker spends no agent
+records them as minor findings, approves and asks for no round, so the worker spends no agent
 run and re-review on lows alone. Like every other variable, an organization one shared with the
 repository is read where the repository sets none.
 
@@ -583,14 +583,19 @@ A merge job runs `merge:gate`, then `merge:publish` where the gate decided `merg
 runner, so the `push` token that makes the merge, with Workflows: write for a pull request that
 changes `.github/workflows/`, is never where an agent runs. The gate is told the App's login as the
 loop's account, the one an arm is read back by, and **waits for nothing**: on Actions it polls for up
-to the review's CI wait, but here a polling gate would hold the worker's one slot, so it decides
-once and ends, `wait` included, and the next push, check suite's completion or status starts it
-again. Merge jobs are **coalesced** per pull request, so they cannot pile up in the one queue: at
-most one runs and one waits. A merge job for a pull request with one waiting is absorbed by it,
-and the worker's log says `absorbed by merge job …`; the one waiting reads the record when it
-starts, so nothing the absorbed delivery reported is lost. The exception is a person adding
-`agent:merge`, the one start that arms, at the head its delivery named: it replaces the one waiting,
-logged `replaced merge job …`. Nothing is absorbed into the running job, since a gate that read a
+to the review's CI wait, but a merge job runs in the **light lane**, beside follow-ups and
+update-branch's gate and clean merge, and a polling gate would hold that lane, so it decides once
+and ends, `wait` included, and the next push, check suite's completion or status starts it again.
+Merge jobs are **coalesced** per pull request, so they cannot pile up in the light lane: at most
+one runs and one waits. A merge job for a pull request with one waiting whose deadline is no
+earlier than its own is absorbed by it, and the worker's log says `absorbed by merge job …`; the
+one waiting reads the record when it starts, so what the absorbed delivery reported is read too.
+Where the one waiting has the earlier deadline, the new one replaces it instead, logged `replaced
+merge job …`: a waiting job can reach its deadline behind the jobs before it for its pull request,
+and end at its first token request with nothing written, which would lose the fresher delivery it
+had absorbed until the next push, check, status or restart. A person adding `agent:merge`, the one
+start that arms, at the head its delivery named, also replaces the one waiting, whatever its
+deadline, and one waiting that arms is never replaced by one that does not. Nothing is absorbed into the running job, since a gate that read a
 check just before it completed would end `wait` with nothing left to start it again.
 
 On a PRD pull request (head `agent/prd-…`), where the review went ahead and the head did not move

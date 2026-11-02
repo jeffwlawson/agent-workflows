@@ -2284,8 +2284,9 @@ const runFollowUps = async (job: FollowUpsJob, edges: JobEdges): Promise<readonl
 /**
  * `merge:gate`'s wait bound on the service, `CHECK_WAIT_SECONDS`: none. On
  * Actions the gate polls for up to the review's CI wait; here a polling gate
- * would hold the worker's one slot, and the dispatcher's deliveries, a push, a
- * check suite's completion and a final status, start it again instead (#591).
+ * would hold the light lane, which follow-ups and update-branch's clean merges
+ * run in too, and the dispatcher's deliveries, a push, a check suite's
+ * completion and a final status, start it again instead (#591).
  */
 export const MERGE_WAIT_SECONDS = 0;
 
@@ -2479,7 +2480,12 @@ export interface Queue<T> {
    * whose work has started is never taken, waiting for a lane or not.
    */
   readonly drop: (dropped: (item: T) => boolean) => readonly T[];
-  /** The item whose work is running, or `undefined` where none is. */
+  /**
+   * An item whose work is running, or `undefined` where none is. Two can run
+   * at once, one in each lane: this answers the light lane's where one runs
+   * there, and the agent lane's otherwise. A merge job runs in the light lane,
+   * so where one is running, it is the one answered.
+   */
   readonly running: () => T | undefined;
 }
 
@@ -2569,7 +2575,7 @@ export interface Lanes extends Queue<Job> {
  *   from its arrival, so the lane waits at that place until the job either
  *   asks for the lane (`agentLane`, handed to its work) or ends without one.
  *   So two agent jobs never run at once, and no agent job waits behind one
- *   that arrived after it. One wait is added to a single queue's: a `hand-off`
+ *   that arrived after it. One wait is added to strict arrival order: a `hand-off`
  *   job whose item is busy when the light lane comes free lets a later light
  *   job start first, and it and the agent jobs after it wait for that one.
  * - **The light lane** runs `light` jobs and a `hand-off` job until it asks
@@ -2592,8 +2598,7 @@ export interface Lanes extends Queue<Job> {
  *
  * Nothing else here reads a deadline: it is the dispatcher's, set at dispatch, so a
  * job's wait counts against it in either lane, a hold's included, and a job
- * late by its turn ends at its first token request, as one late in a single
- * queue did. A job that throws does not stop the ones behind it, and one
+ * late by its turn ends at its first token request. A job that throws does not stop the ones behind it, and one
  * dropped before its turn is passed over.
  */
 export const lanes = (
@@ -2697,7 +2702,7 @@ const arms = (job: MergeJob): boolean => job.action === "labeled" && job.sender.
 
 /**
  * **What the job door queues** (#591): every job, but a `merge` job is
- * coalesced, so merge jobs cannot pile up in the one serial queue. Per pull
+ * coalesced, so merge jobs cannot pile up in the light lane. Per pull
  * request at most one runs and at most one waits: a merge job for a pull
  * request with one queued and not yet started is **absorbed** by it, and
  * queues nothing; one for a pull request whose merge job is running queues
@@ -2712,6 +2717,15 @@ const arms = (job: MergeJob): boolean => job.action === "labeled" && job.sender.
  * as by any. Absorbing into the running job is never done: a gate that read
  * a pending check just before the check completed ends `wait`, and the
  * absorbed delivery was the one that would have started it again.
+ *
+ * And the deadline (#645): a job is absorbed only by a queued one whose
+ * deadline is no earlier than its own, and otherwise **replaces** it, and
+ * goes to the back, as one that arms does. A job that waits past its deadline
+ * behind the jobs before it for its item ends at its first token request with
+ * nothing written, and the fresher delivery it had absorbed, CI's final
+ * status say, would be lost with it, nothing to start the gate again until the
+ * next push, check, status or restart. A queued job that arms is still never
+ * replaced by one that does not, since the arm is the one fact it carries.
  *
  * Answers the line to log where a job was absorbed or replaced, and
  * `undefined` where it was queued as it came.
@@ -2730,6 +2744,12 @@ export const admit = (queue: Queue<Job>, job: Job): string | undefined => {
     return undefined;
   }
   const where = `${job.repo}#${job.pr}`;
+  const later = Date.parse(job.deadline) > Date.parse(waiting.deadline);
+  if (later && !(arms(waiting) && !arms(job))) {
+    queue.drop((held) => held === waiting);
+    queue.add(job);
+    return `job ${job.id}: replaced merge job ${waiting.id}, queued for ${where} and not yet started, since its deadline, ${job.deadline}, is later than that job's, ${waiting.deadline}`;
+  }
   if (!arms(job)) return `job ${job.id}: absorbed by merge job ${waiting.id}, queued for ${where} and not yet started, which reads the record fresh when it starts`;
   queue.drop((held) => held === waiting);
   queue.add(job);

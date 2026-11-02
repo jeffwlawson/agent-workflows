@@ -705,7 +705,9 @@ checkout and no agent; it is started as well, with no author gate and never armi
 check suite's completion and a final status on the head of an open pull request carrying the label,
 since the service's gate waits for nothing and those are what change its answer. Per pull request at
 most one merge job runs and one waits in the worker's queue: one more is absorbed by the one waiting,
-which reads the record when it starts. Every trigger label the loop has is served.
+which reads the record when it starts, where that one's deadline is no earlier than its own, and
+otherwise replaces it (#645), as a person's `agent:merge` does whatever the deadline; one waiting
+that arms is never replaced by one that does not. Every trigger label the loop has is served.
 The map is keyed by event, so a label is answered on the event type it belongs to and on no other,
 and each event has a route of its own reading its own payload: an implement or implement-prd job carries an issue,
 with no head, and the repository's default branch as its base. A job's deadline is its kind's own time limit plus the dispatcher's margin. The labels the service

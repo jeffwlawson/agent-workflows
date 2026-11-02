@@ -2912,6 +2912,56 @@ describe("admitting a job to the queue", () => {
     expect(queue.held().map((job) => job.id)).toEqual(["job-1", "m-3"]);
     expect(admit(queue, pushed("m-4"))).toContain("absorbed by merge job m-3");
   });
+
+  it("lets a delivery with a later deadline replace the one queued, so the gate that runs is inside its own (#645)", async () => {
+    // The dispatcher's clock: it refuses every token once the job's deadline has passed.
+    let clock = new Date("2026-10-11T13:00:00.000Z");
+    const s = setup({});
+    const releases: (() => void)[] = [];
+    const ran: Job[] = [];
+    const queue = lanes(async (job) => {
+      ran.push(job);
+      if (job.workflow !== "merge") return new Promise<void>((resolve) => releases.push(resolve));
+      await runJob(job, {
+        ...s.edges,
+        token: async (kind) => {
+          if (clock.getTime() >= Date.parse(job.deadline)) throw new Error(`the dispatcher answered 403: job ${job.id} is past its deadline, ${job.deadline}`);
+          return s.edges.token(kind);
+        },
+      });
+    }, () => {});
+
+    admit(queue, JOB);
+    admit(queue, { ...pushed("m-1"), deadline: "2026-10-11T13:30:00.000Z" });
+    await settle();
+    clock = new Date("2026-10-11T13:20:00.000Z");
+    const line = admit(queue, { ...pushed("m-2"), deadline: "2026-10-11T13:50:00.000Z" });
+
+    expect(line).toContain("replaced merge job m-1");
+    expect(queue.held().map((job) => job.id)).toEqual(["job-1", "m-2"]);
+    // The review ends past m-1's deadline, inside m-2's.
+    clock = new Date("2026-10-11T13:40:00.000Z");
+    releases[0]?.();
+    await new Promise((resolve) => setTimeout(resolve, 50));
+
+    expect(ran.map((job) => [job.id, job.deadline])).toEqual([
+      ["job-1", JOB.deadline],
+      ["m-2", "2026-10-11T13:50:00.000Z"],
+    ]);
+    expect(s.events).toContain("merge:gate");
+  });
+
+  it("absorbs a delivery whose deadline is no later than the queued one's, and one that does not arm into one that does", () => {
+    const { queue } = queued();
+    admit(queue, JOB);
+    admit(queue, { ...pushed("m-1"), deadline: "2026-10-11T13:30:00.000Z" });
+
+    expect(admit(queue, { ...pushed("m-2"), deadline: "2026-10-11T13:30:00.000Z" })).toContain("absorbed by merge job m-1");
+    expect(admit(queue, { ...pushed("m-3"), deadline: "2026-10-11T13:10:00.000Z" })).toContain("absorbed by merge job m-1");
+    expect(admit(queue, { ...MERGE_JOB, id: "m-4", deadline: "2026-10-11T13:30:00.000Z" })).toContain("replaced merge job m-1");
+    expect(admit(queue, { ...pushed("m-5"), deadline: "2026-10-11T13:50:00.000Z" })).toContain("absorbed by merge job m-4");
+    expect(queue.held().map((job) => job.id)).toEqual(["job-1", "m-4"]);
+  });
 });
 
 /**

@@ -112,7 +112,8 @@ changes, so an *after* run of an edit not yet committed still names what it ran.
    within noise until a larger `--runs` says otherwise.
 
 Some cases miss on today's prompt. That is expected, and is what the issues waiting on #617 (#612,
-#613, #614, #615) set out to change.
+#613, #614, #615) set out to change. The "before" report to compare with is [`baseline.md`](./baseline.md):
+the cases run once against the prompts as released, naming the revision it ran against.
 
 ## Another model
 
@@ -122,9 +123,13 @@ tool, haiku by default) is left as it is, so only the model under test changes.
 
 ## Noise
 
-Three runs per case until a report shows that is too few to tell a drop from variance. How much a
-grader's rate moves between two runs of the same prompt on the same model is not measured yet; the
-first repeated run should record it here.
+Three runs per case until a report shows that is too few to tell a drop from variance. The first
+repeat, on 2026-11-02 (#634), ran the cases at `ca43755` and again at `0226bf9`, where the two
+prompt files differ only by the history clauses and one duplicated rule #610 deleted: 5 of the 15
+graders moved, by one run in three for three of them and by two for the other two (`restart-order`
+04 from 0/3 to 2/3, and `fix` `rescue-deleted-before-open` 02 from 0/3 to 2/3). So a move of two
+in three can happen with no real change, and one in three is no evidence at all. This is one repeat
+of one pair of near-identical prompts, not a measure of the variance.
 
 ## Adding a case
 

@@ -16,6 +16,14 @@ If any of these files don't exist, **proceed silently**. Don't flag their absenc
 creating them upfront. The `/domain-modeling` skill (reached via `/grill-with-docs` and
 `/improve-codebase-architecture`) creates them lazily when terms or decisions actually get resolved.
 
+**The domain model is `CONTEXT.md`, whatever an upstream skill calls it.** Upstream renamed the file
+to `GLOSSARY.md`, and its skills (`/domain-modeling`, `/grill-with-docs`, `/tdd`,
+`/diagnosing-bugs`, and setup) now say that name. Wherever one says `GLOSSARY.md`, read
+`CONTEXT.md`. Decline setup's offer to rename it: the loop's runner prompts read `CONTEXT.md` by
+name, and a missing file reads as an empty one, so after the rename every agent runs on no domain
+model and nothing says so. Never create a `GLOSSARY.md`; add resolved terms to `CONTEXT.md`.
+`doctor` fails a checkout that has a `GLOSSARY.md` and no `CONTEXT.md` (#611).
+
 `docs/adr/` starts at
 [`0001-personal-tooling-before-productising.md`](../adr/0001-personal-tooling-before-productising.md),
 which is why adopter-facing issues carry `parked`.

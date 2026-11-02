@@ -94,7 +94,9 @@ from them, which is why the same loop runs anywhere and why an empty one produce
 invents an architecture per issue.
 
 - **`CONTEXT.md`** — the domain model. Not API documentation: the concepts this project is built
-  from, the distinctions it holds between them, and where the seams are.
+  from, the distinctions it holds between them, and where the seams are. Keep that name: the
+  prompts read `CONTEXT.md`, so renaming it to `GLOSSARY.md` (as upstream's setup skill offers to)
+  leaves them reading nothing, which `doctor` reports.
 - **`CLAUDE.md`** — the commands and the conventions, and above all the **one command that gates
   everything**. Every prompt tells the agent to run "the verify command `CLAUDE.md` names", so
   writing yours down there once is the whole of the coupling. Your CI should run exactly it.

@@ -41,8 +41,10 @@ import {
   FIX_MIN_SEVERITIES,
   FIX_MIN_SEVERITY_VARIABLE,
   FIX_ROUNDS_VARIABLE,
+  gatherFacts,
   TIMEOUT_VARIABLES,
   parseList,
+  readDomainModel,
   REQUIRED_PERMISSIONS,
   runDoctor,
   SERVICE_GUARD_RELEASE,
@@ -3217,6 +3219,8 @@ describe("doctor names the failures that otherwise look like something else", ()
     orchestrator: null,
     // Unset, which is no setup on the service.
     agentSetup: null,
+    // The domain model where every runner prompt reads it, and no glossary beside it.
+    domainModel: { context: true, glossaries: [] },
   });
 
   /** The installed caller file holding a job, repo-relative as `doctor` names it. */
@@ -5564,6 +5568,7 @@ describe("doctor names the failures that otherwise look like something else", ()
       timeoutMinutes: undefined,
       orchestrator: undefined,
       agentSetup: undefined,
+      domainModel: undefined,
     });
 
     expect(code).toBe(0);
@@ -5592,6 +5597,7 @@ describe("doctor names the failures that otherwise look like something else", ()
       timeoutMinutes: undefined,
       orchestrator: undefined,
       agentSetup: undefined,
+      domainModel: undefined,
     });
 
     expect(code).toBe(0);
@@ -5602,6 +5608,107 @@ describe("doctor names the failures that otherwise look like something else", ()
     // the one a working run ends on.
     const known = await check(await installed(), healthy());
     expect(known.out).toContain("nothing broken");
+  });
+
+  /**
+   * The domain model's name (#611). Every runner prompt reads `CONTEXT.md` by
+   * name and a missing file reads as an empty one, so a checkout that accepted
+   * upstream's rename to `GLOSSARY.md` runs every agent on nothing, silently.
+   * Ruled through the fact, for each state, on either orchestrator.
+   */
+  describe("the domain model", () => {
+    /** At least the `gh` calls one `gatherFacts` makes where no Actions policy is listed (ten today). */
+    const GATHER_SPAWNS = 12;
+    const domain = (findings: readonly Finding[]): readonly Finding[] =>
+      findings.filter((finding) => finding.check === "domain model");
+
+    it.each([
+      ["GLOSSARY.md", ["GLOSSARY.md"]],
+      ["GLOSSARY-MAP.md", ["GLOSSARY-MAP.md"]],
+    ] as const)("fails a checkout with %s and no CONTEXT.md, with the git mv that fixes it", async (file, glossaries) => {
+      const { code, err } = await check(await installed(), {
+        ...healthy(),
+        domainModel: { context: false, glossaries },
+      });
+
+      expect(code).toBe(1);
+      expect(err).toContain("FAIL  domain model:");
+      expect(err).toContain(`\`${file}\``);
+      expect(err).toContain("`CONTEXT.md`");
+      expect(err).toContain(`\`git mv ${file} CONTEXT.md\``);
+    });
+
+    it("fails it on the service orchestrator too, where the same prompts read it", () => {
+      const findings = domain(
+        diagnose([], { ...healthy(), orchestrator: record.SERVICE_ORCHESTRATOR, domainModel: { context: false, glossaries: ["GLOSSARY.md"] } }),
+      );
+      expect(findings.map((finding) => finding.severity)).toEqual(["error"]);
+    });
+
+    it("notes a checkout with both files, and still passes it", async () => {
+      const { code, out, err } = await check(await installed(), {
+        ...healthy(),
+        domainModel: { context: true, glossaries: ["GLOSSARY.md"] },
+      });
+
+      expect(code).toBe(0);
+      expect(err).toBe("");
+      expect(out).toContain("note  domain model:");
+      expect(out).toMatch(/read only `CONTEXT\.md`/);
+    });
+
+    it.each([
+      ["only CONTEXT.md", { context: true, glossaries: [] }],
+      ["neither file", { context: false, glossaries: [] }],
+    ] as const)("passes a checkout with %s quietly, as before", async (_what, domainModel) => {
+      const findings = domain(diagnose(readInstalledCallers(await installed(), manifest.name), { ...healthy(), domainModel }));
+      expect(findings).toEqual([]);
+    });
+
+    /** Unknown is a thing to check, never a pass. */
+    it("reports a checkout whose root could not be listed as unknown", async () => {
+      const { code, out, err } = await check(await installed(), { ...healthy(), domainModel: undefined });
+
+      expect(code).toBe(0);
+      expect(err).toBe("");
+      expect(out).toContain("warn  domain model: Could not list the checkout's root");
+    });
+
+    /** Gathered from the checkout, by exact name, for the files present. */
+    it("reads the files present at the checkout's root", async () => {
+      const read = async (files: readonly string[]): Promise<RepoFacts["domainModel"]> => {
+        const root = await installed();
+        for (const file of files) fs.writeFileSync(path.join(root, file), "# Domain\n");
+        return readDomainModel(root);
+      };
+
+      expect(await read([])).toEqual({ context: false, glossaries: [] });
+      expect(await read(["CONTEXT.md"])).toEqual({ context: true, glossaries: [] });
+      expect(await read(["GLOSSARY.md"])).toEqual({ context: false, glossaries: ["GLOSSARY.md"] });
+      expect(await read(["CONTEXT.md", "GLOSSARY-MAP.md", "GLOSSARY.md"])).toEqual({
+        context: true,
+        glossaries: ["GLOSSARY.md", "GLOSSARY-MAP.md"],
+      });
+
+      // A directory of the name is not the file a prompt opens.
+      const root = await installed();
+      fs.mkdirSync(path.join(root, "CONTEXT.md"));
+      expect(readDomainModel(root)).toEqual({ context: false, glossaries: [] });
+
+      // A root that cannot be listed is unknown, never "neither file".
+      expect(readDomainModel(path.join(root, "no-such-checkout"))).toBeUndefined();
+    });
+
+    /**
+     * And `gatherFacts` carries it, so `doctor` run for real rules on it. One
+     * call, which is a `gh` spawn per question it asks, each bounded by `safeGh`.
+     */
+    it.skipIf(process.platform === "win32")("gathers it with the other facts", async () => {
+      const root = await installed();
+      fs.writeFileSync(path.join(root, "GLOSSARY.md"), "# Domain\n");
+      const { result } = await replayed({}, () => gatherFacts(root));
+      expect(result.domainModel).toEqual({ context: false, glossaries: ["GLOSSARY.md"] });
+    }, GATHER_SPAWNS * SUBPROCESS_TIMEOUT);
   });
 
   /**

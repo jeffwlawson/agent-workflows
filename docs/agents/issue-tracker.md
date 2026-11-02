@@ -208,6 +208,14 @@ and what broke were criteria naming *where* (such as "`tests/workflows.test.ts` 
 
 - **Acceptance criteria describe behaviour** that holds wherever the code lives ("a test asserts the
   pattern does not match `follow-ups`"), never a location.
+- **Each criterion names the observation that shows it false at the read-at commit** (the commit
+  the *Where things are* part names), and that observation holds there. A criterion grades nothing
+  when it is **already true at that commit**, **satisfiable only by another ticket**, or **a
+  restatement of the request**; one of those is removed or rewritten until it can fail. The review
+  rules a criterion the base already met as `met`, so this is the only place it is caught (#615).
+  **A guard is the exception**: a criterion true there on purpose, such as "the verify command
+  passes" or "no behaviour changes", stays, and the brief says it is a guard so triage does not
+  rewrite it away.
 - **File, function and step names go in a separate *Where things are* part** of the brief, dated
   (and naming the commit on `main` they were read at), as hints for the implementer. #447's check
   does not resolve them against that commit: it tells the implementing agent to check that the

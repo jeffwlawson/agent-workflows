@@ -11,8 +11,9 @@ Clean context per issue. Send all of them in one message. Each gets this brief, 
 > 1. Read the issue and its comments. Read the code at a clean, freshly fetched `origin/main` (a new worktree, not a working copy), the repo's `CLAUDE.md`, and the rules files SKILL.md names, from wherever SKILL.md says to read them.
 > 2. Verify the issue's claim against the code: reproduce it, or find the lines that make it true or false.
 > 3. Check overlap as `issue-tracker.md`'s *Before a brief* says: open issues, `ready-for-agent` issues, issues being built, open PRs and their diffs, PRDs, and commits since the issue was written.
-> 4. Write the draft brief to `<path>/brief-<n>.md`, in the shape of the repo's three most recent *Agent Brief* comments. Mark each undecided point `[OPEN]`.
-> 5. Return **only** the questions whose answer changes the brief. Each: the stake in one sentence, the question, the options, your recommendation with its reason, and the evidence (file and line). Add the claims your recommendation rests on, so they can be checked.
+> 4. Check each acceptance criterion can fail, as `issue-tracker.md`'s *Criteria as behaviour* says: name the observation that would show it false, and confirm that observation holds at the clean, freshly fetched `origin/main` from step 1. List the criteria that grade nothing: already true there, satisfiable only by another ticket, or a restatement of the request. A guard (true there on purpose, such as "the verify command passes") is not one of them; mark it as a guard in the draft instead.
+> 5. Write the draft brief to `<path>/brief-<n>.md`, in the shape of the repo's three most recent *Agent Brief* comments. Mark each undecided point `[OPEN]`.
+> 6. Return **only** the questions whose answer changes the brief, with each criterion step 4 listed among them: the criterion, which of the three kinds it is, and a rewrite or its removal. Each: the stake in one sentence, the question, the options, your recommendation with its reason, and the evidence (file and line). Add the claims your recommendation rests on, so they can be checked.
 
 ## 2. Check the load-bearing claims yourself
 

@@ -3210,6 +3210,8 @@ describe("the worker's queue", () => {
     const START = Date.parse("2026-11-01T01:10:00Z");
     const RESETS = new Date("2026-11-01T05:50:00Z");
     const UNTIL = (5 * 60 + 50 - 70) + RESET_MARGIN_MINUTES;
+    /** A deadline past the hold, so the job keeps its place. */
+    const LATER = "2026-11-01T09:00:00.000Z";
 
     it("starts no agent job until the reset, runs a job that starts no agent meanwhile, then the held jobs in arrival order, and asks for a scan", async () => {
       const time = fakeClock(START);
@@ -3220,11 +3222,11 @@ describe("the worker's queue", () => {
       w.queue.limit(RESETS);
       await w.end("limited");
 
-      w.queue.add(implement("build"));
-      w.queue.add(review("second", 8));
-      w.queue.add(followUps("file", 9));
-      w.queue.add(updateBranch("clean", 10));
-      w.queue.add(updateBranch("conflicted", 11));
+      w.queue.add({ ...implement("build"), deadline: LATER });
+      w.queue.add({ ...review("second", 8), deadline: LATER });
+      w.queue.add({ ...followUps("file", 9), deadline: LATER });
+      w.queue.add({ ...updateBranch("clean", 10), deadline: LATER });
+      w.queue.add({ ...updateBranch("conflicted", 11), deadline: LATER });
       await settle();
       expect(w.queue.heldUntil()).toEqual(new Date(RESETS.getTime() + RESET_MARGIN_MINUTES * MINUTE_MS));
 
@@ -3256,7 +3258,7 @@ describe("the worker's queue", () => {
       w.queue.limit(RESETS);
       w.queue.limit(new Date(RESETS.getTime() + HOUR_MS));
       w.queue.limit(new Date(RESETS.getTime() - HOUR_MS));
-      w.queue.add(implement("build"));
+      w.queue.add({ ...implement("build"), deadline: LATER });
       await settle();
 
       await time.advance(UNTIL);
@@ -3265,6 +3267,32 @@ describe("the worker's queue", () => {
       await time.advance(60);
       expect(w.events).toEqual(["build starts"]);
       expect(resets).toBe(1);
+    });
+
+    // A hold is often hours, a deadline its kind's time limit and a margin:
+    // a job queued past it would end at its first token with nothing posted.
+    it("drops every queued job past its deadline as it ends, before asking for the scan, so the scan dispatches each again", async () => {
+      const time = fakeClock(START);
+      const late: string[][] = [];
+      let heldAtReset: string[] = [];
+      const w = queued({
+        clock: time.clock,
+        reset: (dropped) => {
+          late.push(dropped.map((job) => job.id));
+          heldAtReset = w.queue.held().map((job) => job.id);
+        },
+      });
+      w.queue.limit(RESETS);
+      w.queue.add({ ...implement("stale"), deadline: "2026-11-01T03:00:00.000Z" });
+      w.queue.add({ ...review("fresh", 8), deadline: LATER });
+      w.queue.add({ ...review("stale-behind", 9), deadline: "2026-11-01T05:52:00.000Z" });
+      await settle();
+
+      await time.advance(UNTIL);
+
+      expect(late).toEqual([["stale", "stale-behind"]]);
+      expect(heldAtReset).toEqual(["fresh"]);
+      expect(w.events).toEqual(["fresh starts"]);
     });
   });
 

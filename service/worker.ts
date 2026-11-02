@@ -2589,11 +2589,13 @@ export interface Lanes extends Queue<Job> {
  * - **While the plan's usage limit holds** (#635, `limit`), the agent lane
  *   starts nothing: no agent job, and no hand-off's agent part, until the
  *   reset and its margin. The light lane runs on meanwhile. At the end of the
- *   hold the agent lane runs its jobs in arrival order, as before, and
- *   `reset` is called, which asks the dispatcher to scan. The hold is in
- *   memory only, so a restarted worker forgets it.
+ *   hold every queued job already past its deadline is dropped, the agent
+ *   lane runs the rest in arrival order, as before, and `reset` is called
+ *   with the dropped ones, which asks the dispatcher to scan, so it
+ *   dispatches each dropped job's item again. The hold is in memory only, so
+ *   a restarted worker forgets it.
  *
- * Nothing here reads a deadline: it is the dispatcher's, set at dispatch, so a
+ * Nothing else here reads a deadline: it is the dispatcher's, set at dispatch, so a
  * job's wait counts against it in either lane, a hold's included, and a job
  * late by its turn ends at its first token request, as one late in a single
  * queue did. A job that throws does not stop the ones behind it, and one
@@ -2602,7 +2604,7 @@ export interface Lanes extends Queue<Job> {
 export const lanes = (
   work: (job: Job, agentLane: () => Promise<void>) => Promise<void>,
   onError: (error: unknown) => void,
-  { clock = REAL_CLOCK, reset = () => {} }: { readonly clock?: HoldClock; readonly reset?: () => void } = {},
+  { clock = REAL_CLOCK, reset = () => {} }: { readonly clock?: HoldClock; readonly reset?: (late: readonly Job[]) => void } = {},
 ): Lanes => {
   const entries: Held[] = [];
   let light: Held | undefined;
@@ -2681,7 +2683,13 @@ export const lanes = (
         // A later limit extended the hold, and its own timer ends it.
         if (until !== ends) return;
         until = undefined;
-        reset();
+        // A job queued past its deadline would end at its first token request
+        // with nothing posted, its label still on: dropped here instead, so
+        // the scan `reset` asks for finds nothing held for its item and
+        // dispatches it again, with a deadline of its own.
+        const late = entries.filter((entry) => entry.state === "queued" && Date.parse(entry.job.deadline) <= clock.now());
+        for (const entry of late) entries.splice(entries.indexOf(entry), 1);
+        reset(late.map((entry) => entry.job));
         pump();
       });
     },

@@ -267,7 +267,7 @@ so does an App whose own record cannot be read, since that is where the App's ow
 | `WEBHOOK_PORT` | optional | `8790` | the webhook door's port; GitHub's deliveries arrive at `POST /github` |
 | `TOKEN_HOST` | optional | `127.0.0.1` | the address the token door listens on: one the worker reaches |
 | `TOKEN_PORT` | optional | `8791` | the token door's port; the worker asks at `POST /token`, and announces its start at `POST /started` |
-| `JOB_DEADLINE_MARGIN_MINUTES` | optional | `60` | added to a job's own time limit for its deadline, review's (its CI wait and `AGENT_REVIEW_TIMEOUT_MINUTES`) or fix's, update-branch's and implement's (`AGENT_TIMEOUT_MINUTES`), or implement-prd's (35 minutes and `AGENT_TIMEOUT_MINUTES`), or follow-ups' (10 minutes), or merge's (20 minutes), covering the phases around the runner's and the time a job waits in the worker's queue: in its lane, behind an earlier job for its item, and, for an update-branch whose merge conflicted, for the agent lane (*The worker*, below) |
+| `JOB_DEADLINE_MARGIN_MINUTES` | optional | `60` | added to a job's own time limit for its deadline, review's (its CI wait and `AGENT_REVIEW_TIMEOUT_MINUTES`) or fix's, update-branch's and implement's (`AGENT_TIMEOUT_MINUTES`), or implement-prd's (35 minutes and `AGENT_TIMEOUT_MINUTES`), or follow-ups' (10 minutes), or merge's (20 minutes), covering the phases around the runner's and the time a job waits in the worker's queue: in its lane, behind an earlier job for its item, and, for an update-branch whose merge conflicted, for the agent lane, a hold on the plan's usage limit included (*The worker*, below) |
 | `EXTRA_OWNERS` | optional | `""` | accounts, comma-separated, whose installations the dispatcher serves besides the App owner's; empty is none. An installation on any other account is refused |
 | `SCAN_DISPATCH_LIMIT` | optional | `2` | how many times the scan dispatches an item for a label that stays on across scans before it leaves the item for a person, and comments once to say so (*The scan's limit*, below), never applied to `agent:merge`. At least `1`: `0` is refused at start, since it would not turn the scan off |
 
@@ -456,11 +456,16 @@ on a clock ahead, answer the same instant), and holds the agent lane until it an
 minutes more (`RESET_MARGIN_MINUTES`, a margin for the two hosts' clocks): no agent job starts, and
 no update-branch job's agent part, so the jobs behind the stop do not hit the same limit one by one.
 The light lane runs on meanwhile: a filing, a clean refresh, a gate that refuses. A later reset
-extends the hold. When it ends, the agent lane runs its jobs in arrival order, as before, and the
-worker announces to the dispatcher as it does at its start, so the dispatcher's scan lists the
-stopped item, its label still on, finds nothing held for it, and dispatches it, decided as any
-label's delivery is. A job held past its deadline ends at its first token request, as any late job
-does. Only the CLI's message in that shape counts: an API rate limit, a billing stop, or a zone other
+extends the hold. When it ends, the worker drops every queued job already past its deadline (a
+job's deadline is its kind's time limit and `JOB_DEADLINE_MARGIN_MINUTES`, often less than a hold),
+logging each, since such a job would end at its first token request with nothing posted and its
+label still on. The agent lane runs the rest in arrival order, as before, and the worker announces
+to the dispatcher as it does at its start, so the dispatcher's scan lists the stopped item and each
+dropped job's, their labels still on, finds nothing held for them, and dispatches them with fresh
+deadlines, decided as any label's delivery is. The margin should cover a hold, a few hours for a
+session limit, so the jobs behind a stop keep their place in the queue rather than being dropped and
+dispatched again behind newer ones; a job that was not dropped but runs past its deadline still ends
+at its first token request, as any late job does. Only the CLI's message in that shape counts: an API rate limit, a billing stop, or a zone other
 than UTC is an ordinary stop.
 
 **One automatic resume per request.** A second usage-limit stop on an item whose newest resume

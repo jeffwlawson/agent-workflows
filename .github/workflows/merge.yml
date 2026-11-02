@@ -140,7 +140,7 @@ jobs:
       # token's account posted it.
       - name: Resolve the loop's token
         id: token
-        uses: jeffwlawson/agent-workflows/.github/actions/loop-token@v0.9.5
+        uses: jeffwlawson/agent-workflows/.github/actions/loop-token@v0.9.6
         with:
           app-id: ${{ secrets.AGENT_APP_ID }}
           private-key: ${{ secrets.AGENT_APP_PRIVATE_KEY }}
@@ -169,7 +169,7 @@ jobs:
           PR_DRAFT: ${{ github.event.pull_request.draft }}
         # `npm exec --prefix` rather than a bare `npx`: see the long note on
         # the same line in review.yml.
-        run: npm exec --prefix "$RUNNER_TEMP" --yes --package=@jeffwlawson/agent-workflows@0.9.5 -- agent-workflows merge:gate
+        run: npm exec --prefix "$RUNNER_TEMP" --yes --package=@jeffwlawson/agent-workflows@0.9.6 -- agent-workflows merge:gate
 
       # Glue only Actions can do (ADR 0003): the gate's decision, copied into
       # the step output `decision`, which the merge step's `if:` reads.
@@ -195,7 +195,7 @@ jobs:
           LOOP_LOGIN: ${{ steps.token.outputs.login }}
           BASE_REF: ${{ github.event.pull_request.base.ref }}
           GATE_DIR: ${{ runner.temp }}/gate
-        run: npm exec --prefix "$RUNNER_TEMP" --yes --package=@jeffwlawson/agent-workflows@0.9.5 -- agent-workflows merge:publish
+        run: npm exec --prefix "$RUNNER_TEMP" --yes --package=@jeffwlawson/agent-workflows@0.9.6 -- agent-workflows merge:publish
 
       # How the job ended, measured here because only this job's clock knows
       # (#220), as `follow-ups.yml` measures it: a cancel that ran the whole
@@ -225,7 +225,7 @@ jobs:
           JOB_STATUS: ${{ job.status }}
           TIMED_OUT: ${{ steps.outcome.outputs.timed-out }}
           MINT_OUTCOME: ${{ steps.token.outcome }}
-        run: npm exec --prefix "$RUNNER_TEMP" --yes --package=@jeffwlawson/agent-workflows@0.9.5 -- agent-workflows merge:conclude
+        run: npm exec --prefix "$RUNNER_TEMP" --yes --package=@jeffwlawson/agent-workflows@0.9.6 -- agent-workflows merge:conclude
 
       # Every write each command made (ADR 0005), by the paths they declare.
       # `always()`, since a run that stopped is the one a log is read for.

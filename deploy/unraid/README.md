@@ -33,7 +33,15 @@ It needs, in `agent-service.conf`:
 
 On ssh: Unraid's root `~/.ssh` cannot be written, so `upgrade.sh` keeps the box's host key in
 `known_hosts` beside the conf, recording it at the first connect and refusing a changed one after
-(`StrictHostKeyChecking=accept-new`). Each ssh that runs `sudo` on the box asks for its password.
+(`StrictHostKeyChecking=accept-new`). A run asks for the box's ssh password once (not at all with
+a key) and for its `sudo` password once: it opens one ssh connection, in a private directory under
+the system temp directory, that every later ssh and scp shares, and hands the `sudo` password to
+each `sudo` on the box on its stdin, never on a command line, in output or in a file. Run it from a
+terminal, which the password is read from; without one, a `sudo` on the box that wants a password
+fails and says so. Where `BOX_SSH_KEY` is set, the run uses a mode 600 copy of the key in that
+private directory, since a key on `/boot` may be open to others, and removes it at the end. Where
+the shared connection cannot be opened, each step connects on its own and ssh may ask again. The
+commands a stopped step prints for you to paste use `ssh -t` and the original key.
 
 On the worker's queue: it is in memory, so restarting the worker drops every job it holds, and a
 running one starts again from the beginning. So after both installs, and before either restart,

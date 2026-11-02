@@ -13,7 +13,9 @@
    — deliberately, so a change to one cannot silently leave the other behind. The exception is a
    new secret or input: the reference caller moves with the reusable, and the local caller waits
    for the release that declares it (see [*This repo runs its own loop*](../adr/0010-this-repo-runs-its-own-loop-on-the-last-release.md),
-   ADR 0010).
+   ADR 0010). A caller change is also an **adopter action**: give the commit an
+   `Adopter-Action: <one imperative sentence: what to do, and where>` line, at the start of its own
+   line in the message, so the Release lists it ([*Releasing*](./releasing.md)).
 4. `tests/workflows.test.ts` asserts over both halves. Add the assertion in the same change; a
    workflow defect has no unit test to catch it and usually no error message either.
 5. A **new** workflow is a reusable plus a caller of it in each caller set, all three carrying a

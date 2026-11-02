@@ -98,6 +98,18 @@ package and a public repository's Release assets do not. The *already published*
 the registry publish only. A re-run on a published tag fetches the published tarball rather than
 building another, and creates the Release or uploads an asset only where it is missing.
 
+The Release's body is the install sentence and an **Adopter action** section (#621), which
+`scripts/release-notes.ts`, run from source and excluded from the build like `sync-version.ts`,
+builds from the commits between the previous `v*` tag and this one. A change owes an adopter
+action when a repository running the loop must act on upgrading: a caller edit (anything `diagnose`
+in `setup/doctor.ts` checks), a new caller input or secret, an App permission or event subscription,
+a repository variable, or a default that changes behaviour. Its commit carries
+`Adopter-Action: <one imperative sentence: what to do, and where>` at the start of its own line;
+squash merging keeps each commit's message in the body on `main`, so a trailer in a commit of the
+pull request is what the release reads, not one in the pull request's description. It is written
+only where `publish.yml` creates the Release, and a wrong or missing one is fixed by editing the
+Release by hand.
+
 The checks that made this a chore rather than a hazard are still the backstop, and are what a
 rewrite gone wrong lands on: `PIN` in `tests/workflows.test.ts` is derived from `package.json` and
 checked against **both caller sets** — `examples/callers/*.yml` and `.github/workflows/agent-*.yml`

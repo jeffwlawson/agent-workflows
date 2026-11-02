@@ -1870,6 +1870,13 @@ Three things it does **not** do.
   in your tree against the pin they now carry and names the row that is short, with the fix — which
   is the only thing on either side of this that can see a caller two releases old. The release notes
   say when a bump needs one; `doctor` says so whether or not you read them.
+
+  **When you move the pin, read the *Adopter action* section of the GitHub Release you are moving
+  to, and of each release between it and the one you are leaving.** It lists what that release
+  needs of you that no `@ref` carries: a caller edit, an App permission or event subscription, a
+  repository variable or secret, a default that changes behaviour on upgrade. Each line names the
+  commit and the pull request it came from. "No adopter action." means the release was checked and
+  needs nothing; "No earlier release to compare with." is the first one.
 - **It is better, not free.** One pull request per repository per release still has to be merged by
   someone. The failure mode changes from a stale pin — invisible — to a stale *open pull request*,
   which at least appears in a list you already read. If a repository has three of them open, it is

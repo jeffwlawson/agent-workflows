@@ -146,7 +146,7 @@ describe("liveAppGitHub: a variable, as `vars` resolves it", () => {
     expect(asked).not.toContain(`/repos/${REPO}/actions/organization-variables`);
   });
 
-  it.each(["AGENT_ORCHESTRATOR", "AGENT_MODEL", "AGENT_MODEL_REVIEW", "AGENT_REVIEW_TIMEOUT_MINUTES", "AGENT_MAX_FIX_ROUNDS"])(
+  it.each(["AGENT_ORCHESTRATOR", "AGENT_MODEL", "AGENT_MODEL_REVIEW", "AGENT_REVIEW_TIMEOUT_MINUTES", "AGENT_MAX_FIX_ROUNDS", "AGENT_FIX_MIN_SEVERITY"])(
     "falls back to an organization variable shared with the repository: %s",
     async (name) => {
       world.organization = { [name]: "from-the-organization" };

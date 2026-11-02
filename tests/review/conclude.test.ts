@@ -431,6 +431,12 @@ describe("review:conclude ends a posted review", () => {
     ["a PRD PR's final review approves", { BRANCH: "agent/prd-14-a-prd", ROUND: "final" }, true],
     ["a review needs a closer look", { VERDICT: "needs a closer look" }, true],
     ["a review recommends changes with no round", { VERDICT: "changes recommended", FIX_ROUND: "false" }, true],
+    // A review whose open findings were all below the fix threshold (#616) is
+    // an approval: it hands over the verdict and nothing finer, so conclude
+    // marks it ready on a regular PR, and on a PRD PR on the final review alone.
+    ["a regular PR's review recorded only minor findings, and approves", { VERDICT: "approval recommended", FIX_ROUND: "false" }, true],
+    ["a PRD PR's slice round recorded only minor findings, and approves", { BRANCH: "agent/prd-14-a-prd", ROUND: "slice", VERDICT: "approval recommended" }, false],
+    ["a PRD PR's final review recorded only minor findings, and approves", { BRANCH: "agent/prd-14-a-prd", ROUND: "final", VERDICT: "approval recommended" }, true],
   ] as const)("marks it ready or not where %s", async (_case, over, ready) => {
     verdictPosted();
 

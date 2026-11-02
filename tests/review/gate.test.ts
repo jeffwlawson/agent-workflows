@@ -60,6 +60,7 @@ const INPUTS = (over: Partial<Inputs> = {}): Inputs => ({
   HEAD_POLL_SECONDS: "0",
   REVIEW_TIMEOUT_MINUTES: "",
   MAX_FIX_ROUNDS: "",
+  FIX_MIN_SEVERITY: "",
   ...over,
 });
 
@@ -258,6 +259,15 @@ describe("review:gate refuses a variable nobody can have meant", () => {
     expect(files.has("refusal_reason.txt")).toBe(false);
   });
 
+  it.each(["Medium", "none", "1", " low"])("refuses an AGENT_FIX_MIN_SEVERITY of %j, naming it and the values it takes", async (value) => {
+    const reason = await refused(INPUTS({ FIX_MIN_SEVERITY: value }));
+
+    expect(reason).toBe(
+      `The repository variable \`AGENT_FIX_MIN_SEVERITY\` is \`${value}\`. It must be \`low\`, \`medium\` or \`high\`, or delete it to use the default of \`medium\`. Then add \`agent:review\` again.`,
+    );
+    expect(decided()["threshold"]).toBeUndefined();
+  });
+
   it.each(["three", "-1", "1.5"])("refuses an AGENT_MAX_FIX_ROUNDS of %j, naming it", async (value) => {
     const reason = await refused(INPUTS({ MAX_FIX_ROUNDS: value }));
 
@@ -293,6 +303,27 @@ describe("review:gate settles the fix-round budget's value", () => {
 
     expect(decided()["budget"]).toBe("999999999");
   });
+});
+
+/**
+ * The fix threshold (#616): `AGENT_FIX_MIN_SEVERITY`, which the runner places
+ * a review's open findings by. Refused by name, as the budget is.
+ */
+describe("review:gate settles the fix threshold", () => {
+  it("reads medium where the variable is unset", async () => {
+    await run();
+
+    expect(decided()).toMatchObject({ threshold: "medium" });
+    expect(logged).toContain("Fix threshold medium.");
+  });
+
+  it.each(["low", "medium", "high"])("takes %j as it is", async (value) => {
+    await run(INPUTS({ FIX_MIN_SEVERITY: value }));
+
+    expect(decided()).toMatchObject({ threshold: value });
+    expect(files.has("refusal_reason.txt")).toBe(false);
+  });
+
 });
 
 /**

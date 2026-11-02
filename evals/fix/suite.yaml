@@ -1,8 +1,8 @@
 # What every fix case is replayed with. A case's replay.yaml and inputs/
 # override any of these.
 #
-# The inputs below are a fix run with nothing to resume and no conversation
-# comment owed an answer, as fix/fix.ts renders them.
+# The inputs below are a fix run with nothing to resume, no conversation
+# comment owed an answer and no minor finding, as fix/fix.ts renders them.
 
 execution:
   max_turns: 200
@@ -12,6 +12,7 @@ execution:
 inputs:
   RESUME: ""
   CONVERSATION: "(none)"
+  MINOR_FINDINGS: "(none)"
 
 # Appended after the rendered prompt. Nothing pushes here, and the runner's
 # second phase, which turns the run into structured output, does not run, so

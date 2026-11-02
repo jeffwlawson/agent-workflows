@@ -23,7 +23,7 @@ import {
 } from "../shared/record.js";
 import { reviewThreads } from "../shared/review-findings.js";
 import { renderReviewPost, verdictRow, type FollowUp, type ReviewBodyParts } from "../shared/review-output.js";
-import { closingReply } from "../shared/review-verification.js";
+import { closingReply, githubReason } from "../shared/review-verification.js";
 import { roundHeader } from "../shared/round-header.js";
 import { handOverParsers, MAX_RESOLUTIONS, type PrSummary, type VerdictHandOver } from "./hand-over.js";
 import { summaryBlock } from "./pr-summary.js";
@@ -98,6 +98,7 @@ export const publish = async (
       : { roundNote: unreadableHistoryNote({ afterFixRound: true, unreviewedCommits: false, unreadable: historyUnreadable }) }),
     ...(redTests === undefined ? {} : { redTestsBlock: renderRedTestsBlock(redTests) }),
     ...(runUrl === undefined ? {} : { runUrl }),
+    ...(blobBase(inputs, reviewed) === undefined ? {} : { blobBase: blobBase(inputs, reviewed) }),
     log: (line) => console.log(line),
   };
   const threads: readonly ReviewThread[] = reviewThreads(findings);
@@ -130,7 +131,9 @@ export const publish = async (
       await workflow.replyAndResolve({
         threadId: resolution.threadId,
         reply: resolution.alreadyReplied ? undefined : closingReply(resolution),
-        reason: resolution.reason,
+        // A minor one goes to GitHub as `WONT_FIX`, its nearest word (#616);
+        // the reply's marker is what records it as minor.
+        reason: githubReason(resolution.reason),
       });
       closed.add(resolution.threadId);
     } catch (error) {
@@ -192,7 +195,7 @@ export const publish = async (
   if (summary === undefined) {
     console.log("Nothing was pushed since the summary was last written, so the title and the summary are left as they are.");
   } else {
-    await writeSummary(workflow, pr, reviewed, summary, body.followUps);
+    await writeSummary(workflow, pr, reviewed, summary, [...(body.minorFindings ?? []), ...body.followUps]);
   }
 
   // Step 3b: off a PRD PR, the status line at the top of the body's note
@@ -299,7 +302,9 @@ const writeSummary = async (
  * and so is half a line, or two. Tolerated, for the summary's reason.
  */
 const writeStatusLine = async (workflow: Writer, pr: number, verdict: VerdictHandOver, review: string): Promise<void> => {
-  const line = statusBlock(renderPrStatus({ verdict: verdict.verdict, startsFixRound: verdict.fixRound, open: verdict.open, review }));
+  const line = statusBlock(
+    renderPrStatus({ verdict: verdict.verdict, startsFixRound: verdict.fixRound, open: verdict.open, minor: verdict.minor ?? 0, review }),
+  );
   try {
     const done = await workflow.editPullRequest(pr, { body: (live) => spliceStatus(live, line) });
     console.log(
@@ -431,6 +436,16 @@ const read = async <T>(what: string, request: () => Promise<T>): Promise<T> => {
     throw new Error(`Could not read ${what} from GitHub, so nothing was posted: ${describe(error)}`, { cause: error });
   }
 };
+
+/**
+ * The reviewed commit's tree on GitHub, which a minor finding's location links
+ * into (#616), from the two variables a run link is read from. Absent where
+ * either is unset.
+ */
+const blobBase = (inputs: { readonly GITHUB_SERVER_URL: string; readonly GITHUB_REPOSITORY: string }, sha: string): string | undefined =>
+  inputs.GITHUB_SERVER_URL === "" || inputs.GITHUB_REPOSITORY === ""
+    ? undefined
+    : `${inputs.GITHUB_SERVER_URL}/${inputs.GITHUB_REPOSITORY}/blob/${sha}`;
 
 const commit = (value: string): string => {
   if (!/^[0-9a-f]{40}$/.test(value)) {

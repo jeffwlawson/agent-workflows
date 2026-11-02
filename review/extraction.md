@@ -26,8 +26,11 @@ evidence. Under about twelve words.
 breaks something or ships the wrong behaviour; `medium` is a real defect with a bounded blast
 radius; `low` is a real but small defect, one you can name, with a consequence you can state,
 that happens to be cheap. `low` is not a place to put a preference: those are not posted at any
-severity. It is display and ordering only, and changes no outcome; an omitted or unrecognised one
-is read as `medium`.
+severity. It orders the record, and decides one thing, through the repository's fix threshold:
+where every finding left open is below it, none is posted as a thread, and each is recorded as a
+minor finding, filed when the pull request merges. Rate honestly: an inflated rating holds up an
+approval and buys a fix round, and an understated one sends a real problem to a follow-up. An
+omitted or unrecognised one is shown as `medium` and counted as at the threshold, whatever it is.
 
 Give each finding **no id of any kind**. The workflow writes one and a finding carries it from
 round to round; one you invented would be matched against a thread you never opened.
@@ -197,8 +200,11 @@ A note you omit is filed as a follow-up at `medium`, so omitting one is not a wa
 ## Follow-ups earlier rounds recorded: `followUpRulings`
 
 One entry per follow-up you were given under **FOLLOW-UPS EARLIER ROUNDS RECORDED** with an id,
-using the `id` exactly as given (`` `fu-...` ``). An id you were not given is dropped. Empty where
-you were given none, which is every review but a PRD pull request's.
+using the `id` exactly as given (`` `fu-...` ``, or a finding's id on a minor finding). An id you
+were not given is dropped. Empty where you were given none: on a PRD pull request every earlier
+round's follow-ups are listed there, and on any pull request the minor findings an earlier review
+recorded, which are findings in this pull request's own code. Never raise a minor finding again in
+`findings`: it is already recorded, and ruling it `resolved` is how one a commit fixed drops off.
 
 - `open`: it still holds at the head you reviewed. The workflow keeps carrying it, unchanged.
 - `resolved`: a commit since it was recorded fixed it, so it no longer holds. Carries a `reason`,

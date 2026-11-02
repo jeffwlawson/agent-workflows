@@ -1,14 +1,17 @@
 import { randomUUID } from "node:crypto";
 import { asArray, asRecord, asString, standardSchema } from "./common.js";
 import {
+  DEFAULT_SEVERITY,
   findingTitle,
   isPreviouslyMissed,
+  meetsThreshold,
   parseFinding,
   parseSeverity,
   severityBadge,
   severityRank,
   SEVERITIES,
   withoutFindingMarkers,
+  withoutOpeningLabel,
   type Finding,
   type PlacedFinding,
   type Severity,
@@ -60,7 +63,24 @@ export interface FollowUp {
    * Absent on a payload written before ids existed.
    */
   readonly id?: string;
+  /**
+   * Which kind of follow-up it is (#616). Absent is **out of scope**, a
+   * problem this pull request will not fix, which is every entry written
+   * before kinds existed. `minor` is a **minor finding**: a finding in this
+   * pull request's own code that the review recorded rather than threaded,
+   * because every finding open on the pull request was below the repository's
+   * `AGENT_FIX_MIN_SEVERITY` (`placeByThreshold`). It is carried and ruled by
+   * id on every pull request, is exempt from the cap and from the body's
+   * shedding, and is listed under *Minor findings* rather than *Follow-ups*.
+   *
+   * The workflow's to write, never the model's, as `id` is: `parseFollowUp`
+   * never reads it, and only `parseFollowUpsBlock` does, off a payload.
+   */
+  readonly kind?: "minor";
 }
+
+/** Whether a follow-up is a minor finding (#616), rather than out of scope. */
+export const isMinor = (followUp: FollowUp): boolean => followUp.kind === "minor";
 
 /**
  * At most this many **out-of-scope** follow-ups per review — the ones the
@@ -146,7 +166,8 @@ export type NoteRuling =
 
 /**
  * What the review decided about one follow-up **an earlier round on a PRD PR
- * recorded** (#495), named by the id the workflow gave it: still open at the
+ * recorded** (#495), or one minor finding an earlier review recorded on any
+ * pull request (#616), named by the id the workflow gave it: still open at the
  * reviewed head, or resolved since, with a reason the body states. See
  * `recordFollowUps`, which drops a resolved one and keeps every other.
  *
@@ -162,6 +183,8 @@ export interface ResolvedFollowUp {
   readonly title: string;
   readonly location: string;
   readonly reason: string;
+  /** `minor` where it was a minor finding a later commit fixed (#616). */
+  readonly kind?: "minor" | undefined;
 }
 
 /**
@@ -494,9 +517,12 @@ export const VERDICTS: Readonly<Record<Verdict, VerdictRow>> = {
     heading: "🟢 Approval recommended",
     label: "Approval recommended",
     state: "success",
-    nextStep: "Nothing left to fix. You can merge once the PR is ready and no longer a draft.",
+    // True with or without minor findings (#616): an approval over one says
+    // nothing blocks, never that nothing is left (the #105 and #124 class).
+    nextStep:
+      "Nothing here blocks the merge; any minor findings below are filed as one follow-up. You can merge once the PR is ready and no longer a draft.",
     description:
-      "Approval recommended. Nothing left to fix. You can merge once the PR is ready and no longer a draft.",
+      "Approval recommended. Nothing blocks the merge; any minor findings are filed as one follow-up. You can merge once the PR is ready.",
   },
   "changes recommended": {
     verdict: "changes recommended",
@@ -606,6 +632,19 @@ export interface VerdictInputs {
    * the disagreement #105 closed, reopened from the other end.
    */
   readonly movedToFollowUps: number;
+  /**
+   * How many of this review's own findings `placeByThreshold` recorded as
+   * **minor findings** rather than threads (#616): every finding open on the
+   * pull request was below the repository's `AGENT_FIX_MIN_SEVERITY`.
+   * Subtracted as `movedToFollowUps` is, since a minor finding has no thread
+   * and blocks nothing, and `stillOpen` is then zero, the carried ones having
+   * become minor entries too.
+   *
+   * Optional, and absent is none, because a caller that forgot it derives
+   * *changes recommended* over minor findings: the direction that blocks an
+   * approval rather than granting one.
+   */
+  readonly minorFindings?: number;
   /**
    * Whether the workflow will add `agent:fix` itself if this review recommends
    * changes: the pull request's automatic fix rounds, or on a PRD PR this
@@ -859,6 +898,108 @@ export const reviewRecord = (parts: {
 };
 
 /**
+ * The repository's fix threshold where `AGENT_FIX_MIN_SEVERITY` is unset
+ * (#616): a review whose open findings are all `low` approves.
+ */
+export const DEFAULT_FIX_MIN_SEVERITY: Severity = "medium";
+
+/**
+ * Where a review's open findings go, decided **once per review** by the
+ * repository's threshold (#616): after verification, before the record is
+ * written, and handed over so publish writes what was decided (ADR 0007).
+ *
+ * - `mixed`: some open finding meets the threshold. Exactly the review this
+ *   loop always posted: every finding a thread, lows included, and the
+ *   carried ones still open.
+ * - `all below`: at least one is open and none meets it. No finding of this
+ *   review is a thread, and every carried one still open is resolved
+ *   (`transitioned`): each becomes a **minor finding**, an entry in the
+ *   follow-ups payload, so nothing is open and the checks decide the verdict.
+ * - `none`: nothing is open.
+ */
+export interface ThresholdPlacement {
+  readonly kind: "mixed" | "all below" | "none";
+  /** The findings to open a thread for: every placed one, or none where all are below. */
+  readonly placed: readonly PlacedFinding[];
+  /** The carried findings still open and counted: every one, or none where all are below. */
+  readonly stillOpen: readonly CarriedFinding[];
+  /**
+   * The minor entries this review records: the carried findings it resolved
+   * first, with their own ids, then its own findings, in the reviewer's
+   * order, each with a fresh id. Empty unless all are below.
+   */
+  readonly minor: readonly FollowUp[];
+  /** The carried findings whose threads publish resolves as `MINOR`. */
+  readonly transitioned: readonly CarriedFinding[];
+  /** How many of `minor` are this review's own, which the count subtracts (`VerdictInputs.minorFindings`). */
+  readonly minorOwn: number;
+}
+
+/**
+ * The **open set** is this review's findings that would be posted (the
+ * moved ones, #127, are not in `placed`) and the carried threads it verified
+ * still open. A finding meets the threshold where `meetsThreshold` says so of
+ * its severity, or where it is marked to meet every threshold (an unrated
+ * finding, or an unmet criterion: `Finding.alwaysMeets`); a carried one with
+ * no severity on its marker meets it too. So a missing rating can only make
+ * a review mixed.
+ *
+ * Severity decides this and nothing finer: the order of the record and of
+ * the minor entries is the one it would be without it, and no finding is
+ * dropped, since each is in the record as a thread or as a minor entry. With
+ * the threshold at `low` every finding meets it, so the review is never all
+ * below and is byte for byte what it was before.
+ */
+export const placeByThreshold = (parts: {
+  readonly placed: readonly PlacedFinding[];
+  readonly stillOpen: readonly CarriedFinding[];
+  readonly threshold: Severity;
+  /** The id each of this review's own minor entries is given. A parameter so a test can name them. */
+  readonly nextId?: () => string;
+}): ThresholdPlacement => {
+  const { placed, stillOpen, threshold, nextId = newFollowUpId } = parts;
+  const kept = { placed, stillOpen, minor: [], transitioned: [], minorOwn: 0 };
+  if (placed.length + stillOpen.length === 0) return { kind: "none", ...kept };
+  const meets =
+    placed.some((p) => p.finding.alwaysMeets === true || meetsThreshold(p.finding.severity, threshold)) ||
+    stillOpen.some((c) => meetsThreshold(c.severity, threshold));
+  if (meets) return { kind: "mixed", ...kept };
+  return {
+    kind: "all below",
+    placed: [],
+    stillOpen: [],
+    minor: [...stillOpen.map(carriedMinor), ...placed.map((p) => ownMinor(p.finding, nextId()))],
+    transitioned: stillOpen,
+    minorOwn: placed.length,
+  };
+};
+
+/** One of this review's findings as the minor entry it becomes: the finding whole, its label taken off. */
+const ownMinor = (finding: Finding, id: string): FollowUp => ({
+  title: oneLine(findingTitle(finding)),
+  location: `${finding.path}:${finding.line}`,
+  body: withoutOpeningLabel(finding.body).trim(),
+  severity: finding.severity,
+  id,
+  kind: "minor",
+});
+
+/**
+ * A carried finding as the minor entry it becomes, with its own id, so a
+ * later review rules on it by the id its thread carried. Its text is the
+ * thread's, or the one-line claim where the thread's could not be read.
+ */
+export const carriedMinor = (finding: CarriedFinding): FollowUp => ({
+  title: oneLine(finding.title),
+  location: finding.anchor,
+  body: finding.body ?? finding.text,
+  // Always rated here: an unrated carried finding meets every threshold.
+  severity: finding.severity ?? DEFAULT_SEVERITY,
+  id: finding.id,
+  kind: "minor",
+});
+
+/**
  * One entry, as the body writes it: the badge, the claim, where it is, and
  * whether it is new. No id: every entry's thread is its record (#224).
  *
@@ -1013,6 +1154,81 @@ const movedSentence = (moved: number): string | undefined =>
     : `_${moved} ${plural(moved, "finding was", "findings were")} moved to follow-ups: ${plural(moved, "it points", "they point")} at no file this pull request changes, so there was nowhere in the diff to comment on ${plural(moved, "it", "them")}._`;
 
 /**
+ * What the body says under the verdict's line where the pull request carries
+ * minor findings (#616), or `undefined` where it carries none, so a review
+ * with none reads as it always did.
+ *
+ * On an approval it is the half the fixed line cannot say: that nothing
+ * blocks the merge, and how many minor findings will be filed. Then the ways
+ * on: `agent:fix` to have them fixed now, or the threshold at `low` to have
+ * automatic rounds fix every finding. On *changes recommended* the minor
+ * findings are an earlier review's, and the round that verdict starts is
+ * handed them.
+ */
+const minorSentence = (verdict: Verdict, count: number): string | undefined => {
+  if (count === 0) return undefined;
+  const findings = `${count} minor ${plural(count, "finding", "findings")}`;
+  const waysOn = `To fix ${plural(count, "it", "them")} now, add the \`agent:fix\` label; to have automatic fix rounds fix every finding, set the repository variable \`AGENT_FIX_MIN_SEVERITY\` to \`low\`.`;
+  if (verdict === "approval recommended") {
+    return `_Nothing here blocks the merge: the ${findings} below ${plural(count, "is", "are")} filed as one follow-up when this pull request merges. ${waysOn}_`;
+  }
+  if (verdict === "changes recommended") {
+    return `_The ${findings} below ${plural(count, "is", "are")} filed as one follow-up when this pull request merges, unless a fix round fixes ${plural(count, "it", "them")} first._`;
+  }
+  return `_The ${findings} below ${plural(count, "is", "are")} under the repository's fix threshold, so ${plural(count, "it is", "they are")} recorded rather than threaded, and filed as one follow-up when this pull request merges. ${waysOn}_`;
+};
+
+/**
+ * A minor finding's location as the body shows it (#616): a link to the line
+ * at the reviewed commit where publish could name the commit, and code
+ * otherwise.
+ *
+ * Every shape a location takes: `path:line` and `path:start-end` (a carried
+ * thread's anchor over a range, `locationOf` in `shared/pr-feedback.ts`) link
+ * to the line or the range; `path:?` (a thread whose line GitHub no longer
+ * reports) and a bare `path` (a file-level thread) link to the file; and
+ * `unknown`, a thread with no path, links to nothing.
+ */
+const locationLink = (location: string, blobBase: string | undefined): string => {
+  const shown = `\`${oneLine(location)}\``;
+  if (blobBase === undefined) return shown;
+  const match = /^(.+?):(?:(\d+)(?:-(\d+))?|\?)$/.exec(oneLine(location));
+  const file = match === null ? oneLine(location) : match[1];
+  if (file === undefined || file === "" || file === "unknown" || /\s/.test(file)) return shown;
+  const start = match?.[2];
+  const end = match?.[3];
+  const fragment = start === undefined ? "" : end === undefined ? `#L${start}` : `#L${start}-L${end}`;
+  return `[${shown}](${blobBase}/${file.split("/").map(encodeURIComponent).join("/")}${fragment})`;
+};
+
+/**
+ * The *Minor findings* group (#616): the findings in this pull request's own
+ * code that the review recorded rather than threaded, because every finding
+ * open on the pull request was below the repository's
+ * `AGENT_FIX_MIN_SEVERITY`. Directly after *Open*, since these are about
+ * this pull request rather than out of its scope, and collapsed, since none
+ * of them blocks the merge. Each with its badge, its location as a link and
+ * its title; their bodies are in the payload. Not counted on the
+ * `**Findings:**` line, which counts what blocks.
+ */
+export const renderMinorFindingsGroup = (
+  minor: readonly FollowUp[],
+  shorten = false,
+  blobBase?: string,
+): string | undefined => {
+  if (minor.length === 0) return undefined;
+  const title = (value: string): string => (shorten ? shortened(oneLine(value), SHED_TITLE_LENGTH) : oneLine(value));
+  return [
+    "<details>",
+    `<summary><b>Minor findings</b> (${minor.length}) · in this pull request's code, below the fix threshold; filed together as one issue on merge, remove <code>${FOLLOW_UPS_LABEL}</code> to skip</summary>`,
+    "",
+    ...minor.map((f) => `- ${severityBadge(f.severity)} ${locationLink(f.location, blobBase)} ${title(f.title)}`),
+    "",
+    "</details>",
+  ].join("\n");
+};
+
+/**
  * A label name the body mentions, rendered as code.
  *
  * One renderer rather than a second copy of each sentence, because the same
@@ -1074,18 +1290,28 @@ const renderHowChecked = (
   withheld?: "unnumbered",
   resolvedFollowUps: readonly ResolvedFollowUp[] = [],
 ): string | undefined => {
+  const resolvedList = (entries: readonly ResolvedFollowUp[], one: string, many: string): string | undefined =>
+    entries.length === 0
+      ? undefined
+      : [
+          `_${entries.length === 1 ? one : `${entries.length} ${many}`} ${entries.length === 1 ? "is" : "are"} resolved at this head, so ${entries.length === 1 ? "it is" : "they are"} no longer carried and will not be filed:_`,
+          "",
+          ...entries.map((entry) => `- **${oneLine(entry.title)}** · \`${oneLine(entry.location)}\`: ${oneLine(entry.reason)}`),
+        ].join("\n");
   const lines = [
     howChecked,
     withheld === undefined ? undefined : WITHHELD_SENTENCE[withheld],
-    resolvedFollowUps.length === 0
-      ? undefined
-      : [
-          `_${resolvedFollowUps.length === 1 ? "One follow-up" : `${resolvedFollowUps.length} follow-ups`} an earlier round recorded ${resolvedFollowUps.length === 1 ? "is" : "are"} resolved at this head, so ${resolvedFollowUps.length === 1 ? "it is" : "they are"} no longer carried and will not be filed:_`,
-          "",
-          ...resolvedFollowUps.map(
-            (entry) => `- **${oneLine(entry.title)}** · \`${oneLine(entry.location)}\`: ${oneLine(entry.reason)}`,
-          ),
-        ].join("\n"),
+    resolvedList(
+      resolvedFollowUps.filter((entry) => entry.kind !== "minor"),
+      "One follow-up an earlier round recorded",
+      "follow-ups an earlier round recorded",
+    ),
+    // A minor finding a later commit fixed (#616), on any pull request.
+    resolvedList(
+      resolvedFollowUps.filter((entry) => entry.kind === "minor"),
+      "One minor finding an earlier review recorded",
+      "minor findings an earlier review recorded",
+    ),
   ].filter((line) => line !== undefined);
   return lines.length === 0
     ? undefined
@@ -1274,6 +1500,13 @@ export interface ReviewBodyHandOver {
    * say so.
    */
   readonly followUps: readonly FollowUp[];
+  /**
+   * The minor findings on the pull request (#616), from `recordFollowUps`:
+   * listed under *Minor findings*, and written into the payload ahead of
+   * `followUps`, inside its exempt prefix, so neither the cap nor the body's
+   * shedding reaches one. Absent where there are none.
+   */
+  readonly minorFindings?: readonly FollowUp[] | undefined;
   readonly droppedFollowUps: number;
   /** The cap `recordFollowUps` held the list to, written into the payload for the filing end to re-apply (#247). */
   readonly followUpsCap: number;
@@ -1450,6 +1683,8 @@ export interface ReviewDecisions {
    */
   readonly resolved: readonly CarriedFinding[];
   readonly followUps: readonly FollowUp[];
+  /** The minor findings on the pull request (#616), from `recordFollowUps`. Absent or empty where there are none. */
+  readonly minorFindings?: readonly FollowUp[] | undefined;
   readonly droppedFollowUps: number;
   /** `MAX_FOLLOW_UPS` where absent, which is every regular pull request's. */
   readonly followUpsCap?: number | undefined;
@@ -1496,6 +1731,11 @@ export const reviewBodyHandOver = (decisions: ReviewDecisions): ReviewBodyHandOv
     resolved,
     movedToFollowUps: decisions.movedToFollowUps,
     followUps: decisions.followUps,
+    // Only where there are any, so a review with none hands over what it
+    // always did (#616).
+    ...(decisions.minorFindings === undefined || decisions.minorFindings.length === 0
+      ? {}
+      : { minorFindings: decisions.minorFindings }),
     droppedFollowUps: decisions.droppedFollowUps,
     followUpsCap: decisions.followUpsCap ?? MAX_FOLLOW_UPS,
     followUpsCarried: decisions.followUpsCarried ?? false,
@@ -1558,6 +1798,12 @@ export interface ReviewBodyParts extends ReviewBodyHandOver {
   readonly runUrl?: string | undefined;
   /** The round's header (#298), from `roundHeader` in `shared/round-header.ts`: the body's first line. */
   readonly header?: string | undefined;
+  /**
+   * The reviewed commit's tree on GitHub, `…/blob/<sha>`, which a minor
+   * finding's location links into (#616). Absent where publish could not name
+   * it, and the location is shown as code.
+   */
+  readonly blobBase?: string | undefined;
   /** Where to say what was shed when the body had to be made to fit: the run log's copy. */
   readonly log?: ((line: string) => void) | undefined;
 }
@@ -1573,7 +1819,10 @@ export const renderReviewPost = (parts: ReviewBodyParts): ReviewPost => {
   const unclosed = parts.resolved.filter((entry) => !parts.closed.has(entry.threadId));
   const closed = parts.resolved.filter((entry) => parts.closed.has(entry.threadId));
   const { text, shed } = renderBody(parts, record, { closed, unclosed });
-  return { body: text, followUps: parts.followUps.slice(0, parts.followUps.length - shed.cutFollowUps) };
+  return {
+    body: text,
+    followUps: [...(parts.minorFindings ?? []), ...parts.followUps.slice(0, parts.followUps.length - shed.cutFollowUps)],
+  };
 };
 
 /** The record's entries as a shed renders them: titles cut where it cut them. */
@@ -1620,6 +1869,7 @@ const renderBody = (
     // gets the cap's count alone: the shed sentence already says what the size
     // took, and "dropped by the cap" is the wrong cause for any of that.
     const dropped = parts.droppedFollowUps + shed.cutFollowUps;
+    const minor = parts.minorFindings ?? [];
 
     return [
       // Which round of which slice this is (#298), above everything else.
@@ -1628,12 +1878,17 @@ const renderBody = (
       `### ${verdict.heading}`,
       assessment,
       `_${labelsAsCode(verdict.nextStep)}_`,
+      minorSentence(parts.verdict, minor.length),
       parts.needsYou,
       parts.roundNote === undefined ? undefined : labelsAsCode(parts.roundNote),
       findingsLine(record),
       movedSentence(parts.movedToFollowUps),
       shedSentence(shed),
       renderGroup("Open", cut(record.open), true),
+      // Directly after *Open*, in its place where nothing is open (#616): the
+      // findings in this pull request's own code the review recorded rather
+      // than threaded.
+      renderMinorFindingsGroup(minor, shed.titles, parts.blobBase),
       renderGroup("Previously missed", cut(record.missed), true, PREVIOUSLY_MISSED_SUBTITLE),
       // A closure GitHub would not make is listed as still open, ahead of the
       // ones it made, in the place the resolved group has (#257).
@@ -1656,7 +1911,16 @@ const renderBody = (
       // Last, and invisible. The filing half reads the latest one off the body
       // (#47), so it goes out on every review including the one that recorded
       // nothing — which is how a round retracts an earlier round's list.
-      followUpsPayload(followUps, dropped, parts.movedToFollowUps, shed.cutFollowUps, parts.followUpsCap, parts.resolvedFollowUpIds),
+      // The minor findings lead it, inside the exempt prefix (#616), so the
+      // filing end caps neither them nor the moved ones behind them.
+      followUpsPayload(
+        [...minor, ...followUps],
+        dropped,
+        minor.length + parts.movedToFollowUps,
+        shed.cutFollowUps,
+        parts.followUpsCap,
+        parts.resolvedFollowUpIds,
+      ),
     ]
       .filter((part) => part !== undefined && part !== "")
       .join("\n\n");
@@ -1725,7 +1989,10 @@ export const deriveVerdict = (output: ReviewOutput, inputs: VerdictInputs): Verd
   // open. Added, because the two are disjoint sets — one this review found,
   // one it verified. Their sum is the record's own size, which is what
   // `**Findings:** N` states.
-  const open = countFixBeforeMerge(output, inputs.movedToFollowUps) + inputs.stillOpen;
+  // Less the findings recorded as minor (#616): on a review whose open
+  // findings are all below the threshold, none is threaded and `stillOpen` is
+  // zero, so the count is zero and the checks decide, as on a clean review.
+  const open = countFixBeforeMerge(output, inputs.movedToFollowUps) - (inputs.minorFindings ?? 0) + inputs.stillOpen;
   if (open > 0) {
     const row = VERDICTS["changes recommended"];
     // **A fix round that closed none of its findings stops the loop** (#202,
@@ -2235,6 +2502,14 @@ export const movedFollowUp = (finding: Finding, pathError = false): FollowUp => 
 
 /** The review's whole follow-up list, and how it is divided. */
 export interface RecordedFollowUps {
+  /**
+   * The minor findings on the pull request (#616): the ones earlier reviews
+   * recorded and this one did not rule fixed, then this review's own. Kept
+   * apart from `followUps`, since the body lists them in a group of their
+   * own, and written into the payload ahead of it, inside the exempt prefix,
+   * so no cap and no shedding reaches one. Empty where there are none.
+   */
+  readonly minor: FollowUp[];
   /** The moved findings, then what survived the cap. In filing order. */
   readonly followUps: FollowUp[];
   /**
@@ -2273,6 +2548,8 @@ export interface RecordedFollowUps {
  * splits them: the exempt prefix, and the out-of-scope rest.
  */
 export interface EarlierFollowUps {
+  /** The minor findings it recorded (#616), absent on a payload that holds none. */
+  readonly minor?: readonly FollowUp[];
   readonly moved: readonly FollowUp[];
   readonly rest: readonly FollowUp[];
 }
@@ -2292,8 +2569,14 @@ export interface RecordOptions {
    * has already left out of `carried`, carried on into this round's payload.
    */
   readonly resolved?: readonly string[];
-  /** This round's rulings on the carried entries (#495). */
+  /** This round's rulings on the carried entries (#495), minor ones included (#616). */
   readonly rulings?: readonly FollowUpRuling[];
+  /**
+   * The minor findings this review recorded (#616), from `placeByThreshold`,
+   * each with its id and `kind` already: after the carried ones, and one
+   * whose id is already carried is that one, not a second.
+   */
+  readonly minor?: readonly FollowUp[];
   /** The id each new entry is given. A parameter so a test can name them. */
   readonly nextId?: () => string;
 }
@@ -2353,12 +2636,15 @@ export const recordFollowUps = (
   pathErrors: readonly Finding[] = [],
   options: RecordOptions = {},
 ): RecordedFollowUps => {
-  const { cap = MAX_FOLLOW_UPS, carried = [], resolved = [], rulings = [], nextId = newFollowUpId } = options;
+  const { cap = MAX_FOLLOW_UPS, carried = [], resolved = [], rulings = [], nextId = newFollowUpId, minor: minorNow = [] } = options;
   const seen = new Set<string>();
+  const earlierMinor = dedupeFollowUps(carried.flatMap((earlier) => earlier.minor ?? []), seen);
   const earlierMoved = dedupeFollowUps(carried.flatMap((earlier) => earlier.moved), seen);
   const earlierRestAll = dedupeFollowUps(carried.flatMap((earlier) => earlier.rest), seen);
 
-  const known = new Map([...earlierMoved, ...earlierRestAll].flatMap((entry) => (entry.id === undefined ? [] : [[entry.id, entry] as const])));
+  const known = new Map(
+    [...earlierMinor, ...earlierMoved, ...earlierRestAll].flatMap((entry) => (entry.id === undefined ? [] : [[entry.id, entry] as const])),
+  );
   const ruled = new Map<string, FollowUpRuling>();
   for (const ruling of rulings) {
     if (!known.has(ruling.id)) {
@@ -2375,9 +2661,14 @@ export const recordFollowUps = (
   const isOpen = (entry: FollowUp): boolean => {
     const ruling = entry.id === undefined ? undefined : ruled.get(entry.id);
     if (ruling?.status !== "resolved") return true;
-    resolvedNow.push({ title: entry.title, location: entry.location, reason: ruling.reason });
+    resolvedNow.push({ title: entry.title, location: entry.location, reason: ruling.reason, ...(isMinor(entry) ? { kind: "minor" as const } : {}) });
     return false;
   };
+
+  // A carried minor finding stays a minor finding (#616), whatever this
+  // review is: it never re-enters the open set, and is never posted as a
+  // thread. Only a ruling that a commit fixed it drops it.
+  const minor = [...earlierMinor.filter(isOpen), ...dedupeFollowUps(minorNow, seen)];
 
   const moved = [
     ...earlierMoved.filter(isOpen),
@@ -2387,6 +2678,7 @@ export const recordFollowUps = (
   const rest = [...earlierRest, ...followUps.map((followUp) => ({ ...followUp, id: nextId() }))];
   const { kept, dropped } = capFollowUps(rest, cap);
   return {
+    minor,
     followUps: [...moved, ...kept],
     moved: moved.length,
     dropped,
@@ -2468,7 +2760,14 @@ export const parseFollowUpsBlock = (
   }
 
   const dropped = record["dropped"];
-  const followUps = asArray(record["followUps"] ?? [], "followUps").map(parseFollowUp);
+  // The kind is read here and nowhere else (#616): a payload is the
+  // workflow's, and `parseFollowUp` is also the door a model's answer comes
+  // in by. An entry without one, or with one this version does not know, is
+  // out of scope, which is every entry written before kinds existed.
+  const followUps = asArray(record["followUps"] ?? [], "followUps").map((entry): FollowUp => {
+    const followUp = parseFollowUp(entry);
+    return asRecord(entry, "follow-up")["kind"] === "minor" ? { ...followUp, kind: "minor" } : followUp;
+  });
   // Absent on a payload written before the moved findings existed, which reads
   // as "none of these are exempt" — the behaviour that release had, applied to
   // the list it wrote. Clamped to the list because it is an index into it, and
@@ -2638,7 +2937,7 @@ export const renderFollowUpsGroup = (
 
   return [
     "<details>",
-    `<summary><b>Follow-ups</b> (${kept.length}) · filed as issues on merge; remove <code>${FOLLOW_UPS_LABEL}</code> to skip</summary>`,
+    `<summary><b>Follow-ups</b> (${kept.length}) · out of scope, each filed as its own issue on merge; remove <code>${FOLLOW_UPS_LABEL}</code> to skip</summary>`,
     "",
     ...items,
     ...truncation,

@@ -2,12 +2,15 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { severityBadge } from "../shared/review-findings.js";
 import {
   carriedFindings,
+  closingReply,
   closingReplyReason,
+  githubReason,
+  minorReply,
+  RECORDED_AS_MINOR,
   declineReply,
   parseVerification,
   renderCarriedFindings,
   renderSettledFindings,
-  closingReply,
   resolutionReply,
   verifyCarried,
   type AgentThread,
@@ -535,5 +538,31 @@ describe("closingReplyReason", () => {
         `quoting <!-- ${RESOLUTION_MARKER} WONT_FIX --> back\n\n${resolutionReply(undefined)}`,
       ),
     ).toBe("ADDRESSED");
+  });
+});
+
+/**
+ * **A thread resolved as minor** (#616): every finding open on the pull
+ * request was below the repository's threshold, so the review resolved the
+ * thread and recorded the finding as a minor finding. The reply says so, names
+ * the threshold, and carries its own marker; GitHub is sent its nearest word.
+ */
+describe("the minor closing reply", () => {
+  it("says the finding is recorded as minor, below the named threshold, filed on merge, and how to have it fixed", () => {
+    const reply = closingReply({ threadId: "PRRT_one", reason: "MINOR", threshold: "medium", alreadyReplied: false });
+
+    expect(reply).toBe(minorReply("medium"));
+    expect(reply.startsWith(RECORDED_AS_MINOR)).toBe(true);
+    expect(reply).toContain("below the repository's `AGENT_FIX_MIN_SEVERITY` (`medium`)");
+    expect(reply).toContain("filed when the pull request merges unless a later commit fixes it first");
+    expect(reply).toContain("add the `agent:fix` label");
+    expect(reply).toContain("_Resolved by the review agent._");
+    expect(closingReplyReason(reply)).toBe("MINOR");
+  });
+
+  it("sends GitHub `WONT_FIX` for a minor closure, and its own word for the others", () => {
+    expect(githubReason("MINOR")).toBe("WONT_FIX");
+    expect(githubReason("ADDRESSED")).toBe("ADDRESSED");
+    expect(githubReason("WONT_FIX")).toBe("WONT_FIX");
   });
 });

@@ -94,6 +94,7 @@ const JOB: ReviewJob = {
     AGENT_REVIEW_TIMEOUT_MINUTES: "",
     AGENT_TIMEOUT_MINUTES: "",
     AGENT_MAX_FIX_ROUNDS: "3",
+    AGENT_FIX_MIN_SEVERITY: "high",
     AGENT_SETUP: "",
   },
 };
@@ -114,7 +115,7 @@ const hang = (signal: AbortSignal, code: number): Promise<number> =>
 
 /** The files each subcommand writes on an ordinary pull request, where every phase goes ahead. */
 const ORDINARY: Readonly<Partial<Record<Subcommand, Canned>>> = {
-  "review:gate": { files: { "gate.json": { proceed: "true", sha: HEAD, budget: "3" } } },
+  "review:gate": { files: { "gate.json": { proceed: "true", sha: HEAD, budget: "3", threshold: "high" } } },
   "review:budget": { files: { "budget.json": { budget: "0", spent: "0", start: "false" } } },
   "review:collect-checks": { files: { "ci_status.md": "All green.", "ci_result.txt": "green" } },
   review: { files: { "verdict.json": { verdict: "approve", fixRound: false, open: 0 } } },
@@ -243,6 +244,7 @@ describe("the worker's job, where the gate refuses", () => {
       PR_STATE: "open",
       PR_MERGED: "false",
       MAX_FIX_ROUNDS: "3",
+      FIX_MIN_SEVERITY: "high",
     });
   });
 
@@ -399,6 +401,14 @@ describe("the worker's job, on an ordinary pull request", () => {
     expect(JOB.variables.AGENT_MAX_FIX_ROUNDS).toBe("3");
     expect(s.env("review:gate")["MAX_FIX_ROUNDS"]).toBe("3");
     expect(s.env("review:budget")).toMatchObject({ FIX_ROUND_BUDGET: "3", LOOP_TOKEN_SOURCE: "app", BASE_REF: "main" });
+  });
+
+  it("hands the runner the fix threshold the gate settled from AGENT_FIX_MIN_SEVERITY, as review.yml does", async () => {
+    const s = setup();
+    await runJob(JOB, s.edges);
+
+    expect(s.env("review:gate")["FIX_MIN_SEVERITY"]).toBe("high");
+    expect(s.env("review")["FIX_MIN_SEVERITY"]).toBe("high");
   });
 
   it("hands the runner and conclude a round to start, where the budget has one left, and none where it is spent", async () => {

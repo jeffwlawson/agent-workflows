@@ -4,6 +4,7 @@ import type { ReadingIo } from "../shared/command-io.js";
 import type { COMMANDS } from "../shared/contract.js";
 import type { InputValues } from "../shared/env.js";
 import { FINAL_REVIEW_MARK, PRD_BRANCH_PREFIX, REVIEW_LABEL } from "../shared/record.js";
+import { DEFAULT_FIX_MIN_SEVERITY } from "../shared/review-output.js";
 
 type Inputs = InputValues<(typeof COMMANDS)["review:gate"]["inputs"]>;
 type Io = ReadingIo<(typeof COMMANDS)["review:gate"]["outputs"]>;
@@ -19,22 +20,25 @@ type Io = ReadingIo<(typeof COMMANDS)["review:gate"]["outputs"]>;
  * - `sha`: the commit this run reviews.
  * - `budget`: the fix-round budget, which `review:budget` counts the rounds
  *   spent against after the checkout (#331).
+ * - `threshold`: the fix threshold, `low`, `medium` or `high` (#616), which
+ *   the runner places the review's open findings by.
  * - `round`: on a PRD PR, `slice` or `final`.
  */
-type Decision = "proceed" | "refusal" | "blocked" | "sha" | "budget" | "round";
+type Decision = "proceed" | "refusal" | "blocked" | "sha" | "budget" | "threshold" | "round";
 
 /**
  * `review:gate` (#420): everything the review job settles between its start
  * and its checkout, in the order it settles them. Whether this run reviews,
  * and which commit; a time limit that is not a positive integer; the
- * fix-round budget's value; and, on a PRD PR, a slice round or the final review.
+ * fix-round budget's value; the fix threshold's (#616); and, on a PRD PR, a
+ * slice round or the final review.
  *
  * It writes nothing to the record. The review job holds no write (#257), so a
  * refusal is decided here and said by the posting job, as it always was.
  *
  * Two kinds of no. **The pre-flight's**, a pull request that is closed or has
  * moved, is a decision, `proceed` false, and the command succeeds. **A
- * variable's**, the time limit or the budget, is refused the way a failed run
+ * variable's**, the time limit, the budget or the threshold, is refused the way a failed run
  * is: `refusal_reason.txt`, then a throw, so the job fails and the posting job
  * says this run didn't run, naming the variable (#253). The pre-flight has
  * settled the commit by then, so the error verdict has one to go on.
@@ -55,6 +59,7 @@ export const gate = async (inputs: Inputs, io: Io): Promise<void> => {
 
     refuseTimeLimit(inputs, io);
     Object.assign(decided, settleBudget(inputs, io));
+    decided.threshold = settleThreshold(inputs, io);
     const round = await settleRound(inputs, io.github, pr);
     if (round !== undefined) decided.round = round;
   } finally {
@@ -223,6 +228,31 @@ const budgetOf = (inputs: Inputs, io: Io): number => {
   // somewhere an arbitrary digit string does not.
   const digits = value.replace(/^0*/, "");
   return digits.length > 9 ? 999_999_999 : Number(digits);
+};
+
+/** What `AGENT_FIX_MIN_SEVERITY` may be set to (#616). */
+const FIX_MIN_SEVERITIES: readonly string[] = ["low", "medium", "high"];
+
+/**
+ * **The fix threshold** (#616): `FIX_MIN_SEVERITY`, the repository variable
+ * `AGENT_FIX_MIN_SEVERITY`, `low`, `medium` or `high`, unset meaning
+ * `medium`. A review whose open findings are all below it records them as
+ * minor findings and approves; one with any finding at or above it is the
+ * review this loop always posted. Any other value is refused, naming the
+ * variable and the values it takes, as the budget is: a threshold nobody
+ * wrote down is not one to guess, and `Medium` read as `medium` would be a
+ * guess.
+ */
+const settleThreshold = (inputs: Inputs, io: Io): string => {
+  const value = inputs.FIX_MIN_SEVERITY === "" ? DEFAULT_FIX_MIN_SEVERITY : inputs.FIX_MIN_SEVERITY;
+  if (!FIX_MIN_SEVERITIES.includes(value)) {
+    refuse(
+      io,
+      `The repository variable \`AGENT_FIX_MIN_SEVERITY\` is \`${inputs.FIX_MIN_SEVERITY}\`. It must be \`low\`, \`medium\` or \`high\`, or delete it to use the default of \`${DEFAULT_FIX_MIN_SEVERITY}\`. Then add \`${REVIEW_LABEL}\` again.`,
+    );
+  }
+  console.log(`Fix threshold ${value}.`);
+  return value;
 };
 
 /**

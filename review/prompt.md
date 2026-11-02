@@ -404,10 +404,15 @@ style choice, a "consider…", a rename you would accept being overruled on is n
 severity. If you cannot name the defect and its consequence, it is not a `low` finding, it is not
 a finding.
 
-Severity is **display and ordering only**. It is read by nobody deciding anything: the outcome
-comes from how many findings there are, from `needsYou` and from the check results, exactly as it
-did before severities existed. It is there so the worst thing you found is the first thing the
-reader meets. Rate honestly: inflating one buys nothing and costs the reader the ordering.
+Severity orders the record, so the worst thing you found is the first thing the reader meets, and
+it decides **one thing**, through the repository's fix threshold, never anything finer. Where any
+finding left open on the pull request (yours, and the earlier ones you rule still open) is at or
+above the threshold, every finding is posted as a thread, lows included, exactly as it would be
+without one. Where none is, none is posted as a thread: each is recorded as a **minor finding**,
+filed as a follow-up when the pull request merges, and the outcome comes from the check results.
+No finding is dropped either way, and `high` is never below the threshold. So rate honestly, and
+know what a rating costs: an inflated one holds up an approval and buys a fix round, and an
+understated one sends a real problem to a follow-up instead of a fix.
 
 # WHAT YOU WRITE BESIDE THE FINDINGS
 

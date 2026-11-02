@@ -59,6 +59,8 @@ import {
   deriveVerdict,
   followUpsCap,
   MAX_FOLLOW_UPS,
+  carriedMinor as carriedAsMinor,
+  placeByThreshold,
   recordFollowUps,
   type EarlierFollowUps,
   reviewBodyHandOver,
@@ -108,6 +110,14 @@ const USAGE = usageLedger((usage) => writeJson("usage.json", usage));
 const PR_NUMBER = INPUTS.PR_NUMBER;
 const BRANCH = INPUTS.BRANCH;
 const BASE_REF = INPUTS.BASE_REF;
+
+/**
+ * The repository's fix threshold, `AGENT_FIX_MIN_SEVERITY`, as `review:gate`
+ * settled it (#616): where every finding open on the pull request is below
+ * it, none is threaded, each is recorded as a minor finding, and the review
+ * approves on green checks.
+ */
+const THRESHOLD: Severity = INPUTS.FIX_MIN_SEVERITY;
 
 /**
  * The PRD this pull request delivers, when its head is a PRD branch:
@@ -299,13 +309,40 @@ try {
   const redCheck = readRedCheck(INPUTS.RED_CHECK_CONFIGURED === "true", INPUTS.RED_CHECK_FILE);
   console.log(`Red check: ${describeRedCheck(redCheck)}.`);
 
+  // What every earlier review on this pull request recorded in its follow-ups
+  // payload, read while the token is in hand. On a PRD PR every round's is
+  // carried forward (#247); on any pull request the minor findings are
+  // (#616), from the newest review that recorded its list, since each
+  // review carries the ones before it.
+  const reviews = fetchReviews(INPUTS.GH_REPO, PR_NUMBER);
+  const earlier = earlierFollowUps(reviews, LOOP_ACCOUNTS);
+  for (const skipped of earlier.skipped) {
+    console.log(`::warning::Follow-ups not carried forward from ${skipped}.`);
+  }
+  const carriedMinor = new Set(
+    (round === undefined ? (earlier.carried.at(-1)?.minor ?? []) : earlier.carried.flatMap((e) => e.minor ?? [])).flatMap((entry) =>
+      entry.id === undefined ? [] : [entry.id],
+    ),
+  );
+
+  // A thread an earlier review resolved as minor (#616) and GitHub did not
+  // close, or whose finding an earlier review already recorded as minor, is
+  // not open: it is a minor finding, carried by its id. Its resolve is
+  // retried, replying only where the reply did not land, and it is handed to
+  // nothing that rules on what is open.
+  const pendingMinor = context.carriedFindings.filter((f) => f.closedAs === "MINOR" || carriedMinor.has(f.id));
+  const carriedFindings = context.carriedFindings.filter((f) => !pendingMinor.includes(f));
+  if (pendingMinor.length > 0) {
+    console.log(`Threads already recorded as minor findings, their resolve retried: ${pendingMinor.length}.`);
+  }
+
   // What `review:advance` parks the chain with (PRD #222), as data (ADR
   // 0007), written now because a failure later has no chance to: it parks on
   // the PRD's parent if the review or its posting fails. What is open is what
   // was open before this review, since nothing after this point is known to
   // have happened. Written again, with the review's ruling, once it has one.
   const parkRound = round === undefined ? undefined : toParkRound(round);
-  const openBefore = context.carriedFindings.map(carriedForPark);
+  const openBefore = carriedFindings.map(carriedForPark);
   if (parkRound !== undefined) writeJson("park.json", { round: parkRound, carried: openBefore } satisfies ParkHandOver);
 
   // The PRD branch, read once for what follows, while the token is in hand.
@@ -387,7 +424,7 @@ try {
   // once the review knows what it leaves open. A list that cannot be read is
   // left as it stands, and says so: it is a view of the chain, and a review
   // is worth more than it.
-  const writeProgress = (open: number): void => {
+  const writeProgress = (open: number, minor = 0): void => {
     if (round === undefined) return;
     if (prdBranch === undefined) {
       console.log("::warning::The PRD PR's progress list could not be rendered, so it is left as it stands.");
@@ -407,9 +444,10 @@ try {
             },
           }),
       open,
+      ...(minor === 0 ? {} : { minor }),
     } satisfies ProgressHandOver);
   };
-  writeProgress(context.carriedFindings.length);
+  writeProgress(carriedFindings.length);
 
   // On a PRD PR, the follow-ups (#247): what every earlier round on it
   // recorded, carried forward into this review's record, since `follow-ups`
@@ -418,19 +456,19 @@ try {
   // regular pull request's review restates its list every round, and its cap
   // stays three. The final review also reads each slice round's criteria
   // record off the same reviews, by the commit each one reviewed.
-  let carried: EarlierFollowUps[] = [];
-  let resolvedEarlier: string[] = [];
+  //
+  // Off a PRD PR, the minor findings alone (#616): the newest review's, which
+  // this review rules on by id and carries on, while its out-of-scope list is
+  // still a complete restatement.
+  const newestMinor = earlier.carried.at(-1)?.minor ?? [];
+  let carried: EarlierFollowUps[] = newestMinor.length === 0 ? [] : [{ minor: newestMinor, moved: [], rest: [] }];
+  let resolvedEarlier: string[] = newestMinor.length === 0 ? [] : earlier.resolved;
   let cap = MAX_FOLLOW_UPS;
   let slicesCriteria: SliceCriteria[] | undefined;
   let slicesRedTests: SliceRedTests[] | undefined;
   if (round !== undefined) {
-    const reviews = fetchReviews(INPUTS.GH_REPO, PR_NUMBER);
-    const earlier = earlierFollowUps(reviews, LOOP_ACCOUNTS);
     carried = earlier.carried;
     resolvedEarlier = earlier.resolved;
-    for (const skipped of earlier.skipped) {
-      console.log(`::warning::Follow-ups not carried forward from ${skipped}.`);
-    }
     if (prdBranch === undefined) {
       console.log(`::warning::The landed slices could not be counted, so the follow-ups cap is ${cap}.`);
     } else {
@@ -445,6 +483,9 @@ try {
       `Follow-ups: ${carried.reduce((n, e) => n + e.moved.length + e.rest.length, 0)} recorded by earlier rounds, carried forward under a cap of ${cap}; ${resolvedEarlier.length} ruled resolved by an earlier round and left out.`,
     );
   }
+  console.log(
+    `Minor findings recorded by earlier reviews and carried: ${dedupeFollowUps(carried.flatMap((e) => e.minor ?? []), new Set()).length}; fix threshold ${THRESHOLD}.`,
+  );
 
   // All `gh`-based context fetching is done; the review agent must not hold the
   // GitHub token (it has no legitimate use for it, and posting happens in a
@@ -478,7 +519,7 @@ try {
           ? renderRedCheckForFinal(slicesRedTests)
           : renderRedCheck(redCheck, headSha),
       HISTORY: describeHistory(history),
-      OPEN_FINDINGS: renderCarriedFindings(context.carriedFindings),
+      OPEN_FINDINGS: renderCarriedFindings(carriedFindings),
       SETTLED_FINDINGS: renderSettledFindings(context.settledFindings),
       FIX_NOTES: renderNotesForReview(context.fixNotes),
       PR_DIFF: context.diff,
@@ -491,7 +532,10 @@ try {
           ? "**This review writes them.** It is the final review, so the workflow replaces the title and the summary block with yours, laid out as the section below says."
           : "**This review writes them.** Something was pushed since the summary was last written, so the workflow replaces the title and the summary block with yours.",
       FINAL_SUMMARY: final ? FINAL_SUMMARY_SHAPE : "",
-      CARRIED_FOLLOW_UPS: round === undefined ? NOT_CARRIED : renderCarriedFollowUps(carried),
+      CARRIED_FOLLOW_UPS:
+        round === undefined && carried.length === 0
+          ? NOT_CARRIED
+          : renderCarriedFollowUps(carried, round === undefined),
     },
     output: sandcastle.Output.object({ tag: "output", schema: reviewOutputSchema }),
     extractionPrompt: fs.readFileSync(path.join(import.meta.dirname, "extraction.md"), "utf8"),
@@ -521,7 +565,7 @@ try {
     ...result.output,
     findings: [...result.output.findings, ...criteriaRulings.findings],
   };
-  const { placed, unanchored } = placeFindings(reviewed.findings, context.diffLines);
+  const { placed: allPlaced, unanchored } = placeFindings(reviewed.findings, context.diffLines);
 
   // **Unless the path names nothing.** "Outside the diff" only means "not this
   // pull request's" for a file that exists; a path that is no file at the
@@ -547,10 +591,28 @@ try {
   //
   // A carried finding the review said nothing about stays open. That is the
   // safe direction and it is `verifyCarried`'s to take, not this file's.
-  const { resolutions, stillOpen, resolved } = verifyCarried(
-    context.carriedFindings,
-    output.verified,
-  );
+  const verification = verifyCarried(carriedFindings, output.verified);
+  const { resolved } = verification;
+
+  // **Where the open findings go**, decided once, here, by the repository's
+  // threshold (#616): this review's findings that would be threaded and the
+  // carried ones still open. Where any one meets it, the review is the one
+  // this loop always posted, every finding a thread, lows included. Where
+  // none does, none is threaded: each is recorded as a minor finding, the
+  // carried ones' threads are resolved as minor, and nothing is open, so the
+  // checks decide the verdict. Never reordered and never dropped.
+  const placement = placeByThreshold({ placed: allPlaced, stillOpen: verification.stillOpen, threshold: THRESHOLD });
+  const placed = placement.placed;
+  const stillOpen = placement.stillOpen;
+  const resolutions: ThreadResolutions = [
+    ...verification.resolutions,
+    ...placement.transitioned.map((f) => ({ threadId: f.threadId, reason: "MINOR" as const, threshold: THRESHOLD, alreadyReplied: false })),
+    ...pendingMinor.map((f) => ({ threadId: f.threadId, reason: "MINOR" as const, threshold: THRESHOLD, alreadyReplied: f.closedAs === "MINOR" })),
+  ];
+  // A thread already recorded as minor whose finding no earlier payload holds
+  // (its review's post went out without one) is recorded here, so resolving
+  // its thread cannot lose it.
+  const pendingEntries = pendingMinor.filter((f) => !carriedMinor.has(f.id)).map(carriedAsMinor);
   // The third channel, serialised into the body on the way out. It cannot stay
   // a sibling of the findings in the posted artifact: a review has one body, and
   // the body is the only part of a review that is still readable — by a human
@@ -593,11 +655,13 @@ try {
     carried: followUpsCarried,
     resolved: resolvedFollowUpIds,
     resolvedNow: resolvedFollowUps,
+    minor: minorFindings,
   } = recordFollowUps(unanchored, [...notes.promoted, ...output.followUps], unplaceable, {
     cap,
     carried,
     resolved: resolvedEarlier,
     rulings: output.followUpRulings ?? [],
+    minor: [...pendingEntries, ...placement.minor],
   });
 
   // The verdict, derived from the review and the checks rather than written by
@@ -609,12 +673,13 @@ try {
   // What the fix round this review follows closed of the findings it was
   // given, matched by id (#202). New findings this review raised are in
   // neither half, so they neither count as progress nor reset anything.
-  const progress = fixRoundProgress(history, context.carriedFindings, resolved);
+  const progress = fixRoundProgress(history, carriedFindings, resolved);
   const verdict = deriveVerdict(output, {
     ci,
     fixRoundProgress: progress,
     stillOpen: stillOpen.length,
     movedToFollowUps: unanchored.length,
+    minorFindings: placement.minorOwn,
     autoFix: willAutoFix(),
     // A review with no header (#442): on a PRD PR it asks for no round,
     // which the budget there could not count.
@@ -661,6 +726,7 @@ try {
       stillOpen,
       resolved,
       followUps,
+      minorFindings,
       droppedFollowUps,
       followUpsCap: followUpsCapUsed,
       followUpsCarried,
@@ -741,6 +807,7 @@ try {
     verdict: verdict.verdict,
     fixRound: verdict.startsFixRound === true,
     open,
+    ...(minorFindings.length === 0 ? {} : { minor: minorFindings.length }),
     ...(verdict.stop === undefined ? {} : { stop: verdict.stop }),
   } satisfies VerdictHandOver);
 
@@ -769,25 +836,33 @@ try {
   // The progress table and status line again, now that this review knows
   // what it leaves open (#298). Off a PRD PR, publish writes the status line
   // from `verdict.json`.
-  writeProgress(open);
+  writeProgress(open, minorFindings.length);
 
   console.log("Review complete.");
   console.log(
-    `Verdict: ${verdict.verdict} (${countFixBeforeMerge(output, unanchored.length)} to fix before merge, checks ${ci}).`,
+    `Verdict: ${verdict.verdict} (${countFixBeforeMerge(output, unanchored.length) - placement.minorOwn} to fix before merge, checks ${ci}).`,
   );
+  console.log(
+    placement.kind === "all below"
+      ? `Placement: every open finding is below the fix threshold of ${THRESHOLD}, so none is threaded: ${placement.minorOwn} of this review's and ${placement.transitioned.length} carried recorded as minor findings, the carried threads resolved.`
+      : placement.kind === "mixed"
+        ? `Placement: an open finding meets the fix threshold of ${THRESHOLD}, so every finding is threaded.`
+        : "Placement: nothing is open.",
+  );
+  console.log(`Minor findings: ${minorFindings.length} recorded on this pull request.`);
   if (progress !== undefined) {
     console.log(
       `Fix round progress: ${progress.closed} of the ${progress.given} findings it was given closed by this review.`,
     );
   }
-  const placements = (kind: string): number => placed.filter((p) => p.placement === kind).length;
+  const placements = (kind: string): number => allPlaced.filter((p) => p.placement === kind).length;
   const missed = output.findings.filter(isPreviouslyMissed).length;
   console.log(
     `Findings: ${output.findings.length} produced: ${placements("line")} on a line, ${placements("file")} on a file, ${unanchored.length} moved to follow-ups for having no anchor in the diff; ${missed} in code an earlier review had already read.`,
   );
   // The ratings, for a human explaining why the record reads the way it does.
-  // They change no outcome above (#113) — which is exactly why the log is the
-  // only place this run says them out loud besides the body.
+  // They decide one thing above, through the threshold (#616), and nothing
+  // finer, which the placement line says.
   const rated = (severity: Severity): number =>
     output.findings.filter((f) => f.severity === severity).length;
   console.log(`Severity: ${rated("high")} high, ${rated("medium")} medium, ${rated("low")} low.`);
@@ -797,7 +872,7 @@ try {
   const closedAs = (reason: ResolutionReason): number =>
     resolutions.filter((r) => r.reason === reason).length;
   console.log(
-    `Earlier findings: ${context.carriedFindings.length} open before this review: ${closedAs("ADDRESSED")} verified fixed, ${closedAs("WONT_FIX")} closed on a maintainer's decline, ${stillOpen.length} still open.`,
+    `Earlier findings: ${carriedFindings.length} open before this review: ${closedAs("ADDRESSED")} verified fixed, ${closedAs("WONT_FIX")} closed on a maintainer's decline, ${closedAs("MINOR") - pendingMinor.length} recorded as minor, ${stillOpen.length} still open.`,
   );
   console.log(`Settled by a maintainer and not raised again: ${context.settledFindings.length}.`);
   console.log(
@@ -821,20 +896,36 @@ try {
  * only what is new, and a second copy of one of these would be filed twice.
  * Each with the id the review rules on it by (#495); one from before ids has
  * none to name, and is kept.
+ *
+ * And on any pull request the minor findings an earlier review recorded
+ * (#616), which are this pull request's own code: carried the same way, and
+ * never raised again as a finding, since a later commit fixing one is what
+ * the ruling is for. Off a PRD PR they are all that is carried, and the
+ * out-of-scope list is still restated (`minorOnly`).
  */
-function renderCarriedFollowUps(carried: readonly EarlierFollowUps[]): string {
+function renderCarriedFollowUps(carried: readonly EarlierFollowUps[], minorOnly = false): string {
+  const minor = dedupeFollowUps(carried.flatMap((earlier) => earlier.minor ?? []), new Set());
   const entries = dedupeFollowUps(
-    carried.flatMap((earlier) => [...earlier.moved, ...earlier.rest]),
+    carried.flatMap((earlier) => [...(earlier.minor ?? []), ...earlier.moved, ...earlier.rest]),
     new Set(),
   );
   const lines = entries.map(
     (entry) =>
-      `- ${entry.id === undefined ? "(no id: kept)" : `\`${entry.id}\``} **${entry.title.replace(/\s+/g, " ").trim()}** · \`${entry.location}\``,
+      `- ${entry.id === undefined ? "(no id: kept)" : `\`${entry.id}\``}${entry.kind === "minor" ? " minor finding:" : ""} **${entry.title.replace(/\s+/g, " ").trim()}** · \`${entry.location}\``,
   );
   return [
+    ...(minorOnly ? [NOT_CARRIED, "", "Beside them, the minor findings earlier reviews recorded:", ""] : []),
     lines.length === 0 ? "(None yet.)" : lines.join("\n"),
     "",
-    "**These are carried forward by the workflow**, into this review's record, and filed when this pull request merges. Do not record any of them again in `followUps`: record only what is new in this round.",
+    minorOnly
+      ? "**These minor findings are carried forward by the workflow**, into this review's record, and filed when this pull request merges. Do not record any of them in `followUps`, and do not raise any of them again as a finding: each is already recorded."
+      : "**These are carried forward by the workflow**, into this review's record, and filed when this pull request merges. Do not record any of them again in `followUps`: record only what is new in this round.",
+    ...(minor.length > 0 && !minorOnly
+      ? [
+          "",
+          "A **minor finding** is one in this pull request's own code that an earlier review recorded rather than posted as a thread, because it was below the repository's fix threshold. Do not raise one again as a finding: it is already recorded.",
+        ]
+      : []),
     ...(entries.some((entry) => entry.id !== undefined)
       ? [
           "",

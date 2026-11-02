@@ -5,16 +5,26 @@ import { PACKAGE_NAME, VERSION } from "./manifest.js";
 import { FINDING_MARKER, RESOLUTION_MARKER } from "./record.js";
 
 /**
- * How bad a finding is, for **display and ordering and nothing else** (#109,
- * decision 9).
+ * How bad a finding is: for display and ordering, and for **one decision
+ * through the repository's threshold** (#616, amending #109 decision 9).
  *
- * It is deliberately not a fourth verdict input: `deriveVerdict` never reads
- * it, and a test permutes every finding's severity and holds the verdict
- * identical. The reason is the one that retired *judgement call* in #96 — a
- * dial the model turns decides the outcome, and every review then has to be
- * read to find out which way it was turned. What severity buys instead is a
- * reader's eye: three high findings and one low read differently from four of
- * each, and the list is sorted so the first one they meet is the worst.
+ * With `AGENT_FIX_MIN_SEVERITY` at `low` it decides nothing, as it always did:
+ * `deriveVerdict` never reads it, and a test permutes every finding's severity
+ * and holds the outcome identical. Otherwise it decides one thing, once per
+ * review, at publish (`placeByThreshold` in `shared/review-output.ts`):
+ * whether the review's open findings are threads that block the merge (any
+ * one of them meets the threshold) or **minor findings**, recorded and filed
+ * at merge (none does). It never reorders the record, never drops a finding,
+ * since every one is in the record as a thread or a minor entry, and decides
+ * nothing finer. `high` meets every threshold, and a finding with no rating
+ * to read meets it (`meetsThreshold`), so a missing rating can only block an
+ * approval, never grant one.
+ *
+ * The reason it decided nothing before is the one that retired *judgement
+ * call* in #96: a dial the model turns decides the outcome. The threshold is a
+ * maintainer's setting rather than a dial the model holds, and the model still
+ * rates honestly: an inflated rating blocks an approval and buys a round, and
+ * an understated one sends a real problem to a follow-up.
  *
  * **Low is a real but small defect, never a nit.** The bar for posting anything
  * at all has not moved: a preference, a "consider…", a rename the reviewer
@@ -41,6 +51,9 @@ export const DEFAULT_SEVERITY: Severity = "medium";
 
 const isSeverity = (value: string): value is Severity =>
   (SEVERITIES as readonly string[]).includes(value);
+
+/** Whether `value` is a rating this file recognises, in any casing the model reaches for. */
+export const isRated = (value: unknown): boolean => typeof value === "string" && isSeverity(value.trim().toLowerCase());
 
 /** Any casing the model reaches for, and `DEFAULT_SEVERITY` for anything else. */
 export const parseSeverity = (value: unknown): Severity => {
@@ -180,6 +193,16 @@ export const severityRank = (severity: Severity | undefined): number =>
   severity === undefined ? SEVERITIES.length : SEVERITIES.indexOf(severity);
 
 /**
+ * Whether a finding rated `severity` **meets** the repository's threshold
+ * (#616): at or above it, so `high` meets every threshold and `low` meets only
+ * `low`. A finding with no rating to read meets it, whatever the threshold:
+ * a missing rating can only block an approval or cause a round, never grant
+ * or skip one.
+ */
+export const meetsThreshold = (severity: Severity | undefined, threshold: Severity): boolean =>
+  severity === undefined || SEVERITIES.indexOf(severity) <= SEVERITIES.indexOf(threshold);
+
+/**
  * One problem the review found in this pull request, as the model produced it.
  *
  * Called a *finding* rather than an inline comment because where it is posted
@@ -211,10 +234,20 @@ export interface Finding {
   readonly body: string;
   /**
    * Always present after parsing, defaulted rather than required — see
-   * `DEFAULT_SEVERITY`. Read by the record's ordering and by nothing that
-   * decides anything.
+   * `DEFAULT_SEVERITY`. Read by the record's ordering and, through the
+   * repository's threshold, by `placeByThreshold` (#616).
    */
   readonly severity: Severity;
+  /**
+   * Set where this finding **meets every threshold** whatever `severity` says
+   * (#616): the model gave it no rating this file recognises, so the
+   * displayed `medium` is a default rather than a judgement, or it is an
+   * acceptance criterion the review ruled unmet (`applyCriteriaRulings`),
+   * since an approval over a criterion the review says is unmet is the
+   * contradiction the threshold must not make. Written by the workflow, never
+   * read from a model's answer.
+   */
+  readonly alwaysMeets?: true;
 }
 
 /**
@@ -443,7 +476,7 @@ const strippedOfLabels = (line: string): string =>
  * returns a whole body, and a strip that ran unconditionally would take the `>`
  * off a body the model chose to open with a quote.
  */
-const withoutOpeningLabel = (body: string): string => {
+export const withoutOpeningLabel = (body: string): string => {
   const lines = body.split("\n");
   const first = lines[0] ?? "";
   const stripped = withoutLabels(first);
@@ -597,6 +630,18 @@ const withoutMarkers = (text: string): string =>
     .replace(EVERY_MARKER, "")
     .replace(EVERY_RESOLUTION_MARKER, "")
     .replace(/[^\S\n]+$/gm, "");
+
+/**
+ * The finding a thread of this loop's was posted with, read back off the
+ * thread's opening comment: the markers taken out, the opening badge line
+ * (`threadBody`'s) and any opening label dropped, and any other badge reduced to its word, since
+ * this is text a minor finding is recorded and filed with (#616).
+ */
+export const threadFindingBody = (posted: string): string => {
+  const lines = withoutMarkers(posted).trim().split("\n");
+  while (lines.length > 0 && strippedOfLabels(lines[0] ?? "") === "") lines.shift();
+  return withSeverityBadgesAsText(withoutOpeningLabel(lines.join("\n"))).trim();
+};
 
 /**
  * The same strip over **every string a model wrote**, wherever it sits in the
@@ -753,6 +798,9 @@ export const parseFinding = (value: unknown): Finding => {
     ...(startLine === undefined ? {} : { startLine }),
     body,
     severity: parseSeverity(record["severity"]),
+    // No rating to read is not a `medium` one: it meets every threshold, so a
+    // rating the model left out can never turn a finding into a minor one.
+    ...(isRated(record["severity"]) ? {} : { alwaysMeets: true as const }),
   };
 };
 
@@ -962,6 +1010,14 @@ export interface HandedFinding {
   readonly line: number;
   readonly startLine?: number | undefined;
   readonly previouslyMissed: boolean;
+  /**
+   * Set where the finding meets every threshold whatever `severity` says
+   * (`Finding.alwaysMeets`, #616). Its thread's marker then carries **no**
+   * severity, so the review that carries it reads it back unrated, which
+   * meets every threshold too: the mark survives the round rather than
+   * turning into the displayed `medium` or the criterion's own rating.
+   */
+  readonly alwaysMeets?: true | undefined;
 }
 
 /** The placed findings, as the runner hands them over: one each, in order. */
@@ -976,6 +1032,7 @@ export const findingsHandOver = (placed: readonly PlacedFinding[]): HandedFindin
     line: finding.line,
     ...(finding.startLine === undefined ? {} : { startLine: finding.startLine }),
     previouslyMissed: isPreviouslyMissed(finding),
+    ...(finding.alwaysMeets === true ? { alwaysMeets: true as const } : {}),
   }));
 
 /**
@@ -1017,7 +1074,10 @@ const threadBody = (finding: HandedFinding): string => {
     .filter((part) => part !== undefined)
     .join(" · ");
 
-  return [opening, withoutOpeningLabel(finding.body), findingMarker(finding.id, finding.severity, finding.title)]
+  // No severity on the marker of a finding that meets every threshold (#616):
+  // read back, an unrated finding meets it, so the mark is carried with it.
+  const marked = findingMarker(finding.id, finding.alwaysMeets === true ? undefined : finding.severity, finding.title);
+  return [opening, withoutOpeningLabel(finding.body), marked]
     .filter((part) => part !== "")
     .join("\n\n");
 };

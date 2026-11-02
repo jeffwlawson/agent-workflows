@@ -89,6 +89,12 @@ export interface ProgressInputs {
    * none.
    */
   readonly open?: number | undefined;
+  /**
+   * The minor findings the round that is current leaves recorded (#616),
+   * where it is known: said beside its status where it is approved and there
+   * are any, since an approval over minor findings is not one over nothing.
+   */
+  readonly minor?: number | undefined;
 }
 
 /** What a round ended or stands on: running, or else the verdict's reading. */
@@ -152,12 +158,13 @@ const UNKNOWN = "–";
 
 /**
  * A state's cell: its icon and word, and the open findings where the state is
- * waiting on them and there are any. An approved round always has none.
+ * waiting on them and there are any. An approved round has none open, and
+ * says how many minor findings it recorded where it recorded any (#616).
  */
-const statusCell = (state: SliceState, open: number | undefined): string =>
+const statusCell = (state: SliceState, open: number | undefined, minor?: number): string =>
   `${ICON[state]} ${capitalised(state)}${
     (state === "parked" || state === "fixing") && open !== undefined && open > 0 ? ` · ${open} open` : ""
-  }`;
+  }${state === "approved" && minor !== undefined && minor > 0 ? ` · ${minor} minor` : ""}`;
 
 const countCells = (count: RoundCount | undefined): [string, string] =>
   count === undefined
@@ -165,10 +172,10 @@ const countCells = (count: RoundCount | undefined): [string, string] =>
     : [count.latestReview === undefined ? String(count.reviews) : `[${count.reviews}](${count.latestReview})`, String(count.fixes)];
 
 /** The final review's row, as it closes the table. */
-const finalRow = (state: FinalReviewState, inputs: Pick<ProgressInputs, "prUrl" | "rounds" | "open">): string => {
+const finalRow = (state: FinalReviewState, inputs: Pick<ProgressInputs, "prUrl" | "rounds" | "open" | "minor">): string => {
   const [reviews, fixes] = countCells(inputs.rounds?.final);
   const diff = inputs.prUrl === undefined ? UNKNOWN : `[all](${inputs.prUrl}/files)`;
-  return `| Final review | ${statusCell(state, inputs.open)} | ${reviews} | ${fixes} | ${diff} |`;
+  return `| Final review | ${statusCell(state, inputs.open, inputs.minor)} | ${reviews} | ${fixes} | ${diff} |`;
 };
 
 /**
@@ -205,7 +212,7 @@ export const renderProgressList = (inputs: ProgressInputs): string => {
     const last = range?.commits.at(-1);
     const diff =
       inputs.prUrl !== undefined && isSha(range?.base) && isSha(last) ? `[diff](${inputs.prUrl}/files/${range?.base}..${last})` : UNKNOWN;
-    return `${rowPrefix(i + 1, subIssue)} ${statusCell(state, isCurrent ? inputs.open : undefined)} | ${reviews} | ${fixes} | ${diff} |`;
+    return `${rowPrefix(i + 1, subIssue)} ${statusCell(state, isCurrent ? inputs.open : undefined, isCurrent ? inputs.minor : undefined)} | ${reviews} | ${fixes} | ${diff} |`;
   });
   const final =
     inputs.finalReview === "requested" ? [finalRow(roundState(inputs), inputs), FINAL_REVIEW_MARK] : [];
@@ -224,6 +231,10 @@ export const renderProgressList = (inputs: ProgressInputs): string => {
 const findings = (open: number | undefined): string | undefined =>
   open === undefined || open === 0 ? undefined : `${open} ${open === 1 ? "finding" : "findings"} open`;
 
+/** How many minor findings an approval recorded (#616), or nothing where it recorded none. */
+const minorRecorded = (minor: number | undefined): string =>
+  minor === undefined || minor === 0 ? "" : ` · ${minor} minor ${minor === 1 ? "finding" : "findings"} recorded`;
+
 /** The status line for the state given, without its markers. */
 export const renderPrdStatus = (inputs: ProgressInputs): string => {
   const n = inputs.subIssues.length;
@@ -233,7 +244,11 @@ export const renderPrdStatus = (inputs: ProgressInputs): string => {
     const seeIt = inputs.rounds?.final.latestReview;
     const link = seeIt === undefined ? "" : ` [See it](${seeIt})`;
     if (state === "in review") return `**🔍 Final review of all ${n} slices**`;
-    if (state === "approved") return `**✅ Final review approved:** ready for you to merge.${link}`;
+    if (state === "approved") {
+      return inputs.minor === undefined || inputs.minor === 0
+        ? `**✅ Final review approved:** ready for you to merge.${link}`
+        : `**✅ Final review approved:** ready for you to merge, with ${inputs.minor} minor ${inputs.minor === 1 ? "finding" : "findings"} recorded.${link}`;
+    }
     const word = state === "fixing" ? "🔧 Final review fixing" : "⏸️ Final review parked";
     return `**${word}:** ${open ?? "no findings open"}.${link}`;
   }
@@ -248,7 +263,7 @@ export const renderPrdStatus = (inputs: ProgressInputs): string => {
   const seeIt = inputs.rounds?.slices[current.subIssue]?.latestReview;
   const link = seeIt === undefined ? "" : ` [See it](${seeIt})`;
   if (state === "in review") return `**🔍 Reviewing ${slice}** · #${current.subIssue}`;
-  if (state === "approved") return `**✅ ${capitalised(slice)} approved** · #${current.subIssue}`;
+  if (state === "approved") return `**✅ ${capitalised(slice)} approved** · #${current.subIssue}${minorRecorded(inputs.minor)}`;
   const word = state === "fixing" ? `🔧 Fixing ${slice}` : `⏸️ ${capitalised(slice)} parked`;
   return `**${word}** · #${current.subIssue}${open === undefined ? "" : ` · ${open}`}.${link}`;
 };
@@ -317,11 +332,18 @@ export const renderPrStatus = (review: {
   readonly verdict: Verdict;
   readonly startsFixRound: boolean;
   readonly open: number;
+  /** The minor findings the review leaves recorded (#616); absent is none. */
+  readonly minor?: number | undefined;
   /** The review, once posted, or the slot the posting job puts its link in. */
   readonly review: string;
 }): string => {
   const link = `[See it](${review.review})`;
-  if (review.verdict === "approval recommended") return `**✅ Ready for you:** the review recommends approval. ${link}`;
+  if (review.verdict === "approval recommended") {
+    const minor = review.minor ?? 0;
+    return minor === 0
+      ? `**✅ Ready for you:** the review recommends approval. ${link}`
+      : `**✅ Ready for you:** the review recommends approval, with ${minor} minor ${minor === 1 ? "finding" : "findings"} recorded. ${link}`;
+  }
   if (review.verdict === "needs a closer look") return `**⏸️ Parked:** the review needs a closer look. ${link}`;
   const open = findings(review.open) ?? "no findings open";
   return review.startsFixRound ? `**🔧 Fixing:** ${open}. ${link}` : `**⏸️ Parked:** ${open}. ${link}`;
@@ -374,6 +396,8 @@ export interface RoundEnd {
   readonly review: string;
   /** The findings open as this review leaves them. */
   readonly open: number;
+  /** The minor findings it leaves recorded (#616); absent is none. */
+  readonly minor?: number | undefined;
   readonly prUrl?: string | undefined;
 }
 
@@ -410,7 +434,15 @@ export const progressAtRoundEnd = (
     running: ProgressInputs["running"],
     fixes: number,
   ): { readonly progress: string; readonly status: string } => {
-    const inputs: ProgressInputs = { ...branch, verdict, running, prUrl: end.prUrl, rounds: counted(fixes), open: end.open };
+    const inputs: ProgressInputs = {
+      ...branch,
+      verdict,
+      running,
+      prUrl: end.prUrl,
+      rounds: counted(fixes),
+      open: end.open,
+      ...(end.minor === undefined || end.minor === 0 ? {} : { minor: end.minor }),
+    };
     return { progress: renderProgressList(inputs), status: statusBlock(renderPrdStatus(inputs)) };
   };
   return {

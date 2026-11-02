@@ -32,12 +32,13 @@ import {
   fetchPullRequestFeedback,
   nothingToActOn,
   refusalReason,
+  renderMinorFindingsForFix,
   surfaceText,
   unreadableNote,
 } from "../shared/pr-feedback.js";
 import { fetchPullRequestContext } from "../review/review-context.js";
 import { findingMarker, severityBadge } from "../shared/review-findings.js";
-import { criteriaCase, reviewRecord } from "../shared/review-output.js";
+import { criteriaCase, followUpsPayload, reviewRecord, type FollowUp } from "../shared/review-output.js";
 import { carriedFindings, declineReply, resolutionReply } from "../shared/review-verification.js";
 import { loopAccounts } from "../shared/loop-accounts.js";
 
@@ -1556,6 +1557,7 @@ describe("the findings an earlier review left open", () => {
         text: "src/queue.ts:206 · the guard runs after the return",
         title: "the guard runs after the return",
         anchor: "src/queue.ts:206",
+        body: "the guard runs after the return",
       },
     ]);
   });
@@ -1614,6 +1616,7 @@ describe("the findings an earlier review left open", () => {
         text: "src/queue.ts:206 · the guard runs after the return",
         title: "the guard runs after the return",
         anchor: "src/queue.ts:206",
+        body: "the guard runs after the return",
       },
     ]);
   });
@@ -2272,6 +2275,7 @@ describe("a finding the maintainer has settled", () => {
         text: "src/queue.ts:206 · the guard runs after the return",
         title: "the guard runs after the return",
         anchor: "src/queue.ts:206",
+        body: "the guard runs after the return",
         maintainerReply: {
           login: "maintainer",
           body: "Won't fix — the duplicate write is intended here.",
@@ -2423,6 +2427,7 @@ describe("a thread already carrying this workflow's closing reply", () => {
         text: "src/queue.ts:206 · the guard runs after the return",
         title: "the guard runs after the return",
         anchor: "src/queue.ts:206",
+        body: "the guard runs after the return",
         closedAs: "ADDRESSED",
       },
     ]);
@@ -2919,5 +2924,116 @@ describe("a diff too large to read", () => {
     expect(() => fetchPullRequestFeedback("o/r", "12", "main", ACCOUNTS)).toThrow(unrelated);
     expect(exit).not.toHaveBeenCalled();
     expect(fs.existsSync(path.join(scratch, "failure_reason.txt"))).toBe(false);
+  });
+});
+
+/**
+ * **What a fix run is handed of the minor findings** (#616). In a round a
+ * `medium` started, the lows are threads like the medium, so they reach the
+ * agent in `INLINE_COMMENTS` and among the threads it owes an outcome on; and
+ * the minor findings the newest review recorded reach it beside them, in
+ * `# MINOR FINDINGS`, read off that review's payload. A round a person started
+ * on an all-below review is handed the minor findings as its work, and is not
+ * a run with nothing to do.
+ */
+describe("the minor findings a fix run is handed", () => {
+  const AGENT = { author: { login: "github-actions[bot]" }, authorAssociation: "NONE" };
+  const thread = (id: string, findingId: string, severity: "medium" | "low", title: string, line: number): unknown => ({
+    id,
+    isResolved: false,
+    comments: {
+      nodes: [
+        {
+          path: "src/queue.ts",
+          line,
+          body: `${severityBadge(severity)}\n\n${title}.\n\n${findingMarker(findingId, severity, title)}`,
+          ...AGENT,
+        },
+      ],
+    },
+  });
+  const MINOR: FollowUp = {
+    title: "The retry log names the wrong field",
+    location: "src/retry.ts:31",
+    body: `${severityBadge("low")} The line logs \`id\` where it means \`key\`.`,
+    severity: "low",
+    id: "fu-minor1",
+    kind: "minor",
+  };
+  const reviewBody = (minor: readonly FollowUp[]): string =>
+    `## Agent review\n\nThe record.\n\n${followUpsPayload(minor, 0, minor.length)}`;
+  const PROMPT = fs.readFileSync(path.join("fix", "prompt.md"), "utf8");
+
+  it("hands a round a medium started its low threads beside the medium, and the carried minor finding in its own section", () => {
+    ghAnswers(() =>
+      response({
+        comments: { nodes: [] },
+        reviewThreads: {
+          nodes: [
+            thread("PRRT_medium", "f-m", "medium", "The lock is never released", 10),
+            thread("PRRT_low1", "f-l1", "low", "The message names the wrong flag", 20),
+            thread("PRRT_low2", "f-l2", "low", "The test passes for the wrong reason", 30),
+          ],
+        },
+        reviews: { nodes: [{ body: reviewBody([MINOR]), state: "COMMENTED", ...AGENT }] },
+      }),
+    );
+
+    const feedback = fetchPullRequestFeedback("o/r", "12", "main", ACCOUNTS);
+    const prompt = PROMPT.replace("{{INLINE_COMMENTS}}", surfaceText(feedback, "inline")).replace(
+      "{{MINOR_FINDINGS}}",
+      renderMinorFindingsForFix(feedback.minorFindings),
+    );
+
+    expect(feedback.threadIds).toEqual(["PRRT_medium", "PRRT_low1", "PRRT_low2"]);
+    for (const title of ["The lock is never released", "The message names the wrong flag", "The test passes for the wrong reason"]) {
+      expect(prompt, title).toContain(title);
+    }
+    expect(feedback.minorFindings).toEqual([MINOR]);
+    const section = prompt.slice(prompt.indexOf("# MINOR FINDINGS"), prompt.indexOf("# PR DIFF"));
+    expect(section).toContain("## `fu-minor1` · low · `src/retry.ts:31`");
+    expect(section).toContain("**The retry log names the wrong field**");
+    // The body as text: a badge is reduced to its word in prompt text.
+    expect(section).toContain("The line logs `id` where it means `key`.");
+    expect(section).not.toContain("<img");
+    // What the run does with them, in a round a finding at or above the threshold started.
+    expect(section).toMatch(/fix the minor findings that\s+sit in files you are already changing, or are otherwise cheap and in this pull request's scope,\s+and leave the rest/);
+    expect(section).toMatch(/No thread outcome is owed on a minor finding/);
+  });
+
+  it("hands a round a person started on an all-below review the minor findings as its work, and is not nothing to do", () => {
+    ghAnswers(() =>
+      response({
+        comments: { nodes: [] },
+        reviewThreads: { nodes: [] },
+        reviews: { nodes: [{ body: reviewBody([MINOR, { ...MINOR, id: "fu-minor2", title: "A comment describes the old behaviour" }]), state: "COMMENTED", ...AGENT }] },
+      }),
+    );
+
+    const feedback = fetchPullRequestFeedback("o/r", "12", "main", ACCOUNTS);
+
+    expect(feedback.threadIds).toEqual([]);
+    expect(feedback.minorFindings.map((f) => f.id)).toEqual(["fu-minor1", "fu-minor2"]);
+    expect(feedback.hasFeedback).toBe(true);
+    expect(nothingToActOn(feedback)).toBe(false);
+    const section = renderMinorFindingsForFix(feedback.minorFindings);
+    for (const part of ["`fu-minor1`", "`fu-minor2`", "**A comment describes the old behaviour**", "`src/retry.ts:31`", "· low ·"]) {
+      expect(section, part).toContain(part);
+    }
+    expect(PROMPT).toMatch(/Where these are the only work above.*they are the work/s);
+  });
+
+  it("hands over none where the newest review records none, an out-of-scope follow-up included", () => {
+    const { kind: _minor, ...outOfScope } = MINOR;
+    ghAnswers(() =>
+      response({
+        comments: { nodes: [] },
+        reviewThreads: { nodes: [] },
+        reviews: { nodes: [{ body: reviewBody([outOfScope]), state: "COMMENTED", ...AGENT }] },
+      }),
+    );
+
+    expect(fetchPullRequestFeedback("o/r", "12", "main", ACCOUNTS).minorFindings).toEqual([]);
+    expect(renderMinorFindingsForFix([])).toBe("(none)");
   });
 });

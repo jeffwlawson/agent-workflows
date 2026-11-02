@@ -136,6 +136,12 @@ export interface RepoFacts {
    */
   readonly maxFixRounds: string | null | undefined;
   /**
+   * The fix threshold variable, `AGENT_FIX_MIN_SEVERITY` (#616), on the same
+   * three states: its value, `null` where it is set nowhere (the default of
+   * `medium`), and `undefined` where that could not be known.
+   */
+  readonly fixMinSeverity: string | null | undefined;
+  /**
    * The time limit variables (#220), keyed by name: each one's value, or `null`
    * where it is set nowhere. `undefined` as a whole where the variables could
    * not be listed; they are read from the same lists, so they are known or
@@ -161,6 +167,16 @@ export const SETUP_VARIABLE = "AGENT_SETUP";
 
 /** The repository variable the review reads its fix-round budget from (#201). */
 export const FIX_ROUNDS_VARIABLE = "AGENT_MAX_FIX_ROUNDS";
+
+/** The repository variable the review reads its fix threshold from (#616). */
+export const FIX_MIN_SEVERITY_VARIABLE = "AGENT_FIX_MIN_SEVERITY";
+
+/**
+ * The values `review:gate` takes for it, and the one it reads where it is set
+ * nowhere: a second copy of the gate's, held equal to it by a test.
+ */
+export const FIX_MIN_SEVERITIES = ["low", "medium", "high"] as const;
+export const DEFAULT_FIX_MIN_SEVERITY = "medium";
 
 /**
  * The budget the review applies where the variable is set nowhere. A second
@@ -1015,6 +1031,28 @@ export const diagnose = (
     });
   }
 
+  // A threshold the review refuses (#616): not `low`, `medium` or `high`, so
+  // every review ends red before it starts, naming it. An error wherever a
+  // review caller is installed, as the budget's is.
+  if (
+    reviews.length > 0 &&
+    typeof facts.fixMinSeverity === "string" &&
+    !(FIX_MIN_SEVERITIES as readonly string[]).includes(facts.fixMinSeverity)
+  ) {
+    add({
+      severity: "error",
+      check: "fix threshold",
+      problem:
+        `The repository variable \`${FIX_MIN_SEVERITY_VARIABLE}\` is \`${facts.fixMinSeverity}\`, which is ` +
+        `not \`low\`, \`medium\` or \`high\`. The review refuses it rather than guess which findings ` +
+        `block a merge, so every review fails before it starts.`,
+      fix:
+        `Set it to \`low\` to have every finding fixed before merge, \`medium\` or \`high\` to have ` +
+        `a review whose findings are all below it approve and record them as minor findings, or ` +
+        `delete it for the default of \`${DEFAULT_FIX_MIN_SEVERITY}\`.`,
+    });
+  }
+
   // A time limit that is not a positive integer (#220). An error wherever a
   // caller whose job reads it is installed, and a warning where none is, since
   // nothing reads it yet. Unset is the default and unreadable is no finding.
@@ -1771,7 +1809,7 @@ export const gatherFacts = (dir: string, packageName: string = PACKAGE_NAME): Re
           dir,
         );
 
-  // The budget and time limit variables, from the same two places as the
+  // The budget, threshold and time limit variables, from the same two places as the
   // secrets and for the same reason: `vars` resolves an organization variable
   // shared with this repository too, and a repository one of the same name over
   // it. Picked by name out of the list rather than asked for by name, because
@@ -1784,6 +1822,7 @@ export const gatherFacts = (dir: string, packageName: string = PACKAGE_NAME): Re
   // list `parseList` reads.
   const wanted: readonly string[] = [
     FIX_ROUNDS_VARIABLE,
+    FIX_MIN_SEVERITY_VARIABLE,
     ...TIMEOUT_VARIABLES.map((v) => v.name),
     ORCHESTRATOR_VARIABLE,
     SETUP_VARIABLE,
@@ -1825,6 +1864,7 @@ export const gatherFacts = (dir: string, packageName: string = PACKAGE_NAME): Re
     actionsPolicies: readPolicies(dir),
     releases: list(["api", `repos/${repoSlug(packageName)}/tags`], ".[].name", dir),
     maxFixRounds: variable(FIX_ROUNDS_VARIABLE),
+    fixMinSeverity: variable(FIX_MIN_SEVERITY_VARIABLE),
     timeoutMinutes:
       repositoryVariables === undefined
         ? undefined

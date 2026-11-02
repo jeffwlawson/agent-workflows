@@ -397,7 +397,7 @@ PRD.
 | **Agent self-improves: commits fixes and pushes** | ✅ | ❌ | biggest single gap. Would need `contents: write`; `agent:fix` covers it with a human deciding |
 | **Replies in review threads** | ✅ | ➕ | the review replies where it **closes** a thread, and only there (#111): `resolutionReason` is recorded by GitHub and readable nowhere afterwards, so the reply is the only record of why a finding closed. `agent:fix` replies in every thread it is asked about and closes none (§4) |
 | **Marks the PR ready for review** when done | ✅ | ✅ | `success()` only, so a failed review leaves the PR in draft — see the invariant in §10. Since #102 it also skips the pull requests whose automatic fix is about to run: it is not the human's turn yet, and the end of that round marks it ready — the re-review where the fix pushed, and the fix run itself where it did not (#159). **Requires `AGENT_PAT`**: `GITHUB_TOKEN` cannot convert a draft at all |
-| **Starts fix rounds by itself, on the verdict that says no reading is needed** | ❌ | ➕ | #102 (PRD #101), and the fix-round budget since #201 (PRD #200). Up to `AGENT_MAX_FIX_ROUNDS` automatic rounds per pull request, or on a PRD PR per slice round and for the final review (#331), default 3, counted from the `agent-fix-round` statuses posted beside the verdicts that asked for a round (#297); the `auto-fix` input it replaced was a deprecated alias from v0.7.5 and has been removed (#366). The last step of the review's posting job (#257), which has no checkout, no toolchain and no agent; one of the `AGENT_PAT` uses in the workflow, beside the advance below. Bounded twice: the budget stops it past N rounds on the same PR, and the early stop (#202) ends it after a fix round that closed none of the findings it was given, matched by id (§10). The round rule that bounded it before is retired |
+| **Starts fix rounds by itself, on the verdict that says no reading is needed** | ❌ | ➕ | #102 (PRD #101), and the fix-round budget since #201 (PRD #200). Up to `AGENT_MAX_FIX_ROUNDS` automatic rounds per pull request, or on a PRD PR per slice round and for the final review (#331), default 3, counted from the `agent-fix-round` statuses posted beside the verdicts that asked for a round (#297); the `auto-fix` input it replaced was a deprecated alias from v0.7.5 and has been removed (#366). The last step of the review's posting job (#257), which has no checkout, no toolchain and no agent; one of the `AGENT_PAT` uses in the workflow, beside the advance below. Bounded twice: the budget stops it past N rounds on the same PR, and the early stop (#202) ends it after a fix round that closed none of the findings it was given, matched by id (§10). The round rule that bounded it before is retired. Since #616 a review whose open findings are all below `AGENT_FIX_MIN_SEVERITY` (`medium` where unset) records them as minor findings and approves, so it starts no round at all; a review with any finding at or above it threads its lows too, and the round fixes them beside it |
 | **Advances the PRD chain when a slice round ends** | ❌ | ➕ | #176 (PRD #171). The **advance**, `review`'s `advance` job after the posting job, running the command `review:advance` (#423): re-adds `agent:implement` to the PRD PR's **parent** when a slice round ends on 🟢, and parks on the parent on every other ending but a fix round starting. `fix` has no advance of its own: on a PRD PR every fix run asks for a review, whether or not it pushed (PRD #222), and that review's advance ends the round. The same shape as the fix round: no checkout, no model, the loop's App token, `AGENT_PAT` or nothing. Bounded by the number of sub-issues (§10) |
 | Emits a verdict (`improved` / `clean`) | ✅ | ❌ | only meaningful with self-improvement |
 | Approve / request-changes | ❌ | ❌ | both always post `COMMENT` |
@@ -728,6 +728,10 @@ expensive to rediscover.
     a derivation cannot set; the verdict's line is the plain 🟡 one (#297), and on a PRD PR the park
     comment says the loop stopped for no progress. A pull request with one review round so far
     never stops here.
+  - **The fix threshold** (#616). A round starts only where a finding at or above
+    `AGENT_FIX_MIN_SEVERITY` is open; a review whose open findings are all below it approves over
+    them as minor findings, so a round is never spent on lows alone, and the budget and the early
+    stop bound only the rounds a real defect asks for.
   - **The fix-round budget** (#201, which replaced the `agent:auto-fixed` marker that held it to
     one). `AGENT_MAX_FIX_ROUNDS` automatic rounds per pull request, default 3, counted from the
     `agent-fix-round` statuses posted beside the verdicts that asked for a round (#297), so nothing
@@ -1057,16 +1061,24 @@ expensive to rediscover.
   displacing the one thing that does. What the label may never be again is a thing the machinery
   reads: the one survivor is *previously missed*, which selects a **group** and not a count, is
   read off the body the model wrote, and is kept beside the badge on the thread for that reason.
-- **Severity is display and ordering, and nothing reads it that decides anything.** Since #113
-  (#109, decision 9) every finding and every follow-up carries `high` / `medium` / `low`. The
+- **Severity orders the record, and decides one thing, through the repository's threshold.** Since
+  #113 (#109, decision 9) every finding and every follow-up carries `high` / `medium` / `low`. The
   review body sorts each group worst first and badges each entry; `deriveVerdict` never sees it,
-  the routing between the two finding types never sees it, and the follow-up cap never sees it.
-  A test permutes the ratings across a review and holds the verdict, the count and the kept
-  follow-ups identical.
+  and the follow-up cap never sees it. Since #616 it decides **one** thing, once per review, through
+  `AGENT_FIX_MIN_SEVERITY` (`medium` where unset): whether the open findings are threads that block
+  the merge, where any one is at or above it, or **minor findings**, recorded and filed at merge,
+  where none is (`placeByThreshold`). It never reorders the record, never drops a finding, and decides
+  nothing finer; `high` meets every threshold, and a finding with no rating, or an unmet criterion,
+  meets it whatever it says. With the threshold at `low` nothing is ever below it, and a test permutes
+  the ratings across a review and holds the outcome, the count and the kept follow-ups identical;
+  at every threshold it holds every finding in the record, as a thread or a minor entry, in the
+  reviewer's order.
 
-  That is the whole of the bargain, and it is the one #96 struck when it retired *judgement call*:
-  a dial the model turns that changes the outcome means every review has to be read to find out
-  which way it was turned. `low` is a **real but small defect** — nameable, with a stateable
+  That is the bargain, amended, and it is the one #96 struck when it retired *judgement call*: a
+  dial the model turns that changes the outcome means every review has to be read to find out which
+  way it was turned. The threshold is the maintainer's dial, not the model's, and the model is told
+  what a rating costs: an inflated one holds up an approval and buys a round, and an understated one
+  sends a real problem to a follow-up. `low` is a **real but small defect** — nameable, with a stateable
   consequence — and not a place to put the preferences that are still posted nowhere at any
   rating.
 
@@ -1087,8 +1099,9 @@ expensive to rediscover.
 - **The review body is a record, and its newest copy is the current statement.** Since #113 (#109,
   decision 8) it is Copilot's overview in order — `## Agent review`, the assessment, one sentence
   naming what is unresolved, the step in italics, `**Findings:** N` with its severities, then
-  the collapsible groups, *Open* (this round's entries marked *new*) first, then *How this was
-  checked*, then a rule and the run. *What changed in this PR* was the last section until #218
+  the collapsible groups, *Open* (this round's entries marked *new*) first, then *Minor findings*
+  (#616) directly after it, in its place when nothing is open, *Follow-ups* where it always was,
+  then *How this was checked*, then a rule and the run. *What changed in this PR* was the last section until #218
   moved the description into the pull request's body. The groups and their order are listed in
   `CONTEXT.md` (the review body paragraph) and in `docs/ADOPTING.md` (*Reading the review body*);
   `renderBody` in `shared/review-output.ts` is what renders them, and where the prose disagrees

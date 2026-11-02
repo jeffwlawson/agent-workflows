@@ -18,6 +18,8 @@ import { CI_WAIT_SECONDS } from "../review/collect-checks.js";
  * dependencies (PRD #515): an admin's to set, and handed to the sandbox's
  * shell unevaluated. `AGENT_MODEL_FIX` and `AGENT_TIMEOUT_MINUTES` are what
  * `fix.yml` reads: the fix runner's model, and the agent's job's time limit.
+ * `AGENT_FIX_MIN_SEVERITY` is the review's fix threshold (#616), read beside its
+ * budget, `AGENT_MAX_FIX_ROUNDS`.
  * `AGENT_MODEL_UPDATE_BRANCH` is the update-branch runner's model, which
  * `update-branch.yml` reads beside the same time limit, and
  * `AGENT_MODEL_IMPLEMENT` the implement runner's, which `implement.yml` reads
@@ -34,6 +36,7 @@ export const REPOSITORY_VARIABLES = [
   "AGENT_REVIEW_TIMEOUT_MINUTES",
   "AGENT_TIMEOUT_MINUTES",
   "AGENT_MAX_FIX_ROUNDS",
+  "AGENT_FIX_MIN_SEVERITY",
   "AGENT_SETUP",
 ] as const;
 

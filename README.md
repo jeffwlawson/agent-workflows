@@ -147,9 +147,9 @@ npm publish       # prepack runs the build first
 ```
 
 `publishConfig.registry` points at GitHub Packages, so `npm publish` needs no `--registry` flag and
-cannot reach npmjs by accident. In practice it runs from CI on an `agent-workflows-v<version>` tag
-push, behind two guards: the tag and this manifest must name the same version, and a version already
-on the registry is not published again, which would be a 409; the run still attaches the published
+cannot reach npmjs by accident. In practice it runs from CI on a `v<version>` tag push
+(`publish.yml`), behind two guards: the tag and this manifest must name the same version, and a
+version already on the registry is not published again, which would be a 409; the run still attaches the published
 tarball to the tag's GitHub Release where that is missing.
 
 `prepack` is what stops a publish shipping a stale `dist/`. The prompts are copied rather than

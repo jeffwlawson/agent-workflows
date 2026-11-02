@@ -1680,10 +1680,11 @@ what **this** repo needs to develop the package, whose sources are this reposito
 > `node_modules`, and was green only because both pins matched. Commits before the move describe
 > that layout and are accurate about it.
 
-Publishing is `publish-agent-workflows.yml`, triggered by pushing an `agent-workflows-v<version>`
-tag. The trigger is a bare `v*` tag push. It was originally chosen to work around a
-`workflow_dispatch` bootstrap deadlock that existed only while this package lived inside another
-repository; that reason is gone, and the trigger is kept now for simplicity rather than necessity.
+Publishing is `publish.yml`, triggered by pushing a `v<version>` tag: a bare `v*` tag push. Until
+the package moved to its own repository the workflow was `publish-agent-workflows.yml` and the tag
+carried an `agent-workflows-v` prefix; both are history. The tag push was originally chosen to
+work around a `workflow_dispatch` bootstrap deadlock that existed only while this package lived
+inside another repository; that reason is gone, and the trigger is kept now for simplicity rather than necessity.
 The ancestor guard that the bootstrap made impossible — `git merge-base --is-ancestor "$GITHUB_SHA"
 origin/<default>` — is in place, so a tag on an unmerged commit is refused.
 

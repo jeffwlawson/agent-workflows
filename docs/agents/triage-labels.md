@@ -1,6 +1,6 @@
 # Triage labels
 
-The skills speak in terms of five canonical triage roles. This file maps those roles to the actual
+The skills speak in terms of five canonical triage state roles and two category roles. This file maps those roles to the actual
 label strings used in this repo's tracker — and, because this repo also runs an agent loop, records
 the **second** vocabulary those roles sit beside and how the two are joined.
 
@@ -11,7 +11,7 @@ the **second** vocabulary those roles sit beside and how the two are joined.
 
 ## The five canonical roles
 
-Defaults, unchanged — each label string equal to its role name.
+Defaults, unchanged: each label string equal to its role name. These are the **state** roles.
 
 | Label in mattpocock/skills | Label in our tracker | Meaning |
 | --- | --- | --- |
@@ -21,18 +21,18 @@ Defaults, unchanged — each label string equal to its role name.
 | `ready-for-human` | `ready-for-human` | Requires human implementation |
 | `wontfix` | `wontfix` | Will not be actioned |
 
+Beside them, upstream's `/triage` gives an issue a **category** role, also at its default string:
+
+| Label in mattpocock/skills | Label in our tracker | Meaning |
+| --- | --- | --- |
+| `bug` | `bug` | Something is broken |
+| `enhancement` | `enhancement` | New feature or improvement |
+
+A triaged issue carries exactly one category role and one state role. `wontfix`, `bug` and
+`enhancement` are GitHub's stock labels.
+
 When a skill mentions a role (e.g. "apply the AFK-ready triage label"), use the corresponding label
-string from this table.
-
-Only `wontfix` exists in the repo today, as GitHub's stock label. Create the other four before
-running `/triage` for the first time:
-
-```bash
-gh label create "needs-triage"    --color D93F0B --description "Maintainer needs to evaluate this issue"
-gh label create "needs-info"      --color FBCA04 --description "Waiting on reporter for more information"
-gh label create "ready-for-agent" --color 0E8A16 --description "Fully specified, ready for an AFK agent"
-gh label create "ready-for-human" --color 5319E7 --description "Requires human implementation"
-```
+string from these tables. Every label in them exists in this repo's tracker.
 
 ## Two vocabularies, not one
 
@@ -124,12 +124,13 @@ workflow files it and cannot authorise it (`docs/parity.md` §10).
 
 `pr-follow-up` is the provenance half: *this came from a reviewer rather than from a person*, and
 it is also the candidate filter the duplicate check lists on, so a stub that loses it is a stub the
-next merge cannot see. Neither label exists in this repo yet — `needs-triage` is waiting on the
-first `/triage` run (above), and this one needs creating before the first merge that files anything,
-or the runner files the stub unlabelled and says so with a warning:
+next merge cannot see. Both labels exist in this repo. A repository without them gets the stub
+filed unlabelled, with a warning from the runner saying so; these are the lines that create them,
+the same as `docs/ADOPTING.md` §3 gives:
 
 ```bash
 gh label create "pr-follow-up"    --color D4C5F9 --description "Filed from a merged PR's review by the follow-ups workflow"
+gh label create "needs-triage"    --color D93F0B --description "Maintainer needs to evaluate this issue"
 ```
 
 The strings are fixed in the runner rather than configurable, which is the cost of the join: a
@@ -147,7 +148,8 @@ Native "blocked by" links do that job, and something reads them. `implement` and
 refuse an issue whose blocker is still open, naming the blocker, and a human re-adds
 `agent:implement` once it closes. Inside a PRD the chain already holds the ordering in the parent's
 sub-issue list. So a label saying the same thing is only one more thing that can go stale against
-the link. Do not create it; where a repository already has it, it can be deleted.
+the link. Do not create it. It is still present in this repo, its description saying it is read by
+nothing, until the maintainer deletes it; where any repository has it, it can be deleted.
 
 ## `parked`
 
@@ -169,19 +171,13 @@ work that decides what to build, as opposed to work that builds it.
 
 | Label | On | Means |
 | --- | --- | --- |
-| `wayfinder:map` | the map issue | The map itself — Notes, Decisions-so-far, Fog. Holds the child tickets as sub-issues. |
+| `wayfinder:map` | the map issue | The map itself: Destination, Notes, Decisions so far, Not yet specified, Out of scope. Holds the child tickets as sub-issues. |
 | `wayfinder:research` | a child ticket | An open question to be answered from sources, not code. |
 | `wayfinder:prototype` | a child ticket | A throwaway build to answer a design question. |
 | `wayfinder:grilling` | a child ticket | A decision to be stress-tested before it is committed to. |
 | `wayfinder:task` | a child ticket | A concrete step within the map that is not itself the feature. |
 
-None of them exist in the repo yet. Create them when you first run `/wayfinder`:
-
-```bash
-for t in map research prototype grilling task; do
-  gh label create "wayfinder:$t" --color BFD4F2 --description "Planning artifact; never implementable"
-done
-```
+All five exist in this repo, each with the description "Planning artifact; never implementable".
 
 **No `wayfinder:*` issue is ever implementable, and both implement workflows refuse one on sight.**
 The refusal matches on the **prefix** — `select(startswith("wayfinder:"))` — not on the list above,
@@ -191,7 +187,7 @@ re-labelling would only reproduce the same refusal.
 
 The refusal says: *"Label the issues they produce instead."* That path is:
 
-1. `/wayfinder` resolves the map's tickets and records the answers in Decisions-so-far.
+1. `/wayfinder` resolves the map's tickets and records the answers in Decisions so far.
 2. `/to-spec` runs off the resolved map and produces a PRD. **File the PRD as a top-level issue**
    and link the map from its body — a PRD that is itself a sub-issue of the map is refused by
    `agent-implement-prd` and deferred away by `agent-implement`, so `agent:implement` would do
@@ -226,7 +222,7 @@ the loop.
 
 Child tickets close earlier and one at a time, as they are answered:
 [`issue-tracker.md`](./issue-tracker.md#wayfinding-operations)'s *Resolve* operation closes each one
-and appends a pointer to Decisions-so-far, and the **frontier query reads the map's open children**
+and appends a pointer to Decisions so far, and the **frontier query reads the map's open children**
 to find the next one. So issue state carries information here — an open child is an unanswered
 question, and an open map is a route still planning: not yet sliced into a PRD, or, for a map that
 ends in standalone issues, with a child ticket still open. Neither reads on promotion: step 4 is a

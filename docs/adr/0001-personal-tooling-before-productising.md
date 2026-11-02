@@ -5,6 +5,11 @@ date: 2026-10-07
 
 # Personal tooling first; adopter-facing work is parked
 
+> **Superseded in part, 2026-11-02, by [ADR 0011](./0011-the-service-install-is-for-others-too.md).**
+> An install of the self-hosted service that others can run is no longer parked. The other
+> adopter work below (#344, #346, #360, #362, #367, #371 to #373, the rename and registry move)
+> still is, and the revisit conditions below are unchanged.
+
 #388's survey (`docs/landscape.md`, #389) recommends productising the loop. We decided not to yet.
 For its maintainer the loop clearly beats the nearest alternative, GitHub Agentic Workflows
 (gh-aw). It runs on a Claude subscription that gh-aw refuses, it runs outside Actions on hardware

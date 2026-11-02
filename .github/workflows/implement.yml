@@ -223,7 +223,7 @@ jobs:
           OUTPUT_DIR: ${{ runner.temp }}
         # `npm exec --prefix` rather than a bare `npx`: see the long note on
         # the runner step below.
-        run: npm exec --prefix "$RUNNER_TEMP" --yes --package=@jeffwlawson/agent-workflows@0.9.5 -- agent-workflows implement:gate
+        run: npm exec --prefix "$RUNNER_TEMP" --yes --package=@jeffwlawson/agent-workflows@0.9.6 -- agent-workflows implement:gate
 
       # Glue only Actions can do (ADR 0003): the gate's decision and facts,
       # copied into the step outputs `proceed`, `branch`, `base` and `tip`,
@@ -359,7 +359,7 @@ jobs:
         env:
           NPM_CONFIG_USERCONFIG: ${{ steps.npmrc.outputs.userconfig }}
           NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: npm install --prefix "$RUNNER_TEMP" --no-save @jeffwlawson/agent-workflows@0.9.5
+        run: npm install --prefix "$RUNNER_TEMP" --no-save @jeffwlawson/agent-workflows@0.9.6
 
       # The agent's branch, created at the commit the gate read the base at,
       # not the base branch's tip a moment later, so the agent builds on
@@ -386,7 +386,7 @@ jobs:
           CHECKOUT: ${{ github.workspace }}
           BRANCH: ${{ needs.gate.outputs.branch }}
           BASE_SHA: ${{ needs.gate.outputs.base }}
-        run: npm exec --prefix "$RUNNER_TEMP" --yes --package=@jeffwlawson/agent-workflows@0.9.5 -- agent-workflows implement:prepare
+        run: npm exec --prefix "$RUNNER_TEMP" --yes --package=@jeffwlawson/agent-workflows@0.9.6 -- agent-workflows implement:prepare
 
       # Both setup steps are the adopter's toolchain, so both are skippable.
       # `npm install -g @anthropic-ai/claude-code` below is not: that is the
@@ -573,7 +573,7 @@ jobs:
           CHECKOUT: ${{ github.workspace }}
           BRANCH: ${{ needs.gate.outputs.branch }}
           BASE_SHA: ${{ needs.gate.outputs.base }}
-        run: npm exec --prefix "$RUNNER_TEMP" --yes --package=@jeffwlawson/agent-workflows@0.9.5 -- agent-workflows implement:bundle
+        run: npm exec --prefix "$RUNNER_TEMP" --yes --package=@jeffwlawson/agent-workflows@0.9.6 -- agent-workflows implement:bundle
 
       # `implement:prepare`'s reason file on a failure, under `prepare/`;
       # `implement:bundle`'s files, the bundle and its reason file on a
@@ -679,7 +679,7 @@ jobs:
       - name: Resolve the loop's token
         id: token
         if: always()
-        uses: jeffwlawson/agent-workflows/.github/actions/loop-token@v0.9.5
+        uses: jeffwlawson/agent-workflows/.github/actions/loop-token@v0.9.6
         with:
           app-id: ${{ secrets.AGENT_APP_ID }}
           private-key: ${{ secrets.AGENT_APP_PRIVATE_KEY }}
@@ -774,7 +774,7 @@ jobs:
           BRANCH: ${{ needs.gate.outputs.branch }}
           BASE_SHA: ${{ needs.gate.outputs.base }}
           BRANCH_TIP: ${{ needs.gate.outputs.tip }}
-        run: npm exec --prefix "$RUNNER_TEMP" --yes --package=@jeffwlawson/agent-workflows@0.9.5 -- agent-workflows implement:publish
+        run: npm exec --prefix "$RUNNER_TEMP" --yes --package=@jeffwlawson/agent-workflows@0.9.6 -- agent-workflows implement:publish
 
       # Every ending, success included, and the label however the run ended
       # (#493): the rescue the runner set aside, said on the issue (#270); a
@@ -829,7 +829,7 @@ jobs:
           DOWNLOAD_OUTCOME: ${{ steps.fetch.outcome }}
           PUBLISH_OUTCOME: ${{ steps.publish.outcome }}
           BUNDLE_OUTCOME: ${{ needs.implement.outputs.bundled }}
-        run: npm exec --prefix "$RUNNER_TEMP" --yes --package=@jeffwlawson/agent-workflows@0.9.5 -- agent-workflows implement:conclude
+        run: npm exec --prefix "$RUNNER_TEMP" --yes --package=@jeffwlawson/agent-workflows@0.9.6 -- agent-workflows implement:conclude
 
       # Every write the two commands made, one line each as it landed, and a
       # last line for how each ended (ADR 0005), kept for whoever audits the

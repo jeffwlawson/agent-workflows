@@ -48,7 +48,7 @@ jobs:
   # `review / review` passed below. Rename it and the CI wait stops recognising
   # itself. A test compares the two, so the pair cannot drift silently.
   review:
-    uses: jeffwlawson/agent-workflows/.github/workflows/review.yml@v0.9.5
+    uses: jeffwlawson/agent-workflows/.github/workflows/review.yml@v0.9.6
     # Granted here, bounded there. A called workflow can only downgrade the
     # token it is handed, so these have to be at least what its jobs need —
     # `pull-requests: write` is what every `gh pr edit` in it spends, and
@@ -135,7 +135,7 @@ jobs:
       AGENT_APP_PRIVATE_KEY: ${{ secrets.AGENT_APP_PRIVATE_KEY }}
 
   fix:
-    uses: jeffwlawson/agent-workflows/.github/workflows/fix.yml@v0.9.5
+    uses: jeffwlawson/agent-workflows/.github/workflows/fix.yml@v0.9.6
     # Granted here, bounded there. A called workflow can only downgrade the
     # token it is handed, so these have to be at least what the job needs.
     permissions:
@@ -168,7 +168,7 @@ jobs:
       AGENT_APP_PRIVATE_KEY: ${{ secrets.AGENT_APP_PRIVATE_KEY }}
 
   update-branch:
-    uses: jeffwlawson/agent-workflows/.github/workflows/update-branch.yml@v0.9.5
+    uses: jeffwlawson/agent-workflows/.github/workflows/update-branch.yml@v0.9.6
     # Granted here, bounded there. A called workflow can only downgrade the
     # token it is handed, so these have to be at least what the job needs.
     permissions:
@@ -216,7 +216,7 @@ jobs:
   # partial failure, which also posts a checklist that is missing. Both types are narrowed in the called job's condition,
   # which an adopter cannot loosen.
   follow-ups:
-    uses: jeffwlawson/agent-workflows/.github/workflows/follow-ups.yml@v0.9.5
+    uses: jeffwlawson/agent-workflows/.github/workflows/follow-ups.yml@v0.9.6
     # Granted here, bounded there. A called workflow can only downgrade the
     # token it is handed, so these have to be at least what the job needs — and
     # `issues: write` is the one this workflow exists for. The agent that raised
@@ -254,7 +254,7 @@ jobs:
   # `AGENT_PAT`: the arm and the merge are made with that token, and without
   # either the called job refuses rather than arming with `GITHUB_TOKEN`.
   merge:
-    uses: jeffwlawson/agent-workflows/.github/workflows/merge.yml@v0.9.5
+    uses: jeffwlawson/agent-workflows/.github/workflows/merge.yml@v0.9.6
     # Granted here, bounded there. No `contents: write` and no
     # `statuses: write`: the arm and the merge are the loop token's, never
     # this job's.

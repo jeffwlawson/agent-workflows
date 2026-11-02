@@ -31,8 +31,11 @@
 #
 # The box is reached as BOX_SSH_USER@BOX_IP, with the key the operator has set
 # up for it (BOX_SSH_KEY, or ssh's default). Host keys are kept beside this
-# script, never under ~/.ssh, which Unraid does not let ssh write. Each ssh that
-# runs sudo on the box asks for its password: the only prompt left.
+# script, never under ~/.ssh, which Unraid does not let ssh write. A run opens
+# one ssh connection and every later ssh and scp shares it, so ssh asks for the
+# box's password once (never with a key). The box's sudo password is read once,
+# from the terminal, and handed to each sudo on its stdin: never in an argument,
+# a printed line or a file. Both are the only prompts left.
 #
 # Run as root on Unraid:  bash /boot/config/agent-service/upgrade.sh 0.8.6
 # Or, to restart at once: bash /boot/config/agent-service/upgrade.sh --now 0.8.6
@@ -53,6 +56,8 @@ BOX_IP=${BOX_IP:-}
 PACKAGE_SOURCE=${PACKAGE_SOURCE:-}
 PACKAGE_NAME=${PACKAGE_NAME:-}
 CONTAINER=${CONTAINER:-agent-dispatcher}
+# The terminal the box's sudo password is read from.
+PROMPT_TTY=${PROMPT_TTY:-/dev/tty}
 IDLE_WAIT_MINUTES=${IDLE_WAIT_MINUTES:-90}
 # How often the worker is asked while it holds a job, and how often a line says
 # the wait goes on where nothing held has changed.
@@ -136,11 +141,11 @@ box="$BOX_SSH_USER@$BOX_IP"
 # Never under ~/.ssh: host keys go beside the conf, a first connect is
 # recorded and a later change of key is refused.
 ssh_opts=(-o "UserKnownHostsFile=$here/known_hosts" -o StrictHostKeyChecking=accept-new)
-if [ -n "$BOX_SSH_KEY" ]; then ssh_opts+=(-i "$BOX_SSH_KEY"); fi
-# The command is run by the box's shell, so its home's ~ is left to it.
-on_box() { ssh "${ssh_opts[@]}" -t "$box" "$1"; }
-# The same ssh, spelt out for an operator to paste when a step stops.
-box_ssh=$(printf '%q ' ssh "${ssh_opts[@]}" -t "$box")
+# The ssh spelt out for an operator to paste when a step stops: it runs after
+# this script has ended, so it shares no connection and keeps its terminal.
+pasted_opts=("${ssh_opts[@]}")
+if [ -n "$BOX_SSH_KEY" ]; then pasted_opts+=(-i "$BOX_SSH_KEY"); fi
+box_ssh=$(printf '%q ' ssh "${pasted_opts[@]}" -t "$box")
 # The way back, should a step stop partway: this script at the version the
 # dispatcher had, which installs it on the box first. It downloads that
 # release's tarball, which a release published before its tarball was attached
@@ -156,7 +161,43 @@ echo "Moving both machines to $version, from $url"
 echo
 echo "== Staging: no service is touched"
 stage=$(mktemp -d "$STAGE_DIR/agent-workflows-upgrade.XXXXXX")
-trap 'rm -rf "$stage"' EXIT
+# This run's private directory (mode 700), in the system temp directory: never
+# beside the conf, since /boot is FAT and can hold neither a socket nor a key
+# with a private mode. It holds the shared connection's socket and the key's copy.
+private=$(mktemp -d)
+master=
+cleanup() {
+  if [ -n "$master" ]; then ssh "${ssh_opts[@]}" -O exit "$box" >/dev/null 2>&1 || true; fi
+  rm -rf "$stage" "$private"
+}
+trap cleanup EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
+# OpenSSH refuses a key whose file mode is open to others, which a key on /boot
+# may be: each ssh of this run uses a copy with mode 600 instead.
+if [ -n "$BOX_SSH_KEY" ]; then
+  cp "$BOX_SSH_KEY" "$private/key"
+  chmod 600 "$private/key"
+  ssh_opts+=(-i "$private/key")
+fi
+ssh_opts+=(-o "ControlPath=$private/%C")
+# The command is run by the box's shell, so its home's ~ is left to it.
+on_box() { ssh "${ssh_opts[@]}" "$box" "$1"; }
+# Runs sudo on the box with the password read once below on its stdin. With no
+# terminal to read it from, sudo is given none: a sudo that wants one fails.
+no_terminal=
+on_box_sudo() {
+  local status=0
+  if [ -n "${sudo_password+set}" ]; then
+    { printf '%s\n' "$sudo_password" || true; } | ssh "${ssh_opts[@]}" "$box" "sudo -S -p '' $1" || status=$?
+  else
+    ssh "${ssh_opts[@]}" "$box" "sudo -S -p '' $1" </dev/null || status=$?
+  fi
+  if [ "$status" -ne 0 ] && [ -n "$no_terminal" ]; then
+    echo "There was no terminal to read the box's sudo password from, so sudo on the box was given none: run upgrade.sh from a terminal." >&2
+  fi
+  return "$status"
+}
 # https only, redirects too: the .sha256 comes over the same connection.
 download() { curl -fsSL --proto '=https' --proto-redir '=https' -o "$1" "$2"; }
 if ! download "$stage/$tarball" "$url" || ! download "$stage/$tarball.sha256" "$url.sha256"; then
@@ -173,6 +214,12 @@ to_copy=("$stage/$tarball" "$stage/$tarball.sha256" "$here/upgrade-box.sh" "$her
 if [ -f "$here/runs.sh" ]; then to_copy+=("$here/runs.sh"); fi
 if [ -f "$conf" ]; then to_copy+=("$conf"); fi
 copied=$(for file in "${to_copy[@]}"; do basename "$file"; done | paste -sd ' ')
+# The one connection every later ssh and scp shares. Where it cannot be set up,
+# each goes on with a connection of its own, as before, asking again.
+master=1
+if ! ssh "${ssh_opts[@]}" -M -N -f "$box"; then
+  echo "Could not open one shared connection to $box, so each step connects on its own and ssh may ask again at each." >&2
+fi
 if ! scp "${ssh_opts[@]}" "${to_copy[@]}" "$box:"; then
   # scp copies one file at a time, so a failure can come after some of them.
   echo "Could not copy all of $copied to $box's home: read scp's output above." >&2
@@ -180,10 +227,19 @@ if ! scp "${ssh_opts[@]}" "${to_copy[@]}" "$box:"; then
   exit 2
 fi
 echo "Copied $copied to $box's home."
+# Read once, with no echo, and kept in this shell only.
+if { exec 3<"$PROMPT_TTY"; } 2>/dev/null; then
+  printf "%s's sudo password: " "$box" >&2
+  IFS= read -rs sudo_password <&3 || true
+  exec 3<&-
+  echo >&2
+else
+  no_terminal=1
+fi
 
 echo
 echo "== Installing: both machines keep running what they started with"
-if ! on_box "sudo bash ~/upgrade-box.sh --install $version ~/$tarball"; then
+if ! on_box_sudo "bash ~/upgrade-box.sh --install $version ~/$tarball"; then
   echo "The install on the box stopped: read its output above. Unraid was not changed, and neither service was restarted." >&2
   echo "The box's install may have stopped partway. Fix the cause and run upgrade.sh $version again." >&2
   way_back
@@ -314,7 +370,7 @@ else
   echo "A job queued on the worker since it held none is dropped by its restart; the dispatcher's scan dispatches it again."
 fi
 status=0
-if ! on_box "sudo bash ~/upgrade-box.sh --restart $version"; then
+if ! on_box_sudo "bash ~/upgrade-box.sh --restart $version"; then
   # Restarting the dispatcher now would leave the two on different versions
   # for as long as the worker is not fixed, with every job refused.
   echo "The worker's restart did not finish, so the dispatcher was not restarted: read its output above (a mistyped sudo password is enough)." >&2
@@ -337,13 +393,12 @@ fi
 
 echo
 echo "== Checking both"
-# Each check's output is shown as it runs and kept to be compared. The box's
-# comes through a terminal, so its lines end in a carriage return.
+# Each check's output is shown as it runs and kept to be compared.
 unraid_out="$stage/check-unraid.out"
 box_out="$stage/check-box.out"
 bash "$here/check-unraid.sh" | tee "$unraid_out" || status=1
-on_box "sudo bash ~/check-box.sh" | tee "$box_out" || status=1
-info() { tr -d '\r' <"$1" | sed -n "s/.*INFO  $2: \([^ ]*\).*/\1/p" | tail -n1; }
+on_box_sudo "bash ~/check-box.sh" | tee "$box_out" || status=1
+info() { sed -n "s/.*INFO  $2: \([^ ]*\).*/\1/p" "$1" | tail -n1; }
 dispatcher_version=$(info "$unraid_out" "dispatcher version")
 worker_version=$(info "$box_out" "worker version")
 unraid_fingerprint=$(info "$unraid_out" "shared secret fingerprint")

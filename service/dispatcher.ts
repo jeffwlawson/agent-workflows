@@ -87,6 +87,12 @@ export type Labelled =
  */
 export type HeadPull = Omit<Extract<Labelled, { readonly type: "pull_request" }>, "type"> & { readonly labels: readonly string[] };
 
+/**
+ * A merged pull request carrying a label, as the scan lists it (#603): what a
+ * pull request's record says of it, read now, and when it was merged.
+ */
+export type MergedPull = Extract<Labelled, { readonly type: "pull_request" }> & { readonly mergedAt: Date };
+
 /** What the dispatcher asks of GitHub, as its App. */
 export interface AppGitHub {
   /** The App's own record. */
@@ -112,6 +118,12 @@ export interface AppGitHub {
   repositories(account: string): Promise<readonly string[]>;
   /** The open issues and pull requests on `repo` carrying `label`, each as it reads now. */
   labelled(repo: string, label: string): Promise<readonly Labelled[]>;
+  /**
+   * The pull requests on `repo` merged at `since` or later and carrying
+   * `label`, each as it reads now (#603). One closed without a merge is not
+   * listed.
+   */
+  mergedLabelled(repo: string, label: string, since: Date): Promise<readonly MergedPull[]>;
   /**
    * The login of the actor of the latest `labeled` event for `label` on
    * `repo`'s issue or pull request `number`, or `undefined` where there is none.
@@ -167,6 +179,11 @@ export interface DispatcherEdges {
    * across scans, before it leaves the item for a person (#596). At least `1`.
    */
   readonly scanLimit: number;
+  /**
+   * How many days back the scan lists merged pull requests still carrying
+   * `agent:follow-ups` (#603). At least `1`.
+   */
+  readonly mergedWindowDays: number;
   readonly now?: () => Date;
   readonly newId?: () => string;
   /**
@@ -307,10 +324,11 @@ export const LABEL_KINDS: {
 export const SERVICE_LABELS: readonly string[] = Object.values(LABEL_KINDS).flatMap((kinds) => Object.keys(kinds));
 
 /**
- * The trigger labels a scan lists (#581): every one but `agent:follow-ups`,
- * a marker that stays on until the pull request is merged and filed, not a
- * label that says a run is working; a merge's follow-ups job comes from the
- * merge's own delivery. `agent:merge` is listed, but is not a run's label
+ * The trigger labels a scan lists on open items (#581): every one but
+ * `agent:follow-ups`, which on an open pull request is a marker that stays on
+ * until the merge, not a label that says a run is working. The scan lists it
+ * on merged pull requests instead (#603, `rescanMerged`), where it does say
+ * something is owed. `agent:merge` is listed, but is not a run's label
  * either, so the scan's limit is not applied to it (`rescan`).
  */
 const SCAN_LABELS: readonly string[] = SERVICE_LABELS.filter((label) => label !== FOLLOW_UPS_LABEL);
@@ -437,6 +455,8 @@ const answer = (status: number, body: unknown): DoorResponse => ({ status, body:
 /** A held-door question the worker answered with a refusal, which asking again meets too. */
 class Refused extends Error {}
 
+const DAY_MS = 24 * 60 * 60 * 1000;
+
 const message = (error: unknown): string => (error instanceof Error ? error.message : String(error));
 
 /**
@@ -476,11 +496,23 @@ interface Asked {
   at?: number;
 }
 
-/** The comment a scan leaves on an item it stops dispatching for `label` (#596). */
+const times = (limit: number): string => (limit === 1 ? "once" : `${limit} times`);
+
+/**
+ * The comment a scan leaves on an item it stops dispatching for `label`
+ * (#596). On a merged pull request's `agent:follow-ups` (#603) it says
+ * something else: a filing leaves the marker on wherever it refuses or fails,
+ * by design, so the job need not have ended before its run did.
+ */
 const stoppedComment = (label: string, limit: number): string =>
-  `**The service has stopped dispatching \`${label}\` here.** Its scan, which runs at each restart, has dispatched this item's job for ` +
-  `\`${label}\` ${limit === 1 ? "once" : `${limit} times`}, and each time the label was still on at the next scan: the job ended before its run did, ` +
-  `most likely by ending the worker's process. The scan will not dispatch it again. To try once more, remove \`${label}\` and add it again by hand.`;
+  label === FOLLOW_UPS_LABEL
+    ? `**The service has stopped dispatching \`${label}\` here.** Its scan, which runs at each restart, has dispatched this merged pull request's ` +
+      `follow-ups job ${times(limit)}, and each time \`${label}\` was still on at the next scan: the filing refused or failed, which leaves the label on ` +
+      `by design and says why in the run's own comment where it got that far, or the job ended before its run did. The scan will not dispatch it again. ` +
+      `To try once more, remove \`${label}\` and add it again by hand.`
+    : `**The service has stopped dispatching \`${label}\` here.** Its scan, which runs at each restart, has dispatched this item's job for ` +
+      `\`${label}\` ${times(limit)}, and each time the label was still on at the next scan: the job ended before its run did, ` +
+      `most likely by ending the worker's process. The scan will not dispatch it again. To try once more, remove \`${label}\` and add it again by hand.`;
 
 /** A scan's door's answer, sent at once, and the scan it starts. */
 export interface Announcement {
@@ -1114,7 +1146,52 @@ export const createDispatcher = (edges: DispatcherEdges) => {
     return dispatch({ workflow: kind, ...fields }, login, where, ` at ${headSha}`, scanFor(repo, pr, label));
   };
 
-  /** One repository's part of a scan: refused where it is not served, and each labelled item decided otherwise. */
+  /**
+   * **A merged pull request still carrying `agent:follow-ups`** (#603), which
+   * a scan lists within `mergedWindowDays` of its merge: `follow-ups:file`
+   * takes the marker off last, after it has filed and reported, so one still
+   * on is a filing that never ran, or stopped partway, most likely a merge
+   * whose delivery was lost while the dispatcher was down. Decided as the
+   * merge's route decides it, past the opt-in its repository passed: the head
+   * in the repository, and the same job, carrying the pull request alone. The
+   * merge's route runs no author gate, so none is run on who merged; the
+   * label's is the scan's, as for every other label (`unasked`).
+   *
+   * Skipped where something holds a follow-ups job for it, and counted toward
+   * the scan's limit: a filing that refuses leaves the marker on by design,
+   * and nothing on the record tells that from a run that never happened, so
+   * the limit is what stops a refused filing being dispatched at every
+   * restart. Not `waitsOnReset`: the filing runs no agent, so never meets the
+   * plan's usage limit.
+   */
+  const rescanMerged = async (repo: string, item: MergedPull, held: readonly HeldJob[], login: string): Promise<string> => {
+    const where = `${repo}#${item.number}`;
+    const skip = heldFor(repo, item.number, ["follow-ups"], held);
+    if (skip !== undefined) return `skipped on ${where}: ${skip}`;
+    const stopped = await countedOut(repo, item.number, FOLLOW_UPS_LABEL, where);
+    if (stopped !== undefined) return stopped;
+    if (item.headRepo !== repo) return `refused on ${where}: the head is on a fork`;
+    const asker = await unasked(repo, item.number, FOLLOW_UPS_LABEL, login, where);
+    if ("refusal" in asker) return asker.refusal;
+    const at = ` merged at ${item.mergedAt.toISOString()}, still carrying \`${FOLLOW_UPS_LABEL}\``;
+    return dispatch({ workflow: "follow-ups", repo, pr: item.number }, login, where, at, scanFor(repo, item.number, FOLLOW_UPS_LABEL));
+  };
+
+  /**
+   * Drops the count of each of `repo`'s items a scan no longer lists with
+   * `label`: its job ended and its label was taken off, so a label added later
+   * counts from zero.
+   */
+  const forgetUnlisted = (repo: string, label: string, items: readonly { readonly number: number }[]): void => {
+    const listed = new Set(items.map((item) => item.number));
+    for (const [key, asked] of asks) if (asked.repo === repo && asked.label === label && !listed.has(asked.number)) asks.delete(key);
+  };
+
+  /**
+   * One repository's part of a scan: refused where it is not served, and
+   * otherwise each open labelled item decided, then each merged pull request
+   * still carrying `agent:follow-ups`.
+   */
   const scanRepository = async (repo: string, held: readonly HeldJob[], login: string): Promise<void> => {
     const why = await unserved(repo);
     if (why !== undefined) return edges.log(`scan: refused on ${repo}: ${why}`);
@@ -1128,14 +1205,23 @@ export const createDispatcher = (edges: DispatcherEdges) => {
         edges.log(`scan: failed on ${repo}: its \`${label}\` items could not be listed: ${message(error)}`);
         continue;
       }
-      // An item no longer listed with the label had its job end and its label
-      // taken off, so its count is dropped, and a label added later counts from zero.
-      const listed = new Set(items.map((item) => item.number));
-      for (const [key, asked] of asks) if (asked.repo === repo && asked.label === label && !listed.has(asked.number)) asks.delete(key);
+      forgetUnlisted(repo, label, items);
       for (const item of items) {
         const line = await rescan(repo, label, item, held, login, baseRef).catch((error: unknown) => `failed on ${repo}#${item.number}: ${message(error)}`);
         edges.log(`scan: ${line}`);
       }
+    }
+    let merged: readonly MergedPull[];
+    try {
+      merged = await edges.github.mergedLabelled(repo, FOLLOW_UPS_LABEL, new Date(now().getTime() - edges.mergedWindowDays * DAY_MS));
+    } catch (error) {
+      return edges.log(`scan: failed on ${repo}: its merged pull requests carrying \`${FOLLOW_UPS_LABEL}\` could not be listed: ${message(error)}`);
+    }
+    // One merged before the window is no longer listed either, and its count goes with it.
+    forgetUnlisted(repo, FOLLOW_UPS_LABEL, merged);
+    for (const item of merged) {
+      const line = await rescanMerged(repo, item, held, login).catch((error: unknown) => `failed on ${repo}#${item.number}: ${message(error)}`);
+      edges.log(`scan: ${line}`);
     }
   };
 
@@ -1190,8 +1276,9 @@ export const createDispatcher = (edges: DispatcherEdges) => {
 
   /**
    * **The scan** (#581): every open item carrying a trigger label a scan
-   * answers, in every repository served, dispatched where nothing holds a job
-   * for it, so a restart does not strand labelled work. One pass at a time: a
+   * answers, and every recently merged pull request still carrying
+   * `agent:follow-ups` (#603), in every repository served, dispatched where
+   * nothing holds a job for it, so a restart does not strand labelled work. One pass at a time: a
    * request while one runs queues a pass behind it, and a request while that
    * one waits is folded into it.
    */

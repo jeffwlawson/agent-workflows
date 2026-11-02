@@ -93,6 +93,10 @@ export const serveDispatcher = async (
   if (scanLimit === 0) {
     throw new Error("`SCAN_DISPATCH_LIMIT` is `0`, which would not turn the scan off, only stop it dispatching anything. It must be at least 1.");
   }
+  const mergedWindowDays = wholeNumber("SCAN_MERGED_WINDOW_DAYS", settings.SCAN_MERGED_WINDOW_DAYS);
+  if (mergedWindowDays === 0) {
+    throw new Error("`SCAN_MERGED_WINDOW_DAYS` is `0`, a window no merge is inside. It must be at least 1.");
+  }
   let privateKey: string;
   try {
     privateKey = fs.readFileSync(settings.GITHUB_APP_PRIVATE_KEY_FILE, "utf8");
@@ -132,6 +136,7 @@ export const serveDispatcher = async (
     workerSecret: settings.WORKER_SECRET,
     deadlineMarginMinutes: margin,
     scanLimit,
+    mergedWindowDays,
     version: VERSION,
   });
 

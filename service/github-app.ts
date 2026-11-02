@@ -1,5 +1,5 @@
 import { createSign } from "node:crypto";
-import { READER_PERMISSIONS, SCAN_PERMISSIONS, type AppGitHub, type AppRecord, type HeadPull, type Labelled } from "./dispatcher.js";
+import { READER_PERMISSIONS, SCAN_PERMISSIONS, type AppGitHub, type AppRecord, type HeadPull, type Labelled, type MergedPull } from "./dispatcher.js";
 import type { TokenGrant } from "./job.js";
 
 /**
@@ -268,6 +268,26 @@ export const liveAppGitHub = (appId: string, privateKey: string): AppGitHub => {
         if (read === undefined) throw new Error(`reading ${repo}#${number} answered ${reply.status}`);
         const { labels: _, ...fields } = read;
         items.push({ type: "pull_request", ...fields, number });
+      }
+      return items;
+    },
+    mergedLabelled: async (repo, label, since) => {
+      // `since` is the issues list's own filter, on when an item was last
+      // updated: a merge updates it, so nothing merged since is missed, and the
+      // merge time each record carries decides.
+      const query = new URLSearchParams({ state: "closed", labels: label, since: since.toISOString() });
+      const listed = await pages(`/repos/${repo}/issues?${query.toString()}`, () => scanner(repo), (reply) => reply.json, `${repo}'s closed items labelled \`${label}\``);
+      const items: MergedPull[] = [];
+      for (const entry of listed) {
+        const { number, pull_request: pull } = record(entry);
+        if (typeof number !== "number" || pull === undefined || pull === null) continue;
+        const reply = await api(`/repos/${repo}/pulls/${number}`, await scanner(repo));
+        const read = reply.status === 200 ? pullOf(reply.json) : undefined;
+        if (read === undefined) throw new Error(`reading ${repo}#${number} answered ${reply.status}`);
+        const mergedAt = record(reply.json)["merged_at"];
+        if (typeof mergedAt !== "string" || mergedAt === "" || Date.parse(mergedAt) < since.getTime()) continue;
+        const { labels: _, ...fields } = read;
+        items.push({ type: "pull_request", ...fields, number, mergedAt: new Date(mergedAt) });
       }
       return items;
     },

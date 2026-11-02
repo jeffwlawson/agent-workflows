@@ -49,6 +49,10 @@ const REQUIRED = { required: true } as const;
  *   `0` is refused at start, since it would not turn the scan off, only make
  *   it comment on every labelled item it finds. Not applied to `agent:merge`
  *   (#591), a standing decision whose gate ends with the label on.
+ * - `SCAN_MERGED_WINDOW_DAYS`: how many days back the scan lists merged pull
+ *   requests still carrying `agent:follow-ups`, a filing that never ran or
+ *   stopped partway (#603), so one someone left the label on for months is
+ *   not dispatched at every restart. At least `1`.
  */
 export const DISPATCHER = {
   GITHUB_APP_ID: REQUIRED,
@@ -63,6 +67,7 @@ export const DISPATCHER = {
   JOB_DEADLINE_MARGIN_MINUTES: { required: false, default: "60" },
   EXTRA_OWNERS: { required: false, default: "" },
   SCAN_DISPATCH_LIMIT: { required: false, default: "2" },
+  SCAN_MERGED_WINDOW_DAYS: { required: false, default: "7" },
 } as const satisfies Inputs;
 
 /**

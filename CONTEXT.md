@@ -722,7 +722,11 @@ Neither process keeps its jobs past a restart, so the dispatcher **scans** (#581
 at the worker's: since a trigger label is on while its run works, one on an open item with no job
 held for it, by the worker or the dispatcher, is a run that never reached its ending, and is
 dispatched as its delivery would have been, the actor of the label's latest `labeled` event
-standing in for the sender. `agent:follow-ups` is a marker, not a run, and is never scanned.
+standing in for the sender. `agent:follow-ups` on an open pull request is a marker, not a run, and
+is not scanned; on a pull request merged within `SCAN_MERGED_WINDOW_DAYS` it is (#603), since
+`follow-ups:file` takes it off last, so one still on is a filing owed, and the scan dispatches the
+merge's follow-ups job, as the merge's delivery would have. A merge carrying no label says nothing
+is owed, so its post-merge checklist is lost with its delivery.
 `agent:merge` is not a run's label either, but a standing decision: it is scanned, so a dropped gate
 is started again, and never counted against the limit below.
 A job carries its dispatcher's **instance**, an id fresh at each start (#597), which the scan's

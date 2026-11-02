@@ -71,8 +71,11 @@ interface Repository {
   permissions: Record<string, string>;
   /** Whether reading a variable fails, as a GitHub outage does. */
   unreadable?: boolean;
-  /** The open items carrying each label, as a scan lists them, with who added each label last. */
-  items: (Labelled & { labels: string[]; labellers: Record<string, string> })[];
+  /**
+   * The items carrying each label, as a scan lists them, with who added each
+   * label last, and when a merged pull request was merged (#603).
+   */
+  items: (Labelled & { labels: string[]; labellers: Record<string, string>; mergedAt?: string })[];
   /** The comments a test put on each item, by its number, oldest first, with who posted each (#635). */
   conversations?: Record<number, { body: string; author: string }[]>;
 }
@@ -84,8 +87,10 @@ interface Installations {
   unlistable: string[];
   /** Each account whose repositories were listed. */
   listed: string[];
-  /** Each label a listing was asked for. */
+  /** Each label a listing of open items was asked for. */
   labels: string[];
+  /** Each listing of merged pull requests asked for: its label, and the earliest merge it lists (#603). */
+  merged: { label: string; since: string }[];
 }
 
 /** The App's owner, which is the repository's owner too, unless a test says otherwise. */
@@ -99,6 +104,7 @@ const setup = (
     holdLabeller?: boolean;
     holdPermission?: boolean;
     scanLimit?: number;
+    mergedWindowDays?: number;
     /** Whether the worker is the real queue behind its real doors, each job's work held until a test ends it (#597). */
     queue?: boolean;
     /** How many minutes the worker's clock runs ahead of the dispatcher's, behind where negative (#601). */
@@ -112,7 +118,7 @@ const setup = (
     permissions: { maintainer: "write", triager: "triage" },
     items: [],
   };
-  const installations: Installations = { accounts: { [APP_OWNER]: [REPO] }, unlistable: [], listed: [], labels: [] };
+  const installations: Installations = { accounts: { [APP_OWNER]: [REPO] }, unlistable: [], listed: [], labels: [], merged: [] };
   /** The worker: what it holds, every job posted to it until it restarts, and whether it can be reached. */
   const worker = { holds: [] as Job[], down: false, asked: 0 };
   /** Each post held back until a test lets it through, where `holdPosts` says so. */
@@ -187,6 +193,16 @@ const setup = (
       if (installations.unlistable.includes(repo)) throw new Error("GitHub answered 502");
       return repo === REPO ? repository.items.filter((item) => item.labels.includes(label)) : [];
     },
+    mergedLabelled: async (repo, label, since) => {
+      installations.merged.push({ label, since: since.toISOString() });
+      if (installations.unlistable.includes(repo)) throw new Error("GitHub answered 502");
+      if (repo !== REPO) return [];
+      return repository.items.flatMap(({ labels, labellers: _, mergedAt, ...item }) =>
+        item.type === "pull_request" && item.merged && mergedAt !== undefined && Date.parse(mergedAt) >= since.getTime() && labels.includes(label)
+          ? [{ ...item, mergedAt: new Date(mergedAt) }]
+          : [],
+      );
+    },
     labeller: async (repo, number, label) => {
       if (options.holdLabeller === true) await new Promise<void>((resolve) => heldLabellers.push(resolve));
       return repo === REPO ? repository.items.find((item) => item.number === number)?.labellers[label] : undefined;
@@ -227,6 +243,7 @@ const setup = (
       owners: options.owners ?? [APP_OWNER],
       deadlineMarginMinutes: MARGIN,
       scanLimit: options.scanLimit ?? 2,
+      mergedWindowDays: options.mergedWindowDays ?? 7,
       version: "9.9.9",
       instance: `dispatcher-${(starts += 1)}`,
       now: () => clock,
@@ -1203,7 +1220,7 @@ describe("the App's permissions and events, checked at start (#560)", () => {
 });
 
 /** An open pull request as a scan lists it, carrying `labels`, each added last by `labeller`, with `change` laid over it. */
-const pullItem = (labels: string[], change: Partial<Extract<Labelled, { type: "pull_request" }>> = {}, labeller = "maintainer") => ({
+const pullItem = (labels: string[], change: Partial<Extract<Labelled, { type: "pull_request" }> & { mergedAt: string }> = {}, labeller = "maintainer") => ({
   type: "pull_request" as const,
   number: 7,
   state: "open",
@@ -1473,14 +1490,15 @@ describe("the scan after a restart", () => {
     expect(s.lines).toContain(`scan: refused on owner/repo#7: ${reason}`);
   });
 
-  it("never dispatches agent:follow-ups, and never lists it", async () => {
+  it("never dispatches agent:follow-ups on an open pull request, and never lists it among the open items", async () => {
     const s = setup();
-    s.repository.items = [pullItem([FOLLOW_UPS_LABEL], { state: "closed", merged: true }), { ...pullItem([FOLLOW_UPS_LABEL]), number: 8 }];
+    s.repository.items = [{ ...pullItem([FOLLOW_UPS_LABEL]), number: 8 }];
 
     await s.dispatcher.scan();
 
     expect(s.posted).toEqual([]);
     expect(s.installations.labels).not.toContain(FOLLOW_UPS_LABEL);
+    expect(s.installations.merged.map(({ label }) => label)).toEqual([FOLLOW_UPS_LABEL]);
     expect([...s.installations.labels].sort()).toEqual([REVIEW_LABEL, FIX_LABEL, UPDATE_BRANCH_LABEL, MERGE_LABEL, IMPLEMENT_LABEL].sort());
   });
 
@@ -1521,7 +1539,8 @@ describe("the scan after a restart", () => {
 
     await s.dispatcher.scan();
 
-    expect(s.lines.filter((line) => line.startsWith("scan: failed on owner/repo: its "))).toHaveLength(5);
+    expect(s.lines.filter((line) => line.startsWith("scan: failed on owner/repo: its "))).toHaveLength(6);
+    expect(s.lines).toContain("scan: failed on owner/repo: its merged pull requests carrying `agent:follow-ups` could not be listed: GitHub answered 502");
     expect(s.lines.at(-1)).toBe("scan: done");
   });
 
@@ -1887,6 +1906,175 @@ describe("the scan's limit", () => {
 
     expect(s.posted).toHaveLength(3);
     expect(s.comments).toHaveLength(1);
+  });
+});
+
+/**
+ * A merged pull request still carrying `agent:follow-ups` (#603): its filing
+ * never ran, or stopped partway, most likely because the merge's delivery was
+ * lost while the dispatcher was down. The scan lists the merged ones within
+ * the window and dispatches each as the merge's delivery would.
+ */
+describe("the scan's merged pull requests (#603)", () => {
+  const DAY_MS = 24 * 60 * MINUTE_MS;
+  const daysAgo = (days: number) => new Date(START.getTime() - days * DAY_MS).toISOString();
+  /** A pull request merged `days` ago, carrying `labels`, with `change` laid over it. */
+  const mergedItem = (days: number, labels: string[] = [FOLLOW_UPS_LABEL], change: Partial<Extract<Labelled, { type: "pull_request" }>> = {}, labeller = "maintainer") =>
+    pullItem(labels, { state: "closed", merged: true, mergedAt: daysAgo(days), ...change }, labeller);
+
+  it("dispatches one within the window as the job its merge's delivery makes, once however many scans follow", async () => {
+    const delivered = setup();
+    const expected = await dispatched(delivered, closed());
+    const s = setup();
+    s.repository.items = [mergedItem(2)];
+
+    await s.dispatcher.scan();
+    await s.dispatcher.scan();
+    await announce(s);
+
+    expect(jobsPosted(s).map(unnamed)).toEqual([unnamed(expected)]);
+    expect(s.lines).toContain(
+      `scan: dispatched owner/repo#7 merged at ${daysAgo(2)}, still carrying \`${FOLLOW_UPS_LABEL}\` as job job-1, deadline ${expected.deadline}`,
+    );
+    expect(linesOn(s, "owner/repo#7").slice(1)).toEqual(Array(2).fill("scan: skipped on owner/repo#7: the worker holds a job for it"));
+    expect(s.installations.merged).toEqual(Array(3).fill({ label: FOLLOW_UPS_LABEL, since: daysAgo(7) }));
+  });
+
+  it("lists back as far as the window the setting gives", async () => {
+    const s = setup({ mergedWindowDays: 30 });
+    s.repository.items = [mergedItem(20)];
+
+    await s.dispatcher.scan();
+
+    expect(s.installations.merged).toEqual([{ label: FOLLOW_UPS_LABEL, since: daysAgo(30) }]);
+    expect(jobsPosted(s).map((job) => job.workflow)).toEqual(["follow-ups"]);
+  });
+
+  it("dispatches nothing for one merged before the window, one closed without a merge, an open one carrying the label, or a merged one without it", async () => {
+    const s = setup();
+    s.repository.items = [
+      mergedItem(8),
+      pullItem([FOLLOW_UPS_LABEL], { number: 8, state: "closed", merged: false }),
+      pullItem([FOLLOW_UPS_LABEL], { number: 9 }),
+      mergedItem(1, [], { number: 10 }),
+    ];
+
+    await s.dispatcher.scan();
+
+    expect(s.posted).toEqual([]);
+  });
+
+  it("refuses one whose head is on a fork, or whose head repository is gone, as a merge's delivery is", async () => {
+    const s = setup();
+    s.repository.items = [mergedItem(1, [FOLLOW_UPS_LABEL], { headRepo: "someone/fork" }), mergedItem(1, [FOLLOW_UPS_LABEL], { number: 8, headRepo: undefined })];
+
+    await s.dispatcher.scan();
+
+    expect(s.posted).toEqual([]);
+    expect(s.lines).toContain("scan: refused on owner/repo#7: the head is on a fork");
+    expect(s.lines).toContain("scan: refused on owner/repo#8: the head is on a fork");
+  });
+
+  it("runs no author gate on who merged, and holds the label to the scan's rule: the App's, or a writer's, never a guess", async () => {
+    const s = setup();
+    s.repository.items = [
+      mergedItem(1, [FOLLOW_UPS_LABEL], {}, "loop-app[bot]"),
+      mergedItem(1, [FOLLOW_UPS_LABEL], { number: 8 }, "triager"),
+      { ...mergedItem(1, [FOLLOW_UPS_LABEL], { number: 9 }), labellers: {} },
+    ];
+
+    await s.dispatcher.scan();
+
+    expect(jobsPosted(s).map((job) => ("pr" in job ? job.pr : 0))).toEqual([7]);
+    expect(s.looked).toEqual(["triager"]);
+    expect(s.lines).toContain("scan: refused on owner/repo#8: triager cannot write to owner/repo, and added `agent:follow-ups` last");
+    expect(s.lines).toContain("scan: skipped on owner/repo#9: no `labeled` event for `agent:follow-ups` was found, so there is no one it was asked by to check");
+  });
+
+  it("skips one the worker holds a follow-ups job for, from its merge's delivery", async () => {
+    const s = setup();
+    s.repository.items = [mergedItem(0)];
+    await deliver(s, closed());
+
+    await s.dispatcher.scan();
+
+    expect(s.posted).toHaveLength(1);
+    expect(s.lines).toContain("scan: skipped on owner/repo#7: the worker holds a job for it");
+  });
+
+  it("skips one the dispatcher has dispatched a follow-ups job for whose post the worker has not answered yet", async () => {
+    const s = setup({ holdPosts: true });
+    s.repository.items = [mergedItem(0)];
+    const pending = deliver(s, closed());
+    while (s.heldPosts.length === 0) await new Promise((resolve) => setImmediate(resolve));
+
+    await s.dispatcher.scan();
+    s.heldPosts.forEach((release) => release());
+    await pending;
+
+    expect(s.posted).toHaveLength(1);
+    expect(s.lines).toContain("scan: skipped on owner/repo#7: the dispatcher has dispatched a job for it");
+  });
+
+  it("makes one job where the merge's delivery lands while the scan's post is in flight", async () => {
+    const s = setup({ holdPosts: true });
+    s.repository.items = [mergedItem(0)];
+    const scanned = s.dispatcher.scan();
+    while (s.heldPosts.length === 0) await new Promise((resolve) => setImmediate(resolve));
+
+    expect((await deliver(s, closed())).outcome).toBe("skipped on owner/repo#7 on its merge: a scan has dispatched a job for it");
+    s.heldPosts.forEach((release) => release());
+    await scanned;
+
+    expect(jobsPosted(s).map((job) => job.workflow)).toEqual(["follow-ups"]);
+  });
+
+  it("dispatches a refused filing the limit's number of times, then leaves it for a person, with one comment true for a follow-ups job", async () => {
+    const s = setup();
+    s.repository.items = [mergedItem(1)];
+
+    await s.dispatcher.scan();
+    await crash(s);
+    await crash(s);
+    await crash(s);
+
+    expect(s.posted).toHaveLength(2);
+    expect(linesOn(s, "owner/repo#7").slice(2)).toEqual([`${STOPPED("owner/repo#7", FOLLOW_UPS_LABEL)}; commented on it`, STOPPED("owner/repo#7", FOLLOW_UPS_LABEL)]);
+    expect(s.comments).toHaveLength(1);
+    const body = s.comments[0]?.body ?? "";
+    expect(body).toContain("dispatched this merged pull request's follow-ups job 2 times");
+    expect(body).toContain("the filing refused or failed");
+    expect(body).not.toContain("most likely by ending the worker's process");
+    expect(body).toContain(`remove \`${FOLLOW_UPS_LABEL}\` and add it again by hand`);
+  });
+
+  it("answers the label added again by hand, on its delivery, and the scan counts from zero after it", async () => {
+    const s = setup();
+    s.repository.items = [mergedItem(1)];
+    await s.dispatcher.scan();
+    await crash(s);
+    await crash(s);
+    expect(s.posted).toHaveLength(2);
+
+    expect((await deliver(s, labelled({ label: FOLLOW_UPS_LABEL, state: "closed", merged: true }))).outcome).toMatch(/^dispatched owner\/repo#7 on its label/);
+    await crash(s);
+
+    expect(s.posted).toHaveLength(4);
+  });
+
+  it("forgets the count of one that leaves the window", async () => {
+    const s = setup();
+    s.repository.items = [mergedItem(6)];
+    await s.dispatcher.scan();
+    await crash(s);
+
+    s.advance(2 * 24 * 60);
+    await crash(s);
+    s.repository.items = [mergedItem(0)];
+    await crash(s);
+
+    expect(s.posted).toHaveLength(3);
+    expect(s.comments).toEqual([]);
   });
 });
 

@@ -617,6 +617,7 @@ export const runJob = async (job: Job, edges: JobEdges): Promise<readonly Phase[
  * 1. A `read` token, then `review:gate`. Where it does not go ahead, on to 6.
  * 2. The checkout of the commit the gate settled, as `BRANCH`, with the base.
  * 3. `review:budget`, with the budget the gate settled from `AGENT_MAX_FIX_ROUNDS`.
+ *    The runner, in 5, is handed the threshold it settled from `AGENT_FIX_MIN_SEVERITY`.
  * 4. `review:collect-checks`, whose failure the review reads as checks unknown.
  * 5. A fresh `read` token, then the runner, with it as `GH_TOKEN`.
  * 6. A `resolve` token, then `review:publish`, where the review finished:
@@ -693,6 +694,7 @@ const runReview = async (job: ReviewJob, edges: JobEdges): Promise<readonly Phas
         PR_MERGED: String(job.merged),
         REVIEW_TIMEOUT_MINUTES: job.variables.AGENT_REVIEW_TIMEOUT_MINUTES,
         MAX_FIX_ROUNDS: job.variables.AGENT_MAX_FIX_ROUNDS,
+        FIX_MIN_SEVERITY: job.variables.AGENT_FIX_MIN_SEVERITY,
       },
       edges.runDir,
       reviewLimit.signal,
@@ -788,6 +790,7 @@ const runReview = async (job: ReviewJob, edges: JobEdges): Promise<readonly Phas
         AUTO_FIX: budget["start"],
         FIX_ROUNDS_SPENT: budget["spent"],
         FIX_ROUND_BUDGET: budget["budget"],
+        FIX_MIN_SEVERITY: gate["threshold"],
       },
       checkout,
       reviewLimit.signal,

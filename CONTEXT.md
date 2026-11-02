@@ -18,7 +18,7 @@ transition, near enough:
 | `agent:fix` on a **PR** | `fix` | act on review feedback, reply to every thread it is asked about and close none, record what it did with the conversation comments, ask for a re-review if it pushed or left an out-of-scope note |
 | `agent:update-branch` on a **PR** | `update-branch` | merge the base branch in, resolve conflicts, carry the verdict over or ask for a re-review |
 | `agent:merge` on a **PR** | `merge` | the maintainer's merge decision for the head it was added at (the **arm**): merge it once that head is current with its base, green and approved; ask for `agent:update-branch` where it is behind; disarm where the head gained anything but a clean merge of the base ([ADR 0009](./docs/adr/0009-agent-merge-executes-the-human-decision.md)) |
-| `agent:follow-ups` on a **merged PR** | `follow-ups` | file the out-of-scope findings its review recorded, as `needs-triage` stubs; on **every** merge, labelled or not, post the linked briefs' *After merge, by a human* checklist |
+| `agent:follow-ups` on a **merged PR** | `follow-ups` | file the out-of-scope findings and the minor findings its review recorded, as `needs-triage` stubs; on **every** merge, labelled or not, post the linked briefs' *After merge, by a human* checklist |
 
 `implement` and `implement-prd` share one label and partition on **issue shape**: a parent with
 sub-issues goes to the PRD chain, everything else to the single-issue run. The chain works one
@@ -164,7 +164,9 @@ name where it does not, and checks out, waits on CI for and posts every status o
 Review adds a trigger label in two cases. The first is on the pull request (#102): the posting
 job's last step adds `agent:fix` when the verdict is *Changes recommended* and the pull request has
 automatic fix rounds left in its **fix-round budget** (#201): the repository variable
-`AGENT_MAX_FIX_ROUNDS`, default 3, `0` for none. **Rounds spent** are counted from the pull request
+`AGENT_MAX_FIX_ROUNDS`, default 3, `0` for none. A review whose open findings are all below the
+repository's **fix threshold** (`AGENT_FIX_MIN_SEVERITY`, below) is an approval and starts no round at
+all, so the budget is spent only on rounds a finding at or above it asks for. **Rounds spent** are counted from the pull request
 itself: the `agent-fix-round` statuses the loop posted there, one beside each verdict that asked
 for a round (#297; the verdict's own line is fixed, so it cannot be the record). There is no marker
 label, so the count survives re-runs and hand edits, only automatic rounds count, and a push resets
@@ -296,7 +298,7 @@ writers of it would break "the newest record wins".
 
 **And the review body is where the rounds are kept** (#109, decisions 8 and 9). It is a findings
 record, not a rendering of the latest pass: the round header, `## Agent review`, the assessment, one sentence the
-review wrote naming what is unresolved, the step, a count, then *Open*, *Previously missed*,
+review wrote naming what is unresolved, the step, a count, then *Open*, *Minor findings* (#616), *Previously missed*,
 *Still open* (closures GitHub refused, #257), *Resolved since last review*, *Acceptance criteria*,
 *Since the brief*, *Not checked here*, *Follow-ups* and *Notes from `agent:fix` not filed*, then
 *How this was checked*, then a rule and the run. A group with nothing in it is
@@ -304,7 +306,9 @@ omitted, except *Not checked here*, which is on every review (#543): what the re
 skipped of the tests exercising the change, for want of something in the environment, with the
 reason; or that it skipped none, ran none, or did not say. Its content, never its absence, says
 what went unchecked, and it derives nothing. The horizontal rule before the run is the only divider in the body. Every entry carries a **severity** — `high` / `medium` / `low`, which orders the list
-and decides nothing else; a test permutes it across a review and holds the verdict identical. It is
+and decides **one thing**, through the repository's **fix threshold** (#616), and nothing finer: whether
+the review's open findings are threads that block the merge or minor findings (below). With the threshold at
+`low` it decides nothing, and a test permutes it across a review and holds the outcome identical. It is
 rendered as a **chip this repository hosts**, pinned to the release that posted it, and the thread
 the entry points at opens with the same one (#135) — one badge, so the two surfaces cannot label one
 finding two ways. The picture is never the only copy: its alt text is the word, and every reader
@@ -315,6 +319,28 @@ because the thread is its record; and one this round closed carries none at all,
 would be handed a settled finding to rule on again. A carried entry also carries a **link** to its
 thread, which sits under an older review; a fresh one cannot, because its thread is opened by the
 same call that posts the body.
+
+**The fix threshold places the open findings, once per review** (#616). The repository variable
+`AGENT_FIX_MIN_SEVERITY` is `low`, `medium` or `high`, `medium` where unset, and `review:gate` refuses
+any other value by name. After the review has verified what was carried and before it writes
+anything, the runner looks at the **open set**: its own findings that would be threaded (not the ones
+moved to follow-ups, below) and the carried threads still open. A finding **meets** the threshold at or
+above it; `high` meets every one, and so do a finding with no severity to read, carried or new, and an
+acceptance criterion ruled unmet, so a missing rating can only block an approval. Where any open
+finding meets it, the review is **mixed**, which is every review before this setting: every finding a
+thread, lows included, so the round a medium starts fixes the lows beside it. Where at least one is
+open and none meets it, the review is **all below**: none is a thread, each is a **minor finding**, a
+follow-up of kind `minor` with its title, location, severity, body and id, listed under *Minor
+findings* directly after *Open*; a carried thread still open is resolved by `review:publish` as
+`MINOR`, with a reply saying why, and becomes a minor finding under its own id. Nothing is open, so the
+verdict is the checks': *approval recommended* on green, and with it the green status, the ready
+mark and the PRD chain's advance. A minor finding is carried and ruled by id on **every** pull
+request, as #495 carries a PRD PR's follow-ups: one a later commit fixed is ruled resolved and drops
+off, and one is never threaded again, in a later mixed review or otherwise. The fix agent is handed
+them in a section of their own (`# MINOR FINDINGS`), beside the threads, owing no outcome on them;
+a pull request whose only work is minor findings is not one with nothing to do. They are filed at
+merge. The approval's fixed line says nothing blocks the merge, never that nothing is left (#105,
+#124).
 
 Since #127 no finding the review raises is thread-less. **Every fix-before-merge finding is anchored
 at something the pull request changed** — a line the diff covers, or the changed file where it
@@ -441,6 +467,16 @@ into the payload so no later round carries it back from an older review; one rul
 on, or from before ids, stays. And the cap is **three per landed slice**, recorded in the payload and re-applied by the filing end. A
 regular pull request is one slice, so its cap stays three and its review still restates its list
 every round.
+
+There are two **follow-up kinds**, told apart by the payload entry's `kind`, which the workflow
+writes and never the model: **out of scope** (no `kind`, every entry before #616), a problem this
+pull request is not going to fix, capped, each filed as its own issue; and **minor** (#616), a
+finding in this pull request's own code the review recorded rather than threaded because every
+finding open was below the fix threshold. Minor findings lead the payload, inside its exempt prefix
+with the moved findings, so neither the cap nor the body's shedding reaches one; they are carried and
+ruled by id on every pull request, a regular one included, where the out-of-scope list is still
+restated; and they are filed at merge, one stub each until #625 groups them into one issue per pull
+request.
 
 ## The three parts, and what belongs in each
 
@@ -705,7 +741,7 @@ its reusable's jobs checks out, a checkout per job, whether or not the job befor
 changed (#530): `fix`'s publish job checks the head out again as `update-branch`'s does. It differs
 only where a command needs it, and that workflow's *Service orchestrator* block in
 `docs/platform-spec.md` says so, as implement-prd's publish checkout of `head` does. With `fix` served, the review's fix-round
-budget is the repository's `AGENT_MAX_FIX_ROUNDS`, read as on Actions (PRD #515): it was held at 0
+budget is the repository's `AGENT_MAX_FIX_ROUNDS`, and the fix threshold its `AGENT_FIX_MIN_SEVERITY`, read as on Actions (PRD #515): the budget was held at 0
 until something answered the `agent:fix` a review adds. A token's **kind** is what it may write: `read`
 writes nothing, `write` adds what a posting phase writes (the pull request, issues and statuses),
 `resolve` is `write` with Contents: write added, for `review:publish` alone, since GitHub lets

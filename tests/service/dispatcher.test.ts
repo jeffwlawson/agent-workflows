@@ -105,7 +105,7 @@ const setup = (
   const repository: Repository = {
     installed: true,
     account: APP_OWNER,
-    variables: { [ORCHESTRATOR_VARIABLE]: SERVICE_ORCHESTRATOR, AGENT_MODEL: "a-model", AGENT_MAX_FIX_ROUNDS: "2" },
+    variables: { [ORCHESTRATOR_VARIABLE]: SERVICE_ORCHESTRATOR, AGENT_MODEL: "a-model", AGENT_MAX_FIX_ROUNDS: "2", AGENT_FIX_MIN_SEVERITY: "low" },
     permissions: { maintainer: "write", triager: "triage" },
     items: [],
   };
@@ -396,6 +396,7 @@ describe("the webhook door", () => {
         AGENT_REVIEW_TIMEOUT_MINUTES: "",
         AGENT_TIMEOUT_MINUTES: "",
         AGENT_MAX_FIX_ROUNDS: "2",
+        AGENT_FIX_MIN_SEVERITY: "low",
         AGENT_SETUP: "",
       },
     });
@@ -479,6 +480,7 @@ describe("the labels the dispatcher routes", () => {
       expect(job.workflow, sender).toBe("fix");
       expect(job, sender).toMatchObject({ pr: 7, branch: "agent/issue-7-a-thing", headSha: HEAD, baseRef: "main", appLogin: "loop-app[bot]" });
       expect(job.variables.AGENT_MAX_FIX_ROUNDS, sender).toBe("2");
+      expect(job.variables.AGENT_FIX_MIN_SEVERITY, sender).toBe("low");
     }
   });
 
@@ -826,6 +828,7 @@ describe("the issue route", () => {
           AGENT_REVIEW_TIMEOUT_MINUTES: "",
           AGENT_TIMEOUT_MINUTES: "",
           AGENT_MAX_FIX_ROUNDS: "2",
+          AGENT_FIX_MIN_SEVERITY: "low",
           AGENT_SETUP: "",
         },
       };

@@ -17,6 +17,26 @@ You are on branch `{{BRANCH}}`, already checked out at the PR head.
 
 {{CONVERSATION}}
 
+# MINOR FINDINGS
+
+{{MINOR_FINDINGS}}
+
+These are **findings in this pull request's own code** that a review recorded rather than posted
+as threads: each was below the repository's threshold for fixing before merge, so it has **no
+thread**, and each is filed as a follow-up when the pull request merges unless a commit fixes it
+first. Each is shown under its id, with its severity, its location and the review's text.
+
+- **Where a finding in the sections above is what this run is for**, fix the minor findings that
+  sit in files you are already changing, or are otherwise cheap and in this pull request's scope,
+  and leave the rest: they are recorded, and the merge files them.
+- **Where these are the only work above** (a review approved over them, and a person asked for this
+  run), they are the work: fix them on the same terms as any finding, and decline one only where
+  it is wrong.
+
+No thread outcome is owed on a minor finding, since there is no thread to reply into, and nothing
+you report closes one: name the ones you fixed, by id, in your commit message, and the next review
+reads the code and drops the ones it finds fixed.
+
 # PR DIFF
 
 The change under review: the PR's diff against its base branch, exactly what GitHub shows.

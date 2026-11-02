@@ -10,9 +10,11 @@ import {
 import {
   lastFindingMarker,
   openingClaim,
+  threadFindingBody,
   withSeverityBadgesAsText,
   type Severity,
 } from "./review-findings.js";
+import { isMinor, parseFollowUpsBlock, type FollowUp } from "./review-output.js";
 import {
   closingReplyReason,
   type AgentThread,
@@ -165,6 +167,17 @@ export interface PullRequestFeedback {
    * `shared/review-findings.ts`'s to describe.
    */
   readonly latestAgentReviewBody: string;
+  /**
+   * The **minor findings** on this pull request (#616): the entries of kind
+   * `minor` in the follow-ups payload of `latestAgentReviewBody`, which
+   * carries every one an earlier review recorded and no later one ruled
+   * fixed. Findings in this pull request's own code, below the repository's
+   * `AGENT_FIX_MIN_SEVERITY`, with no thread: a fix run is handed them in a
+   * section of their own, owes no thread outcome on them, and a pull request
+   * whose only actionable feedback is these is not one with nothing to do.
+   * Empty where that body records none, or its payload cannot be read.
+   */
+  readonly minorFindings: readonly FollowUp[];
   /**
    * Bodies of the top-level comments `agent:fix` already posted on this PR —
    * kept out of every rendered surface above, and returned only so a new run
@@ -706,6 +719,44 @@ export const surfaceText = (feedback: PullRequestFeedback, surface: FeedbackSurf
 };
 
 /**
+ * The minor findings a review body's follow-ups payload records (#616), or
+ * none where it has no payload or one this version cannot read, which is said
+ * in the log: the run still has the review's body in its summaries.
+ */
+const minorFindingsIn = (body: string): FollowUp[] => {
+  try {
+    return (parseFollowUpsBlock(body)?.followUps ?? []).filter(isMinor);
+  } catch (error) {
+    console.log(`::warning::The newest review's follow-ups payload could not be read, so no minor findings are handed over: ${error instanceof Error ? error.message : String(error)}`);
+    return [];
+  }
+};
+
+/** Said in the fix brief's *Minor findings* section where the pull request carries none. */
+const NO_MINOR_FINDINGS = "(none)";
+
+/**
+ * The minor findings as a fix run is shown them (#616), in the brief's
+ * `# MINOR FINDINGS` section: each with its id, severity, location, title and
+ * body, a badge in the body reduced to its word, since this is prompt text.
+ * What the run does with them is the brief's to say, around this list.
+ */
+export const renderMinorFindingsForFix = (minor: readonly FollowUp[]): string =>
+  minor.length === 0
+    ? NO_MINOR_FINDINGS
+    : minor
+        .map((finding) =>
+          [
+            `## \`${finding.id ?? "(no id)"}\` · ${finding.severity} · \`${finding.location.replace(/\s+/g, " ").trim()}\``,
+            "",
+            `**${finding.title.replace(/\s+/g, " ").trim()}**`,
+            "",
+            withSeverityBadgesAsText(finding.body.trim()),
+          ].join("\n"),
+        )
+        .join("\n\n");
+
+/**
  * Why a run that **acts** on this feedback must not proceed, or `undefined` when
  * it may.
  *
@@ -762,7 +813,8 @@ export const refusalReason = (feedback: PullRequestFeedback): string | undefined
  * Not counted: resolved threads, comments from outside the repository's
  * collaborators, a thread already carrying this workflow's closing reply (it
  * waits on the review to close it), and this loop's own status notes. The last
- * two are shown to a fix run as evidence, not as asks.
+ * two are shown to a fix run as evidence, not as asks. Counted: a minor
+ * finding the newest review recorded (#616), which is work with no thread.
  *
  * Asked only after `refusalReason` came back empty, so a feedback set that is
  * empty because something could not be read never reaches it: that is a
@@ -986,6 +1038,7 @@ const findingOn = (
   readonly title: string;
   readonly anchor: string;
   readonly url?: string;
+  readonly body: string;
 } | undefined => {
   const marked = thread.comments.find(
     (c) => isWorkflowBot(c.author?.login ?? undefined, accounts) && findingIdIn(c.body ?? "") !== undefined,
@@ -1017,6 +1070,9 @@ const findingOn = (
     // rather than inside the link that is one.
     title: lastFindingMarker(marked.body ?? "")?.title ?? claim,
     anchor: locationOf(marked, isFileLevel(thread)),
+    // The finding as its thread holds it, for a review that records it as a
+    // minor finding (#616), which is filed with this text at merge.
+    body: threadFindingBody(marked.body ?? ""),
   };
 };
 
@@ -1421,6 +1477,7 @@ export const fetchPullRequestFeedback = (
         anchor: found.anchor,
         ...(found.severity === undefined ? {} : { severity: found.severity }),
         ...(found.url === undefined ? {} : { url: found.url }),
+        ...(found.body === "" ? {} : { body: found.body }),
         ...(reply === undefined ? {} : { maintainerReply: reply }),
         ...(thread.closedAs === undefined ? {} : { closedAs: thread.closedAs }),
       },
@@ -1465,6 +1522,7 @@ export const fetchPullRequestFeedback = (
     .filter((review) => (review.body ?? "").trim() !== "")
     .pop();
   const latestAgentReviewBody = (latestAgentReview?.body ?? "").trim();
+  const minorFindings = minorFindingsIn(latestAgentReviewBody);
 
   // The notes that review has not ruled on: posted after it, or all of them
   // where this loop has posted no review yet (#213). An unreadable time on
@@ -1499,6 +1557,7 @@ export const fetchPullRequestFeedback = (
     agentThreads,
     settledFindings,
     latestAgentReviewBody,
+    minorFindings,
     priorTopLevelComments,
     outOfScopeNotes,
     priorOutOfScopeNotes,
@@ -1510,7 +1569,9 @@ export const fetchPullRequestFeedback = (
     // evidence and ask for nothing, so a PR holding only those must still
     // refuse rather than spend a run with nothing to act on. A review summary
     // counts as it always has.
-    hasFeedback: summaries !== "" || answerable.length > 0 || conversationComments.length > 0,
+    // A minor finding counts too (#616): it is work a fix run is handed, with
+    // no thread and no comment to carry it.
+    hasFeedback: summaries !== "" || answerable.length > 0 || conversationComments.length > 0 || minorFindings.length > 0,
     status,
     unreadable,
   };

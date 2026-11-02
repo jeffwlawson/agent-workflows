@@ -35,8 +35,11 @@ import {
   asVisibility,
   availableSecrets,
   availableVariable,
+  DEFAULT_FIX_MIN_SEVERITY,
   DEFAULT_FIX_ROUNDS,
   diagnose,
+  FIX_MIN_SEVERITIES,
+  FIX_MIN_SEVERITY_VARIABLE,
   FIX_ROUNDS_VARIABLE,
   TIMEOUT_VARIABLES,
   parseList,
@@ -46,6 +49,7 @@ import {
   type Finding,
   type RepoFacts,
 } from "../setup/doctor.js";
+import { DEFAULT_FIX_MIN_SEVERITY as DEFAULT_FIX_MIN_SEVERITY_REVIEW } from "../shared/review-output.js";
 import {
   livePolicySurface,
   parsePolicies,
@@ -3204,6 +3208,7 @@ describe("doctor names the failures that otherwise look like something else", ()
     actionsPolicies: [],
     // Unset, which is the budget's default of 3.
     maxFixRounds: null,
+    fixMinSeverity: null,
     // Unset, which is every limit at today's value.
     timeoutMinutes: Object.fromEntries(TIMEOUT_VARIABLES.map((variable) => [variable.name, null])),
     // Unset, which is the Actions orchestrator.
@@ -5229,6 +5234,35 @@ describe("doctor names the failures that otherwise look like something else", ()
   });
 
   /**
+   * **A threshold that is not one of the three** fails every review (#616):
+   * the gate refuses it by name rather than guess which findings block a
+   * merge. An error, on the same values the gate takes; unset passes.
+   */
+  it("errors on a fix threshold variable that is not low, medium or high", async () => {
+    for (const value of ["Medium", "none", "2", " low"]) {
+      const { code, err } = await check(await installed(), { ...healthy(), fixMinSeverity: value });
+      expect(err, value).toContain("FAIL  fix threshold");
+      expect(err, value).toContain(`\`${value}\``);
+      expect(err, value).toContain(FIX_MIN_SEVERITY_VARIABLE);
+      expect(code, value).toBe(1);
+    }
+    for (const value of ["low", "medium", "high", null]) {
+      const { code, err } = await check(await installed(), { ...healthy(), fixMinSeverity: value });
+      expect(err, String(value)).toBe("");
+      expect(code, String(value)).toBe(0);
+    }
+  });
+
+  /** The values and the default `doctor` knows are the gate's, and the variable is the one the review reads. */
+  it("knows the fix threshold the review applies", () => {
+    const gate = fs.readFileSync(path.join("review", "gate.ts"), "utf8");
+    const review = fs.readFileSync(path.join(".github", "workflows", "review.yml"), "utf8");
+    expect(gate).toContain(`const FIX_MIN_SEVERITIES: readonly string[] = ${JSON.stringify(FIX_MIN_SEVERITIES).replaceAll(",", ", ")};`);
+    expect(DEFAULT_FIX_MIN_SEVERITY_REVIEW).toBe(DEFAULT_FIX_MIN_SEVERITY);
+    expect(review).toContain(`FIX_MIN_SEVERITY: \${{ vars.${FIX_MIN_SEVERITY_VARIABLE} }}`);
+  });
+
+  /**
    * The default `doctor` assumes is the one the review applies, read out of
    * `review:gate`, which settles the budget: two copies of the number, held
    * equal.
@@ -5524,6 +5558,7 @@ describe("doctor names the failures that otherwise look like something else", ()
       releases: undefined,
       actionsPolicies: undefined,
       maxFixRounds: undefined,
+      fixMinSeverity: undefined,
       timeoutMinutes: undefined,
       orchestrator: undefined,
       agentSetup: undefined,
@@ -5551,6 +5586,7 @@ describe("doctor names the failures that otherwise look like something else", ()
       releases: undefined,
       actionsPolicies: undefined,
       maxFixRounds: undefined,
+      fixMinSeverity: undefined,
       timeoutMinutes: undefined,
       orchestrator: undefined,
       agentSetup: undefined,

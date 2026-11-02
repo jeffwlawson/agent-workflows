@@ -270,6 +270,10 @@ export interface CommandContract {
  *   run that could not say must not claim a fix round started.
  * - `FIX_ROUNDS_SPENT` and `FIX_ROUND_BUDGET` are counted by the same step,
  *   and a stop on a spent budget is recorded only where both are numbers.
+ * - `FIX_MIN_SEVERITY` is the repository's fix threshold, `low`, `medium` or
+ *   `high`, as `review:gate` settled it from `AGENT_FIX_MIN_SEVERITY` (#616):
+ *   a review whose open findings are all below it records them as minor
+ *   findings and approves. Unset is `medium`, and anything else fails the run.
  *
  * And the files each writes:
  *
@@ -341,6 +345,7 @@ export const RUNNERS = {
       AUTO_FIX: { required: false, default: "false", accepts: ["true", "false"] },
       FIX_ROUNDS_SPENT: EMPTY,
       FIX_ROUND_BUDGET: EMPTY,
+      FIX_MIN_SEVERITY: { required: false, default: "medium", accepts: ["low", "medium", "high"] },
       RED_CHECK_CONFIGURED: EMPTY,
       RED_CHECK_FILE: EMPTY,
     },
@@ -875,8 +880,10 @@ const MERGE_PUBLISH = {
  * declared here.
  *
  * - `review:gate` decides, before checkout, whether the review runs, which
- *   commit it reviews, the fix-round budget's value and, on a PRD branch,
- *   which round it is, and writes nothing to the record: the posting job says
+ *   commit it reviews, the fix-round budget's value, the fix threshold's
+ *   (`FIX_MIN_SEVERITY`, the repository's `AGENT_FIX_MIN_SEVERITY`, #616)
+ *   and, on a PRD branch, which round it is, and writes nothing to the
+ *   record: the posting job says
  *   what it decided. `HEAD_SHA`, `PR_STATE` and `PR_MERGED` are the pull request as
  *   the event that asked for the review saw it; the branch's tip and the rest
  *   of the live state it reads itself. `gate.json` is its decisions, every
@@ -1393,6 +1400,7 @@ export const COMMANDS = {
       HEAD_POLL_SECONDS: { required: false, default: "5" },
       REVIEW_TIMEOUT_MINUTES: EMPTY,
       MAX_FIX_ROUNDS: EMPTY,
+      FIX_MIN_SEVERITY: EMPTY,
     },
     outputs: [...EVERY_SUBCOMMAND_OUTPUTS, "gate.json", "refusal_reason.txt"],
   },

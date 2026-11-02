@@ -17,7 +17,7 @@ import {
 /** The runner's decisions, and the parts only publish formats. */
 export type Decided = ReviewDecisions & Partial<Omit<ReviewBodyParts, keyof ReviewBodyHandOver>>;
 
-export const postDecided = ({ closed, roundNote, redTestsBlock, runUrl, header, log, ...decisions }: Decided): ReviewPost =>
+export const postDecided = ({ closed, roundNote, redTestsBlock, runUrl, header, log, blobBase, ...decisions }: Decided): ReviewPost =>
   renderReviewPost({
     ...reviewBodyHandOver(decisions),
     closed: closed ?? new Set(decisions.resolved.flatMap((finding) => finding.threadId ?? [])),
@@ -25,6 +25,7 @@ export const postDecided = ({ closed, roundNote, redTestsBlock, runUrl, header, 
     ...(redTestsBlock === undefined ? {} : { redTestsBlock }),
     ...(runUrl === undefined ? {} : { runUrl }),
     ...(header === undefined ? {} : { header }),
+    ...(blobBase === undefined ? {} : { blobBase }),
     ...(log === undefined ? {} : { log }),
   });
 

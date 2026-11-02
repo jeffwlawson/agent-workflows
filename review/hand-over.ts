@@ -7,10 +7,10 @@
  * | File | Holds |
  * |---|---|
  * | `findings.json` | One entry per finding to post: id, placement, severity, title, the agent's text, path, line, and whether it was previously missed |
- * | `review_body.json` | The verdict and its cause, the agent's assessment, the open, resolved and missed entries, criteria results and why there are none, what merged since the brief, what the review's own test run skipped, follow-ups and their cap, the carried follow-ups ruled resolved and why, red-test results, and the data behind the header and the round note |
- * | `thread_resolutions.json` | Per thread: id, reason, whether it was already replied to, and the agent's note or the maintainer's reply to quote |
+ * | `review_body.json` | The verdict and its cause, the agent's assessment, the open, resolved and missed entries, criteria results and why there are none, what merged since the brief, what the review's own test run skipped, minor findings, follow-ups and their cap, the carried follow-ups ruled resolved and why, red-test results, and the data behind the header and the round note |
+ * | `thread_resolutions.json` | Per thread: id, reason, whether it was already replied to, and the agent's note, the maintainer's reply to quote, or the threshold a minor one is below |
  * | `pr_summary.json` | The title, the agent's summary, whether the round is final, and the data behind Evidence and merge danger. Written only where this review rewrites them |
- * | `verdict.json` | The verdict's key, whether it starts a fix round, how many findings it leaves open, and which stop kept it from starting one |
+ * | `verdict.json` | The verdict's key, whether it starts a fix round, how many findings it leaves open and how many minor findings it records, and which stop kept it from starting one |
  *
  * None of them holds a marker, a status context or a commit. Every marker is
  * publish's to write, every free-text field comes out of these parsers
@@ -124,6 +124,12 @@ export interface VerdictHandOver {
   readonly verdict: Verdict;
   readonly fixRound: boolean;
   readonly open: number;
+  /**
+   * How many minor findings the pull request carries as this review leaves
+   * it (#616), for the status line, which says how many an approval
+   * recorded. Absent where there are none.
+   */
+  readonly minor?: number | undefined;
   /** Which of #200's stops kept a *changes recommended* review from starting a round, where one did (#425). */
   readonly stop?: "budget spent" | "no progress" | undefined;
 }
@@ -174,6 +180,8 @@ export interface ProgressHandOver extends Pick<ProgressInputs, "subIssues" | "ra
       }
     | undefined;
   readonly open: number;
+  /** How many minor findings the round leaves recorded (#616), where it leaves any. */
+  readonly minor?: number | undefined;
 }
 
 /**
@@ -240,7 +248,8 @@ const entry = {
   isNew: YES_NO,
 };
 
-const followUp = object({ title: text, location: text, body: text, severity: SEVERITY, id: optional(ID) });
+/** A follow-up, out of scope or, with its `kind`, a minor finding (#616). */
+const followUp = object({ title: text, location: text, body: text, severity: SEVERITY, id: optional(ID), kind: optional(choice(["minor"])) });
 
 /**
  * Why the review was or was not handed criteria (#435): a choice, and the
@@ -478,6 +487,7 @@ const verdict = refine(
     verdict: VERDICT,
     fixRound: YES_NO,
     open: count({ min: 0, max: MAX_ENTRIES * 2 }),
+    minor: optional(count({ min: 0, max: FOLLOW_UPS_LIST_LIMIT })),
     stop: optional(choice(["budget spent", "no progress"])),
   }),
   (v, wrong): VerdictHandOver => {
@@ -498,12 +508,22 @@ export const handOverParsers = (known: Known) => {
   const resolution = refine(
     object({
       threadId: thread,
-      reason: choice(["ADDRESSED", "WONT_FIX"]),
+      reason: choice(["ADDRESSED", "WONT_FIX", "MINOR"]),
       alreadyReplied: YES_NO,
       note: optional(text),
       maintainerReply: optional(object({ login: LOGIN, body: text })),
+      threshold: optional(SEVERITY),
     }),
-    ({ threadId, alreadyReplied, ...r }, wrong): ThreadResolution => {
+    ({ threadId, alreadyReplied, threshold, ...r }, wrong): ThreadResolution => {
+      // Below the threshold (#616): the reply names the threshold, and quotes
+      // nobody, since nobody decided it but the repository's setting.
+      if (r.reason === "MINOR") {
+        if (threshold === undefined) return wrong("closes a thread as MINOR and names no threshold");
+        return r.note === undefined && r.maintainerReply === undefined
+          ? { threadId, alreadyReplied, reason: r.reason, threshold }
+          : wrong("carries a note or a maintainer reply on a thread closed as minor");
+      }
+      if (threshold !== undefined) return wrong(`names a threshold on a thread closed as ${r.reason}`);
       if (r.reason === "ADDRESSED") {
         return r.maintainerReply === undefined
           ? { threadId, alreadyReplied, reason: r.reason, ...(r.note === undefined ? {} : { note: r.note }) }
@@ -531,10 +551,13 @@ export const handOverParsers = (known: Known) => {
           resolved: list(object({ ...entry, threadId: thread }), { max: MAX_ENTRIES }),
           movedToFollowUps: NUMBER,
           followUps: list(followUp, { max: FOLLOW_UPS_LIST_LIMIT }),
+          minorFindings: optional(list(followUp, { max: FOLLOW_UPS_LIST_LIMIT })),
           droppedFollowUps: NUMBER,
           followUpsCap: NUMBER,
           followUpsCarried: YES_NO,
-          resolvedFollowUps: optional(list(object({ title: text, location: text, reason: text }), { max: FOLLOW_UPS_LIST_LIMIT })),
+          resolvedFollowUps: optional(
+            list(object({ title: text, location: text, reason: text, kind: optional(choice(["minor"])) }), { max: FOLLOW_UPS_LIST_LIMIT }),
+          ),
           resolvedFollowUpIds: optional(list(ID, { max: FOLLOW_UPS_LIST_LIMIT })),
           droppedNotes: list(object({ title: text, reason: text, url: optional(LINK) }), { max: MAX_ENTRIES }),
           criteria: list(
@@ -560,6 +583,18 @@ export const handOverParsers = (known: Known) => {
             return wrong(`says a fix round was withheld on ${body.verdict}`);
           }
           if (sinceBrief !== undefined && body.criteria.length === 0) return wrong("says what merged since the brief, and lists no criteria");
+          // Each list holds its own kind (#616): a minor finding in the
+          // out-of-scope list would be capped, and one out of scope in the
+          // minor list would be filed as this pull request's own code.
+          if (body.followUps.some((f) => f.kind === "minor")) return wrong("lists a minor finding among the out-of-scope follow-ups");
+          if (body.minorFindings !== undefined && body.minorFindings.some((f) => f.kind !== "minor")) {
+            return wrong("lists an out-of-scope follow-up among the minor findings");
+          }
+          if (body.minorFindings !== undefined && body.minorFindings.some((f) => f.id === undefined)) return wrong("lists a minor finding with no id");
+          // One payload, one bound: the filing end opens at most this many issues.
+          if (body.followUps.length + (body.minorFindings?.length ?? 0) > FOLLOW_UPS_LIST_LIMIT) {
+            return wrong(`lists more than ${FOLLOW_UPS_LIST_LIMIT} follow-ups and minor findings together`);
+          }
           return {
             ...body,
             ...(criteriaCase === undefined ? {} : { criteriaCase }),
@@ -625,6 +660,7 @@ export interface ProgressRead {
   readonly branch: Pick<ProgressInputs, "subIssues" | "ranges" | "finalReview">;
   readonly rounds?: RoundCounts;
   readonly open: number;
+  readonly minor?: number;
 }
 
 const progress = refine(
@@ -640,10 +676,12 @@ const progress = refine(
       }),
     ),
     open: count({ min: 0, max: MAX_ENTRIES * 2 }),
+    minor: optional(count({ min: 0, max: FOLLOW_UPS_LIST_LIMIT })),
   }),
-  ({ subIssues, ranges, finalReview, rounds, open }): ProgressRead => ({
+  ({ subIssues, ranges, finalReview, rounds, open, minor }): ProgressRead => ({
     branch: { subIssues, ranges, finalReview },
     open,
+    ...(minor === undefined ? {} : { minor }),
     ...(rounds === undefined
       ? {}
       : {

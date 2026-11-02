@@ -1,4 +1,4 @@
-import type { FollowUp, ReviewOutput } from "./review-output.js";
+import { isMinor, type FollowUp, type ReviewOutput } from "./review-output.js";
 
 /**
  * The **Merge Danger** a pull request's body gives (#356), the last section of
@@ -13,7 +13,8 @@ import type { FollowUp, ReviewOutput } from "./review-output.js";
  *    from when;
  *  - a **Breaking:** line per change a caller or a user has to act on;
  *  - the **known issues**, the follow-ups this review records, which are filed
- *    as issues when the pull request merges.
+ *    as issues when the pull request merges: its minor findings first, each
+ *    said to be one (#616), then the out-of-scope ones.
  *
  * The last two are left out when there are none; the door and the blast
  * radius never are, and say so where the review gave none.
@@ -43,7 +44,7 @@ export const renderMergeDanger = (danger: MergeDanger, followUps: readonly Follo
           [
             "**Known issues**, filed when this merges:",
             "",
-            ...followUps.map((f) => `- ${oneLine(f.title)} (\`${oneLine(f.location)}\`)`),
+            ...followUps.map((f) => `- ${oneLine(f.title)} (\`${oneLine(f.location)}\`)${isMinor(f) ? ", a minor finding" : ""}`),
           ].join("\n"),
         ]),
   ];

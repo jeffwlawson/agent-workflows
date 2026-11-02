@@ -28,8 +28,11 @@ import {
 import { findingsHandOver, severityBadge, type PlacedFinding } from "../../shared/review-findings.js";
 import {
   CLOSER_LOOK,
+  deriveVerdict,
   parseFollowUpsBlock,
+  placeByThreshold,
   readCriteriaChanges,
+  recordFollowUps,
   REVIEW_BODY_BUDGET,
   reviewBodyHandOver,
   VERDICTS,
@@ -37,7 +40,7 @@ import {
   type ReviewDecisions,
   type ReviewOutput,
 } from "../../shared/review-output.js";
-import { verifyCarried, type CarriedFinding, type ThreadResolution } from "../../shared/review-verification.js";
+import { closingReplyReason, minorReply, verifyCarried, type CarriedFinding, type ThreadResolution } from "../../shared/review-verification.js";
 import { fakeGitHub, fakeReader, fakeWriters, type FakeGitHub, type ServerError } from "../engine/fakes.js";
 import { renderDecided } from "./decided.js";
 
@@ -1476,6 +1479,128 @@ describe("review:publish posts the verdict", () => {
     fs.rmSync(path.join(dir, "verdict.json"));
 
     await expect(run()).rejects.toThrow("review's verdict.json is not in");
+    expect(writes()).toEqual([]);
+  });
+});
+
+/**
+ * **The transition** (#616): a re-review whose carried threads still open and
+ * own findings are all below the threshold. The runner's decisions, built by
+ * its own functions (`verifyCarried`, `placeByThreshold`, `recordFollowUps`,
+ * `deriveVerdict`), carried through `review:publish`: each low thread resolved
+ * with the minor reason and its reply, each recorded as a minor entry with
+ * its own text, location, severity and id, this review's own lows beside
+ * them, no thread posted, and the approval on green.
+ */
+describe("review:publish over a review whose open findings are all below the threshold", () => {
+  const LOWS: readonly CarriedFinding[] = [
+    { id: "f-low1", threadId: "PRRT_one", text: "src/a.ts:1 · the log line names the wrong field", title: "The log line names the wrong field", anchor: "src/a.ts:1", severity: "low", body: "The log line names `id` where it means `key`." },
+    { id: "f-low2", threadId: "PRRT_two", text: "src/b.ts:2 · the test passes for the wrong reason", title: "The test passes for the wrong reason", anchor: "src/b.ts:2", severity: "low", body: "It asserts on a fixture that never changes." },
+  ];
+  const OWN: PlacedFinding = {
+    id: "f-own",
+    placement: "line",
+    finding: { title: "A comment describes the old behaviour", path: "src/c.ts", line: 9, body: "**Fix before merge.** The comment says it returns the first match.", severity: "low" },
+  };
+
+  const decideAllBelow = (): { decisions: ReviewDecisions; resolutions: ThreadResolution[]; minor: number } => {
+    const reviewed = output({ findings: [OWN.finding], verified: LOWS.map((f) => ({ id: f.id, status: "open" as const })) });
+    const verification = verifyCarried(LOWS, reviewed.verified);
+    const placement = placeByThreshold({ placed: [OWN], stillOpen: verification.stillOpen, threshold: "medium", nextId: () => "fu-own" });
+    const recorded = recordFollowUps([], [], [], { minor: placement.minor });
+    const verdict = deriveVerdict(reviewed, {
+      ci: "green",
+      fixRoundProgress: undefined,
+      stillOpen: placement.stillOpen.length,
+      movedToFollowUps: 0,
+      minorFindings: placement.minorOwn,
+      autoFix: true,
+    });
+    return {
+      minor: recorded.minor.length,
+      resolutions: [
+        ...verification.resolutions,
+        ...placement.transitioned.map((f): ThreadResolution => ({ threadId: f.threadId, reason: "MINOR", threshold: "medium", alreadyReplied: false })),
+      ],
+      decisions: {
+        verdict,
+        output: reviewed,
+        placed: placement.placed,
+        movedToFollowUps: 0,
+        stillOpen: placement.stillOpen,
+        resolved: verification.resolved,
+        followUps: recorded.followUps,
+        minorFindings: recorded.minor,
+        droppedFollowUps: 0,
+      },
+    };
+  };
+
+  it("resolves each low thread as minor, with its reply, posts no thread, and approves on green", async () => {
+    const decided = decideAllBelow();
+    handOver(decided);
+    put("verdict.json", { ...verdictOf(decided.decisions), minor: decided.minor });
+
+    await run();
+
+    for (const id of ["PRRT_one", "PRRT_two"]) {
+      const thread = github.threads.get(PR)?.get(id);
+      expect(thread?.resolved, id).toBe("WONT_FIX");
+      expect(thread?.replies, id).toEqual([minorReply("medium")]);
+      expect(thread?.replies[0], id).toContain("**Recorded as a minor finding.**");
+      expect(thread?.replies[0], id).toContain("`AGENT_FIX_MIN_SEVERITY` (`medium`)");
+      expect(closingReplyReason(thread?.replies[0] ?? "")).toBe("MINOR");
+    }
+    expect(posted()?.threads).toEqual([]);
+    const body = posted()?.body ?? "";
+    expect(body).toContain("### 🟢 Approval recommended");
+    expect(body).toContain("**Findings:** 0");
+    expect(body).not.toContain("<summary><b>Resolved since last review</b>");
+    expect(group(body, "Minor findings")).toEqual([
+      `- ${severityBadge("low")} [\`src/a.ts:1\`](https://github.com/o/r/blob/${SHA}/src/a.ts#L1) The log line names the wrong field`,
+      `- ${severityBadge("low")} [\`src/b.ts:2\`](https://github.com/o/r/blob/${SHA}/src/b.ts#L2) The test passes for the wrong reason`,
+      `- ${severityBadge("low")} [\`src/c.ts:9\`](https://github.com/o/r/blob/${SHA}/src/c.ts#L9) A comment describes the old behaviour`,
+    ]);
+    expect(parseFollowUpsBlock(body)?.followUps).toEqual([
+      { title: "The log line names the wrong field", location: "src/a.ts:1", body: "The log line names `id` where it means `key`.", severity: "low", id: "f-low1", kind: "minor" },
+      { title: "The test passes for the wrong reason", location: "src/b.ts:2", body: "It asserts on a fixture that never changes.", severity: "low", id: "f-low2", kind: "minor" },
+      { title: "A comment describes the old behaviour", location: "src/c.ts:9", body: "The comment says it returns the first match.", severity: "low", id: "fu-own", kind: "minor" },
+    ]);
+    // The verdict, green, and no round asked for; the label for the filing, since they are filed on merge.
+    expect(github.statuses.get(SHA)?.map((s) => [s.context, s.state])).toEqual([[VERDICT_CONTEXT, "success"]]);
+    expect(github.pullRequests.get(PR)?.labels).toEqual([FOLLOW_UPS_LABEL]);
+  });
+
+  it("says in the regular pull request's status line how many minor findings the approval recorded", async () => {
+    github.pullRequests.get(PR)!.body = `${statusBlock("before")}\n\nThe note.`;
+    const decided = decideAllBelow();
+    handOver(decided);
+    put("verdict.json", { ...verdictOf(decided.decisions), minor: decided.minor });
+
+    await run();
+
+    expect(github.pullRequests.get(PR)?.body).toContain(
+      "**✅ Ready for you:** the review recommends approval, with 3 minor findings recorded. [See it](",
+    );
+  });
+
+  it("refuses a minor closure that names no threshold, before it writes anything", async () => {
+    const decided = decideAllBelow();
+    handOver(decided);
+    put(
+      "thread_resolutions.json",
+      decided.resolutions.map((r) => (r.reason === "MINOR" ? { threadId: r.threadId, reason: "MINOR", alreadyReplied: false } : r)),
+    );
+
+    await expect(run()).rejects.toThrow(/closes a thread as MINOR and names no threshold/);
+    expect(writes()).toEqual([]);
+  });
+
+  it("refuses a minor finding among the out-of-scope follow-ups, which the cap would reach", async () => {
+    const decided = decideAllBelow();
+    handOver(decided, { followUps: [{ ...FOLLOW_UP, kind: "minor" }] });
+
+    await expect(run()).rejects.toThrow(/lists a minor finding among the out-of-scope follow-ups/);
     expect(writes()).toEqual([]);
   });
 });

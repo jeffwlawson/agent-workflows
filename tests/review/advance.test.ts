@@ -197,6 +197,25 @@ describe("review:advance moves the chain on after a slice round's approval", () 
     expect(logged).toContain(`Re-added agent:implement to #${PARENT}: the PRD chain advances past the slice round approved on PRD PR #${PR}.`);
   });
 
+  /**
+   * **A slice round that ends all below the fix threshold approves** (#616):
+   * its findings are minor findings, nothing is open, so the chain advances,
+   * and the progress list and status line say how many it recorded. No park
+   * comment: it is an approval, not a stop.
+   */
+  it("advances on a slice round that recorded minor findings, saying how many in the list and the status line", async () => {
+    github.pullRequests.get(PR)!.body = `${statusBlock("**🔍 Reviewing slice 2 of 2** · #16")}\n\nMine.`;
+    const approved: ParkHandOver = { ...BEFORE, review: { verdict: "approval recommended", stillOpen: [], raised: [] } };
+    handOver(approved, { ...PROGRESS, open: 0, minor: 3 });
+
+    await run();
+
+    expect(github.issueLabels.get(PARENT)).toEqual(["agent:implement"]);
+    expect(comments()).toEqual([]);
+    expect(body()).toContain("| 2 · #16 | ✅ Approved · 3 minor | [3](https://github.com/acme/widgets/pull/201#pullrequestreview-9) | 1 |");
+    expect(body()).toContain("> **✅ Slice 2 of 2 approved** · #16 · 3 minor findings recorded");
+  });
+
   /** Never from the final review: `review:conclude` marked it ready, and it is the maintainer's to merge. */
   it("writes only the table after the final review's approval", async () => {
     handOver();

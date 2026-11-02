@@ -235,6 +235,11 @@ const raisedIn = (note: PostedNote): string =>
  *
  * The location is the review's where it gave one, then the note's, then the
  * note's permalink: a follow-up needs one, and a filing run keys on it.
+ *
+ * A promoted note is always **out of scope**, the follow-up kind with no
+ * `kind` (#616): a note is by definition about code this pull request is not
+ * the place to fix, so it is never a minor finding, which is this pull
+ * request's own code, and it takes a place under the out-of-scope cap.
  */
 export const applyNoteRulings = (
   notes: readonly PostedNote[],

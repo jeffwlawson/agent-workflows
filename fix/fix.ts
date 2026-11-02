@@ -19,6 +19,7 @@ import {
   fetchPullRequestFeedback,
   nothingToActOn,
   refusalReason,
+  renderMinorFindingsForFix,
   surfaceText,
 } from "../shared/pr-feedback.js";
 import { firstLine, readPrdBranch } from "../shared/prd-round.js";
@@ -102,6 +103,7 @@ try {
     console.log("Nothing to act on: no open review findings or comments are owed an answer.");
     process.exit(0);
   }
+  console.log(`Minor findings handed over: ${feedback.minorFindings.length}.`);
 
   const header = readFixHeader();
   console.log(`Header: ${header ?? "none, since the rounds could not be read"}.`);
@@ -141,6 +143,10 @@ try {
       REVIEW_SUMMARIES: surfaceText(feedback, "summaries"),
       INLINE_COMMENTS: surfaceText(feedback, "inline"),
       CONVERSATION: surfaceText(feedback, "conversation"),
+      // The minor findings the newest review records (#616): this pull
+      // request's own code, below the repository's threshold, with no thread
+      // to answer. Their own section, since no outcome is owed on them.
+      MINOR_FINDINGS: renderMinorFindingsForFix(feedback.minorFindings),
       PR_DIFF: feedback.diff,
       RESUME: resumeSection(resume, RESCUE_BRANCH),
     },

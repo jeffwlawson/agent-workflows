@@ -8977,8 +8977,8 @@ describe("the PRD chain's progress", () => {
     const review = fs.readFileSync("review/review.ts", "utf8");
     const implement = fs.readFileSync("implement-prd/implement-prd.ts", "utf8");
 
-    expect(review.indexOf("writeProgress(context.carriedFindings.length);")).toBeGreaterThan(-1);
-    expect(review.indexOf("writeProgress(context.carriedFindings.length);")).toBeLessThan(review.indexOf("scrubGitHubTokens();"));
+    expect(review.indexOf("writeProgress(carriedFindings.length);")).toBeGreaterThan(-1);
+    expect(review.indexOf("writeProgress(carriedFindings.length);")).toBeLessThan(review.indexOf("scrubGitHubTokens();"));
     expect(implement).not.toMatch(/writeProgress|renderProgressList|roundCounts/);
     expect(stepsOf(PRD).find((s) => s.name === "Run implementation agent")?.env).not.toHaveProperty("PRD_PR");
   });

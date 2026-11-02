@@ -4,6 +4,7 @@ import {
   capFollowUps,
   type EarlierFollowUps,
   hasFollowUpsBlock,
+  isMinor,
   parseFollowUpsBlock,
   type FollowUp,
 } from "./review-output.js";
@@ -404,6 +405,9 @@ const stubBody = (
   [
     followUp.body.trim(),
     "",
+    // A minor finding is this pull request's own code (#616), not a problem
+    // out of its scope, and the stub says which it is.
+    ...(isMinor(followUp) ? [MINOR_NOTE, ""] : []),
     `**Location:** \`${oneLine(followUp.location)}\``,
     "",
     `**Severity:** ${severityTextBadge(followUp.severity)}`,
@@ -417,6 +421,15 @@ const stubBody = (
     "",
     stubMarker(followUp.location, prNumber, seq),
   ].join("\n");
+
+/**
+ * What a stub filed for a **minor finding** says it is (#616): a finding in
+ * that pull request's own code, which the review recorded rather than asked
+ * to have fixed, because every finding open on it was below the repository's
+ * fix threshold. Names no issue and no repository, as `MOVED_NOTE` does not.
+ */
+const MINOR_NOTE =
+  "_A minor finding in that pull request's own code: the review recorded it rather than asking for it to be fixed before the merge, since every finding open on the pull request was below the repository's `AGENT_FIX_MIN_SEVERITY`._";
 
 /**
  * Decide what a merged pull request's recorded findings become.
@@ -553,7 +566,7 @@ export const planFollowUps = (input: FilingInput, accounts: LoopAccounts): Filin
     // report's job was making *skips* visible and there are none left to make
     // visible; a relation is for the triager of the new stub, not for a merged
     // pull request nobody opens again.
-    lines.push(`- **Filed** · \`${path}\` · ${placeholder}`);
+    lines.push(`- **Filed**${isMinor(followUp) ? " (minor finding)" : ""} · \`${path}\` · ${placeholder}`);
   }
 
   // A readable block that asked for nothing: the retraction, and the ordinary
@@ -567,7 +580,11 @@ export const planFollowUps = (input: FilingInput, accounts: LoopAccounts): Filin
   return {
     issues,
     report: [
-      `**Out-of-scope findings**, read from [the review](${review.url}) on this pull request:`,
+      // Named for what the list holds (#616): out of scope alone, as it
+      // always was, or with this pull request's own minor findings.
+      kept.some(isMinor)
+        ? `**Minor and out-of-scope findings**, read from [the review](${review.url}) on this pull request:`
+        : `**Out-of-scope findings**, read from [the review](${review.url}) on this pull request:`,
       "",
       ...lines,
       // The post-merge half of announcing truncation. The review body said it
@@ -622,13 +639,24 @@ export const earlierFollowUps = (
     try {
       const block = parseFollowUpsBlock(review.body);
       if (block === undefined) continue;
-      read.push({ moved: block.followUps.slice(0, block.moved), rest: block.followUps.slice(block.moved) });
+      // Split by kind as well as by the exempt prefix (#616): the minor
+      // findings lead the prefix, and one anywhere is a minor finding.
+      const minor = block.followUps.filter(isMinor);
+      read.push({
+        ...(minor.length === 0 ? {} : { minor }),
+        moved: block.followUps.slice(0, block.moved).filter((entry) => !isMinor(entry)),
+        rest: block.followUps.slice(block.moved).filter((entry) => !isMinor(entry)),
+      });
       for (const id of block.resolved) resolved.add(id);
     } catch (error) {
       skipped.push(`${review.url} (${error instanceof Error ? error.message : String(error)})`);
     }
   }
   const open = (entry: FollowUp): boolean => entry.id === undefined || !resolved.has(entry.id);
-  const carried = read.map((earlier) => ({ moved: earlier.moved.filter(open), rest: earlier.rest.filter(open) }));
+  const carried = read.map((earlier) => ({
+    ...(earlier.minor === undefined ? {} : { minor: earlier.minor.filter(open) }),
+    moved: earlier.moved.filter(open),
+    rest: earlier.rest.filter(open),
+  }));
   return { carried, resolved: [...resolved], skipped };
 };

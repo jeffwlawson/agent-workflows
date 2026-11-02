@@ -235,7 +235,7 @@ when all of these hold:
 
 Every other delivery is logged with its reason. A job carries what the label's event carried, the
 repository variables the service reads (`AGENT_MODEL`, `AGENT_MODEL_REVIEW`, `AGENT_MODEL_FIX`,
-`AGENT_MODEL_UPDATE_BRANCH`, `AGENT_MODEL_IMPLEMENT`, `AGENT_MODEL_IMPLEMENT_PRD`, `AGENT_REVIEW_TIMEOUT_MINUTES`, `AGENT_TIMEOUT_MINUTES`, `AGENT_MAX_FIX_ROUNDS` and `AGENT_SETUP`,
+`AGENT_MODEL_UPDATE_BRANCH`, `AGENT_MODEL_IMPLEMENT`, `AGENT_MODEL_IMPLEMENT_PRD`, `AGENT_REVIEW_TIMEOUT_MINUTES`, `AGENT_TIMEOUT_MINUTES`, `AGENT_MAX_FIX_ROUNDS`, `AGENT_FIX_MIN_SEVERITY` and `AGENT_SETUP`,
 each unset as empty), the App's login, a job id, a deadline and the package's version. An
 implement job and an implement-prd job each carry the issue's number, title and state, and the
 repository's default branch as its base, which stands in for the `default-branch` a caller hands
@@ -457,6 +457,13 @@ asking for changes under a budget with a round left adds `agent:fix`, which the 
 as the App's own label, and a spent budget leaves the round to a human, with the comment Actions
 posts. A review and the fix round it asks for are both agent jobs for one pull request, so the fix
 round starts only once the review has finished, through the agent lane and the item's chain alike, and the `agent-fix-round` status the budget counts stops the cycle.
+
+The fix threshold is the repository's `AGENT_FIX_MIN_SEVERITY` (#616), read as on Actions: the worker
+hands it to `review:gate`, which refuses a value that is not `low`, `medium` or `high`, and the
+threshold the gate settled to the review runner. A review whose open findings are all below it
+records them as minor findings, approves and asks for no round, so the serial worker spends no agent
+run and re-review on lows alone. Like every other variable, an organization one shared with the
+repository is read where the repository sets none.
 
 A fix job runs `fix:gate`, then the agent's job: the checkout of the head the label's event named,
 with the base, `fix:prepare`, which fetches a stopped round's rescue branch into it, the setup, the

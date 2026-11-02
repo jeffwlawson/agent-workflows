@@ -48,6 +48,7 @@ const inputs = (over: Partial<ProgressInputs> & { readonly built?: readonly numb
     ...(over.prUrl === undefined ? {} : { prUrl: over.prUrl }),
     ...(over.rounds === undefined ? {} : { rounds: over.rounds }),
     ...(over.open === undefined ? {} : { open: over.open }),
+    ...(over.minor === undefined ? {} : { minor: over.minor }),
   };
 };
 
@@ -262,6 +263,30 @@ describe("the status line", () => {
     );
   });
 
+  /**
+   * An approval over minor findings (#616) says how many it recorded, in the
+   * status line and in the approved row; none drops the count, so a list
+   * from before is the one it always was.
+   */
+  it("says how many minor findings an approval recorded, and nothing where it recorded none", () => {
+    expect(renderPrdStatus(inputs({ ranges, verdict: "approval", minor: 2 }))).toBe(
+      "**✅ Slice 2 of 3 approved** · #11 · 2 minor findings recorded",
+    );
+    expect(renderPrdStatus(inputs({ ranges, verdict: "approval", minor: 1 }))).toBe(
+      "**✅ Slice 2 of 3 approved** · #11 · 1 minor finding recorded",
+    );
+    expect(renderPrdStatus(inputs({ ranges, verdict: "approval", minor: 0 }))).toBe("**✅ Slice 2 of 3 approved** · #11");
+    const rounds: RoundCounts = { ...ROUNDS, final: { reviews: 1, latestReview: `${PR}#pullrequestreview-9`, fixes: 0 } };
+    expect(renderPrdStatus(inputs({ built: [10, 11, 12], finalReview: "requested", verdict: "approval", rounds, minor: 3 }))).toBe(
+      `**✅ Final review approved:** ready for you to merge, with 3 minor findings recorded. [See it](${PR}#pullrequestreview-9)`,
+    );
+    expect(renderProgressList(inputs({ ranges, verdict: "approval", minor: 2 }))).toContain("| 2 · #11 | ✅ Approved · 2 minor |");
+    expect(renderProgressList(inputs({ built: [10, 11, 12], finalReview: "requested", verdict: "approval", minor: 2 }))).toContain(
+      "| Final review | ✅ Approved · 2 minor |",
+    );
+    expect(renderProgressList(inputs({ ranges, verdict: "approval" }))).toContain("| 2 · #11 | ✅ Approved |");
+  });
+
   it("goes between its own markers, and is replaced only where the body has them", () => {
     const block = statusBlock("**🔍 Reviewing slice 1 of 2** · #10");
     const body = `> [!NOTE]\n> ${statusBlock("old")}\n>\n> Mine.`;
@@ -363,6 +388,15 @@ describe("a regular pull request's status line", () => {
     );
     expect(renderPrStatus({ verdict: "needs a closer look", startsFixRound: false, open: 0, review })).toBe(
       `**⏸️ Parked:** the review needs a closer look. [See it](${review})`,
+    );
+  });
+
+  it("says how many minor findings an approval recorded (#616), and nothing where it recorded none", () => {
+    expect(renderPrStatus({ verdict: "approval recommended", startsFixRound: false, open: 0, minor: 2, review })).toBe(
+      `**✅ Ready for you:** the review recommends approval, with 2 minor findings recorded. [See it](${review})`,
+    );
+    expect(renderPrStatus({ verdict: "approval recommended", startsFixRound: false, open: 0, minor: 0, review })).toBe(
+      `**✅ Ready for you:** the review recommends approval. [See it](${review})`,
     );
   });
 });

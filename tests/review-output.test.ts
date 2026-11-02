@@ -26,6 +26,7 @@ import {
   MAX_SUMMARY_WORDS,
   MAX_TITLE_LENGTH,
   parseFollowUpsBlock,
+  placeByThreshold,
   recordFollowUps,
   renderFollowUpsBlock,
   renderFollowUpsGroup,
@@ -48,6 +49,7 @@ import {
 } from "../shared/review-output.js";
 import { FOLLOW_UPS_MARKER, VERDICT_CONTEXT } from "../shared/record.js";
 import { renderDecided, postDecided, type Decided } from "./review/decided.js";
+import { applyCriteriaRulings } from "../review/acceptance-criteria.js";
 
 /** Every row a verdict can post: the table's three, and each cause of a closer look. */
 const EVERY_ROW: readonly VerdictRow[] = [
@@ -489,6 +491,7 @@ describe("recordFollowUps", () => {
   it("changes nothing where nothing was moved, but the id each entry is given", () => {
     const ids = ["fu-00000001", "fu-00000002"];
     expect(recordFollowUps([], followUps(2), [], { nextId: () => ids.shift() ?? "" })).toEqual({
+      minor: [],
       followUps: followUps(2).map((f, i) => ({ ...f, id: `fu-0000000${i + 1}` })),
       moved: 0,
       dropped: 0,
@@ -1470,8 +1473,9 @@ describe("the verdict's commit status", () => {
       "approval recommended",
       "🟢 Approval recommended",
       "success",
-      "Nothing left to fix. You can merge once the PR is ready and no longer a draft.",
-      "Approval recommended. Nothing left to fix. You can merge once the PR is ready and no longer a draft.",
+      // True over minor findings as over none (#616): never "Nothing left to fix".
+      "Nothing here blocks the merge; any minor findings below are filed as one follow-up. You can merge once the PR is ready and no longer a draft.",
+      "Approval recommended. Nothing blocks the merge; any minor findings are filed as one follow-up. You can merge once the PR is ready.",
     ],
     [
       "changes recommended",
@@ -2590,17 +2594,19 @@ describe("the record's size is the count the verdict was given", () => {
 });
 
 /**
- * **Severity decides nothing** (#109, decision 9). It is the property that
- * makes the rest of the record readable, and it is also the property most
- * likely to grow into a fourth verdict input by accident — which is exactly the
- * *judgement call* label #96 retired, because a dial the model turns means
- * every review has to be read to find out which way it was turned.
+ * **Severity decides one thing, through the threshold** (#616, amending #109
+ * decision 9). With `AGENT_FIX_MIN_SEVERITY` at `low` it decides nothing, as it
+ * always did; otherwise it decides whether a review's open findings are threads
+ * that block the merge (any one meets the threshold) or minor findings,
+ * recorded and filed at merge (none does). It never reorders the record, never
+ * drops a finding, and decides nothing finer.
  *
- * So the test is not an example, it is every arrangement: permute the ratings
- * across a review's findings and its follow-ups, and the verdict, the count and
- * what is filed are byte-identical each time.
+ * So the test is still every arrangement: permute the ratings across a
+ * review's findings and its follow-ups, at every threshold, and every finding
+ * is in the record, as a thread or as a minor entry, in the reviewer's order;
+ * at `low` the outcome is byte-identical each time.
  */
-describe("severity changes no outcome", () => {
+describe("severity decides only whether the open findings are threads or minor entries", () => {
   const RATINGS: readonly Severity[] = ["high", "medium", "low"];
 
   /** Every assignment of the three ratings to three findings — 27 of them. */
@@ -2612,6 +2618,7 @@ describe("severity changes no outcome", () => {
     findings: severities.map((severity, index) =>
       finding({
         path: `src/${index}.ts`,
+        title: `finding ${index}`,
         severity,
         body: "**Fix before merge.** the guard runs after the return",
       }),
@@ -2620,21 +2627,104 @@ describe("severity changes no outcome", () => {
     verified: [],
   });
 
-  it.each(["green", "red", "unknown"] as const)(
-    "derives the same verdict on %s checks however the findings are rated",
-    (ci: CiResult) => {
-      const baseline = deriveVerdict(reviewed(["medium", "medium", "medium"]), { autoFix: false,
-        ci,
-        fixRoundProgress: undefined,
-        stillOpen: 0, movedToFollowUps: 0 });
+  const placed = (output: ReviewOutput): PlacedFinding[] =>
+    output.findings.map((f, i) => ({ id: `f-${i}`, placement: "line" as const, finding: f }));
 
+  const ids = (): (() => string) => {
+    let n = 0;
+    return () => `fu-${String((n += 1)).padStart(8, "0")}`;
+  };
+
+  /** What the review derives at `threshold`, from the placement down: the verdict, the threads and the minor entries. */
+  const outcome = (severities: readonly Severity[], threshold: Severity, ci: CiResult, autoFix: boolean) => {
+    const output = reviewed(severities);
+    const placement = placeByThreshold({ placed: placed(output), stillOpen: [], threshold, nextId: ids() });
+    const verdict = deriveVerdict(output, {
+      autoFix,
+      ci,
+      fixRoundProgress: undefined,
+      stillOpen: placement.stillOpen.length,
+      movedToFollowUps: 0,
+      minorFindings: placement.minorOwn,
+    });
+    return { placement, verdict };
+  };
+
+  it.each(["green", "red", "unknown"] as const)(
+    "derives the same verdict on %s checks however the findings are rated, where the threshold is low",
+    (ci: CiResult) => {
+      const baseline = outcome(["medium", "medium", "medium"], "low", ci, false);
       for (const severities of assignments) {
-        expect(deriveVerdict(reviewed(severities), { autoFix: false, ci, fixRoundProgress: undefined, stillOpen: 0, movedToFollowUps: 0 }), severities.join()).toEqual(
-          baseline,
+        const { placement, verdict } = outcome(severities, "low", ci, false);
+        expect(verdict, severities.join()).toEqual(baseline.verdict);
+        expect(placement.kind, severities.join()).toBe("mixed");
+        expect(placement.minor, severities.join()).toEqual([]);
+      }
+    },
+  );
+
+  /**
+   * And at `low` the threshold is not there at all: the placement hands back
+   * the very findings it was given, so everything after it is what it was.
+   */
+  it("hands back what it was given, untouched, at low", () => {
+    for (const severities of assignments) {
+      const given = placed(reviewed(severities));
+      const placement = placeByThreshold({ placed: given, stillOpen: [], threshold: "low" });
+      expect(placement.placed, severities.join()).toBe(given);
+      expect(placement.transitioned, severities.join()).toEqual([]);
+      expect(placement.minorOwn, severities.join()).toBe(0);
+    }
+  });
+
+  it.each(["low", "medium", "high"] as const)(
+    "keeps every finding, as a thread or a minor entry, in the reviewer's order, at %s",
+    (threshold) => {
+      for (const severities of assignments) {
+        const { placement } = outcome(severities, threshold, "green", true);
+        const recorded = [
+          ...placement.placed.map((p) => p.finding.title),
+          ...placement.minor.map((m) => m.title),
+        ];
+        expect(recorded, severities.join()).toEqual(["finding 0", "finding 1", "finding 2"]);
+        expect(placement.minor.map((m) => m.severity), severities.join()).toEqual(
+          placement.minor.length === 0 ? [] : severities,
         );
       }
     },
   );
+
+  /**
+   * Every arrangement, with `autoFix` on, at each threshold and on each
+   * result of the checks: a mixed one is today's review (every finding a
+   * thread, *changes recommended*, a round started), and an all-below one
+   * threads none, records the same findings as minor entries, and reaches
+   * the checks' arm.
+   */
+  it.each(
+    (["low", "medium", "high"] as const).flatMap((threshold) =>
+      (["green", "red", "unknown"] as const).map((ci) => [threshold, ci] as const),
+    ),
+  )("at %s, on %s checks, a mixed review is today's and an all-below one is the checks'", (threshold, ci) => {
+    const rank = { high: 0, medium: 1, low: 2 } as const;
+    for (const severities of assignments) {
+      const { placement, verdict } = outcome(severities, threshold, ci, true);
+      const meets = severities.some((s) => rank[s] <= rank[threshold]);
+      if (meets) {
+        expect(placement.kind, severities.join()).toBe("mixed");
+        expect(placement.placed, severities.join()).toHaveLength(3);
+        expect(placement.minor, severities.join()).toEqual([]);
+        expect(verdict, severities.join()).toEqual({ ...VERDICTS["changes recommended"], startsFixRound: true });
+      } else {
+        expect(placement.kind, severities.join()).toBe("all below");
+        expect(placement.placed, severities.join()).toEqual([]);
+        expect(placement.minor.map((m) => m.kind), severities.join()).toEqual(["minor", "minor", "minor"]);
+        expect(verdict.startsFixRound, severities.join()).toBeUndefined();
+        expect(verdict.verdict, severities.join()).toBe(ci === "green" ? "approval recommended" : "needs a closer look");
+        if (ci !== "green") expect(verdict.cause, severities.join()).toBe(ci);
+      }
+    }
+  });
 
   it("counts the same findings however they are rated", () => {
     for (const severities of assignments) {
@@ -2652,6 +2742,111 @@ describe("severity changes no outcome", () => {
       const kept = capFollowUps(reviewed(severities).followUps).kept;
       expect(kept.map((f) => f.severity), severities.join()).toEqual(severities);
     }
+  });
+});
+
+/**
+ * What meets the threshold (#616): at or above it, `high` at every one, and,
+ * so a missing rating can only block an approval, a finding with no rating to
+ * read and an acceptance criterion ruled unmet, whatever their ratings.
+ */
+describe("what meets the fix threshold", () => {
+  const own = (over: Partial<Finding>): PlacedFinding => ({ id: "f-own", placement: "line", finding: finding(over) });
+  const carriedThread = (over: Partial<CarriedFinding> = {}): CarriedFinding => ({
+    id: "f-old",
+    threadId: "PRRT_old",
+    text: "src/b.ts:3 · the old claim",
+    title: "the old claim",
+    anchor: "src/b.ts:3",
+    severity: "low",
+    ...over,
+  });
+
+  it("is high at every threshold, and a medium among lows only at medium or below", () => {
+    for (const threshold of ["low", "medium", "high"] as const) {
+      expect(placeByThreshold({ placed: [own({ severity: "high" })], stillOpen: [], threshold }).kind).toBe("mixed");
+    }
+    const mediumAmongLows = [own({ severity: "low" }), own({ severity: "medium" }), own({ severity: "low" })];
+    expect(placeByThreshold({ placed: mediumAmongLows, stillOpen: [], threshold: "medium" }).kind).toBe("mixed");
+    expect(placeByThreshold({ placed: mediumAmongLows, stillOpen: [], threshold: "high" }).kind).toBe("all below");
+  });
+
+  it("counts a carried finding still open: a low-only review over a medium thread is mixed", () => {
+    const placement = placeByThreshold({ placed: [own({ severity: "low" })], stillOpen: [carriedThread({ severity: "medium" })], threshold: "medium" });
+    expect(placement.kind).toBe("mixed");
+    expect(placement.placed).toHaveLength(1);
+    expect(placement.stillOpen).toHaveLength(1);
+  });
+
+  it("meets it with a carried finding whose marker carries no severity", () => {
+    const { severity: _none, ...unrated } = carriedThread();
+    expect(placeByThreshold({ placed: [own({ severity: "low" })], stillOpen: [unrated], threshold: "high" }).kind).toBe("mixed");
+  });
+
+  it("meets it with a finding of this review's the model gave no rating it recognises", () => {
+    const unrated = parse({ findings: [{ path: "src/a.ts", line: 4, body: "b" }, { path: "src/a.ts", line: 5, body: "c", severity: "urgent" }] });
+    expect(unrated.findings.map((f) => f.alwaysMeets)).toEqual([true, true]);
+    for (const f of unrated.findings) {
+      expect(placeByThreshold({ placed: [{ id: "f-1", placement: "line", finding: f }], stillOpen: [], threshold: "high" }).kind).toBe("mixed");
+    }
+    const rated = parse({ findings: [{ path: "src/a.ts", line: 4, body: "b", severity: "Low" }] });
+    expect(rated.findings[0]?.alwaysMeets).toBeUndefined();
+  });
+
+  it("meets it with an unmet acceptance criterion, whatever it was rated", () => {
+    const { findings } = applyCriteriaRulings(["The body names the tests."], [
+      { id: "C1", status: "unmet", path: "src/a.ts", line: 4, severity: "low" },
+    ]);
+    const criterion = findings.map((f, i): PlacedFinding => ({ id: `f-${i}`, placement: "line", finding: f }));
+    expect(placeByThreshold({ placed: criterion, stillOpen: [], threshold: "high" }).kind).toBe("mixed");
+  });
+
+  it("finds nothing to place where nothing is open", () => {
+    expect(placeByThreshold({ placed: [], stillOpen: [], threshold: "medium" })).toMatchObject({ kind: "none", minor: [], transitioned: [] });
+  });
+
+  /**
+   * **The transition**: a re-review whose carried threads still open and own
+   * findings are all below resolves each carried one, and records it as a
+   * minor entry with its own text, location, severity and id, ahead of this
+   * review's own, which get fresh ids.
+   */
+  it("records the carried ones still open by their own ids and text, then its own, and resolves the carried threads", () => {
+    const placement = placeByThreshold({
+      placed: [own({ severity: "low", title: "a new low", path: "src/a.ts", line: 7, body: "**Fix before merge.** the log line names the wrong field" })],
+      stillOpen: [carriedThread({ body: "the old claim, with its evidence" })],
+      threshold: "medium",
+      nextId: () => "fu-00000001",
+    });
+    expect(placement.kind).toBe("all below");
+    expect(placement.transitioned.map((f) => f.threadId)).toEqual(["PRRT_old"]);
+    expect(placement.stillOpen).toEqual([]);
+    expect(placement.minorOwn).toBe(1);
+    expect(placement.minor).toEqual([
+      { title: "the old claim", location: "src/b.ts:3", body: "the old claim, with its evidence", severity: "low", id: "f-old", kind: "minor" },
+      { title: "a new low", location: "src/a.ts:7", body: "the log line names the wrong field", severity: "low", id: "fu-00000001", kind: "minor" },
+    ]);
+  });
+});
+
+/**
+ * Where the stops still bite (#200): on a mixed review, as they always did;
+ * on an all-below one they are not consulted, since nothing is open.
+ */
+describe("the stops and an all-below review", () => {
+  const output: ReviewOutput = { findings: [finding({ severity: "low" })], followUps: [], verified: [] };
+  const inputs = { ci: "green" as const, movedToFollowUps: 0, autoFix: false, stillOpen: 1 };
+
+  it("reports a spent budget and no progress on a review a finding meets the threshold of", () => {
+    expect(deriveVerdict(output, { ...inputs, fixRoundProgress: undefined, fixRounds: { spent: 3, budget: 3 } }).stop).toBe("budget spent");
+    expect(deriveVerdict(output, { ...inputs, fixRoundProgress: { given: 1, closed: 0 } }).stop).toBe("no progress");
+  });
+
+  it("approves an all-below review whatever the budget and the last round did", () => {
+    const allBelow = { ...inputs, stillOpen: 0, minorFindings: 1 };
+    expect(deriveVerdict(output, { ...allBelow, fixRoundProgress: { given: 1, closed: 0 }, fixRounds: { spent: 3, budget: 3 } })).toEqual(
+      VERDICTS["approval recommended"],
+    );
   });
 });
 
@@ -2921,9 +3116,10 @@ describe("the review's finding vocabulary", () => {
    */
   /**
    * And the rating, which is the field most likely to be read as a fourth
-   * verdict input — by the model first. Both halves say it decides nothing, and
-   * both define *low* as a real but small defect rather than as a place to put
-   * the preferences neither half posts (#109, decision 9).
+   * verdict input — by the model first. Both halves say it decides one thing,
+   * through the threshold, and what a dishonest rating costs (#616, amending
+   * #109 decision 9), and both define *low* as a real but small defect rather
+   * than as a place to put the preferences neither half posts.
    */
   it.each(halves)("%s asks for a severity on every finding", (_half, text) => {
     expect(text).toContain("severity");
@@ -2934,8 +3130,13 @@ describe("the review's finding vocabulary", () => {
     expect(text).toContain("a real but small defect");
   });
 
-  it.each(halves)("%s says the severity decides nothing", (_half, text) => {
-    expect(text).toMatch(/display and ordering only/);
+  it.each(halves)("%s says the severity decides one thing, through the threshold, and nothing finer", (_half, text) => {
+    expect(text).not.toMatch(/display and ordering only/);
+    expect(plain(text)).toMatch(/decides one thing, through the repository's fix threshold/);
+    expect(plain(text)).toMatch(/recorded as a minor finding/);
+    expect(plain(text)).toMatch(/rate honestly/i);
+    expect(plain(text)).toMatch(/inflated (one|rating) holds up an approval and buys a fix round/);
+    expect(plain(text)).toMatch(/understated one sends a real problem to a follow-up/);
   });
 
   /**
@@ -3835,5 +4036,191 @@ describe("the review brief asks what its own run left unrun", () => {
     expect(EXTRACTION).toContain("## What the review's own test run left unrun: `notChecked`");
     expect(EXTRACTION).toMatch(/"notChecked": \{\s*"ranTests": true/);
     expect(plain(EXTRACTION)).toMatch(/`notChecked` out only where the review does not say whether it ran tests/);
+  });
+});
+
+/**
+ * **Minor findings in the body and the payload** (#616): a group of their own
+ * directly after *Open*, collapsed, a payload entry each with its `kind`, in
+ * the exempt prefix, and never cut to fit.
+ */
+describe("the body over minor findings", () => {
+  const minor = (n: number, over: Partial<FollowUp> = {}): FollowUp =>
+    followUp({ title: `minor ${n}`, location: `src/m${n}.ts:${n}`, body: `the evidence for ${n}`, severity: "low", id: `fu-m${n}`, kind: "minor", ...over });
+  const allBelow = (over: Partial<Decided> = {}): Decided => ({
+    verdict: VERDICTS["approval recommended"],
+    output: { findings: [finding({ severity: "low" })], followUps: [], verified: [] },
+    placed: [],
+    movedToFollowUps: 0,
+    stillOpen: [],
+    resolved: [],
+    followUps: [],
+    minorFindings: [minor(1), minor(2)],
+    droppedFollowUps: 0,
+    ...over,
+  });
+  const open: PlacedFinding = { id: "f-1", placement: "line", finding: finding({ title: "an open one", severity: "high" }) };
+
+  it("lists them in a collapsed group of their own, directly after Open, saying where they are and how they are filed", () => {
+    const body = renderDecided(
+      allBelow({
+        verdict: VERDICTS["changes recommended"],
+        output: { findings: [open.finding], followUps: [], verified: [] },
+        placed: [open],
+        followUps: [followUp({ title: "out of scope" })],
+        blobBase: "https://github.com/o/r/blob/abc123",
+      }),
+    );
+    const openAt = body.indexOf("<summary><b>Open</b>");
+    const minorAt = body.indexOf("<summary><b>Minor findings</b> (2)");
+    expect(openAt).toBeGreaterThan(-1);
+    expect(minorAt).toBeGreaterThan(openAt);
+    // Directly after: nothing but the end of *Open* between them.
+    expect(body.slice(openAt, minorAt).match(/<summary>/g)).toHaveLength(1);
+    expect(body.lastIndexOf("<details", minorAt)).toBe(body.lastIndexOf("<details>", minorAt));
+    expect(body).toContain(
+      "<summary><b>Minor findings</b> (2) · in this pull request's code, below the fix threshold; filed together as one issue on merge, remove <code>agent:follow-ups</code> to skip</summary>",
+    );
+    expect(body).toContain(`- ${severityBadge("low")} [\`src/m1.ts:1\`](https://github.com/o/r/blob/abc123/src/m1.ts#L1) minor 1`);
+    expect(body).toContain(
+      "<summary><b>Follow-ups</b> (1) · out of scope, each filed as its own issue on merge; remove <code>agent:follow-ups</code> to skip</summary>",
+    );
+    expect(body.indexOf("<summary><b>Follow-ups</b>")).toBeGreaterThan(minorAt);
+  });
+
+  it("puts them where Open would be when nothing is open, and does not count them", () => {
+    const body = renderDecided(allBelow());
+    expect(body).not.toContain("<summary><b>Open</b>");
+    expect(body).toContain("**Findings:** 0");
+    expect(body.indexOf("**Findings:** 0")).toBeLessThan(body.indexOf("<summary><b>Minor findings</b>"));
+    expect(body.indexOf("<summary><b>Minor findings</b>")).toBeLessThan(body.indexOf("Not checked here"));
+    // Without a commit to link to, the location is code.
+    expect(body).toContain(`- ${severityBadge("low")} \`src/m1.ts:1\` minor 1`);
+  });
+
+  it("says on the approval that nothing blocks, how many will be filed as one follow-up, and the ways on", () => {
+    const body = renderDecided(allBelow());
+    expect(body).toContain(`_${VERDICTS["approval recommended"].nextStep}_`);
+    expect(body).not.toContain("Nothing left to fix");
+    expect(body).toContain(
+      "_Nothing here blocks the merge: the 2 minor findings below are filed as one follow-up when this pull request merges. To fix them now, add the `agent:fix` label; to have automatic fix rounds fix every finding, set the repository variable `AGENT_FIX_MIN_SEVERITY` to `low`._",
+    );
+  });
+
+  it("records them all the same where the checks are red, and says no approval was given over them", () => {
+    const body = renderDecided(allBelow({ verdict: deriveVerdict(allBelow().output, { ci: "red", fixRoundProgress: undefined, stillOpen: 0, movedToFollowUps: 0, minorFindings: 1, autoFix: true }) }));
+    expect(body).toContain("Needs a closer look");
+    expect(body).not.toContain("Nothing here blocks the merge:");
+    expect(body).toContain("<summary><b>Minor findings</b> (2)");
+    expect(parseFollowUpsBlock(body)?.followUps.filter((f) => f.kind === "minor")).toHaveLength(2);
+  });
+
+  it("says nothing about minor findings where there are none", () => {
+    const body = renderDecided(allBelow({ minorFindings: [] }));
+    expect(body).not.toContain("<summary><b>Minor findings</b>");
+    expect(body).not.toContain("Nothing here blocks the merge:");
+    expect(parseFollowUpsBlock(body)).toMatchObject({ moved: 0, followUps: [] });
+  });
+
+  it("writes them into a version 1 payload ahead of the follow-ups, inside the exempt prefix, each with its kind", () => {
+    const body = renderDecided(allBelow({ followUps: [followUp({ title: "out of scope", id: "fu-o" })] }));
+    const block = parseFollowUpsBlock(body);
+    expect(block?.moved).toBe(2);
+    expect(block?.followUps.map((f) => [f.title, f.kind])).toEqual([
+      ["minor 1", "minor"],
+      ["minor 2", "minor"],
+      ["out of scope", undefined],
+    ]);
+    expect(JSON.parse(body.match(new RegExp(`<!-- ${FOLLOW_UPS_MARKER} (.*) -->`))?.[1] ?? "{}")).toMatchObject({ version: 1 });
+    expect(postDecided(allBelow()).followUps.map((f) => f.title)).toEqual(["minor 1", "minor 2"]);
+  });
+
+  /** An entry with no kind, or one this version does not know, is out of scope: every entry before kinds existed. */
+  it("reads an entry with no kind as out of scope, and does not take a kind from the model", () => {
+    const payload = `<!-- ${FOLLOW_UPS_MARKER} ${JSON.stringify({
+      version: 1,
+      dropped: 0,
+      moved: 0,
+      followUps: [
+        { title: "a", location: "x", body: "b", severity: "low" },
+        { title: "c", location: "y", body: "d", severity: "low", kind: "major" },
+      ],
+    })} -->`;
+    expect(parseFollowUpsBlock(payload)?.followUps.map((f) => f.kind)).toEqual([undefined, undefined]);
+
+    const answered = parse({ findings: [], followUps: [{ title: "t", location: "l", body: "b", severity: "low", kind: "minor" }] });
+    expect(answered.followUps[0]).not.toHaveProperty("kind");
+    expect(recordFollowUps([], answered.followUps).followUps[0]).not.toHaveProperty("kind");
+  });
+
+  /** Never cut to fit: an entry cut is a finding lost. The out-of-scope tail goes first, and the minor ones stay whole. */
+  it("keeps every minor finding, body and all, through every step of the shedding", () => {
+    const huge = "x".repeat(9_000);
+    const minors = Array.from({ length: 5 }, (_, i) => minor(i, { title: `minor ${i} ${huge.slice(0, 400)}`, body: huge }));
+    const outOfScope = Array.from({ length: 3 }, (_, i) => followUp({ title: `oos ${i}`, body: huge, id: `fu-o${i}` }));
+    const post = postDecided(allBelow({ minorFindings: minors, followUps: outOfScope }));
+    expect(reviewBodySize(post.body)).toBeLessThanOrEqual(REVIEW_BODY_LIMIT);
+    const block = parseFollowUpsBlock(post.body);
+    expect(block?.followUps.filter((f) => f.kind === "minor").map((f) => f.body)).toEqual(minors.map(() => huge));
+    expect(block?.cut).toBeGreaterThan(0);
+    expect(post.followUps.filter((f) => f.kind === "minor")).toHaveLength(5);
+  });
+});
+
+/**
+ * **Minor findings are carried and ruled by id on every pull request** (#616),
+ * #495's mechanism for this kind: one ruled resolved drops off with its id
+ * in `resolved` and is not filed, one ruled open or not ruled on stays, and a
+ * carried one is never threaded again.
+ */
+describe("recordFollowUps over minor findings", () => {
+  const minor = (id: string): FollowUp => followUp({ title: id, location: `src/${id}.ts:1`, severity: "low", id, kind: "minor" });
+  const cases = [
+    ["a regular pull request, carrying the newest review's alone", [{ minor: [minor("fu-a"), minor("fu-b"), minor("fu-c")], moved: [], rest: [] }]],
+    [
+      "a PRD PR, carrying every earlier round's",
+      [
+        { minor: [minor("fu-a")], moved: [], rest: [followUp({ id: "fu-o1", title: "oos" })] },
+        { minor: [minor("fu-a"), minor("fu-b"), minor("fu-c")], moved: [], rest: [] },
+      ],
+    ],
+  ] as const;
+
+  it.each(cases)("on %s, drops the one ruled fixed and keeps the ones ruled open and not ruled on", (_kind, carried) => {
+    const recorded = recordFollowUps([], [], [], {
+      carried,
+      rulings: [
+        { id: "fu-a", status: "resolved", reason: "the log line names the field now" },
+        { id: "fu-b", status: "open" },
+      ],
+      minor: [minor("fu-new")],
+    });
+    expect(recorded.minor.map((m) => m.id)).toEqual(["fu-b", "fu-c", "fu-new"]);
+    expect(recorded.resolved).toEqual(["fu-a"]);
+    expect(recorded.resolvedNow).toEqual([{ title: "fu-a", location: "src/fu-a.ts:1", reason: "the log line names the field now", kind: "minor" }]);
+    expect(recorded.moved).toBe(0);
+
+    const body = renderDecided({
+      verdict: VERDICTS["approval recommended"],
+      output: { findings: [], followUps: [], verified: [] },
+      placed: [],
+      movedToFollowUps: recorded.moved,
+      stillOpen: [],
+      resolved: [],
+      followUps: recorded.followUps,
+      minorFindings: recorded.minor,
+      droppedFollowUps: 0,
+      resolvedFollowUps: recorded.resolvedNow,
+      resolvedFollowUpIds: recorded.resolved,
+    });
+    const block = parseFollowUpsBlock(body);
+    expect(block?.followUps.filter((f) => f.kind === "minor").map((f) => f.id)).toEqual(["fu-b", "fu-c", "fu-new"]);
+    expect(block?.resolved).toEqual(["fu-a"]);
+    expect(body).toContain("One minor finding an earlier review recorded is resolved at this head, so it is no longer carried and will not be filed:");
+  });
+
+  it("keeps one carried minor finding once where this review records it again by the same id", () => {
+    const recorded = recordFollowUps([], [], [], { carried: [{ minor: [minor("fu-a")], moved: [], rest: [] }], minor: [minor("fu-a")] });
+    expect(recorded.minor.map((m) => m.id)).toEqual(["fu-a"]);
   });
 });

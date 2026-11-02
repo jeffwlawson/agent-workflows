@@ -125,6 +125,7 @@ const writeProgress = async (
     ...(handed.rounds === undefined ? {} : { rounds: handed.rounds }),
     review,
     open: handed.open,
+    ...(handed.minor === undefined ? {} : { minor: handed.minor }),
     prUrl,
   })[ending];
   let half = false;

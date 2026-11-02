@@ -1212,3 +1212,73 @@ describe("earlierFollowUps", () => {
     expect(recorded.followUps).toEqual([old]);
   });
 });
+
+/**
+ * **Minor findings are filed at merge** (#616): the payload's own entries of
+ * kind `minor`, in its exempt prefix, so neither cap reaches one. In this
+ * release one stub each, saying it is a minor finding in that pull request's
+ * own code; #625 groups them.
+ */
+describe("filing the minor findings", () => {
+  const minor = (n: number): FollowUp =>
+    followUp({ title: `minor ${n}`, location: `src/m${n}.ts:${n}`, severity: "low", id: `fu-m${n}`, kind: "minor" });
+  const body = (minors: readonly FollowUp[], rest: readonly FollowUp[]): FilingReview =>
+    review([], { body: `A summary.\n\n${followUpsPayload([...minors, ...rest], 0, minors.length)}` });
+
+  it("files every minor finding, past the out-of-scope cap, each stub saying it is a minor finding in that pull request's code", () => {
+    const minors = [1, 2, 3, 4].map(minor);
+    const rest = [1, 2, 3].map((n) => followUp({ title: `oos ${n}`, location: `src/o${n}.ts:${n}` }));
+    const planned = planFollowUps({ prNumber: 32, reviews: [body(minors, rest)], stubs: [] }, ACCOUNTS);
+
+    expect(planned.issues.map((i) => i.title)).toEqual(["minor 1", "minor 2", "minor 3", "minor 4", "oos 1", "oos 2", "oos 3"]);
+    for (const issue of planned.issues.slice(0, 4)) {
+      expect(issue.body, issue.title).toContain("_A minor finding in that pull request's own code:");
+      expect(issue.body, issue.title).toContain("`AGENT_FIX_MIN_SEVERITY`");
+    }
+    for (const issue of planned.issues.slice(4)) expect(issue.body, issue.title).not.toContain("minor finding");
+    expect(planned.report).toContain("**Minor and out-of-scope findings**, read from");
+    expect(planned.report).toContain("- **Filed** (minor finding) · `src/m1.ts`");
+    expect(planned.report).not.toContain("dropped by the cap");
+  });
+
+  it("says what it always said where there is no minor finding", () => {
+    const planned = planFollowUps({ prNumber: 32, reviews: [body([], [followUp()])], stubs: [] }, ACCOUNTS);
+    expect(planned.report).toContain("**Out-of-scope findings**, read from");
+    expect(planned.issues[0]?.body).not.toContain("minor finding");
+  });
+
+  it("does not file one a later review ruled fixed: the newest payload leaves it out", () => {
+    const first = body([minor(1), minor(2)], []);
+    const recorded = recordFollowUps([], [], [], {
+      carried: earlierFollowUps([first], ACCOUNTS).carried,
+      rulings: [{ id: "fu-m1", status: "resolved", reason: "fixed in the last commit" }],
+    });
+    const second = review([], {
+      body: `A summary.\n\n${followUpsPayload([...recorded.minor, ...recorded.followUps], 0, recorded.minor.length + recorded.moved, 0, 3, recorded.resolved)}`,
+    });
+    const planned = planFollowUps({ prNumber: 32, reviews: [first, second], stubs: [] }, ACCOUNTS);
+    expect(planned.issues.map((i) => i.title)).toEqual(["minor 2"]);
+  });
+});
+
+describe("earlierFollowUps over minor findings", () => {
+  it("splits them out by their kind, whichever half of the payload they sit in", () => {
+    const minorA = followUp({ title: "a", id: "fu-a", kind: "minor", severity: "low" });
+    const minorB = followUp({ title: "b", id: "fu-b", kind: "minor", severity: "low" });
+    const moved = followUp({ title: "moved", id: "fu-mv" });
+    const rest = followUp({ title: "rest", id: "fu-r" });
+    const reviews = [review([], { body: `x\n\n${followUpsPayload([minorA, moved, rest, minorB], 0, 2)}` })];
+
+    expect(earlierFollowUps(reviews, ACCOUNTS).carried).toEqual([{ minor: [minorA, minorB], moved: [moved], rest: [rest] }]);
+  });
+
+  it("leaves out a minor finding a review ruled resolved, as it does any carried follow-up", () => {
+    const minorA = followUp({ title: "a", id: "fu-a", kind: "minor", severity: "low" });
+    const reviews = [
+      review([], { body: `x\n\n${followUpsPayload([minorA], 0, 1)}` }),
+      review([], { body: `y\n\n${followUpsPayload([], 0, 0, 0, 3, ["fu-a"])}` }),
+    ];
+
+    expect(earlierFollowUps(reviews, ACCOUNTS)).toMatchObject({ carried: [{ minor: [], moved: [], rest: [] }, { moved: [], rest: [] }], resolved: ["fu-a"] });
+  });
+});

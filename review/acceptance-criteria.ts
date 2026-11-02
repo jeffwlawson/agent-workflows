@@ -189,7 +189,8 @@ export const renderCriteriaForReview = (criteria: readonly string[], prBody: str
  * naming a criterion the review was not handed is dropped, the first ruling on
  * one is the one kept, and one nobody ruled on is listed as **not checked**
  * rather than left out. An **unmet** criterion is a fix-before-merge finding at
- * the anchor the review gave it; a **changed** one is not, and carries its
+ * the anchor the review gave it, which meets the repository's fix threshold
+ * whatever its severity (#616); a **changed** one is not, and carries its
  * reason instead.
  */
 export const applyCriteriaRulings = (
@@ -227,6 +228,9 @@ export const applyCriteriaRulings = (
         path: ruling.path,
         line: ruling.line,
         severity: ruling.severity,
+        // Whatever it was rated (#616): an approval over a criterion this
+        // review says is unmet is the contradiction the threshold must not make.
+        alwaysMeets: true,
         body: [
           `**${FIX_BEFORE_MERGE_LABEL}.** The linked issue's acceptance criterion is not met: "${text}".`,
           ruling.reason,

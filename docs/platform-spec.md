@@ -493,11 +493,11 @@ string the agent wrote, so the agent cannot forge one of those through a review.
 | `## Agent review` | The opening of a review's body, after its round header. A review by the loop with this heading is one round. | `review:publish`, from `review`'s `review_body.json` | `review`, `fix`, `implement-prd`, to count rounds |
 | `**Review <r>**`, `**Slice <k> of <n> · #<sub> · review <r>**`, `**Final review · review <r>**` | The round header, the first line of a review or fix comment. | `review:publish`, from `review`'s `review_body.json`, and `fix:publish`, from `fix`'s `round_header.txt` | the same three, to tell a PRD PR's rounds apart by slice; `review:budget`, to tell which round a fix-round status was spent in |
 | `<!-- agent-finding <id> … -->` | Each finding's inline comment. A review body carries none since #224. | `review:publish`, from `review`'s `findings.json` and `review_body.json` | `review`, `fix`, as the findings still open |
-| `<!-- agent-resolution ADDRESSED -->`, `<!-- agent-resolution WONT_FIX -->` | The reply that closes a finding's thread. | `review:publish`, from `review`'s `thread_resolutions.json` | `review`, `fix`, as the findings settled |
+| `<!-- agent-resolution ADDRESSED -->`, `<!-- agent-resolution WONT_FIX -->`, `<!-- agent-resolution MINOR -->` | The reply that closes a finding's thread: verified fixed, declined by a maintainer, or (#616) resolved because every finding open on the pull request was below `AGENT_FIX_MIN_SEVERITY`, the finding recorded as a minor finding. A `MINOR` closure is sent to GitHub as `WONT_FIX`. | `review:publish`, from `review`'s `thread_resolutions.json` | `review`, `fix`, as the findings settled |
 | `<!-- agent-fix:out-of-scope {…} -->` | A note on a finding the fix judged out of scope. | `fix:publish`, from `fix`'s `out_of_scope_notes.json` | `review`, which rules on it; `fix`, to not repeat it |
 | `<!-- agent-fix:top-level -->` | A top-level comment the fix posted. Read on a trusted author's post too. | `fix:publish`, from `fix`'s `top_level_comments.json` | `review`, `fix`, to leave the loop's own comments out of the feedback |
 | `<!-- agent-fix:conversation-outcomes -->` | The comment saying what the fix did with the conversation. | `fix:publish`, from `fix`'s `conversation_outcomes.json` | `review`, `fix`, the same |
-| `<!-- agent-follow-ups {…} -->` | A review body that recorded out-of-scope findings: `version` (`1`), `dropped`, `moved`, `cap`, `cut` where not zero, `followUps`, and on a PRD PR `resolved`, the ids of every carried follow-up a round on it ruled resolved (#495), written where not empty, so a later round carries none of them from an older review. A reader that does not know a field ignores it. An edited review's is refused. | `review:publish`, from `review`'s `review_body.json` | `review`, to not record one twice; `follow-ups:file`, to file them |
+| `<!-- agent-follow-ups {…} -->` | A review body that recorded out-of-scope findings and minor findings: `version` (`1`), `dropped`, `moved`, `cap`, `cut` where not zero, `followUps`, and `resolved`, the ids of every carried follow-up a round on a PRD PR, or carried minor finding a review on any pull request, ruled resolved (#495, #616), written where not empty, so a later round carries none of them from an older review. Each entry of `followUps` is `title`, `location`, `body`, `severity`, `id`, and `kind`: `minor` for a minor finding (#616), a finding in this pull request's own code below `AGENT_FIX_MIN_SEVERITY`, and absent for one out of scope, which is every entry written before kinds. Minor findings lead the list, inside the exempt prefix `moved` counts, so no cap reaches them. The workflow writes `kind` and `id`, never the model. A reader that does not know a field ignores it, and an entry with a `kind` it does not know is out of scope. An edited review's is refused. | `review:publish`, from `review`'s `review_body.json` | `review`, to not record one twice; `follow-ups:file`, to file them |
 | `<!-- agent-red-tests {…} -->` | A slice round's review body: the red check's tests. | `review:publish`, from `review`'s `review_body.json` | `review`, on the PRD PR's final review |
 | `<summary><b>Acceptance criteria</b>` | A review body's criteria group, its `- **Changed:**` and `- **Unmet:**` lines. | `review:publish`, from `review`'s `review_body.json` | `review`, on later rounds of the same slice |
 | `<!--{"version",…,"location","pr","seq"}-->` | The end of a filed follow-up issue's body. | `follow-ups:file`, which files it through `createIssue`, as `stubMarker` in `shared/record.ts` spells it | `follow-ups:file`, to not file one twice, and to read back a stub GitHub filed while answering with a server error |
@@ -1899,6 +1899,23 @@ Reviews a pull request and writes everything a posting step needs; it posts noth
 Preconditions: the pull request's head checked out as `BRANCH`, and its base, `BASE_REF`, fetched
 so the diff matches GitHub's.
 
+**Where the open findings go** (#616). Once per review, after it has verified what earlier rounds
+left open and before it writes anything, the runner places the **open set**, this review's findings
+that would be threaded (the ones moved to follow-ups for having no anchor, #127, are not in it) and
+the carried threads it found still open, by `FIX_MIN_SEVERITY`. A finding meets it where its
+severity is at or above it; `high` meets every threshold, and so does a finding with no severity to
+read, carried or this review's own, and an acceptance criterion ruled unmet, whatever its rating.
+Where **any** open finding meets it, the review is *mixed*, which is every review before this
+setting: each finding a thread, lows included. Where at least one is open and **none** meets it,
+the review is *all below*: no finding of it is a thread, each becomes a **minor finding** (a
+follow-up of kind `minor`, with its title, location, severity, body and an id), each carried thread
+still open is resolved as `MINOR` with a reply saying why, and nothing is open, so the verdict is
+the checks': *approval recommended* on green, *needs a closer look* otherwise. Every review is shown
+the minor findings the newest earlier review recorded (on a PRD PR, every earlier round's), rules on
+each by id in `followUpRulings` as it does a PRD PR's carried follow-ups, keeps the open ones and
+drops one ruled fixed; a carried minor finding is never threaded again. With `low` nothing is ever
+below, and the review is the one it always was.
+
 **When the verdict asks for a fix round.** On *changes recommended*, where `AUTO_FIX` is `true` and
 the fix round this review follows closed at least one of its findings, or it follows none. Except on
 a PRD PR when the earlier rounds could not be read (#442): the review then carries no round header,
@@ -1934,6 +1951,7 @@ so a review asks with or without a header.
 | `AUTO_FIX` | optional | `false` | Accepts `true` or `false`: `true` where the orchestrator will start a fix round itself on a verdict asking for one, `false` where it will not. Unset or empty is `false`, and any other value fails the run, naming it. |
 | `FIX_ROUNDS_SPENT` | optional | `""` | The fix rounds this pull request has spent, or on a PRD PR this round, for the verdict's line. |
 | `FIX_ROUND_BUDGET` | optional | `""` | The budget, for the same line. Both have to be numbers for it to be written. |
+| `FIX_MIN_SEVERITY` | optional | `medium` | Accepts `low`, `medium` or `high`: the fix threshold `review:gate` settled from `AGENT_FIX_MIN_SEVERITY` (#616). Where every finding open on the pull request is below it, none is threaded, each is recorded as a minor finding, and the review approves on green checks. Unset or empty is `medium`, and any other value fails the run, naming it. |
 | `RED_CHECK_CONFIGURED` | optional | `""` | `true` where the red check is configured. |
 | `RED_CHECK_FILE` | optional | `""` | The red check's report. |
 
@@ -1943,12 +1961,12 @@ so a review asks with or without a header.
 |---|---|
 | `usage.json` | On every run whose agent started: what it spent, pass by pass (§2.3). |
 | `findings.json` | The findings to open a thread for: where each goes, its severity and title, the agent's text, and whether an earlier review had read its code. |
-| `review_body.json` | What the body is written from: the verdict, the agent's assessment, the record's entries, the criteria and, except on a PRD PR's final review, why there are none where there are none (`criteria found`, `none in the issue`, `no linked issue` or `untrusted issue`), where criteria were handed what merged since the brief (#541: the commits since its read-at commit that touched the files it names, or why the check could not run) with the review's ruling, what the review's own test run left unrun (#543: whether it ran tests, and each test or suite exercising the change it skipped for want of something in the environment, with the reason, at most 20 and how many more; absent where the review did not say), the follow-ups, on a PRD PR the carried follow-ups this review ruled resolved, each with its reason, and the ids of every one ruled resolved on the pull request so far (#495), both absent where there are none, and the data behind the header, the round note and the red tests, and, where a PRD PR's review with no header asked for no round it would have, that it withheld one (`unnumbered`). |
-| `thread_resolutions.json` | The earlier findings this review verified: each thread, why it closes, and the agent's note or the maintainer's reply to quote. Written on every run. |
-| `verdict.json` | The verdict's key, whether it starts a fix round, how many findings it leaves open, and, on *changes recommended* with no round, which of #200's stops kept it from asking for one (`budget spent` or `no progress`), where one did. |
+| `review_body.json` | What the body is written from: the verdict, the agent's assessment, the record's entries, the criteria and, except on a PRD PR's final review, why there are none where there are none (`criteria found`, `none in the issue`, `no linked issue` or `untrusted issue`), where criteria were handed what merged since the brief (#541: the commits since its read-at commit that touched the files it names, or why the check could not run) with the review's ruling, what the review's own test run left unrun (#543: whether it ran tests, and each test or suite exercising the change it skipped for want of something in the environment, with the reason, at most 20 and how many more; absent where the review did not say), the minor findings (#616), the follow-ups, on a PRD PR the carried follow-ups this review ruled resolved (and on any pull request the carried minor findings it ruled fixed), each with its reason, and the ids of every one ruled resolved on the pull request so far (#495), both absent where there are none, and the data behind the header, the round note and the red tests, and, where a PRD PR's review with no header asked for no round it would have, that it withheld one (`unnumbered`). |
+| `thread_resolutions.json` | The earlier findings this review verified, and on an all-below review the ones it recorded as minor: each thread, why it closes (`ADDRESSED`, `WONT_FIX` or `MINOR`), and the agent's note, the maintainer's reply to quote, or the threshold a minor one is below. Written on every run. |
+| `verdict.json` | The verdict's key, whether it starts a fix round, how many findings it leaves open, how many minor findings the pull request carries where it carries any (#616), and, on *changes recommended* with no round, which of #200's stops kept it from asking for one (`budget spent` or `no progress`), where one did. |
 | `pr_summary.json` | Signals by existing: the title, the agent's summary, whether the round is final, and the data behind the Evidence and the Merge Danger. |
 | `park.json` | On a PRD PR: the round, the findings open before this review and, once it has ruled, its verdict, why its round parks where it does, and the findings it leaves open. Written before the work, and again once the review has ruled. |
-| `progress.json` | On a PRD PR whose branch could be read: the sub-issues, the slice ranges, whether the final review is requested, the rounds so far and the findings left open, which the progress list and status line are rendered from. Written with `park.json`. |
+| `progress.json` | On a PRD PR whose branch could be read: the sub-issues, the slice ranges, whether the final review is requested, the rounds so far, the findings left open and the minor findings recorded, which the progress list and status line are rendered from. Written with `park.json`. |
 
 None of these files holds a marker, a status context or a commit: they carry decisions and raw
 text, and `review:publish` and `review:advance` write every final string from them.
@@ -2069,6 +2087,9 @@ what it decided is handed on, and the posting step says it. In order:
 - **The fix-round budget.** `MAX_FIX_ROUNDS`, 3 where unset, and a value that is not a whole
   number is refused, naming it. The rounds spent against it are `review:budget`'s, after the
   checkout.
+- **The fix threshold** (#616). `FIX_MIN_SEVERITY`, the repository's `AGENT_FIX_MIN_SEVERITY`:
+  `low`, `medium` or `high`, `medium` where unset, and any other value is refused, naming the
+  variable and the values it takes. The runner places the review's open findings by it.
 - **The round.** On a PRD branch only: `final` where the pull request's body carries the final
   review's mark, else `slice`. A body that cannot be read fails the command.
 
@@ -2089,12 +2110,13 @@ written to `refusal_reason.txt` and the command fails, so the run ends as one th
 | `HEAD_POLL_SECONDS` | optional | `"5"` | How often it is asked meanwhile. |
 | `REVIEW_TIMEOUT_MINUTES` | optional | `""` | The review's own time limit, as configured; empty is the default. |
 | `MAX_FIX_ROUNDS` | optional | `""` | The fix-round budget, as configured; empty is 3. |
+| `FIX_MIN_SEVERITY` | optional | `""` | The fix threshold, as configured: `low`, `medium` or `high`; empty is `medium`. |
 
 #### Outputs
 
 | Output | When it is written |
 |---|---|
-| `gate.json` | Always. Its decisions, every value a string: `proceed`, and `refusal` and `blocked` where it refused; `sha`, the commit to review; `budget`; and `round` on a PRD PR. A name not yet decided when it ended is absent. |
+| `gate.json` | Always. Its decisions, every value a string: `proceed`, and `refusal` and `blocked` where it refused; `sha`, the commit to review; `budget`; `threshold`, the fix threshold; and `round` on a PRD PR. A name not yet decided when it ended is absent. |
 | `refusal_reason.txt` | Where it refuses a variable: the sentence, before it fails. |
 
 **`doctor` cannot check this.** These tables are the command's, for the reason §6 gives.
@@ -2349,10 +2371,11 @@ Nothing. Its inputs are the checkout and what `review:red-check-place` wrote.
 Resolves the threads a review closed and posts the review, then writes the pull request's title,
 summary and status line and posts the verdict, from the runner's hand-over, which it reads and
 checks in full before its first write. It runs no model, so it needs no `claude` and no checkout.
-It writes every final string itself: the body and its groups, each thread's body, the two closing
-replies, the summary block with its Evidence and Merge Danger, the status line and every marker in
+It writes every final string itself: the body and its groups, each thread's body, the three closing
+replies (`ADDRESSED`, `WONT_FIX`, and `MINOR`, #616, which names the threshold the finding is below and
+is sent to GitHub as `WONT_FIX`), the summary block with its Evidence and Merge Danger, the status line and every marker in
 them, holding the body to GitHub's limit and shedding in a fixed order down to cutting
-out-of-scope follow-ups. Each commit status's context, state and description are its own, chosen
+out-of-scope follow-ups, never a minor finding or a moved one. Each commit status's context, state and description are its own, chosen
 by the verdict's key and cause, never read from the hand-over. The pull request's node id is read
 from the pull request `PR_NUMBER` names, and every thread id in the hand-over has to be a review
 thread on it, the verdict and the fix-round claim are read strictly into their fixed sets, and
@@ -2360,7 +2383,7 @@ thread on it, the verdict and the fix-round claim are read strictly into their f
 
 The order: every reply and resolve first, a thread that will not resolve tolerated and listed in
 the body as still open; then the review, on `REVIEWED_SHA`, its *Resolved since last review* naming
-only the threads that resolved; then `agent:follow-ups`, only where follow-ups survive the body's
+only the threads that resolved, a thread resolved as minor listed under *Minor findings* instead; then `agent:follow-ups`, only where follow-ups or minor findings survive the body's
 shedding; then, where `pr_summary.json` is there, the title and the summary block, spliced against
 the body as it stands, headed by `REVIEWED_SHA` (a body with half a block, or two, gets the title
 alone, and the final review's write drops the draft-only note); then, off a PRD PR, the status
@@ -2384,7 +2407,7 @@ run's, and the command goes on with its URL.
 | `REVIEWED_SHA` | required | | The commit the review read, recorded before the agent ran; the review and the verdict are posted on it. |
 | `REVIEW_DIR` | directory | | The `review` runner's `OUTPUT_DIR`. Reads `findings.json`, `review_body.json`, `thread_resolutions.json`, `pr_summary.json` (where written) and `verdict.json`. |
 | `GITHUB_SERVER_URL` | optional | `""` | With the next two, the link to the run the body ends with. Empty renders none. |
-| `GITHUB_REPOSITORY` | optional | `""` | See `GITHUB_SERVER_URL`. |
+| `GITHUB_REPOSITORY` | optional | `""` | See `GITHUB_SERVER_URL`. With it, the link a minor finding's location carries to the reviewed commit. |
 | `GITHUB_RUN_ID` | optional | `""` | See `GITHUB_SERVER_URL`. |
 
 #### Outputs
@@ -2435,7 +2458,8 @@ the ending from them. Each is one of:
   the mint, the download and publish that did not succeed: a fixed sentence for the mint and the
   download, publish's `failure_reason.txt`, or a cancel where that step was cancelled or skipped.
 - **A posted review**: `agent:blocked` off; the ready mark, unless a fix round is about to start,
-  and on a PRD PR only on the final review's approval; the stop comment, below; `agent:review` off; then, where the pull
+  and on a PRD PR only on the final review's approval, an approval over minor findings (#616)
+  included, since it reads the verdict and nothing finer; the stop comment, below; `agent:review` off; then, where the pull
   request is open and its head has moved on from `REVIEWED_SHA`, `agent:review` again with the
   loop's token, or a comment saying it was not asked for where `LOOP_TOKEN_SOURCE` is neither `app`
   nor `pat`, or nothing where another trigger label is on. Otherwise, on *changes recommended*
@@ -2537,7 +2561,9 @@ ran, and works out how the round ended: **approved** where both finished and the
   `REVIEW_URL` where a review was posted and the pull request where not, and spliced into the PRD
   PR's live body between their markers with `GH_TOKEN`: a body with no list gets one appended, and
   half a list, or two, is left as it stands. Tolerated: one GitHub refuses is a warning.
-- **On a slice round's approval**, `agent:implement` removed from and added to the PRD's parent,
+- **On a slice round's approval**, a slice round whose findings were all below the fix threshold
+  and recorded as minor findings included (#616), with the progress list and the status line saying
+  how many minor findings it recorded, `agent:implement` removed from and added to the PRD's parent,
   read off `BRANCH`, with `LOOP_TOKEN`. Where `LOOP_TOKEN_SOURCE` is neither `app` nor `pat`,
   nothing is added, and a comment on the PRD PR says which re-label advances the chain by hand.
   Where `MINT_OUTCOME` is `failure`, the same comment names the mint's failure, and the command
@@ -2599,7 +2625,14 @@ A head that is not `agent/prd-<parent>-<slug>`, where the parent is needed, fail
 Trigger label: `agent:fix`, on a pull request. `doctor` checks that the label exists.
 
 Acts on review feedback as commits on the pull request's branch, and writes the replies for a
-posting step. Preconditions: the head checked out as `BRANCH` and its base, `BASE_REF`, fetched for
+posting step. The agent's brief has a section per surface it acts on: the review summaries, the
+unresolved threads (`INLINE_COMMENTS`, each one owed an outcome), the conversation, and since #616
+the **minor findings** (`# MINOR FINDINGS`), the entries of kind `minor` in the newest review's
+follow-ups payload, each with its id, severity, location, title and body. A minor finding has no
+thread, so no outcome is owed on it: in a round a finding at or above the threshold started the
+agent fixes the ones in files it is already changing or otherwise cheap and in scope, and in a round
+a person started over an approval it records them as its work; the next review rules on each by id.
+A pull request whose only work is minor findings is not one with nothing to do. Preconditions: the head checked out as `BRANCH` and its base, `BASE_REF`, fetched for
 diffing, which the orchestrator prepares, and `RESCUE_BRANCH` fetched to
 `refs/rescue/<RESCUE_BRANCH>` where it exists, which `fix:prepare` does.
 
@@ -2643,6 +2676,8 @@ diffing, which the orchestrator prepares, and `RESCUE_BRANCH` fetched to
 - The review feedback, through `isTrustedAuthor` (§4.1): the open findings by their
   `agent-finding` markers, less the ones an `agent-resolution` reply closed, with its own earlier
   `agent-fix:top-level` comments and `agent-fix:conversation-outcomes` left out.
+- The newest review the loop posted, for the minor findings its `agent-follow-ups` payload records
+  (#616).
 - Its own earlier `agent-fix:top-level` comments and `agent-fix:out-of-scope` notes, so as not to
   post one twice.
 - Its own head against `agent/prd-<parent>-<slug>`, and on a PRD PR the branch's trailers, for

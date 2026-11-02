@@ -108,7 +108,7 @@ each. A row that is a **warning** instead — printed, exit 0 — says so where 
 | where a `merge` caller is installed, the loop's App or `AGENT_PAT` is set: with neither, an error; and, as a note, that with the PAT alone its owner cannot arm | §3, *The merge decision*: the arm is a commit status only the loop token's account may post, so with only `GITHUB_TOKEN` the gate refuses every `agent:merge`, and nothing is armed or merged |
 | where a `merge` caller is installed, that its caller file's trigger lists `synchronize`: a warning where it does not | §3, *The merge decision*: a push re-starts the merge gate only on `synchronize`, so without it a push the maintainer did not see disarms nothing when it lands |
 | no retired label is still here, as a warning with the `gh label delete` that removes it | §3, *Retired labels*: nothing reads it, and it reads as a run in progress that is not |
-| the fix-round budget, `AGENT_MAX_FIX_ROUNDS`, is a whole number where it is set; that no review caller still passes the removed `auto-fix`; and, as a warning, that a budget above 0 (the default of 3 included) has the App or `AGENT_PAT` behind it | §3b — a variable the review refuses fails every review; GitHub fails every job in a caller that passes `auto-fix` before any starts, with no log; and without the App or the PAT no automatic round ever starts, and every verdict asks for `agent:fix` by hand |
+| the fix-round budget, `AGENT_MAX_FIX_ROUNDS`, is a whole number where it is set, and the fix threshold, `AGENT_FIX_MIN_SEVERITY`, is `low`, `medium` or `high`; that no review caller still passes the removed `auto-fix`; and, as a warning, that a budget above 0 (the default of 3 included) has the App or `AGENT_PAT` behind it | §3b — a variable the review refuses fails every review; GitHub fails every job in a caller that passes `auto-fix` before any starts, with no log; and without the App or the PAT no automatic round ever starts, and every verdict asks for `agent:fix` by hand |
 | whether the review caller configures the red check, as a note either way; and, as a warning, one that is half configured: a `red-check-command` with no `red-check-report` or no `red-check-test-globs`, named, or either of those with no command | §4, *The red check*: half configured, the check reports itself misconfigured on every review and the review reads what is red as unknown; with no command, the other two are read by nothing |
 | the time limits, `AGENT_TIMEOUT_MINUTES` and `AGENT_REVIEW_TIMEOUT_MINUTES`, are positive integers where they are set | §2c: the agent jobs fail before their first step, with no comment and the label left on; the review refuses to start |
 | on a **public** repository, an active Actions policy allows `pull_request_target` for every caller that runs on it; silent on a private or internal one, and a warning where the policies or the visibility could not be read | [On a public repository, `pull_request_target` stops running](#on-a-public-repository-pull_request_target-stops-running): from 2026-11-02 a label is added and no run starts |
@@ -791,11 +791,15 @@ with, taken verbatim. If you have read one of those, you already know what ours 
 
 | Verdict | Commit status | What GitHub shows you |
 |---|---|---|
-| **🟢 Approval recommended** | `success` | Approval recommended. Nothing left to fix. You can merge once the PR is ready and no longer a draft. |
+| **🟢 Approval recommended** | `success` | Approval recommended. Nothing blocks the merge; any minor findings are filed as one follow-up. You can merge once the PR is ready. |
 | **🟡 Changes recommended** | `failure` | Changes recommended. If the agent isn't already working on them, add the agent:fix label to have it make the changes. |
 | **🔵 Needs a closer look**, the review needs your judgement | `failure` | Needs a closer look. Read the review, then tell the agent what to fix, fix it yourself, merge as is, or close the PR. |
 | **🔵 Needs a closer look**, a CI check failed | `failure` | Needs a closer look. A CI check failed and the review couldn't trace it to the code. Read the failing check, then fix it or merge as is. |
 | **🔵 Needs a closer look**, CI hadn't finished or couldn't be read | `failure` | Needs a closer look. CI hadn't finished or couldn't be read. Once it's done, add agent:review, or merge as is if CI isn't needed. |
+
+An approval says nothing blocks the merge, rather than that nothing is left, because a review can
+approve over **minor findings**: findings in this pull request's own code below your fix threshold,
+recorded and filed at merge rather than fixed first (below, *The fix threshold*).
 
 The third column is the status description **verbatim**. The review summary opens with the long
 form of the same line, under the same heading, so the two cannot tell you different things. Each
@@ -868,6 +872,34 @@ verdict is the same 🟡 line, which asks you for the label; on a PRD PR the par
 parent says why it stopped (the slice's or the final review's budget is spent, or the last round
 made no progress).
 
+**The fix threshold** (#616) decides which findings are worth a round. The repository variable
+`AGENT_FIX_MIN_SEVERITY` is `low`, `medium` or `high`, **`medium` where unset**; any other value fails
+the review, naming the variable, and `doctor` reports it. Once per review the review looks at what is
+open on the pull request, its own findings and the earlier ones it found still open:
+
+- **Some finding is at or above the threshold** (a *mixed* review): exactly the review this loop
+  always posted. Every finding is a thread, the lows included and listed under *Open*, the verdict is
+  🟡, and the automatic round, budget and early stop all apply as above. The round the medium starts
+  is handed the lows as threads, so it fixes them beside it.
+- **Every open finding is below it** (an *all-below* review): no finding is a thread. Each is recorded
+  as a **minor finding** under *Minor findings* in the body, a thread an earlier round left open is
+  resolved with a reply saying why, and nothing is open, so the verdict is 🟢 on green checks (🔵 on red
+  or unreadable ones): no round starts, the pull request is marked ready, and on a PRD chain the slice
+  round advances. The minor findings are filed when the pull request merges.
+
+`high` is never below any threshold, and a finding with no rating, or an acceptance criterion the
+review ruled unmet, counts as at it whatever its rating, so a missing rating can only hold an approval
+up. A later review rules on each minor finding by id and drops the ones a commit fixed, so only what
+is still there is filed; one is never posted as a thread again. To have the minor findings fixed
+before you merge, add `agent:fix`: the round is handed them as its work. To keep every finding fixed
+before merge, as before this setting, set the variable to `low`.
+
+**Upgrading changes this.** A repository that sets nothing gets `medium` from the first review after
+the pin bump, so a review whose findings are all `low` approves instead of starting a round. That is
+deliberate: about two thirds of first-posted findings in this loop are `low`, and a round spent on
+lows alone costs the same agent run and re-review as one on a real defect. Set
+`AGENT_FIX_MIN_SEVERITY` to `low` before you bump to keep today's behaviour.
+
 The `auto-fix` input this replaced has been **removed** (#366), after a deprecation that ran from
 v0.7.5. A caller that still passes it is refused by GitHub before any job starts, every job in that
 file, with no log. Remove it from the job's `with:` block and set the variable instead: `1` is what
@@ -885,7 +917,8 @@ decision, and the loop carries it out only where you armed the pull request for 
 It needs the loop's App or `AGENT_PAT` (a label added with `GITHUB_TOKEN` fires no event, so nothing
 would start). `doctor` warns where the budget is above 0, the default included, and neither is set; it
 fails a variable that is not a whole number, and fails a caller still passing `auto-fix`, naming
-the variable to set instead.
+the variable to set instead. It fails an `AGENT_FIX_MIN_SEVERITY` that is not `low`, `medium` or
+`high` too.
 
 Everywhere else, `agent:fix` is the human hand in the loop, and the table above is where you are
 asked for it.
@@ -994,6 +1027,13 @@ empty:
   this one could not verify as fixed. Entries this review is the first to raise are marked *new*,
   which is how a round that found nothing new and left three findings standing reads differently
   from a fresh review that went badly. Expanded on arrival.
+- **Minor findings**: findings in this pull request's own code that were below your fix threshold
+  when every finding open on it was, so the review recorded them rather than posting a thread for
+  each (§3b, *The fix threshold*). Each with its severity, its location as a link and its title;
+  their text is in the record the filing reads. Folded, and **not** in `**Findings:** N`, since none
+  of them blocks the merge. Filed together as one issue on merge, and removing the `agent:follow-ups`
+  label declines that, as for *Follow-ups*. In the place *Open* has when nothing is open. A later
+  review drops one a commit fixed, and says so under *How this was checked*.
 - **Previously missed** — findings this review made in code an earlier review had already read.
   They count toward the verdict exactly like the rest, and they say the record was wrong about this
   pull request rather than that the pull request got worse. Expanded, and rendered exactly like an
@@ -1018,8 +1058,8 @@ empty:
   each with the reason; or one line saying the run skipped none of them, that the review ran no
   tests, or that it did not say. It does not change the verdict: it tells you what to run yourself
   before merging. A test skipped only in your CI is not listed, since the review cannot see it.
-- **Follow-ups** — the out-of-scope findings this review recorded, filed as issues when the pull
-  request merges. Folded, and **not** in `**Findings:** N`: that number is what blocks this pull
+- **Follow-ups** — the out-of-scope findings this review recorded, each filed as its own issue when
+  the pull request merges. Folded, and **not** in `**Findings:** N`: that number is what blocks this pull
   request, and a follow-up is by definition what does not. Removing the `agent:follow-ups` label is
   how you decline them.
 
@@ -1044,11 +1084,14 @@ beneath it.
 Every entry carries a **severity** — High, Medium or Low, shown as a small coloured chip — and each
 group is sorted worst first. The thread the entry points at opens with the same chip, so the two
 surfaces cannot tell you two different things about one finding. It is for reading and for ordering,
-and for nothing else: the verdict is not derived from it, whether a finding blocks the merge or
-becomes a follow-up issue does not read it, and three Low findings get the same assessment as three
-High ones. That is deliberate — a dial the agent turns that changes the outcome is one you have to
-check on every review to find out which way it was turned. Low means a real but small defect;
-preferences are still posted nowhere, at any rating.
+and for **one decision, through your fix threshold** (§3b): whether the open findings are threads
+that block the merge, when any one is at or above it, or minor findings, when none is. With the
+threshold at `low` it decides nothing, and three Low findings get the same assessment as three High
+ones. It never decides anything finer, and no finding is dropped by it: each is a thread or a minor
+finding. That is deliberate: a dial the agent turns that changes the outcome is one you have to
+check on every review to find out which way it was turned, so the dial is yours, not the agent's,
+and the agent is told what an inflated or an understated rating costs. Low means a real but small
+defect; preferences are still posted nowhere, at any rating.
 
 **The chip is an image, and it is served from `jeffwlawson/agent-workflows`.** GitHub's comment
 Markdown cannot colour text, so a coloured badge has to be a picture: each review body and each
@@ -1199,7 +1242,11 @@ with it:
 - **It gates the threads, and the threads are now the whole record.** Every finding that counts
   toward the verdict is a thread you can answer: a finding about an untouched file is
   anchored at the change that causes it, and one nothing in the change causes is a follow-up rather
-  than a blocker. So this setting and the required check cover much the same set from two
+  than a blocker. A **minor finding** (§3b, *The fix threshold*) is not a thread but an entry filed at
+  merge, and a review that approves over minor findings leaves no thread of the loop's open, so it
+  does not hold the merge; a review with any finding at or above the threshold threads its lows too,
+  and they hold it as every thread does. Set `AGENT_FIX_MIN_SEVERITY` to `low` to keep every finding
+  a thread to fix before merge. So this setting and the required check cover much the same set from two
   directions: the check gates the verdict, this gates each finding in it. Running both is still
   the argument, since a verdict is one line and a finding is a decision.
 - **Give the resolutions a few rounds first.** Which threads close is a judgement the review now
@@ -1252,7 +1299,9 @@ they came from, and re-run `init`, which moves the `pull_request_target` policy 
 or not, it posts one **post-merge checklist**: the *After merge, by a human* items of the linked
 issue's latest brief, or on a PRD PR of the parent's and every sub-issue's, each under its issue,
 read from trusted text only, and posted once (#544). And where `agent:follow-ups` is on, it files
-the pull request's recorded out-of-scope findings as triageable issues: the label gates the filing
+the pull request's recorded out-of-scope findings as triageable issues, each its own, and its
+still-unresolved **minor findings** (§3b, *The fix threshold*), each stub saying it is a minor finding
+in that pull request's code (one issue per pull request once #625 lands): the label gates the filing
 alone, so removing it opts out of filing and not of the checklist. Having its job is the whole of
 switching both on:
 the runner subcommand ships inside the package and the reusable lives here, but nothing invokes a

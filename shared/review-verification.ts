@@ -59,6 +59,12 @@ export interface CarriedFinding {
    */
   readonly url?: string;
   /**
+   * The finding as its thread holds it, the badge and the marker taken off
+   * (`threadFindingBody`), where the thread holds any: what a review that
+   * records it as a minor finding (#616) records and files it with.
+   */
+  readonly body?: string;
+  /**
    * A maintainer's own word on this finding, where one of them answered the
    * thread it lives in (#109, decision 10).
    *
@@ -120,6 +126,8 @@ export interface AgentThread {
   readonly severity?: Severity;
   /** The thread's own permalink, where the response carried one. */
   readonly url?: string;
+  /** The finding as the thread holds it. See `CarriedFinding.body`. */
+  readonly body?: string;
   /**
    * The **latest** thing a maintainer said on it, where one of them did — and
    * the only reply a review may rule `declined` on, which is what keeps the
@@ -175,6 +183,7 @@ export const carriedFindings = (threads: readonly AgentThread[]): CarriedFinding
       anchor: thread.anchor,
       ...(thread.severity === undefined ? {} : { severity: thread.severity }),
       ...(thread.url === undefined ? {} : { url: thread.url }),
+      ...(thread.body === undefined ? {} : { body: thread.body }),
       ...(thread.maintainerReply === undefined ? {} : { maintainerReply: thread.maintainerReply }),
       ...(thread.closedAs === undefined ? {} : { closedAs: thread.closedAs }),
     });
@@ -302,15 +311,28 @@ export const parseVerification = (value: unknown): VerificationEntry => {
 };
 
 /**
- * Why a thread closed, in GitHub's own words for it.
+ * Why a thread closed.
  *
- * Two of the three `resolveReviewThread` takes. `INVALID` is the one left out:
- * a finding that was never real is one this loop has no way to establish — the
- * review that would say so is the same one that raised it — and a maintainer
- * saying it is arrives here as a decline, which is a `WONT_FIX` with a human
- * behind it rather than a judgement of its own.
+ * Two are GitHub's own words, two of the three `resolveReviewThread` takes.
+ * `INVALID` is the one left out: a finding that was never real is one this
+ * loop has no way to establish — the review that would say so is the same one
+ * that raised it — and a maintainer saying it is arrives here as a decline,
+ * which is a `WONT_FIX` with a human behind it rather than a judgement of its
+ * own.
+ *
+ * The third is the loop's (#616): `MINOR`, a thread a review resolved because
+ * every finding left open on the pull request is below the repository's
+ * `AGENT_FIX_MIN_SEVERITY`, so the finding is recorded as a **minor finding**
+ * and filed at merge instead. Not fixed and not declined, so neither of
+ * GitHub's words is true of it: `review:publish` sends GitHub `WONT_FIX` for
+ * it (`githubReason`), the nearest it takes, and the reply and its marker
+ * say which it was.
  */
-export type ResolutionReason = "ADDRESSED" | "WONT_FIX";
+export type ResolutionReason = "ADDRESSED" | "WONT_FIX" | "MINOR";
+
+/** The `resolutionReason` GitHub is sent for a closure: its own word, or `WONT_FIX` for a minor one. */
+export const githubReason = (reason: ResolutionReason): "ADDRESSED" | "WONT_FIX" =>
+  reason === "MINOR" ? "WONT_FIX" : reason;
 
 /**
  * One thread the workflow closes, as the review runner hands it to
@@ -345,6 +367,8 @@ export type ThreadResolution = {
 } & (
   | { readonly reason: "ADDRESSED"; readonly note?: string | undefined }
   | { readonly reason: "WONT_FIX"; readonly maintainerReply: MaintainerReply }
+  /** Below the repository's threshold, which the reply names (#616). */
+  | { readonly reason: "MINOR"; readonly threshold: Severity }
 );
 
 /**
@@ -353,6 +377,7 @@ export type ThreadResolution = {
  */
 export const VERIFIED_FIXED = "**Verified fixed.**";
 export const CLOSED_AS_WONT_FIX = "**Closed as won't fix.**";
+export const RECORDED_AS_MINOR = "**Recorded as a minor finding.**";
 
 /**
  * The marker every closing reply ends with, and the whole of what says a thread
@@ -384,13 +409,13 @@ const resolutionMarker = (reason: ResolutionReason): string =>
  * `findingMarker`: two descriptions of one format drift on the release that
  * changes either.
  *
- * It accepts the two reasons and nothing else, which is narrower than the strip
+ * It accepts the three reasons and nothing else, which is narrower than the strip
  * in `shared/review-findings.ts` matches. That direction is deliberate: a
  * payload this version does not understand is not a record, and is still a
  * marker a model must not be able to post.
  */
 const CLOSING_REPLY_MARKER = new RegExp(
-  `<!--\\s*${RESOLUTION_MARKER}\\s+(ADDRESSED|WONT_FIX)\\s*-->`,
+  `<!--\\s*${RESOLUTION_MARKER}\\s+(ADDRESSED|WONT_FIX|MINOR)\\s*-->`,
   "g",
 );
 
@@ -476,9 +501,30 @@ export const declineReply = (reply: MaintainerReply): string => {
   ].join("\n");
 };
 
+/**
+ * The reply posted into a thread a review resolved as **minor** (#616): every
+ * finding left open on the pull request is below the repository's
+ * `AGENT_FIX_MIN_SEVERITY`, so this one is recorded in the review body's
+ * *Minor findings* and filed at merge, unless a later commit fixes it first.
+ * It says so, because the thread closing is otherwise indistinguishable from
+ * a fix, and it says how to have it fixed before the merge.
+ */
+export const minorReply = (threshold: Severity): string =>
+  [
+    `${RECORDED_AS_MINOR} Every finding left open on this pull request is below the repository's \`AGENT_FIX_MIN_SEVERITY\` (\`${threshold}\`), so this thread is resolved and the finding is recorded under *Minor findings* in the review, to be filed when the pull request merges unless a later commit fixes it first. To have it fixed before the merge, add the \`agent:fix\` label.`,
+    "",
+    "_Resolved by the review agent._",
+    "",
+    resolutionMarker("MINOR"),
+  ].join("\n");
+
 /** The reply a resolution closes its thread with, written from what the runner handed over. */
 export const closingReply = (resolution: ThreadResolution): string =>
-  resolution.reason === "WONT_FIX" ? declineReply(resolution.maintainerReply) : resolutionReply(resolution.note);
+  resolution.reason === "WONT_FIX"
+    ? declineReply(resolution.maintainerReply)
+    : resolution.reason === "MINOR"
+      ? minorReply(resolution.threshold)
+      : resolutionReply(resolution.note);
 
 /**
  * What the review's verification means for each carried finding: the threads to

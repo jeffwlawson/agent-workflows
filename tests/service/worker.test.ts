@@ -16,6 +16,7 @@ import {
   SIGNATURE_HEADER,
   FOLLOW_UPS_MINUTES,
   MERGE_MINUTES,
+  REPOSITORY_VARIABLES,
   type FixJob,
   type FollowUpsJob,
   type ImplementJob,
@@ -50,7 +51,7 @@ import {
   type SandboxRun,
   type Subcommand,
 } from "../../service/worker.js";
-import { COMMANDS, RUNNERS, type Command, type Runner } from "../../shared/contract.js";
+import { COMMANDS, RUNNERS, SANDBOX, type Command, type Runner } from "../../shared/contract.js";
 import type { HostEnvironment } from "../../shared/env.js";
 
 /**
@@ -92,6 +93,13 @@ const JOB: ReviewJob = {
     AGENT_MODEL_UPDATE_BRANCH: "",
     AGENT_MODEL_IMPLEMENT: "",
     AGENT_MODEL_IMPLEMENT_PRD: "",
+    AGENT_EFFORT: "",
+    AGENT_EFFORT_REVIEW: "",
+    AGENT_EFFORT_FIX: "",
+    AGENT_EFFORT_UPDATE_BRANCH: "",
+    AGENT_EFFORT_IMPLEMENT: "",
+    AGENT_EFFORT_IMPLEMENT_PRD: "",
+    AGENT_PROMPT_CACHE_TTL: "",
     AGENT_REVIEW_TIMEOUT_MINUTES: "",
     AGENT_TIMEOUT_MINUTES: "",
     AGENT_MAX_FIX_ROUNDS: "3",
@@ -3547,5 +3555,51 @@ describe("the worker's queue", () => {
     expect(phases.at(-1)?.name).toBe("update-branch:conclude");
     expect(phases.at(-1)?.outcome).toMatch(/^not run: the dispatcher granted no token/);
     expect(queue.held()).toEqual([]);
+  });
+});
+
+/**
+ * The repository variables a runner reads (#651): the model, the effort and
+ * the prompt cache's TTL, and each runner's own override of the first two,
+ * which the job carries and the worker hands the runner as each reusable
+ * hands it `vars.X`. Derived from the contract: every `AGENT_` input a runner
+ * declares but the sandbox's settings and the loop's accounts, which are the
+ * service's own, so a variable added there and left off the job's list fails
+ * here rather than doing nothing on the service.
+ */
+describe("the repository variables a runner reads, on the service", () => {
+  const SERVICE_OWN = new Set<string>([...Object.keys(SANDBOX), "AGENT_LOOP_LOGINS"]);
+  const reads = (runner: Runner): string[] =>
+    Object.keys(RUNNERS[runner].inputs).filter((name) => name.startsWith("AGENT_") && !SERVICE_OWN.has(name));
+
+  it("names the effort and the prompt cache's TTL among them, so the derivation is not empty", () => {
+    expect(reads("review")).toEqual(expect.arrayContaining(["AGENT_MODEL", "AGENT_MODEL_REVIEW", "AGENT_EFFORT", "AGENT_EFFORT_REVIEW", "AGENT_PROMPT_CACHE_TTL"]));
+  });
+
+  it.each(Object.keys(RUNNERS) as Runner[])("carries each %s reads on the job", (runner) => {
+    expect([...REPOSITORY_VARIABLES]).toEqual(expect.arrayContaining(reads(runner)));
+  });
+
+  it("starts the review's runner with AGENT_EFFORT_REVIEW where the repository sets it", async () => {
+    const s = setup();
+    await runJob({ ...JOB, variables: { ...JOB.variables, AGENT_EFFORT_REVIEW: "low" } }, s.edges);
+
+    expect(s.env("review")["AGENT_EFFORT_REVIEW"]).toBe("low");
+  });
+
+  const cases: readonly (readonly [Runner, Job, Readonly<Partial<Record<Subcommand, Canned>>>])[] = [
+    ["review", JOB, ORDINARY],
+    ["fix", FIX_JOB, FIX_ORDINARY],
+    ["update-branch", UPDATE_BRANCH_JOB, UB_CONFLICTS],
+    ["implement", IMPLEMENT_JOB, IMPLEMENT_ORDINARY],
+    ["implement-prd", PRD_JOB, PRD_BUILD],
+  ];
+
+  it.each(cases)("hands %s's runner each it reads, as the repository set it", async (runner, job, canned) => {
+    const s = setup(canned);
+    const set = Object.fromEntries(reads(runner).map((name) => [name, `${name.toLowerCase()}-value`]));
+    await runJob({ ...job, variables: { ...job.variables, ...set } } as Job, s.edges);
+
+    expect(s.env(runner)).toMatchObject(set);
   });
 });

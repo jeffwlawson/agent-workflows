@@ -113,14 +113,15 @@ each. A row that is a **warning** instead — printed, exit 0 — says so where 
 | the time limits, `AGENT_TIMEOUT_MINUTES` and `AGENT_REVIEW_TIMEOUT_MINUTES`, are positive integers where they are set | §2c: the agent jobs fail before their first step, with no comment and the label left on; the review refuses to start |
 | on a **public** repository, an active Actions policy allows `pull_request_target` for every caller that runs on it; silent on a private or internal one, and a warning where the policies or the visibility could not be read | [On a public repository, `pull_request_target` stops running](#on-a-public-repository-pull_request_target-stops-running): from 2026-11-02 a label is added and no run starts |
 | how many releases each pin is behind | *Keeping the pins fresh* — a report, not a failure |
-| `AGENT_ORCHESTRATOR` is unset or `service`: any other value is an error, and a variable it could not read a warning, never a pass. With `service`, the checks in §2e replace every other row, a caller pinned before `v0.8.3` among them | §2e: a typo in the opt-in leaves Actions serving the repository and the service refusing it, with nothing saying why |
+| `AGENT_ORCHESTRATOR` is unset or `service`: any other value is an error, and a variable it could not read a warning, never a pass. With `service`, the checks in §2e replace every other row but the domain model's below, a caller pinned before `v0.8.3` among them |
+| the domain model is `CONTEXT.md` at the repository root, on either orchestrator: a `GLOSSARY.md` or `GLOSSARY-MAP.md` there and no `CONTEXT.md` is an error, with the `git mv` that fixes it; one beside `CONTEXT.md` is a note; a root it could not list is a warning, never a pass. Neither file is silent | §6, `CONTEXT.md`: the prompts read the domain model by name and a missing file reads as an empty one, so after upstream's rename to `GLOSSARY.md` every agent runs on no domain model and nothing says so | §2e: a typo in the opt-in leaves Actions serving the repository and the service refusing it, with nothing saying why |
 
 The rows it cannot have are
 [A label set when the issue is *created* fires no `labeled` event](#a-label-set-when-the-issue-is-created-fires-no-labeled-event)
 and [Re-adding a label that is already there fires nothing](#re-adding-a-label-that-is-already-there-fires-nothing).
 Each says in §1 why `doctor` cannot check it, and stays prose there.
 
-Everything `gh` could not answer — no auth, no admin — is reported as **unknown** rather than folded
+Everything `gh` could not answer — no auth, no admin — and a checkout root it could not list are reported as **unknown** rather than folded
 into a pass. Run it in the repository being adopted, or pass `--dir <path>`; it asks GitHub about
 whichever repository that directory is.
 
@@ -547,7 +548,7 @@ caller pinned to a SHA cannot be ordered against a release, so `doctor` notes it
 **Switching to the service.** Set the variable to `service` once the service is running and its
 GitHub App is installed on the repository. The callers can stay: each label still starts a caller
 run, and every job in it skips. `doctor` then checks what the service needs instead of what Actions
-needs. What differs on the service:
+needs, and the domain model's name (§0) as on either. What differs on the service:
 
 - it answers every trigger label: `agent:review`, `agent:fix`, `agent:update-branch`,
   `agent:follow-ups` and `agent:merge` on a pull request, `agent:implement` on an issue, a regular

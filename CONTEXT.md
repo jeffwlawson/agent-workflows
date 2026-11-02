@@ -106,13 +106,17 @@ run would answer the threads it answered. There is no lifetime "in progress" lab
 an open issue with a linked pull request, a draft, and `agent:blocked` already give that view.
 
 Every run ends in **one order**: post every result, take its own label off, then add the label
-naming the next step. A hand-off removes its trigger label just before it adds `agent:review`; a
+naming the next step. The one run that keeps its label is one the plan's usage limit stopped on
+the service (#635): it posts its comment and ends there, label on and nothing added, since the
+service resumes it after the reset. A hand-off removes its trigger label just before it adds `agent:review`; a
 failure comments, then removes it, then adds `agent:blocked`; a refusal does the same where the
 maintainer has to act, and one that leaves nothing to act on (a closed issue or pull request, a
 finished PRD, a deleted branch, a fix with nothing to do) comments and removes it, and adds nothing
 (#253). Every such comment is in one of two patterns: `**`agent:X` stopped:**` and the reason, the
 run and what to do, for a run that started; `**`agent:X` didn't run:**` and a sentence saying why
-and what to do, for one refused before it did anything. So nothing ever carries a run's label and the next step's at once, or `agent:blocked` with no word of why. A
+and what to do, for one refused before it did anything. The service's usage-limit ending is a
+third, `**`agent:X` is waiting:**` and the reset time it resumes after, ending in its resume note
+(#635); on Actions the same stop says `stopped:`, as any does. So nothing ever carries a run's label and the next step's at once, or `agent:blocked` with no word of why. A
 review that found the head moved hands off one way only, and says so as `moved`: its fix-round and
 advance hand-offs stand down, since its verdict is about a commit the pull request has left, and
 `update-branch` asks for itself again only where it did not just ask for a review.

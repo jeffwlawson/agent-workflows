@@ -81,7 +81,9 @@ Two mechanical reasons reinforce it:
 
 - **A trigger label is on while its run works** (`ADOPTING.md` §3) and comes off when the run
   ends, however it ends, which is what makes a retry idempotent: a human re-adds the label
-  deliberately. An automatic promoter would re-add it automatically, and the idempotence is gone.
+  deliberately. The one exception is a run the plan's usage limit stopped on the service, which
+  keeps its label and resumes by itself after the reset, once per request (#635); that is the
+  service finishing the request it was given, not a new one. An automatic promoter would re-add it automatically, and the idempotence is gone.
 - **On a PRD parent the label is a cursor, not a one-shot.** The chain re-adds `agent:implement` to
   the parent after each slice closes, and stops by *not* re-adding it. A promoter writing the same
   label from a different rule would be writing into a live cursor.

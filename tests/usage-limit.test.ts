@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { loopAccounts } from "../shared/loop-accounts.js";
 import { IMPLEMENT_LABEL, resetTime, resumeNoteMark, SERVICE_ORCHESTRATOR, USAGE_LIMIT } from "../shared/record.js";
-import { limitEnding, newestResumeNote, usageLimitReset } from "../shared/usage-limit.js";
+import { limitEnding, newestResumeNote, RESET_GRACE_MINUTES, usageLimitReset } from "../shared/usage-limit.js";
 
 /**
  * The plan's usage limit (#635): the recogniser that reads the reset instant
@@ -12,6 +12,7 @@ import { limitEnding, newestResumeNote, usageLimitReset } from "../shared/usage-
 const SESSION = "claude-code exited with code 1: You've hit your session limit · resets 5:50am (UTC)";
 const HOURLY = "claude-code exited with code 1: You've hit your session limit · resets 11am (UTC)";
 const at = (iso: string): Date => new Date(iso);
+const MINUTE_MS = 60 * 1000;
 
 describe("usageLimitReset reads the reset instant off the CLI's message", () => {
   it("answers the stated time later the same day", () => {
@@ -21,8 +22,25 @@ describe("usageLimitReset reads the reset instant off the CLI's message", () => 
 
   it("answers the next day's where today's has passed, across midnight", () => {
     expect(usageLimitReset(SESSION, at("2026-11-01T23:30:00Z"))).toEqual(at("2026-11-02T05:50:00Z"));
-    expect(usageLimitReset(HOURLY, at("2026-11-01T11:00:00Z"))).toEqual(at("2026-11-02T11:00:00Z"));
+    expect(usageLimitReset(HOURLY, at("2026-11-01T12:30:00Z"))).toEqual(at("2026-11-02T11:00:00Z"));
     expect(usageLimitReset(SESSION, at("2026-12-31T22:00:00Z"))).toEqual(at("2027-01-01T05:50:00Z"));
+  });
+
+  // The message is read after it was written: by conclude a phase or a job
+  // after the worker, each on its own clock. Each reads the same instant.
+  it("answers today's where it passed within the grace, as a reader later than the run, or on a clock ahead of it, reads it", () => {
+    expect(usageLimitReset(SESSION, at("2026-11-01T05:49:00Z"))).toEqual(at("2026-11-01T05:50:00Z"));
+    expect(usageLimitReset(SESSION, at("2026-11-01T05:50:00Z"))).toEqual(at("2026-11-01T05:50:00Z"));
+    expect(usageLimitReset(SESSION, at("2026-11-01T05:51:00Z"))).toEqual(at("2026-11-01T05:50:00Z"));
+    expect(usageLimitReset(SESSION, new Date(Date.parse("2026-11-01T05:50:00Z") + RESET_GRACE_MINUTES * MINUTE_MS - 1))).toEqual(at("2026-11-01T05:50:00Z"));
+    expect(usageLimitReset(SESSION, new Date(Date.parse("2026-11-01T05:50:00Z") + RESET_GRACE_MINUTES * MINUTE_MS))).toEqual(at("2026-11-02T05:50:00Z"));
+  });
+
+  it("answers yesterday's where it passed within the grace across midnight", () => {
+    const LATE = "You've hit your session limit · resets 11:50pm (UTC)";
+    expect(usageLimitReset(LATE, at("2026-11-01T23:49:00Z"))).toEqual(at("2026-11-01T23:50:00Z"));
+    expect(usageLimitReset(LATE, at("2026-11-02T00:10:00Z"))).toEqual(at("2026-11-01T23:50:00Z"));
+    expect(usageLimitReset(LATE, at("2027-01-01T00:10:00Z"))).toEqual(at("2026-12-31T23:50:00Z"));
   });
 
   it("reads 12am as midnight and 12pm as noon", () => {
@@ -80,7 +98,7 @@ describe("limitEnding decides which ending a stopped run takes", () => {
       if (fails) throw new Error("GitHub answered 502");
       return comments.map((comment) => ({ ...comment, association: "NONE" }));
     },
-    labelEvents: async () => events,
+    labelledAt: async () => events.map((event) => event.at),
   });
   const ending = (github: ReturnType<typeof reader>, reason = SESSION, orchestrator: string = SERVICE_ORCHESTRATOR) =>
     limitEnding({ reason, orchestrator, item: 12, label: IMPLEMENT_LABEL, github, accounts, now });
@@ -108,11 +126,11 @@ describe("limitEnding decides which ending a stopped run takes", () => {
     });
   });
 
-  it("ends as any stop where the item already resumed since a person last added the label, the loop's own adds not counting", async () => {
+  it("ends as any stop where the item already resumed since the label was last added", async () => {
     const earlier = { body: resumeNoteMark("2026-10-31T05:50:00.000Z", "2026-10-31T01:00:00.000Z"), author: "loop-app[bot]" };
     const events = [
       { at: "2026-10-30T09:00:00Z", actor: "maintainer" },
-      { at: "2026-10-31T09:00:00Z", actor: "loop-app[bot]" },
+      { at: "2026-10-30T23:00:00Z", actor: "loop-app[bot]" },
     ];
     expect(await ending(reader([earlier], events))).toBeUndefined();
   });
@@ -120,6 +138,18 @@ describe("limitEnding decides which ending a stopped run takes", () => {
   it("resumes once more where a person added the label after the last resume note", async () => {
     const earlier = { body: resumeNoteMark("2026-10-31T05:50:00.000Z", "2026-10-31T01:00:00.000Z"), author: "loop-app[bot]" };
     expect((await ending(reader([earlier], [{ at: "2026-10-31T09:00:00Z", actor: "maintainer" }])))?.kind).toBe("resumes");
+  });
+
+  // The App adds most `agent:review` and `agent:fix` labels, and re-adds a PRD
+  // parent's `agent:implement` after each slice: each a new request, which a
+  // resume note from an earlier one does not use up.
+  it("resumes once more where the loop's own account added the label after the last resume note", async () => {
+    const earlier = { body: resumeNoteMark("2026-10-31T05:50:00.000Z", "2026-10-31T01:00:00.000Z"), author: "loop-app[bot]" };
+    const events = [
+      { at: "2026-10-30T09:00:00Z", actor: "maintainer" },
+      { at: "2026-10-31T09:00:00Z", actor: "loop-app[bot]" },
+    ];
+    expect((await ending(reader([earlier], events)))?.kind).toBe("resumes");
   });
 
   it("ends as any stop where the record cannot be read", async () => {

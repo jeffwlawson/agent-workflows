@@ -662,8 +662,8 @@ export const mergeStoppedComment = (sentence: string, runUrl: string | undefined
  * the reset instant and the instant the run stopped, each in ISO 8601 UTC,
  * inside the same HTML comment. The dispatcher's scan reads the newest one on
  * an item to hold it until the reset, and a conclude command reads it as the
- * bound: an item that already has one newer than a person last adding its
- * trigger label has had its one automatic resume. Read only off a comment one
+ * bound: an item that already has one newer than its trigger label's last
+ * add, by anyone, has had its one automatic resume. Read only off a comment one
  * of the loop's accounts posted, never on the marker alone.
  */
 export const RESUME_NOTE_MARKER = "agent:resume-after";

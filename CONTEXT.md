@@ -91,7 +91,8 @@ before the upgrade and is not built again, and a pull request from the older rel
 or closes it by hand.
 
 **A trigger label is on while its run works** (#236). The run leaves it on as it starts and takes
-it off in its last step, however it ends: success, failure, refusal, timeout or cancel. So the
+it off in its last step, however it ends: success, failure, refusal, timeout or cancel, except a
+run the plan's usage limit stopped on the service, which leaves it on (#635). So the
 label on an issue or a pull request is the run working on it now, or the one queued behind it, or,
 on the service, the one waiting for the plan's usage limit to reset, which resumes by itself
 (#635), and `agent:in-progress`, which said the same thing in a second write, is retired. On a PRD parent that

@@ -597,7 +597,9 @@ green merging, grey a marker, red a run that needs you.
 **A trigger label is on while its run works.** The run leaves it on as it starts and takes it off
 when it ends, whether it succeeded, failed, was refused, timed out or was cancelled, so the label on
 an issue or pull request is the run working on it now. A failure or a refusal also adds
-`agent:blocked` and says why in a comment, and a human re-adds the trigger label to retry. A refusal
+`agent:blocked` and says why in a comment, and a human re-adds the trigger label to retry. The one
+exception is a run the plan's usage limit stopped on the service orchestrator, which keeps the label
+and adds no `agent:blocked`, since the service resumes it after the reset (#635, below). A refusal
 that leaves you nothing to act on (a closed issue or pull request, a finished PRD, a deleted branch,
 a fix with nothing to do) says so and adds no label. It is not
 a rule with exceptions, though. It is a property with a value per label, and which value a label
@@ -660,9 +662,9 @@ plan's usage limit and gives the reset time in UTC. On Actions nothing waits for
 ends as a stop does, the label off and `agent:blocked` on, and you add the label again after that
 time. On the service orchestrator it **resumes by itself**: the trigger label **stays on**, since the
 item is waiting on a run, `agent:blocked` is not added, and the service runs it again after the
-reset ([*Deploying the service*](./deploying-the-service.md)). Once per limit window: a second
-such stop on the same item, with no one having added the label again since the first, ends as an
-ordinary stop.
+reset ([*Deploying the service*](./deploying-the-service.md)). Once per request: a second
+such stop on the same item, with no one, you or the loop, having added the label again since the
+first, ends as an ordinary stop.
 
 **Retired labels.** `agent:in-progress` went when the trigger labels began staying on while their
 run works, and two others before it. Nothing writes or reads any of them.

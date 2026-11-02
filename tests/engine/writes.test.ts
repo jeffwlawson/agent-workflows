@@ -724,19 +724,6 @@ describe("githubReader", () => {
     ]);
   });
 
-  it("reads who added a label, each time it was, off the same events, a deleted account as empty", async () => {
-    const { transport } = recording(() => [
-      { event: "labeled", label: { name: "agent:fix" }, actor: { login: "maintainer" }, created_at: "2026-01-01T00:00:00Z" },
-      { event: "labeled", label: { name: "agent:review" }, actor: { login: "other" }, created_at: "2026-01-01T00:01:00Z" },
-      { event: "labeled", label: { name: "agent:fix" }, actor: null, created_at: "2026-01-02T00:00:00Z" },
-    ]);
-
-    expect(await githubReader(REPO, transport).labelEvents(7, "agent:fix")).toEqual([
-      { at: "2026-01-01T00:00:00Z", actor: "maintainer" },
-      { at: "2026-01-02T00:00:00Z", actor: "" },
-    ]);
-  });
-
   it("reads every page of a pull request's commits, oldest first", async () => {
     const { transport, sent } = recording((s) =>
       "rest" in s && s.rest.path.endsWith("page=1") ? Array.from({ length: 100 }, (_, i) => ({ sha: `s${i}` })) : [{ sha: "last" }],

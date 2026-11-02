@@ -21,13 +21,26 @@ import { RESUME_NOTE_MARKER, SERVICE_ORCHESTRATOR } from "./record.js";
 const LIMIT_MESSAGE = /hit your [a-z][a-z -]* limit · resets ([0-9]{1,2})(?::([0-9]{2}))?(am|pm) \(UTC\)/i;
 
 /**
+ * How long past the stated time a reader still takes it as today's reset.
+ * The message is read after the CLI wrote it: by the worker as the runner
+ * ends, by conclude a phase or a job later, each on its own host's clock. A
+ * run that stopped at 05:49 on `resets 5:50am (UTC)` and is read at 05:51 has
+ * a reset that just passed, not one a day ahead. The CLI states no reset more
+ * than a session window ahead, so a time this recently past is never
+ * tomorrow's.
+ */
+export const RESET_GRACE_MINUTES = 60;
+
+/**
  * The instant the plan's usage limit resets, read off a failure `reason`, or
  * `undefined` where the reason is not the CLI's usage-limit message. The
  * message gives a time of day and no date, so the answer is the **next** such
- * instant after `endedAt`, the moment the run ended: later today, or tomorrow
- * where today's has passed.
+ * instant after `readAt`, less `RESET_GRACE_MINUTES`: later today, today's
+ * where it passed within the grace, or tomorrow where it passed before that.
+ * So every reader of one message answers the same instant, read within the
+ * grace of it on whichever host's clock.
  */
-export const usageLimitReset = (reason: string | undefined, endedAt: Date): Date | undefined => {
+export const usageLimitReset = (reason: string | undefined, readAt: Date): Date | undefined => {
   if (reason === undefined) return undefined;
   const match = LIMIT_MESSAGE.exec(reason);
   if (match === null || match[1] === undefined || match[3] === undefined) return undefined;
@@ -35,8 +48,10 @@ export const usageLimitReset = (reason: string | undefined, endedAt: Date): Date
   const minute = match[2] === undefined ? 0 : Number(match[2]);
   if (hour < 1 || hour > 12 || minute > 59) return undefined;
   const hours = (hour % 12) + (match[3].toLowerCase() === "pm" ? 12 : 0);
-  const at = new Date(Date.UTC(endedAt.getUTCFullYear(), endedAt.getUTCMonth(), endedAt.getUTCDate(), hours, minute));
-  if (at.getTime() <= endedAt.getTime()) at.setUTCDate(at.getUTCDate() + 1);
+  const after = readAt.getTime() - RESET_GRACE_MINUTES * 60_000;
+  const at = new Date(Date.UTC(readAt.getUTCFullYear(), readAt.getUTCMonth(), readAt.getUTCDate(), hours, minute));
+  if (at.getTime() <= after) at.setUTCDate(at.getUTCDate() + 1);
+  else if (at.getTime() - after > 24 * 60 * 60_000) at.setUTCDate(at.getUTCDate() - 1);
   return at;
 };
 
@@ -83,12 +98,16 @@ export interface LimitEnding {
  *
  * - **On Actions** (`orchestrator` anything but `SERVICE_ORCHESTRATOR`) it
  *   `waits` for a person: nothing there schedules a resume.
- * - **On the service** it `resumes`, but once per item per limit window: an
- *   item whose newest resume note, from one of the loop's accounts, is newer
- *   than the latest time a person (an account not the loop's) added `label`
- *   has had its automatic resume, and ends as any stopped run does. So a
- *   person adding the label again allows one more. A record that cannot be
- *   read ends it so too, the direction that cannot resume without bound.
+ * - **On the service** it `resumes`, but once per request: an item whose
+ *   newest resume note, from one of the loop's accounts, is newer than the
+ *   latest time anyone added `label` has had its automatic resume, and ends
+ *   as any stopped run does. The resume itself adds no label, since the label
+ *   stayed on, so a stop after it with no add between is the same request
+ *   stopping twice. Any add after the note is a new request, a person's or
+ *   the loop's own (the App re-adds `agent:review`, `agent:fix` and a PRD
+ *   parent's `agent:implement` as the chain moves on), and allows one more.
+ *   A record that cannot be read ends it so too, the direction that cannot
+ *   resume without bound.
  */
 export const limitEnding = async ({
   reason,
@@ -103,7 +122,7 @@ export const limitEnding = async ({
   readonly orchestrator: string;
   readonly item: number;
   readonly label: string;
-  readonly github: Pick<GitHubReader, "authoredComments" | "labelEvents">;
+  readonly github: Pick<GitHubReader, "authoredComments" | "labelledAt">;
   readonly accounts: LoopAccounts;
   readonly now: Date;
 }): Promise<LimitEnding | undefined> => {
@@ -111,12 +130,12 @@ export const limitEnding = async ({
   if (until === undefined) return undefined;
   if (orchestrator !== SERVICE_ORCHESTRATOR) return { kind: "waits", until, stopped: now };
   try {
-    const [comments, events] = await Promise.all([github.authoredComments(item), github.labelEvents(item, label)]);
+    const [comments, added] = await Promise.all([github.authoredComments(item), github.labelledAt(item, label)]);
     const note = newestResumeNote(comments, accounts);
-    const asked = Math.max(-Infinity, ...events.filter((event) => !isWorkflowBot(event.actor, accounts)).map((event) => Date.parse(event.at)));
+    const asked = Math.max(-Infinity, ...added.map((at) => Date.parse(at)));
     if (note !== undefined && note.stopped.getTime() > asked) {
       console.log(
-        `#${item} has already resumed once after the plan's usage limit since a person last added ${label}, so this stop ends as any other: adding ${label} again allows one more.`,
+        `#${item} has already resumed once after the plan's usage limit since ${label} was last added, so this stop ends as any other: adding ${label} again allows one more.`,
       );
       return undefined;
     }

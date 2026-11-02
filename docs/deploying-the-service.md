@@ -450,7 +450,9 @@ plan's usage limit with `You've hit your session limit · resets 5:50am (UTC)`, 
 another kind of limit or time. That run is not a failure: its conclude command says on the item
 that it hit the plan's usage limit and will resume after the reset time in UTC, leaves the trigger
 label on, and adds no `agent:blocked`. The worker reads the reset instant off the runner's reason
-as it ends, the next such time after the run ended, and holds the agent lane until it and two
+as it ends, the next such time after the run ended, a time up to an hour past read as today's
+(`RESET_GRACE_MINUTES`, so the worker and a conclude that reads the message a few minutes later, or
+on a clock ahead, answer the same instant), and holds the agent lane until it and two
 minutes more (`RESET_MARGIN_MINUTES`, a margin for the two hosts' clocks): no agent job starts, and
 no update-branch job's agent part, so the jobs behind the stop do not hit the same limit one by one.
 The light lane runs on meanwhile: a filing, a clean refresh, a gate that refuses. A later reset
@@ -461,10 +463,12 @@ label's delivery is. A job held past its deadline ends at its first token reques
 does. Only the CLI's message in that shape counts: an API rate limit, a billing stop, or a zone other
 than UTC is an ordinary stop.
 
-**One automatic resume per item per limit window.** A second usage-limit stop on an item whose
-newest resume note from the App is newer than the latest time a person added its trigger label ends
-as any stopped run does: the failure comment, the label off, `agent:blocked` on. A person adding the
-label again allows one more. The note is on the record, so the bound survives either process's
+**One automatic resume per request.** A second usage-limit stop on an item whose newest resume
+note from the App is newer than the latest time its trigger label was added ends as any stopped run
+does: the failure comment, the label off, `agent:blocked` on. The resume adds no label, since the
+label stayed on, so that is the same request stopping twice. Any add after the note is a new
+request and allows one more: a person's, or the App's own as the chain moves on (an `agent:review`
+or `agent:fix` it asks for, a PRD parent's `agent:implement` after a slice). The note is on the record, so the bound survives either process's
 restart. A resume is a scan's dispatch, counted toward `SCAN_DISPATCH_LIMIT` as any is, but a
 resume note the stopped run posted after the scan's last counted dispatch says that job reached its
 ending, so the count starts again there, and the scan's "ended before its run did" comment is never

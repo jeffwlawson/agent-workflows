@@ -133,8 +133,8 @@ export interface FakeGitHub {
   readonly discussion: Map<number, AuthoredText[]>;
   /** Every review posted, in order, with the pull request's node id and the commit it was posted on. */
   readonly reviews: FakeReview[];
-  /** Per issue or pull request, each label added to it, when, and by whom (`FAKE_LABELLER` where unsaid), oldest first. */
-  readonly labelled: Map<number, { readonly label: string; readonly at: string; readonly actor?: string }[]>;
+  /** Per issue or pull request, each label added to it and when, oldest first. */
+  readonly labelled: Map<number, { readonly label: string; readonly at: string }[]>;
   /** Issues by number with a title, a body and a state: what a listing by label reads, and what `createIssue` adds to. */
   readonly filed: Map<number, FakeFiledIssue>;
   /** Per pull request, its review history, oldest first. A pull request not here has none. */
@@ -217,9 +217,6 @@ export const fakeGitHub = (pullRequests: readonly Partial<FakePullRequest>[] = [
 
 /** The login a comment a writer posted reads back as: the workflow's account, whichever token posted it. */
 const POSTED_AS = "github-actions[bot]";
-
-/** Who a label a test put on an item was added by, where the test does not say: a person. */
-export const FAKE_LABELLER = "a-maintainer";
 
 const pullRequestOf = (github: FakeGitHub, number: number): FakePullRequest => {
   const pr = github.pullRequests.get(number);
@@ -388,12 +385,6 @@ export const fakeReader = (github: FakeGitHub): { readonly reader: GitHubReader;
     labelledAt: async (number, label) => {
       reads.push({ method: "labelledAt", args: [number, label] });
       return (github.labelled.get(number) ?? []).filter((event) => event.label === label).map((event) => event.at);
-    },
-    labelEvents: async (number, label) => {
-      reads.push({ method: "labelEvents", args: [number, label] });
-      return (github.labelled.get(number) ?? [])
-        .filter((event) => event.label === label)
-        .map((event) => ({ at: event.at, actor: event.actor ?? FAKE_LABELLER }));
     },
     conversationComments: async (number) => {
       reads.push({ method: "conversationComments", args: [number] });

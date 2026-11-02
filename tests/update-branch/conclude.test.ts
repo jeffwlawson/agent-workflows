@@ -781,6 +781,18 @@ describe("update-branch:conclude ends a run the plan's usage limit stopped (#635
     expect(labels()).toEqual([UPDATE_BRANCH_LABEL]);
   });
 
+  // Conclude runs after the runner, on its own clock: a reset that passed
+  // between the two is today's, which the worker's hold reads too.
+  it("reads a reset that passed while it was reaching conclude as today's, not the next day's", async () => {
+    vi.setSystemTime(new Date("2026-11-01T05:51:00Z"));
+    put("runner", "failure_reason.txt", LIMIT);
+
+    await run(INPUTS(CONFLICTS("failure", SERVICE)));
+
+    expect(comment()).toContain("will resume after 2026-11-01 05:50 UTC.");
+    expect(comment()).toContain("<!-- agent:resume-after 2026-11-01T05:50:00.000Z stopped 2026-11-01T05:51:00.000Z -->");
+  });
+
   it("on Actions, gives the reset time and says to add the label after it", async () => {
     put("runner", "failure_reason.txt", LIMIT);
 

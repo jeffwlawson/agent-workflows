@@ -968,7 +968,7 @@ describe("review:conclude ends a review the plan's usage limit stopped (#635)", 
   const SERVICE = { ORCHESTRATOR: "service", AGENT_LOOP_LOGINS: "loop-app[bot]", GITHUB_RUN_ID: "" } as const;
   beforeEach(() => {
     vi.useFakeTimers({ toFake: ["Date"] });
-    vi.setSystemTime(new Date("2026-11-01T06:30:00Z"));
+    vi.setSystemTime(new Date("2026-11-01T07:00:00Z"));
     github.pullRequests.get(PR)!.labels = ["agent:review"];
     github.labelled.set(PR, [{ label: "agent:review", at: "2026-11-01T06:00:00Z" }]);
   });
@@ -981,7 +981,7 @@ describe("review:conclude ends a review the plan's usage limit stopped (#635)", 
 
     expect(writes()).toEqual([`workflow setCommitStatus ${VERDICT_CONTEXT}=error`, "workflow comment"]);
     expect(comments()).toEqual([
-      "**`agent:review` is waiting:** It hit the plan's usage limit, and will resume after 2026-11-02 05:50 UTC. `agent:review` stays on: the service runs it again once the limit resets, and nobody needs to add it.\n\n<!-- agent:resume-after 2026-11-02T05:50:00.000Z stopped 2026-11-01T06:30:00.000Z -->\n",
+      "**`agent:review` is waiting:** It hit the plan's usage limit, and will resume after 2026-11-02 05:50 UTC. `agent:review` stays on: the service runs it again once the limit resets, and nobody needs to add it.\n\n<!-- agent:resume-after 2026-11-02T05:50:00.000Z stopped 2026-11-01T07:00:00.000Z -->\n",
     ]);
     expect(labels()).toEqual(["agent:review"]);
     expect(ended()).toEqual({ moved: false, resumes: true });

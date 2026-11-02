@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { planFollowUps } from "../shared/follow-up-plan.js";
 import { loopAccounts } from "../shared/loop-accounts.js";
-import { branchIssue, issueBranch, prdBranch, stubMarker } from "../shared/record.js";
+import { branchIssue, issueBranch, minorFindingsMarker, prdBranch, stubMarker } from "../shared/record.js";
 import { renderFollowUpsBlock } from "../shared/review-output.js";
 
 /**
@@ -63,5 +63,16 @@ describe("the issue a branch is built for", () => {
     for (const branch of ["main", "feature/prd-5-x", "agent/rescue/prd-5", "agent/prd-", "agent/prd-17", "agent/prd-x-17-y", "agent/issue-017-x", "agent/issue-0-x"]) {
       expect(branchIssue(branch)).toBeUndefined();
     }
+  });
+});
+
+/**
+ * The minor-findings issue's key (#625): additive beside the stub's, the same
+ * version with a shape of its own, so a stub filed under `stubMarker` is read
+ * as it was. Pinned because every minor-findings issue filed carries it.
+ */
+describe("the minor-findings issue's key", () => {
+  it("is spelled in exactly its bytes", () => {
+    expect(minorFindingsMarker(32)).toBe(`<!--{"version":2,"kind":"minor","pr":32}-->`);
   });
 });

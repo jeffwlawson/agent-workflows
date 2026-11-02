@@ -501,6 +501,7 @@ string the agent wrote, so the agent cannot forge one of those through a review.
 | `<!-- agent-red-tests {…} -->` | A slice round's review body: the red check's tests. | `review:publish`, from `review`'s `review_body.json` | `review`, on the PRD PR's final review |
 | `<summary><b>Acceptance criteria</b>` | A review body's criteria group, its `- **Changed:**` and `- **Unmet:**` lines. | `review:publish`, from `review`'s `review_body.json` | `review`, on later rounds of the same slice |
 | `<!--{"version",…,"location","pr","seq"}-->` | The end of a filed follow-up issue's body. | `follow-ups:file`, which files it through `createIssue`, as `stubMarker` in `shared/record.ts` spells it | `follow-ups:file`, to not file one twice, and to read back a stub GitHub filed while answering with a server error |
+| `<!--{"version","kind":"minor","pr"}-->` | The end of a pull request's minor-findings issue's body (#625), the one issue its minor findings are filed as. Additive: the stub key's `version`, with a shape of its own, so a stub filed under the key above is read as it was. The last readable key in a body is its key, whichever shape it is. | `follow-ups:file`, which files it through `createIssue`, as `minorFindingsMarker` in `shared/record.ts` spells it | `follow-ups:file`, to not file a second for the pull request, and to read it back where GitHub answered the create with a server error |
 | `<!-- agent:prd-started -->` | The end of a PRD chain's first run's comment on the parent, saying which sub-issue it builds first. | `implement-prd:gate`, as `PRD_STARTED_MARK` in `shared/record.ts` spells it | `implement-prd:gate`, to not post it twice on a retry |
 | `<!-- agent:slice-approved <sha> -->` | The end of the note on an approved slice's sub-issue, `<sha>` the PRD PR head it was approved on. | `implement-prd:gate`, past an approval, as `sliceApprovedMark` in `shared/record.ts` spells it | `implement-prd:gate`, to not post it twice on a retry |
 | `<!-- agent:post-merge-checklist -->` | The end of the post-merge checklist on a merged pull request (§11). | `follow-ups:file`, as `POST_MERGE_CHECKLIST_MARK` in `shared/record.ts` spells it | `follow-ups:file`, to not post it twice on a retry |
@@ -3716,6 +3717,16 @@ PR of the parent's and every sub-issue's, each under its issue. Then, only where
 Posts the post-merge checklist, then files the out-of-scope findings a pull request's reviews
 recorded, as issues, where `agent:follow-ups` is on. It runs no model, so it needs no `claude` and
 no checkout.
+
+Each out-of-scope follow-up is one stub, `needs-triage` and `pr-follow-up`, ending in the stub key
+(§4). The minor findings (#616), every entry of kind `minor` in the newest review's payload, are
+**one** issue (#625), *Minor findings from #N*, with the same labels, listing each with its
+severity, title and location and its body in a collapsed `<details>`, then the provenance a stub
+carries, and ending in the minor-findings key (§4). A payload with no minor entry files no such
+issue. A minor entry a release before #625 filed as its own stub, matched by the stub key, is left
+out of it. The report names it on one line, `Filed #M: minor findings from #N (k)`, or on a retry
+that finds it by its key, as already filed by this pull request. It counts as one `createIssue`
+within the command's limits.
 
 #### Inputs
 

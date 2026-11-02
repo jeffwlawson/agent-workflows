@@ -18,7 +18,7 @@ transition, near enough:
 | `agent:fix` on a **PR** | `fix` | act on review feedback, reply to every thread it is asked about and close none, record what it did with the conversation comments, ask for a re-review if it pushed or left an out-of-scope note |
 | `agent:update-branch` on a **PR** | `update-branch` | merge the base branch in, resolve conflicts, carry the verdict over or ask for a re-review |
 | `agent:merge` on a **PR** | `merge` | the maintainer's merge decision for the head it was added at (the **arm**): merge it once that head is current with its base, green and approved; ask for `agent:update-branch` where it is behind; disarm where the head gained anything but a clean merge of the base ([ADR 0009](./docs/adr/0009-agent-merge-executes-the-human-decision.md)) |
-| `agent:follow-ups` on a **merged PR** | `follow-ups` | file the out-of-scope findings and the minor findings its review recorded, as `needs-triage` stubs; on **every** merge, labelled or not, post the linked briefs' *After merge, by a human* checklist |
+| `agent:follow-ups` on a **merged PR** | `follow-ups` | file the out-of-scope findings and the minor findings its review recorded, as `needs-triage` issues (a stub each out of scope, and one issue for the minor findings); on **every** merge, labelled or not, post the linked briefs' *After merge, by a human* checklist |
 
 `implement` and `implement-prd` share one label and partition on **issue shape**: a parent with
 sub-issues goes to the PRD chain, everything else to the single-issue run. The chain works one
@@ -475,8 +475,12 @@ finding in this pull request's own code the review recorded rather than threaded
 finding open was below the fix threshold. Minor findings lead the payload, inside its exempt prefix
 with the moved findings, so neither the cap nor the body's shedding reaches one; they are carried and
 ruled by id on every pull request, a regular one included, where the out-of-scope list is still
-restated; and they are filed at merge, one stub each until #625 groups them into one issue per pull
-request.
+restated; and they are filed at merge as **one issue per pull request** (#625), *Minor findings from
+#N*, listing each with its severity, title, location and body, with a key of its own naming the pull
+request and the kind. Out-of-scope follow-ups are not grouped: each is a separate problem in code the
+pull request did not change, triaged and fixed on its own, and relatedness works per stub; minor
+findings are one pull request's polish in its own code, so one issue per pull request is the triage
+unit.
 
 ## The three parts, and what belongs in each
 

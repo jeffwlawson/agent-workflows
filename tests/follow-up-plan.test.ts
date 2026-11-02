@@ -1214,40 +1214,73 @@ describe("earlierFollowUps", () => {
 });
 
 /**
- * **Minor findings are filed at merge** (#616): the payload's own entries of
- * kind `minor`, in its exempt prefix, so neither cap reaches one. In this
- * release one stub each, saying it is a minor finding in that pull request's
- * own code; #625 groups them.
+ * **Minor findings are filed at merge** (#616), as **one issue** (#625): the
+ * payload's own entries of kind `minor`, in its exempt prefix, so neither cap
+ * reaches one, listed in a single *Minor findings from #N* issue with a key of
+ * its own. Out-of-scope follow-ups keep one stub each.
  */
 describe("filing the minor findings", () => {
   const minor = (n: number): FollowUp =>
-    followUp({ title: `minor ${n}`, location: `src/m${n}.ts:${n}`, severity: "low", id: `fu-m${n}`, kind: "minor" });
+    followUp({ title: `minor ${n}`, location: `src/m${n}.ts:${n}`, body: `Why minor ${n} matters.`, severity: "low", id: `fu-m${n}`, kind: "minor" });
+  const oos = (n: number): FollowUp => followUp({ title: `oos ${n}`, location: `src/o${n}.ts:${n}` });
   const body = (minors: readonly FollowUp[], rest: readonly FollowUp[]): FilingReview =>
     review([], { body: `A summary.\n\n${followUpsPayload([...minors, ...rest], 0, minors.length)}` });
+  const KEY = `<!--{"version":2,"kind":"minor","pr":32}-->`;
+  /** The minor-findings issue a run filed, as the listing returns it. */
+  const grouped = (number: number, over: Partial<FilingStub> = {}): FilingStub => ({
+    number,
+    state: "OPEN",
+    stateReason: null,
+    body: `Prose.\n\n${KEY}`,
+    ...over,
+  });
 
-  it("files every minor finding, past the out-of-scope cap, each stub saying it is a minor finding in that pull request's code", () => {
-    const minors = [1, 2, 3, 4].map(minor);
-    const rest = [1, 2, 3].map((n) => followUp({ title: `oos ${n}`, location: `src/o${n}.ts:${n}` }));
-    const planned = planFollowUps({ prNumber: 32, reviews: [body(minors, rest)], stubs: [] }, ACCOUNTS);
+  it("files one issue for three minors and a stub for each of two out-of-scope follow-ups, all with the stub's labels", () => {
+    const planned = planFollowUps({ prNumber: 32, reviews: [body([1, 2, 3].map(minor), [oos(1), oos(2)])], stubs: [] }, ACCOUNTS);
 
-    expect(planned.issues.map((i) => i.title)).toEqual(["minor 1", "minor 2", "minor 3", "minor 4", "oos 1", "oos 2", "oos 3"]);
-    for (const issue of planned.issues.slice(0, 4)) {
-      expect(issue.body, issue.title).toContain("_A minor finding in that pull request's own code:");
-      expect(issue.body, issue.title).toContain("`AGENT_FIX_MIN_SEVERITY`");
+    expect(planned.issues.map((i) => i.title)).toEqual(["Minor findings from #32", "oos 1", "oos 2"]);
+    for (const issue of planned.issues) expect(issue.labels, issue.title).toEqual([TRIAGE_LABEL, FOLLOW_UP_STUB_LABEL]);
+    const group = planned.issues[0]?.body ?? "";
+    for (const n of [1, 2, 3]) {
+      expect(group).toContain(`- \`Low\` **minor ${n}** · \`src/m${n}.ts:${n}\``);
+      expect(group).toContain(`  Why minor ${n} matters.`);
     }
-    for (const issue of planned.issues.slice(4)) expect(issue.body, issue.title).not.toContain("minor finding");
+    expect(group.match(/<details><summary>Details<\/summary>/g)).toHaveLength(3);
+    expect(group).toContain("_Minor findings in that pull request's own code:");
+    expect(group).toContain("`AGENT_FIX_MIN_SEVERITY`");
+    expect(group).toContain(`Found in [a review](${REVIEW_URL}) on #32.`);
+    expect(group.split("\n").at(-1)).toBe(KEY);
+    for (const issue of planned.issues.slice(1)) expect(issue.body, issue.title).not.toContain("inor finding");
     expect(planned.report).toContain("**Minor and out-of-scope findings**, read from");
-    expect(planned.report).toContain("- **Filed** (minor finding) · `src/m1.ts`");
-    expect(planned.report).not.toContain("dropped by the cap");
+    expect(reportLines(planned.report)).toEqual([
+      "- **Filed** {{follow-up-issue-minor}}: minor findings from #32 (3)",
+      "- **Filed** · `src/o1.ts` · {{follow-up-issue-3}}",
+      "- **Filed** · `src/o2.ts` · {{follow-up-issue-4}}",
+    ]);
   });
 
-  it("says what it always said where there is no minor finding", () => {
-    const planned = planFollowUps({ prNumber: 32, reviews: [body([], [followUp()])], stubs: [] }, ACCOUNTS);
-    expect(planned.report).toContain("**Out-of-scope findings**, read from");
-    expect(planned.issues[0]?.body).not.toContain("minor finding");
+  it("keeps the out-of-scope stubs' keys and cap: every minor past the cap, three stubs, the fourth dropped", () => {
+    const planned = planFollowUps({ prNumber: 32, reviews: [body([1, 2, 3, 4].map(minor), [1, 2, 3, 4].map(oos))], stubs: [] }, ACCOUNTS);
+
+    expect(planned.issues.map((i) => i.title)).toEqual(["Minor findings from #32", "oos 1", "oos 2", "oos 3"]);
+    expect(planned.issues[0]?.body).toContain("**minor 4**");
+    expect(planned.issues[1]?.body.split("\n").at(-1)).toBe(`<!--{"version":2,"location":"src/o1.ts:1","pr":32,"seq":4}-->`);
+    expect(planned.report).toContain("1 further finding was dropped by the cap");
   });
 
-  it("does not file one a later review ruled fixed: the newest payload leaves it out", () => {
+  it("files one issue on a PRD PR for the minors two slice rounds recorded, the carried and the new", () => {
+    const round1 = body([minor(1), minor(2)], []);
+    const recorded = recordFollowUps([], [], [], { carried: earlierFollowUps([round1], ACCOUNTS).carried, rulings: [] });
+    const round2 = review([], {
+      body: `A summary.\n\n${followUpsPayload([...recorded.minor, minor(3)], 0, recorded.minor.length + 1)}`,
+    });
+    const planned = planFollowUps({ prNumber: 32, reviews: [round1, round2], stubs: [] }, ACCOUNTS);
+
+    expect(planned.issues.map((i) => i.title)).toEqual(["Minor findings from #32"]);
+    for (const n of [1, 2, 3]) expect(planned.issues[0]?.body).toContain(`**minor ${n}**`);
+  });
+
+  it("leaves out of the group one a later review ruled fixed: the newest payload leaves it out", () => {
     const first = body([minor(1), minor(2)], []);
     const recorded = recordFollowUps([], [], [], {
       carried: earlierFollowUps([first], ACCOUNTS).carried,
@@ -1257,7 +1290,65 @@ describe("filing the minor findings", () => {
       body: `A summary.\n\n${followUpsPayload([...recorded.minor, ...recorded.followUps], 0, recorded.minor.length + recorded.moved, 0, 3, recorded.resolved)}`,
     });
     const planned = planFollowUps({ prNumber: 32, reviews: [first, second], stubs: [] }, ACCOUNTS);
-    expect(planned.issues.map((i) => i.title)).toEqual(["minor 2"]);
+
+    expect(planned.issues.map((i) => i.title)).toEqual(["Minor findings from #32"]);
+    expect(planned.issues[0]?.body).toContain("**minor 2**");
+    expect(planned.issues[0]?.body).not.toContain("**minor 1**");
+    expect(reportLines(planned.report)).toEqual(["- **Filed** {{follow-up-issue-minor}}: minor findings from #32 (1)"]);
+  });
+
+  it("files exactly what it always did where there is no minor finding", () => {
+    const planned = planFollowUps({ prNumber: 32, reviews: [body([], [oos(1)])], stubs: [] }, ACCOUNTS);
+
+    expect(planned.issues.map((i) => i.title)).toEqual(["oos 1"]);
+    expect(planned.report).toContain("**Out-of-scope findings**, read from");
+    expect(reportLines(planned.report)).toEqual(["- **Filed** · `src/o1.ts` · {{follow-up-issue-0}}"]);
+  });
+
+  it("files no second on a retry, open or closed, and reports it as already filed", () => {
+    for (const state of ["OPEN", "CLOSED"]) {
+      const planned = planFollowUps({ prNumber: 32, reviews: [body([minor(1), minor(2)], [])], stubs: [grouped(90, { state })] }, ACCOUNTS);
+
+      expect(planned.issues).toEqual([]);
+      expect(reportLines(planned.report)).toEqual(["- **Already filed by this pull request** · #90: minor findings from #32 (2)"]);
+      expect(planned.removeMarker).toBe(true);
+    }
+  });
+
+  it("is not met by another pull request's minor-findings issue, nor by a stub key its prose quotes", () => {
+    const quoting = stub({ number: 91, pr: 32, seq: 0, location: "src/m1.ts:1" });
+    const planned = planFollowUps(
+      {
+        prNumber: 32,
+        reviews: [body([minor(1)], [])],
+        stubs: [grouped(90, { body: `<!--{"version":2,"kind":"minor","pr":31}-->` }), { ...quoting, body: `${quoting.body}\n\n${KEY}` }],
+      },
+      ACCOUNTS,
+    );
+
+    // #91 ends in the group key, so it is this pull request's minor-findings
+    // issue and not a stub for minor 1: the last key wins.
+    expect(planned.issues).toEqual([]);
+    expect(reportLines(planned.report)).toEqual(["- **Already filed by this pull request** · #91: minor findings from #32 (1)"]);
+  });
+
+  it("leaves out of the group a minor an earlier release filed as its own stub, under today's key", () => {
+    const planned = planFollowUps(
+      { prNumber: 32, reviews: [body([minor(1), minor(2)], [])], stubs: [stub({ number: 80, pr: 32, seq: 0, location: "src/m1.ts:1" })] },
+      ACCOUNTS,
+    );
+
+    expect(planned.issues.map((i) => i.title)).toEqual(["Minor findings from #32"]);
+    expect(planned.issues[0]?.body).not.toContain("**minor 1**");
+    expect(reportLines(planned.report)).toEqual([
+      "- **Already filed by this pull request** · `src/m1.ts` · #80, which it opened for this same finding already.",
+      "- **Filed** {{follow-up-issue-minor}}: minor findings from #32 (1)",
+    ]);
+  });
+
+  it("is no relatedness candidate for another pull request's stub", () => {
+    const planned = planFollowUps({ prNumber: 33, reviews: [body([], [oos(1)])], stubs: [grouped(90)] }, ACCOUNTS);
+    expect(relationOf(planned.issues[0]?.body)).toBe("");
   });
 });
 

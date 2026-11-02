@@ -4,6 +4,63 @@ The domain model. Read this before changing anything; [CLAUDE.md](./CLAUDE.md) h
 the conventions, [README.md](./README.md) is for people installing the package, and
 [docs/ADOPTING.md](./docs/ADOPTING.md) is for people installing the loop.
 
+## Glossary
+
+Read this first, then only the sections below that a change touches. Each term has a one-line
+meaning, the words not to use for it, and the section that holds it in full.
+
+| Term | Means | Avoid | Section |
+|---|---|---|---|
+| Agent loop | A labelled issue becomes a reviewed pull request with no human in the middle; the human decides the merge at the end. | | [What this is](#what-this-is) |
+| Trigger label | An `agent:*` label that starts a run; it stays on while its run works and comes off in the run's last step. | `agent:in-progress` (retired) | [What this is](#what-this-is) |
+| Issue shape | What `agent:implement` partitions on: a parent with sub-issues goes to `implement-prd`, anything else to `implement`. | | [What this is](#what-this-is) |
+| PRD branch, PRD PR | The one branch every slice of a PRD is built on, and the one pull request from it into the default branch. | a branch or a pull request per slice; a stack | [What this is](#what-this-is) |
+| Slice range | A sub-issue's commits on the PRD branch, derived from `Agent-Slice` trailers in its first-parent log. | reading the next slice off which issues are closed | [What this is](#what-this-is) |
+| Slice round | An ordinary review round on the PRD PR, scoped to one slice range and its sub-issue's criteria. | | [What this is](#what-this-is) |
+| Finishing run, final review | The build run that finds every sub-issue built and runs no model; the full review of the PRD PR it asks for when more than one slice landed. | | [What this is](#what-this-is) |
+| Progress list | The PRD PR body's table of each sub-issue's state, re-rendered from live state; it carries the final review's mark. | | [What this is](#what-this-is) |
+| Round header | The line opening every top-level review and fix comment, numbered off the pull request's own record. | | [What this is](#what-this-is) |
+| Advance, park | Review's `advance` job re-adds `agent:implement` to the parent when a slice round ends on an approval, and otherwise parks the chain with a comment naming the ways on. | | [What this is](#what-this-is) |
+| Fix-round budget | `AGENT_MAX_FIX_ROUNDS`, default 3: the automatic fix rounds a pull request (or one round of a PRD PR) may spend, counted from `agent-fix-round` statuses. | `auto-fix` (removed); a marker label | [What this is](#what-this-is) |
+| Early stop | No further automatic round after a fix round that closed none of the findings it was given. | the round rule (retired) | [What this is](#what-this-is) |
+| Verdict history | The verdicts on a pull request, which say whether a review follows a fix round. | reading that off who authored the commits | [What this is](#what-this-is) |
+| Severity | `high`, `medium` or `low` on every finding; it orders the list and decides one thing, through the fix threshold. | | [What this is](#what-this-is) |
+| Fix threshold | `AGENT_FIX_MIN_SEVERITY`, default `medium`: whether a review's open findings are threads (mixed) or minor findings (all below). | | [What this is](#what-this-is) |
+| Minor finding | A finding in the pull request's own code recorded rather than threaded, since every open finding was below the threshold; filed at merge as one issue per pull request. | | [What this is](#what-this-is) |
+| Follow-up | A problem the pull request is not going to fix, recorded by the review and filed at merge; out of scope or minor, by its `kind`. | | [What this is](#what-this-is) |
+| Out-of-scope note | A fix run's structured note of something outside the pull request, which the next review promotes or drops. | | [What this is](#what-this-is) |
+| Finding | A review's entry, anchored at something the pull request changed, with a severity and an id; a reviewer closes it, the fixer never does, and a maintainer's decline outranks both. | | [What this is](#what-this-is) |
+| Clean merge, conflict resolution | An `update-branch` merge that changed nothing reviewed, which carries the verdict and the arm on; and one the loop wrote code for, which copies nothing and asks for a review. | | [What this is](#what-this-is) |
+| Arm, disarm | A human adding `agent:merge` arms the head it was added at; anything but a clean merge of the base on that head disarms it. | the loop arming | [What this is](#what-this-is) |
+| Frame, summary block | The pull request body the opening run writes once; a review rewrites only the title and the summary block, and only when something was pushed since. | a description of the change in the review comment | [What this is](#what-this-is) |
+| Evidence, test-first check | The summary's Before (failing-first tests from the red check) and After (CI at the head); the body alone calls the red check the test-first check. | "test-first check" anywhere but the body | [What this is](#what-this-is) |
+| Merge Danger | The summary's door (`one-way` or `two-way`), blast radius, *Breaking:* lines and known issues. | | [What this is](#what-this-is) |
+| Post-merge checklist | The *After merge, by a human* items of the linked briefs, posted by `follow-ups` on every merge. | | [What this is](#what-this-is) |
+| Part | One of the caller, the reusable workflow and the package; which one a change belongs in is the distinction to get right. | layer (a pull request in a GitHub stack) | [The three parts](#the-three-parts-and-what-belongs-in-each) |
+| Caller, caller file | One calling job an adopter owns (a `uses:`, its grant and its secrets), and the workflow file holding one or more. | "the workflow" (say which part) | [The three parts](#the-three-parts-and-what-belongs-in-each) |
+| Reusable workflow | The part that keeps only what Actions can do: the job graph, the fork guard, the permissions ceiling, secrets, concurrency and timeouts. | a composite action | [The three parts](#the-three-parts-and-what-belongs-in-each), [why not a composite action](#why-reusable-workflows-and-not-a-composite-action) |
+| Package | Every other step: one that reads or changes the pull request or issue, or decides anything. | | [The three parts](#the-three-parts-and-what-belongs-in-each) |
+| Runner | The part of the package that does an agent's work: TypeScript plus a prompt, one subcommand, no arguments. | the package; the agent | [The three parts](#the-three-parts-and-what-belongs-in-each) |
+| Command | A `<workflow>:<step>` subcommand that does an orchestrator's work on the record and starts no agent. | any subcommand; the adopter's own commands | [The three parts](#the-three-parts-and-what-belongs-in-each) |
+| Subcommand | Any entry of the binary's table: a runner, a command, or the install path. | | [The three parts](#the-three-parts-and-what-belongs-in-each) |
+| Writer, write log | The engine's way to change the record, one call per write, each logged as it lands. | a plan of writes | [The three parts](#the-three-parts-and-what-belongs-in-each) |
+| Hand-over | The runner's files a command declares it reads, checked and cleaned; decisions as data and raw text, never finished strings. | | [The three parts](#the-three-parts-and-what-belongs-in-each) |
+| Workflow's folder | `<name>/`, holding that workflow's runner and every command its jobs run; `shared/` is code two or more use. | | [The three parts](#the-three-parts-and-what-belongs-in-each) |
+| Orchestrator | Whatever invokes a runner and acts on its result: the Actions orchestrator (a caller plus its reusable) or the service. | | [Orchestrator, the record and the agent](#orchestrator-the-record-and-the-agent) |
+| Record | What the loop leaves on GitHub that a later run reads back. | | [Orchestrator, the record and the agent](#orchestrator-the-record-and-the-agent) |
+| Agent | The model CLI a runner drives inside its sandbox. | the runner | [Orchestrator, the record and the agent](#orchestrator-the-record-and-the-agent) |
+| Install path | `init` and `doctor`: subcommands a human runs, which put the callers in place and check them. | a fourth part | [The install path](#and-the-install-path-which-is-none-of-the-three) |
+| Service orchestrator | A second orchestrator outside Actions: the dispatcher turns label deliveries into jobs, and the worker runs each as its reusable would. | a fourth part | [The service orchestrator](#and-the-service-orchestrator-which-is-an-orchestrator-not-a-part) |
+| Fork guard, author gate | The job-level `if:` keeping a fork's head out of `pull_request_target`; and `isTrustedAuthor`, which decides whose text reaches an agent. | write access (the gate is org-adjacent or better) | [The trust boundary](#the-trust-boundary) |
+| Split | A workflow that runs an agent: a gate, the agent's job with a read-only token, and a publish job on a fresh runner that writes. | | [The agent's own runner](#the-agents-own-runner) |
+| Catch-up | `implement-prd`'s job that merges the default branch into the PRD branch before any agent runs. | | [The agent's own runner](#the-agents-own-runner) |
+| Loop's identity | Who the loop's writes are made as: its App, then `AGENT_PAT`, then the workflow token, chosen by the token resolver. | | [The loop's identity](#the-loops-identity) |
+| Base-controlled | `pull_request_target` reads workflow YAML from the default branch while checking out the PR head. | `@main` in a `uses:` | [Base-controlled](#base-controlled-and-what-that-now-depends-on) |
+| Pin | The version in the YAML that takes the reusable and the package from one release. | | [The version pin](#the-version-pin-keeps-two-halves-in-step) |
+| `self-check`, rescue branch | Two invariants nothing fails on: the job id the CI wait excludes, and the branch a stopped run's commits are kept on. | | [Invariants with no runtime symptom](#invariants-with-no-runtime-symptom) |
+| Domain model | This file, which every runner prompt reads by name; the prompts themselves name no domain. | `GLOSSARY.md` | [The prompts name no domain](#the-prompts-name-no-domain) |
+| Narrative log | `docs/friction.md`: appended, never rewritten to match today. | a changelog | [Where the rest is written down](#where-the-rest-is-written-down) |
+
 ## What this is
 
 A **GitHub Actions agent loop**: a labelled issue becomes a reviewed pull request with no human in

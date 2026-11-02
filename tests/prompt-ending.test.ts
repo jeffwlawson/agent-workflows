@@ -97,3 +97,19 @@ describe.each(Object.keys(RUNNERS).map((runner) => `${runner}/prompt.md`))("%s d
     expect(read(prompt)).toMatch(/Read `CONTEXT\.md`/);
   });
 });
+
+/**
+ * `CONTEXT.md` is read before any work on every run, and here runs to
+ * hundreds of lines (#640). Each runner reads its glossary first and only the
+ * sections the change touches, and falls back to the whole file where an
+ * adopter's has no glossary, so a repository without one reads what it read
+ * before. The sentence names no section and no term: the prompts name no domain.
+ */
+const GLOSSARY_READ =
+  "In `CONTEXT.md`, read the `## Glossary` at the top first, then only the sections below it that the change touches; where it has no glossary, read it whole.";
+
+describe.each(Object.keys(RUNNERS).map((runner) => `${runner}/prompt.md`))("%s reads CONTEXT.md by its glossary", (prompt) => {
+  it("reads the glossary first, then by section, with the whole-file fallback", () => {
+    expect(read(prompt)).toContain(GLOSSARY_READ);
+  });
+});

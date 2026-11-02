@@ -48,6 +48,8 @@ The change under review: the PR's diff against its base branch, exactly what Git
 # HOW TO RESPOND TO FEEDBACK
 
 Read `CONTEXT.md` first, then the files the comments refer to. `CLAUDE.md` is already in your context; do not read it again.
+In `CONTEXT.md`, read the `## Glossary` at the top first, then only the sections below it that
+the change touches; where it has no glossary, read it whole.
 
 For each piece of feedback, decide honestly:
 

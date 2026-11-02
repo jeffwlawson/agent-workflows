@@ -9,7 +9,9 @@ decisions. There is no `CONTEXT-MAP.md` and no per-package context — this is a
 ## Before exploring, read these
 
 - **`CONTEXT.md`** at the repo root. It is the domain model: the three parts, what belongs in each,
-  and the vocabulary below.
+  and the vocabulary below. It opens with a `## Glossary`: a table of each term, a one-line meaning,
+  the words to *Avoid* for it, and a link to the section below that holds it. Read the glossary
+  first, then only the sections your work touches, as the runner prompts do.
 - **`docs/adr/`** — read ADRs that touch the area you're about to work in.
 
 If any of these files don't exist, **proceed silently**. Don't flag their absence; don't suggest
@@ -71,8 +73,10 @@ prose into one; a decision written in two places is a decision that can disagree
 ## Use the glossary's vocabulary
 
 When your output names a domain concept (in an issue title, a refactor proposal, a hypothesis, a
-test name), use the term as defined in `CONTEXT.md`. Don't drift to synonyms the glossary
-explicitly avoids.
+test name), use the term as defined in `CONTEXT.md`. Don't drift to the words in its glossary's
+*Avoid* column. A new term goes in the glossary, one row linking to the section that defines it;
+`tests/context-md.test.ts` fails on a link to a heading the file does not have, and on a section
+no row links to.
 
 In particular, `CONTEXT.md`'s *three parts* distinction — **caller**, **reusable workflow**,
 **package** — decides where a change belongs, and the part names are the vocabulary. A **runner**

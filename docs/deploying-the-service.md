@@ -128,8 +128,8 @@ Repository permissions:
 | Metadata | `metadata` | read | every API call, a label's sender's permission, and the repositories each installation reaches, which a scan lists |
 | Variables | `actions_variables` | read | `AGENT_ORCHESTRATOR`, re-read at every token, and the variables the service reads, `AGENT_SETUP` among them: the repository's own, else its organization's shared with it, as `vars` resolves them |
 | Contents | `contents` | write | the checkout and the pull request's history, read by every phase; resolving a review thread on a pull request the App did not open, by a `resolve` token; a push, and `agent:merge`'s merge, by a `push` token only |
-| Pull requests | `pull_requests` | write | the review, its threads, the title and summary, the ready mark, and `agent:merge`'s merge; a scan reads an open pull request's head and base, and the dispatcher's reads the pull requests a check suite's or a status's commit belongs to, with their labels |
-| Issues | `issues` | write | comments and labels, the issue an implement job builds, and a PRD's parent; a scan reads the open items carrying a trigger label and their `labeled` events, and comments on one it stops dispatching |
+| Pull requests | `pull_requests` | write | the review, its threads, the title and summary, the ready mark, and `agent:merge`'s merge; a scan reads an open pull request's head and base, and those of a merged one carrying `agent:follow-ups`, and the dispatcher's reads the pull requests a check suite's or a status's commit belongs to, with their labels |
+| Issues | `issues` | write | comments and labels, the issue an implement job builds, and a PRD's parent; a scan reads the open items carrying a trigger label, and the merged pull requests carrying `agent:follow-ups`, and their `labeled` events, and comments on one it stops dispatching |
 | Checks | `checks` | read | CI's result, which the review's verdict reads |
 | Commit statuses | `statuses` | write | the verdict and the fix-round statuses, and `agent:merge`'s arm, `agent-merge` |
 | Workflows | `workflows` | write | a push touching `.github/workflows/**` is refused without it, *after* the agent has done all its work |
@@ -350,7 +350,10 @@ the actor of its latest `labeled` event is the App or someone who can write now,
 skipped and logged. A filing that refuses leaves the label on by design, an edited review being the
 standing case, and nothing on the record tells that from a run that never happened, so a refused
 filing is dispatched again at each restart within the window, up to the scan's limit below, and
-then left for a person. A merge whose pull request carried no label is not listed, so its
+then left for a person. Each of those runs posts its refusal comment again. With `STATE_FILE`
+unset, the scan's count starts again at each dispatcher restart (*What it does not keep*, above),
+so the limit bounds one dispatcher's lifetime, not the total: each restart within the window can
+dispatch the filing up to the limit again and post the stop comment once more. A merge whose pull request carried no label is not listed, so its
 post-merge checklist, lost with its delivery, is not recovered.
 `agent:merge` is not a run's label either, but the maintainer's standing decision, so a gate that
 ends with it on is the normal case: the scan dispatches a merge job for an armed pull request

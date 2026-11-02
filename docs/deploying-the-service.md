@@ -416,8 +416,11 @@ The runner never holds a token that writes. It needs:
 
 At start it installs the agent's CLI, `@anthropic-ai/claude-code` at `CLAUDE_CODE_VERSION`, into
 `WORK_DIR/claude-code/<version>`, and refuses to start where the install fails. The box's install
-script defaults it to the version the reusables install, which a test holds equal, so one release
-runs one Claude Code on either orchestrator. The host's own
+script defaults it to the version the reusables install, which a test holds equal, so a box freshly
+installed at a release runs the Claude Code that release's reusables do. An upgrade does not move
+it: `install-box.sh` writes it into `service.env` once, and `upgrade-box.sh` leaves the settings as
+they are, so an upgraded box keeps the version it was installed with until `CLAUDE_CODE_VERSION` in
+`service.env` is changed and the worker restarted. The host's own
 `claude` is never used: the worker's goes first on the runner's `PATH`, first on
 `AGENT_SANDBOX_PATH`, and into `AGENT_SANDBOX_RO_BINDS`. Bind the Node the agent's CLI runs on
 read-only too, through `AGENT_SANDBOX_RO_BINDS`, and put it on `AGENT_SANDBOX_PATH`.

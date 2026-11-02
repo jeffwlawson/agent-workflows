@@ -273,6 +273,7 @@ so does an App whose own record cannot be read, since that is where the App's ow
 | `EXTRA_OWNERS` | optional | `""` | accounts, comma-separated, whose installations the dispatcher serves besides the App owner's; empty is none. An installation on any other account is refused |
 | `SCAN_DISPATCH_LIMIT` | optional | `2` | how many times the scan dispatches an item for a label that stays on across scans before it leaves the item for a person, and comments once to say so (*The scan's limit*, below), never applied to `agent:merge`. At least `1`: `0` is refused at start, since it would not turn the scan off |
 | `SCAN_MERGED_WINDOW_DAYS` | optional | `7` | how many days back the scan lists merged pull requests still carrying `agent:follow-ups` (*What a restart recovers*, below), so one someone left the label on for months is not dispatched at every restart. A positive whole number: `0` is refused at start |
+| `STATE_FILE` | optional | `""` | the path of the file the dispatcher keeps its dispatched jobs and the scan's counts in, so a restart keeps them (*What it does not keep*, below). Empty is none: both are held in memory only. A path it cannot write to is refused at start, naming the setting. One dispatcher per file |
 
 Each door also answers `GET /health` with `200`.
 
@@ -283,18 +284,42 @@ Each door also answers `GET /health` with `200`.
   The scan below recovers what a label still says is owed: a trigger label on an open item, and
   `agent:follow-ups` on a pull request merged within `SCAN_MERGED_WINDOW_DAYS`. A merge whose pull
   request carried no label says nothing is owed, so its post-merge checklist stays lost.
-- **The jobs it dispatched are held in memory, and only the started ones are lost to a restart.** Each
-  job carries the id of the dispatcher instance that sent it, fresh at each start, and the scan at
-  a restarted dispatcher's start names its own at the worker's held door. The worker drops every
-  job it holds *queued* from another instance before it answers, so none of them runs, and the
-  scan dispatches their items again, in the order it lists them, behind the running jobs. A
-  running job, one in each lane at most, is not dropped, since the held door cannot stop it, nor is
-  an update-branch job waiting for the agent lane after its merge: each ends at its next token
-  request, which the new dispatcher refuses as unknown, and the scan skips its item while the
-  worker still holds it. Remove that item's label and add it again.
-- **The scan's counts are held in memory.** A restarted dispatcher forgets how many times its scans
-  have dispatched each item (*The scan's limit*, below), so each item's count starts from zero
-  again, and the comment saying the scan stopped may be posted once more.
+- **The jobs it dispatched, and only the started ones are lost to a restart without
+  `STATE_FILE`.** Each job carries the id of the dispatcher instance that sent it, fresh at each
+  start, and the scan at a restarted dispatcher's start names its own at the worker's held door.
+  The worker drops every job it holds *queued* from another instance before it answers, so none of
+  them runs, and the scan dispatches their items again, in the order it lists them, behind the
+  running jobs. That holds with `STATE_FILE` set or not. A running job, one in each lane at most,
+  is not dropped, since the held door cannot stop it, nor is an update-branch job waiting for the
+  agent lane after its merge: the scan skips its item while the worker still holds it.
+  - **With `STATE_FILE` unset**, the dispatcher holds its jobs in memory only, so each started job
+    ends at its next token request, which the new dispatcher refuses as unknown. Remove that item's
+    label and add it again.
+  - **With it set**, the restarted dispatcher reads its jobs back from the file, and its start
+    scan's question to the worker keeps the record of each job the worker still holds, which,
+    with the queued ones dropped, is each one that has started. Those jobs' next token requests
+    are answered, and they end normally. Every other record is dropped. Where the worker cannot be
+    reached at that start, the records are kept, and the scan its announcement starts decides.
+- **The scan's counts.** With `STATE_FILE` unset they are held in memory, and a restarted
+  dispatcher forgets how many times its scans have dispatched each item (*The scan's limit*,
+  below), so each item's count starts from zero again, and the comment saying the scan stopped may
+  be posted once more. With it set they are kept: an item at the limit is not dispatched again
+  after a restart, and its comment is not posted a second time. A count is still dropped for an
+  item a scan no longer lists with its label, and reset by a delivery for it.
+
+**The state file**, where `STATE_FILE` names one, is one small JSON file: a `version`, the scan's
+counts (`asks`: the repository, item, label, dispatches, whether the comment was posted, and when
+the last was counted) and the dispatched jobs (`jobs`: each one's id, repository, item, kind,
+deadline, whether the worker had answered its post, whether a scan dispatched it, and its order).
+It holds no token, key, secret or signature, and no instance id, which is fresh at each start. It
+is written on each change, a scan's pass writing once at its end however many items it decided, to
+a temporary file beside it (`<file>.tmp`), flushed, then renamed over it, so a crash leaves the old
+file or the new one and never half of one; its directory must be writable by the dispatcher. A
+write that fails is logged (`state: …`) and the dispatcher goes on; the next change tries again.
+It is read once, at start. A file that cannot be read, is not valid, or has a `version` this
+release does not read is logged, naming the file and the reason, and the dispatcher starts empty,
+as without the setting, and replaces it; a path that cannot be written is refused at start. One
+dispatcher per file: two sharing one are not supported, and nothing locks it.
 - **An item waiting on the plan's usage limit is kept by its note, not by the dispatcher.** Its
   label stays on and its resume note names the reset time (*The worker*, below), so a scan at any
   restart lists it. A scan before the reset reads the newest resume note and skips the item, so a
@@ -364,8 +389,9 @@ the loop's commands take the trigger label off however a decided run ends. Two l
   (adding it again is the retry), so a scan after it dispatches it once more, once per start, up
   to the scan's limit;
 - a job **running in the worker when only the dispatcher restarted** is skipped, since the worker
-  still holds it, and dies at its next token request, as above. The jobs queued behind it are not:
-  the worker drops them at the scan's question, and the scan dispatches their items again.
+  still holds it, and, without `STATE_FILE`, dies at its next token request, as above; with it,
+  it is answered and ends normally. The jobs queued behind it are not skipped: the worker drops
+  them at the scan's question, and the scan dispatches their items again.
 
 **The scan's limit.** A job that ends the worker's *process*, rather than a phase that fails
 cleanly, leaves its label on; the worker is restarted, its start makes the dispatcher scan, and the
@@ -761,10 +787,12 @@ The job door also answers `GET /health` with `200`.
   whose filing the lost merge never started. What a scan does not list stays lost: the post-merge
   checklist of a merge whose pull request carried no label, above all.
 - **A dispatcher restarted alone** recovers the jobs the worker holds queued from it: its start
-  scan has the worker drop them and dispatches their items again. Only the jobs that had started
-  are lost: the one running in each lane, and every update-branch job waiting for the agent lane
-  after its merge conflicted, of which there can be several. Each keeps its label until a person
-  adds it again (*What it does not keep*, above).
+  scan has the worker drop them and dispatches their items again. With `STATE_FILE` set it keeps
+  the rest too: each job that had started (the one running in each lane, and every update-branch
+  job waiting for the agent lane after its merge conflicted) is answered at its next token
+  request and ends normally, and the scan's counts carry over. With it unset those started jobs
+  are lost, each keeping its label until a person adds it again, and the scan's counts start
+  from zero (*What it does not keep*, above).
 - **The worker's queue is in memory too**: a worker restarted mid-job loses the jobs running and the ones
   waiting behind them. Its start announcement makes the dispatcher scan, which dispatches each of
   them again, the running ones and the queued ones alike, since each item keeps its label. Where
@@ -887,21 +915,30 @@ WEBHOOK_HOST=127.0.0.1
 WEBHOOK_PORT=8790
 TOKEN_HOST=192.168.250.1
 TOKEN_PORT=8791
+STATE_FILE=/state/dispatcher.json
 ```
 
 It runs as a container with host networking, since libvirt's NAT network admits new connections
 from the host and not from a container on Docker's own bridge, and restarts unless stopped. It runs
 as `99:100` (Unraid's nobody:users), not root: it is the process the internet reaches, through the
 Funnel, and it holds the App's key. That user has no home in the image and `/app` is read-only, so
-it starts in `/tmp` with `HOME` there:
+it starts in `/tmp` with `HOME` there. Its one writable place is `state/` in the appdata folder,
+owned by uid 99 and mounted read-write at `/state`, where `STATE_FILE` keeps its jobs and the
+scan's counts across a restart (*What it does not keep*, above):
 
 ```bash
 docker run -d --name agent-dispatcher --restart unless-stopped --network host \
   --user 99:100 -w /tmp -e HOME=/tmp \
   --env-file /mnt/user/appdata/agent-dispatcher/service.env \
-  -v /mnt/user/appdata/agent-dispatcher:/app:ro node:24-alpine \
+  -v /mnt/user/appdata/agent-dispatcher:/app:ro \
+  -v /mnt/user/appdata/agent-dispatcher/state:/state node:24-alpine \
   node /app/pkg/node_modules/@jeffwlawson/agent-workflows/dist/cli.js dispatcher
 ```
+
+`install-unraid.sh` makes `state/`, sets `STATE_FILE` in `service.env` and creates the container
+with the mount, replacing one created before it without. An upgrade restarts the container it
+finds, so `upgrade-unraid.sh` says where that container has no `/state` mount, and running
+`install-unraid.sh` once at the new version recreates it with one.
 
 Docker reads `--env-file` when it creates a container, not when it restarts one, so a change to
 `service.env` means a new container. An upgrade is an install at the new version into `pkg/` and a

@@ -752,6 +752,7 @@ describe("the CLI starts the dispatcher", () => {
         EXTRA_OWNERS: "",
         SCAN_DISPATCH_LIMIT: "2",
         SCAN_MERGED_WINDOW_DAYS: "7",
+        STATE_FILE: "",
       },
       expect.any(Function),
     );

@@ -7,7 +7,7 @@ Unraid host plus a VM, and no other.
 
 | Script | Runs on | Does |
 |---|---|---|
-| `install-unraid.sh <version>` | Unraid, as root | agentnet and its reservation, the firewall User Script, the dispatcher's settings, package and container, the Funnel |
+| `install-unraid.sh <version>` | Unraid, as root | agentnet and its reservation, the firewall User Script, the dispatcher's settings, package, writable `state/` folder (its `STATE_FILE`) and container, the Funnel |
 | `install-box.sh <version>` | the box, as root | bubblewrap and its AppArmor profile, Node, tinyproxy, the egress rule, the `worker` user, the package and the worker's unit |
 | `upgrade.sh [--now] <version>` | Unraid, as root | both machines at another version: downloads the release's tarball, copies it to the box, installs on both, waits up to `IDLE_WAIT_MINUTES` (90) for the worker to hold no job, restarts the worker then the dispatcher, runs both checks and compares them. `--now` restarts without waiting, dropping what the worker holds |
 | `upgrade-unraid.sh [--install \| --restart] <version> [<tarball>]` / `upgrade-box.sh …` | each machine | the halves of `upgrade.sh`: install a tarball they are handed, restart, then the check. Run alone, to recover or roll back one machine, they do all three; `--install` and `--restart` do one phase each, as `upgrade.sh` calls them |

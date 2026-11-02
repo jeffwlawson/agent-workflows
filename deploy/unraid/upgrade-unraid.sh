@@ -95,6 +95,13 @@ if [ "$phase" = install ]; then
   exit 0
 fi
 
+# A restart keeps the container's mounts. One created before the state file
+# (#618) has no writable /state, and its dispatcher keeps its jobs and the
+# scan's counts in memory only: install-unraid.sh recreates it with one.
+if ! docker inspect -f '{{range .Mounts}}{{println .Destination .RW}}{{end}}' "$CONTAINER" 2>/dev/null | grep -qx "/state true"; then
+  echo "Note: $CONTAINER has no writable /state mount, so STATE_FILE cannot keep the dispatcher's jobs and scan counts"
+  echo "across this restart. Run install-unraid.sh $version once to recreate the container with it."
+fi
 echo "Restarting $CONTAINER ..."
 docker restart "$CONTAINER" >/dev/null
 # Read whole, then searched: grep -q on a pipe can end it early, and under

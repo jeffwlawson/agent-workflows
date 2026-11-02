@@ -156,6 +156,19 @@ describe("extractCriteria", () => {
     expect(extractCriteria("")).toEqual([]);
   });
 
+  /** A brief's *Test seam* part (#619) sits outside the criteria heading, like *Where things are*. */
+  it("reads the same criteria from a brief with a Test seam part as from one without", () => {
+    const without = TRIAGED;
+    const withSeam = TRIAGED.replace(
+      "**Acceptance criteria:**",
+      "**Test seam:**\nThe import command's output: its recipe count and its error list.\n\n**Acceptance criteria:**",
+    ).concat("\n\n## Test seam\n\n- The import command's output, read by its caller.");
+
+    expect(withSeam).toContain("Test seam");
+    expect(extractCriteria(withSeam)).toEqual(extractCriteria(without));
+    expect(extractCriteria("A comment.", [withSeam])).toEqual(extractCriteria("A comment.", [without]));
+  });
+
   it("reads nothing inside a code fence", () => {
     const body = ["```md", "## Acceptance", "- [ ] Quoted, not asked.", "```"].join("\n");
 

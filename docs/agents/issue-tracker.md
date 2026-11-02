@@ -244,6 +244,16 @@ comment carries one, **it replaces the issue body's list for review rather than 
   heading, or a bold label alone on its line, or the review grades file locations as if they were
   criteria. The date goes on the next line, not beside a bold label: a label with anything after
   it is not read as one, so it does not end the criteria section.
+- **An optional *Test seam* part sits outside the acceptance-criteria heading too** (#619), under
+  its own heading, or a bold label alone on its line, naming "Test seam", so the review does not
+  read it as a criterion. It names the surface the criteria are observed through **as behaviour,
+  not a location**: a command and its output, a function's contract, a check's pass and fail. Any
+  path it would name goes in *Where things are* instead, so the part stays durable. Both implement
+  prompts write their tests at the seam it names, and otherwise at a seam that already exists;
+  where the named one is missing or cannot observe a criterion, they test at the nearest existing
+  one and say so in the commit message. On a PRD chain the slice's part is read first, and the
+  PRD's where the slice names none. A brief without one is as valid as before: the part is for the
+  brief that knows its seam.
 - **A brief restates every criterion it keeps from the issue body.** One it leaves out is silently
   dropped from review.
 - ***After merge, by a human* sits outside the acceptance-criteria heading too**, under its own

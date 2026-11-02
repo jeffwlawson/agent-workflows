@@ -25,7 +25,7 @@ import {
   SUMMARY_START,
   VERDICT_CONTEXT,
 } from "../../shared/record.js";
-import { findingsHandOver, severityBadge, type PlacedFinding } from "../../shared/review-findings.js";
+import { findingsHandOver, lastFindingMarker, severityBadge, type PlacedFinding } from "../../shared/review-findings.js";
 import {
   CLOSER_LOOK,
   deriveVerdict,
@@ -368,6 +368,30 @@ describe("review:publish writes every string it posts", () => {
     expect(thread?.replies[0]).toContain("@maintainer");
     expect(thread?.replies[0]).toContain("> Won't fix: the duplicate write is intended.");
     expect(thread?.replies[0]).toContain(`<!-- ${RESOLUTION_MARKER} WONT_FIX -->`);
+  });
+
+  /**
+   * A finding that meets every threshold (#616: unrated, or an unmet
+   * criterion) keeps that mark across a round: its marker carries no
+   * severity, so the review that carries it reads it back unrated, and at
+   * `high` a later round over it alone is still mixed, not an approval.
+   */
+  it("writes no severity on the marker of a finding that meets every threshold, so the next round still counts it", async () => {
+    const [first] = PLACED;
+    if (first === undefined) throw new Error("no finding");
+    const unrated: PlacedFinding = { ...first, finding: { ...first.finding, severity: "medium", alwaysMeets: true } };
+    handOver(decide({ placed: [unrated] }));
+
+    await run();
+
+    const body = posted()?.threads[0]?.body ?? "";
+    expect(body.startsWith(severityBadge("medium"))).toBe(true);
+    expect(body).toContain("<!-- agent-finding f-new title:");
+    const read = lastFindingMarker(body);
+    expect(read).toMatchObject({ id: "f-new", title: "The lock is never released" });
+    expect(read?.severity).toBeUndefined();
+    const carried: CarriedFinding = { id: "f-new", threadId: "PRRT_new", text: "src/queue.ts:12 · x", title: "x", anchor: "src/queue.ts:12" };
+    expect(placeByThreshold({ placed: [], stillOpen: [carried], threshold: "high" }).kind).toBe("mixed");
   });
 
   it("opens a thread per finding, with the badge, the label it keeps and the marker", async () => {

@@ -395,7 +395,9 @@ describe("the id is the workflow's to write", () => {
     expect("id" in (output.findings[0] ?? {})).toBe(false);
 
     const [thread] = threadsOf(place(output.findings));
-    expect(thread?.body).toContain(findingMarker("f-1", "medium", "t"));
+    // No severity on the marker: the model rated it nothing, so it is posted
+    // unrated and meets every threshold on the next round too (#616).
+    expect(thread?.body).toContain(findingMarker("f-1", undefined, "t"));
     expect(thread?.body).not.toContain("f-modelwrote");
   });
 

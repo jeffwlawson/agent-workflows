@@ -1010,6 +1010,14 @@ export interface HandedFinding {
   readonly line: number;
   readonly startLine?: number | undefined;
   readonly previouslyMissed: boolean;
+  /**
+   * Set where the finding meets every threshold whatever `severity` says
+   * (`Finding.alwaysMeets`, #616). Its thread's marker then carries **no**
+   * severity, so the review that carries it reads it back unrated, which
+   * meets every threshold too: the mark survives the round rather than
+   * turning into the displayed `medium` or the criterion's own rating.
+   */
+  readonly alwaysMeets?: true | undefined;
 }
 
 /** The placed findings, as the runner hands them over: one each, in order. */
@@ -1024,6 +1032,7 @@ export const findingsHandOver = (placed: readonly PlacedFinding[]): HandedFindin
     line: finding.line,
     ...(finding.startLine === undefined ? {} : { startLine: finding.startLine }),
     previouslyMissed: isPreviouslyMissed(finding),
+    ...(finding.alwaysMeets === true ? { alwaysMeets: true as const } : {}),
   }));
 
 /**
@@ -1065,7 +1074,10 @@ const threadBody = (finding: HandedFinding): string => {
     .filter((part) => part !== undefined)
     .join(" · ");
 
-  return [opening, withoutOpeningLabel(finding.body), findingMarker(finding.id, finding.severity, finding.title)]
+  // No severity on the marker of a finding that meets every threshold (#616):
+  // read back, an unrated finding meets it, so the mark is carried with it.
+  const marked = findingMarker(finding.id, finding.alwaysMeets === true ? undefined : finding.severity, finding.title);
+  return [opening, withoutOpeningLabel(finding.body), marked]
     .filter((part) => part !== "")
     .join("\n\n");
 };

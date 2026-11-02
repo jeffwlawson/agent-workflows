@@ -2802,6 +2802,28 @@ describe("what meets the fix threshold", () => {
     expect(placeByThreshold({ placed: criterion, stillOpen: [], threshold: "high" }).kind).toBe("mixed");
   });
 
+  /**
+   * The mark survives the round (#616): a thread's marker is what the next
+   * review reads a carried finding's severity from, so a finding that meets
+   * every threshold is posted with none on it, and read back unrated.
+   */
+  it("posts an unrated finding and an unmet criterion with no severity on the marker, and a rated one with its own", () => {
+    const unrated = parse({ findings: [{ path: "src/a.ts", line: 4, body: "b" }] }).findings;
+    const { findings: criterion } = applyCriteriaRulings(["The body names the tests."], [
+      { id: "C1", status: "unmet", path: "src/a.ts", line: 4, severity: "low" },
+    ]);
+    const rated = parse({ findings: [{ path: "src/a.ts", line: 4, body: "b", severity: "low" }] }).findings;
+    const bodies = (fs: readonly Finding[]) =>
+      reviewThreads(findingsHandOver(fs.map((f, i): PlacedFinding => ({ id: `f-${i}`, placement: "line", finding: f })))).map((t) => t.body);
+
+    for (const body of [...bodies(unrated), ...bodies(criterion)]) {
+      expect(body).toMatch(/<!-- agent-finding f-0 title:/);
+    }
+    expect(findingsHandOver([{ id: "f-0", placement: "line", finding: criterion[0] as Finding }])[0]?.alwaysMeets).toBe(true);
+    expect(bodies(rated)[0]).toMatch(/<!-- agent-finding f-0 low title:/);
+    expect(findingsHandOver([{ id: "f-0", placement: "line", finding: rated[0] as Finding }])[0]).not.toHaveProperty("alwaysMeets");
+  });
+
   it("finds nothing to place where nothing is open", () => {
     expect(placeByThreshold({ placed: [], stillOpen: [], threshold: "medium" })).toMatchObject({ kind: "none", minor: [], transitioned: [] });
   });

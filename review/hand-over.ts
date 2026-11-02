@@ -235,6 +235,7 @@ const finding = refine(
     line: LINE,
     startLine: optional(LINE),
     previouslyMissed: YES_NO,
+    alwaysMeets: optional(choice([true])),
   }),
   (f, wrong): HandedFinding =>
     f.startLine !== undefined && f.startLine >= f.line ? wrong(`starts at line ${f.startLine}, not before its last line, ${f.line}`) : f,

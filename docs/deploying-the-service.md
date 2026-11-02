@@ -638,6 +638,23 @@ checkout (a fix job's `checkout` and `publish-checkout`, an update-branch job's 
 redacted. The worker's own log says how each phase ended, redacted the same way. Nothing removes
 old runs: prune `WORK_DIR/runs` as you see fit.
 
+The "Workflow run" link in each comment the service posts for an implement, implement-prd or
+follow-ups job is the App's own page with the job's id in its fragment,
+`https://github.com/apps/<slug>#job-<id>`. GitHub ignores the fragment, so the link still opens the
+App's page; the id is the one the run's directory is named for and its `summary.json` holds.
+Review, fix and update-branch post no run link on the service. The id is no credential: a token is
+minted only for a request signed with the shared secret.
+
+The run index, `deploy/unraid/runs.sh`, lists the runs on the worker's machine from their
+summaries. Run it there as root, as `check-box.sh` is, since `WORK_DIR` is the worker user's alone:
+`sudo bash runs.sh` prints the 20 most recent runs, newest first, one line each: when it started,
+its job id, its workflow, the repository and number, `ok` or `FAILED` and how each phase ended,
+and how long it took (to when its summary was written). `sudo bash runs.sh 50` lists 50, and
+`sudo bash runs.sh <id>` prints that run's directory and its phases in full, or says no run has
+the id. A run with no `summary.json`, or one that does not parse, is listed as such: a run that
+died before it wrote its summary is the one you are most likely looking for. It reads only the
+summaries, so it prints no log text and no token, and nothing outside `WORK_DIR/runs`.
+
 Every phase has a time limit, as every job on Actions does, so a hung agent cannot hold the queue.
 The gate, the checkout, the budget, the CI wait and the runner share the review's: 15 minutes of CI
 wait plus `AGENT_REVIEW_TIMEOUT_MINUTES` (5 where unset). `review:publish` and `review:conclude`
@@ -908,10 +925,10 @@ bash /boot/config/agent-service/upgrade.sh [--now] <version>
 
 It downloads the release's tarball and its `.sha256` once, on Unraid (the tokenless install,
 above, from the repository `PACKAGE_SOURCE` names in `agent-service.conf`), checks it, and copies
-it to the box over ssh as `BOX_SSH_USER`, with the box's `upgrade-box.sh`, `check-box.sh` and the
-conf, where the digest is checked again. Then it installs on both with neither service touched,
-waits for the worker to hold no job, restarts the worker and straight after it the dispatcher, and
-runs both check scripts, failing where their versions or the shared secret's fingerprints differ.
+it to the box over ssh as `BOX_SSH_USER`, with the box's `upgrade-box.sh`, `check-box.sh`, the run
+index `runs.sh` where it is beside it, and the conf, where the digest is checked again. Then it
+installs on both with neither service touched, waits for the worker to hold no job, restarts the
+worker and straight after it the dispatcher, and runs both check scripts, failing where their versions or the shared secret's fingerprints differ.
 
 The wait is there because the worker's queue is in memory (*The worker's queue is in memory too*,
 above): a restart drops every job it holds, and a running one, which may have run for most of its

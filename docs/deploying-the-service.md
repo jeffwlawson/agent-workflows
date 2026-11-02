@@ -235,7 +235,9 @@ when all of these hold:
 
 Every other delivery is logged with its reason. A job carries what the label's event carried, the
 repository variables the service reads (`AGENT_MODEL`, `AGENT_MODEL_REVIEW`, `AGENT_MODEL_FIX`,
-`AGENT_MODEL_UPDATE_BRANCH`, `AGENT_MODEL_IMPLEMENT`, `AGENT_MODEL_IMPLEMENT_PRD`, `AGENT_REVIEW_TIMEOUT_MINUTES`, `AGENT_TIMEOUT_MINUTES`, `AGENT_MAX_FIX_ROUNDS`, `AGENT_FIX_MIN_SEVERITY` and `AGENT_SETUP`,
+`AGENT_MODEL_UPDATE_BRANCH`, `AGENT_MODEL_IMPLEMENT`, `AGENT_MODEL_IMPLEMENT_PRD`, `AGENT_EFFORT`,
+`AGENT_EFFORT_REVIEW`, `AGENT_EFFORT_FIX`, `AGENT_EFFORT_UPDATE_BRANCH`, `AGENT_EFFORT_IMPLEMENT`,
+`AGENT_EFFORT_IMPLEMENT_PRD`, `AGENT_PROMPT_CACHE_TTL`, `AGENT_REVIEW_TIMEOUT_MINUTES`, `AGENT_TIMEOUT_MINUTES`, `AGENT_MAX_FIX_ROUNDS`, `AGENT_FIX_MIN_SEVERITY` and `AGENT_SETUP`,
 each unset as empty), the App's login, a job id, a deadline and the package's version. An
 implement job and an implement-prd job each carry the issue's number, title and state, and the
 repository's default branch as its base, which stands in for the `default-branch` a caller hands
@@ -413,7 +415,12 @@ The runner never holds a token that writes. It needs:
 - the dispatcher's token door reachable from it.
 
 At start it installs the agent's CLI, `@anthropic-ai/claude-code` at `CLAUDE_CODE_VERSION`, into
-`WORK_DIR/claude-code/<version>`, and refuses to start where the install fails. The host's own
+`WORK_DIR/claude-code/<version>`, and refuses to start where the install fails. The box's install
+script defaults it to the version the reusables install, which a test holds equal, so a box freshly
+installed at a release runs the Claude Code that release's reusables do. An upgrade does not move
+it: `install-box.sh` writes it into `service.env` once, and `upgrade-box.sh` leaves the settings as
+they are, so an upgraded box keeps the version it was installed with until `CLAUDE_CODE_VERSION` in
+`service.env` is changed and the worker restarted. The host's own
 `claude` is never used: the worker's goes first on the runner's `PATH`, first on
 `AGENT_SANDBOX_PATH`, and into `AGENT_SANDBOX_RO_BINDS`. Bind the Node the agent's CLI runs on
 read-only too, through `AGENT_SANDBOX_RO_BINDS`, and put it on `AGENT_SANDBOX_PATH`.

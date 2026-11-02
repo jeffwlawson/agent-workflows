@@ -80,7 +80,7 @@
 
 # Node (from nodejs.org, linux-x64 only) and the agent's CLI the worker installs.
 #NODE_VERSION=24.21.0
-#CLAUDE_CODE_VERSION=2.1.290
+#CLAUDE_CODE_VERSION=2.1.316
 
 # tinyproxy's port on the box's loopback.
 #PROXY_PORT=3128

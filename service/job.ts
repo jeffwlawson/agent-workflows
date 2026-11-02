@@ -25,6 +25,11 @@ import { CI_WAIT_SECONDS } from "../review/collect-checks.js";
  * `AGENT_MODEL_IMPLEMENT` the implement runner's, which `implement.yml` reads
  * beside it too, and `AGENT_MODEL_IMPLEMENT_PRD` the implement-prd runner's,
  * which `implement-prd.yml` reads beside it.
+ * `AGENT_EFFORT` and `AGENT_PROMPT_CACHE_TTL`, with each runner's own
+ * `AGENT_EFFORT_<WORKFLOW>`, are the effort and the prompt cache's TTL (#638),
+ * read beside the model (#651). The worker hands a runner the lot, and the
+ * runner's declaration in `shared/contract.ts` keeps the ones it reads, as
+ * each reusable hands its runner its own `vars.X`.
  */
 export const REPOSITORY_VARIABLES = [
   "AGENT_MODEL",
@@ -33,6 +38,13 @@ export const REPOSITORY_VARIABLES = [
   "AGENT_MODEL_UPDATE_BRANCH",
   "AGENT_MODEL_IMPLEMENT",
   "AGENT_MODEL_IMPLEMENT_PRD",
+  "AGENT_EFFORT",
+  "AGENT_EFFORT_REVIEW",
+  "AGENT_EFFORT_FIX",
+  "AGENT_EFFORT_UPDATE_BRANCH",
+  "AGENT_EFFORT_IMPLEMENT",
+  "AGENT_EFFORT_IMPLEMENT_PRD",
+  "AGENT_PROMPT_CACHE_TTL",
   "AGENT_REVIEW_TIMEOUT_MINUTES",
   "AGENT_TIMEOUT_MINUTES",
   "AGENT_MAX_FIX_ROUNDS",

@@ -653,3 +653,43 @@ export const mergeRefreshCapComment = (head: string, base: string, login: string
  */
 export const mergeStoppedComment = (sentence: string, runUrl: string | undefined): string =>
   `**\`${MERGE_LABEL}\` stopped:** ${sentence}\n\n${runUrl === undefined ? "" : `[Workflow run](${runUrl}) · `}To try again, add \`${MERGE_LABEL}\`.\n`;
+
+// A run the plan's usage limit stopped (#635).
+
+/**
+ * The selector of a **resume note**: the comment the service posts where the
+ * plan's usage limit stopped a run that will resume by itself, followed by
+ * the reset instant and the instant the run stopped, each in ISO 8601 UTC,
+ * inside the same HTML comment. The dispatcher's scan reads the newest one on
+ * an item to hold it until the reset, and a conclude command reads it as the
+ * bound: an item that already has one newer than a person last adding its
+ * trigger label has had its one automatic resume. Read only off a comment one
+ * of the loop's accounts posted, never on the marker alone.
+ */
+export const RESUME_NOTE_MARKER = "agent:resume-after";
+
+/** A resume note's marker, naming the reset instant `until` and the instant the run `stopped`. */
+export const resumeNoteMark = (until: string, stopped: string): string => `<!-- ${RESUME_NOTE_MARKER} ${until} stopped ${stopped} -->`;
+
+/** A reset instant as the endings say it: `2026-11-01 05:50 UTC`. */
+export const resetTime = (until: Date): string => `${until.toISOString().slice(0, 16).replace("T", " ")} UTC`;
+
+/**
+ * The two endings of a run the plan's usage limit stopped, one per
+ * orchestrator, so the five kinds that start an agent say them alike.
+ *
+ * - **`resumes`, on the service**: the run will resume after the reset, by
+ *   itself. The trigger label stays on, since the item is waiting on a run,
+ *   and the resume note's marker ends it.
+ * - **`waits`, on Actions**, which has no scheduler: the reset time, and that
+ *   a person adds the label again after it. The label comes off and
+ *   `agent:blocked` goes on, as for any stop.
+ */
+export const USAGE_LIMIT = {
+  resumes: (label: string, until: Date, stopped: Date): string =>
+    `**\`${label}\` is waiting:** It hit the plan's usage limit, and will resume after ${resetTime(until)}. \`${label}\` stays on: ` +
+    `the service runs it again once the limit resets, and nobody needs to add it.\n\n${resumeNoteMark(until.toISOString(), stopped.toISOString())}\n`,
+  waits: (label: string, until: Date, runUrl: string | undefined): string =>
+    `**\`${label}\` stopped:** It hit the plan's usage limit, which resets at ${resetTime(until)}. Nothing on Actions waits for the reset, ` +
+    `so it will not resume by itself.\n\n${runUrl === undefined ? "" : `[Workflow run](${runUrl}) · `}To run it again, add \`${label}\` after ${resetTime(until)}.\n`,
+} as const;

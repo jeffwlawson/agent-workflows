@@ -92,8 +92,9 @@ or closes it by hand.
 
 **A trigger label is on while its run works** (#236). The run leaves it on as it starts and takes
 it off in its last step, however it ends: success, failure, refusal, timeout or cancel. So the
-label on an issue or a pull request is the run working on it now, or the one queued behind it, and
-`agent:in-progress`, which said the same thing in a second write, is retired. On a PRD parent that
+label on an issue or a pull request is the run working on it now, or the one queued behind it, or,
+on the service, the one waiting for the plan's usage limit to reset, which resumes by itself
+(#635), and `agent:in-progress`, which said the same thing in a second write, is retired. On a PRD parent that
 makes `agent:implement` on only during each build run; the advance puts it back. Two rules
 follow from GitHub firing no event for a label already there. The loop adds a trigger label by
 **removing it first**, so a stale one cannot swallow the request. And a request made **while a run

@@ -41,6 +41,7 @@ import {
   MERGE_LABEL,
   ORCHESTRATOR_VARIABLE,
   REVIEW_LABEL,
+  resumeNoteMark,
   SERVICE_ORCHESTRATOR,
   UPDATE_BRANCH_LABEL,
 } from "../../shared/record.js";
@@ -72,6 +73,8 @@ interface Repository {
   unreadable?: boolean;
   /** The open items carrying each label, as a scan lists them, with who added each label last. */
   items: (Labelled & { labels: string[]; labellers: Record<string, string> })[];
+  /** The comments a test put on each item, by its number, oldest first, with who posted each (#635). */
+  conversations?: Record<number, { body: string; author: string }[]>;
 }
 
 /** The world a scan reads beyond the one repository: each installation's account to its repositories. */
@@ -188,6 +191,7 @@ const setup = (
       if (options.holdLabeller === true) await new Promise<void>((resolve) => heldLabellers.push(resolve));
       return repo === REPO ? repository.items.find((item) => item.number === number)?.labellers[label] : undefined;
     },
+    comments: async (repo, number) => (repo === REPO ? (repository.conversations?.[number] ?? []) : []),
     defaultBranch: async () => "main",
     pullsAt: async (repo, sha) => {
       pullsRead.push(sha);
@@ -1869,6 +1873,68 @@ describe("the scan's limit", () => {
 
     expect(s.posted).toHaveLength(3);
     expect(s.comments).toHaveLength(1);
+  });
+});
+
+describe("the scan and the plan's usage limit (#635)", () => {
+  /** The resume note the service's conclude posts, as the App. */
+  const note = (until: string, stopped: string, author = "loop-app[bot]") => ({
+    body: `**\`${REVIEW_LABEL}\` is waiting:** It hit the plan's usage limit.\n\n${resumeNoteMark(until, stopped)}\n`,
+    author,
+  });
+
+  it("skips an item whose newest resume note names a time still ahead, and dispatches it once at the scan the reset asks for, its label still on", async () => {
+    const s = setup();
+    s.repository.items = [pullItem([REVIEW_LABEL])];
+    s.repository.conversations = { 7: [note("2026-10-11T13:00:00.000Z", "2026-10-11T11:50:00.000Z")] };
+
+    await s.dispatcher.scan();
+    expect(s.posted).toHaveLength(0);
+    expect(linesOn(s, "owner/repo#7")).toEqual([
+      "scan: skipped on owner/repo#7: it waits on the plan's usage limit, which resets at 2026-10-11T13:00:00.000Z, and the worker asks for a scan then",
+    ]);
+
+    // The worker's announcement, a margin after the reset.
+    s.advance(62);
+    await announce(s);
+    await announce(s);
+
+    expect(jobsPosted(s).map((job) => job.workflow)).toEqual(["review"]);
+    expect(s.comments).toEqual([]);
+  });
+
+  it("reads only a note the App posted, so anyone else's marker holds nothing", async () => {
+    const s = setup();
+    s.repository.items = [pullItem([REVIEW_LABEL])];
+    s.repository.conversations = { 7: [note("2026-10-11T13:00:00.000Z", "2026-10-11T11:50:00.000Z", "someone")] };
+
+    await s.dispatcher.scan();
+
+    expect(s.posted).toHaveLength(1);
+  });
+
+  it("does not count an item out while it waits, nor say its job ended before its run did, and counts the resume like any scan's dispatch", async () => {
+    const s = setup({ scanLimit: 1 });
+    s.repository.items = [issueItem([IMPLEMENT_LABEL])];
+    await s.dispatcher.scan();
+    expect(jobsPosted(s).map((job) => job.workflow)).toEqual(["implement", "implement-prd"]);
+
+    // The job ran, the plan's limit stopped it, and its conclude left the note with the label on.
+    s.advance(10);
+    s.repository.conversations = { 12: [note("2026-10-11T13:00:00.000Z", "2026-10-11T12:10:00.000Z")] };
+    await crash(s);
+    expect(s.posted).toHaveLength(2);
+    expect(s.comments).toEqual([]);
+
+    s.advance(52);
+    await crash(s);
+    expect(jobsPosted(s).slice(2).map((job) => job.workflow)).toEqual(["implement", "implement-prd"]);
+    expect(s.comments).toEqual([]);
+
+    // The resume's job ends before its run does: that is the scan's limit, as for any dispatch.
+    await crash(s);
+    expect(s.posted).toHaveLength(4);
+    expect(s.comments[0]?.body).toContain(`for \`${IMPLEMENT_LABEL}\` once`);
   });
 });
 

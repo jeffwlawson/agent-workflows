@@ -227,10 +227,23 @@ export const serveWorker = async (settings: InputValues<typeof WORKER>, stdout: 
         await agentLane();
         log(`job ${job.id}: in the agent lane`);
       },
+      // The plan's usage limit (#635): no agent job starts until it resets.
+      limited: (until) => {
+        queue.limit(until);
+        log(`job ${job.id}: the plan's usage limit stopped its agent; no agent job starts until ${queue.heldUntil()?.toISOString() ?? until.toISOString()}`);
+      },
     });
     log(`job ${job.id}: ended. ${phases.map(({ name, outcome }) => `${name}: ${outcome}`).join("; ")}. Its summary: ${path.join(runDir, SUMMARY_FILE)}`);
   };
-  const queue = lanes(work, (error) => log(`a job failed: ${error instanceof Error ? error.message : String(error)}`));
+  const queue = lanes(work, (error) => log(`a job failed: ${error instanceof Error ? error.message : String(error)}`), {
+    // At the reset the dispatcher is asked to scan, as at the worker's start,
+    // so the item the limit stopped, its label still on, is dispatched again.
+    reset: () => {
+      void announceStart(settings.DISPATCHER_TOKEN_URL, settings.WORKER_SECRET, VERSION).then((said) =>
+        log(`the plan's usage limit has reset, so the agent lane is open again, announced: ${said}`),
+      );
+    },
+  });
   const accept = jobDoor({
     secret: settings.WORKER_SECRET,
     version: VERSION,

@@ -655,6 +655,15 @@ read), and by either `implement` workflow when it refuses an issue's *shape* (a 
 nested PRD, or a `wayfinder:*` planning ticket), since re-labelling would only reproduce the same
 refusal.
 
+**A run the plan's usage limit stopped is not a failure** (#635). Its comment says it hit the
+plan's usage limit and gives the reset time in UTC. On Actions nothing waits for the reset, so it
+ends as a stop does, the label off and `agent:blocked` on, and you add the label again after that
+time. On the service orchestrator it **resumes by itself**: the trigger label **stays on**, since the
+item is waiting on a run, `agent:blocked` is not added, and the service runs it again after the
+reset ([*Deploying the service*](./deploying-the-service.md)). Once per limit window: a second
+such stop on the same item, with no one having added the label again since the first, ends as an
+ordinary stop.
+
 **Retired labels.** `agent:in-progress` went when the trigger labels began staying on while their
 run works, and two others before it. Nothing writes or reads any of them.
 `init` deletes each one no open issue or pull request still carries, and names the ones that are

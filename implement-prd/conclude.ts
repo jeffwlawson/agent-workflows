@@ -11,9 +11,10 @@ import { choice, count, json, matching, object, optional, readDirectory, text, t
 import { loopAccounts } from "../shared/loop-accounts.js";
 import { readBranchLog } from "../shared/prd-round.js";
 import { renderPrdStatus, renderProgressList, spliceProgressList, spliceStatus, statusBlock, type ProgressInputs } from "../shared/progress-list.js";
-import { BLOCKED_LABEL, FIX_LABEL, IMPLEMENT_LABEL, PROGRESS_END, PROGRESS_START, REVIEW_LABEL } from "../shared/record.js";
+import { BLOCKED_LABEL, FIX_LABEL, IMPLEMENT_LABEL, PROGRESS_END, PROGRESS_START, REVIEW_LABEL, USAGE_LIMIT } from "../shared/record.js";
 import { roundCounts, type RoundCounts } from "../shared/round-header.js";
 import { sliceRanges } from "../shared/slice-ranges.js";
+import { limitEnding, type LimitEnding } from "../shared/usage-limit.js";
 import { present, rescueIgnored, setAsideNote, SNAPSHOT } from "./hand-over.js";
 
 type Declared = (typeof COMMANDS)["implement-prd:conclude"];
@@ -98,14 +99,36 @@ export const conclude = async (inputs: Inputs, io: Io): Promise<void> => {
 
   const decided = inputs.REFUSED === "false";
   const pushed = state?.pushed === true;
+  let limited: LimitEnding | undefined;
   if (ending.kind === "undecided" || ending.kind === "stopped") {
     const rescued = ending.kind === "stopped" && inputs.BUILD === "true" && !pushed && (await rescueCommits(inputs, io, loop, bundled));
     const reason = ending.reason(reasons);
-    const retry = retryOf(inputs, ending.kind === "undecided", pushed, state?.pr ?? prdPr(inputs), rescued);
-    await tolerated(`Could not post the failure comment on #${parent}.`, () => workflow.comment(parent, failureComment(inputs, reason, retry)));
+    // The plan's usage limit (#635), on a build that decided and pushed
+    // nothing: a wait, which resumes by itself on the service, the parent's
+    // label on and nothing blocked, and builds on the rescue when it does.
+    limited =
+      ending.kind !== "stopped" || pushed
+        ? undefined
+        : await limitEnding({
+            reason,
+            orchestrator: inputs.ORCHESTRATOR,
+            item: parent,
+            label: IMPLEMENT_LABEL,
+            github: io.github,
+            accounts: loopAccounts(inputs.AGENT_LOOP_LOGINS),
+            now: new Date(),
+          });
+    const comment =
+      limited === undefined
+        ? failureComment(inputs, reason, retryOf(inputs, ending.kind === "undecided", pushed, state?.pr ?? prdPr(inputs), rescued))
+        : limited.kind === "resumes"
+          ? USAGE_LIMIT.resumes(IMPLEMENT_LABEL, limited.until, limited.stopped)
+          : USAGE_LIMIT.waits(IMPLEMENT_LABEL, limited.until, inputs.RUN_URL);
+    await tolerated(`Could not post the failure comment on #${parent}.`, () => workflow.comment(parent, comment));
   }
-  if (decided) await tolerated(undefined, () => workflow.removeLabel(parent, IMPLEMENT_LABEL));
-  if (ending.kind === "undecided" || ending.kind === "stopped") await tolerated(undefined, () => workflow.addLabel(parent, BLOCKED_LABEL));
+  const waiting = limited?.kind === "resumes";
+  if (decided && !waiting) await tolerated(undefined, () => workflow.removeLabel(parent, IMPLEMENT_LABEL));
+  if ((ending.kind === "undecided" || ending.kind === "stopped") && !waiting) await tolerated(undefined, () => workflow.addLabel(parent, BLOCKED_LABEL));
 
   if (decided && inputs.BUILD === "true" && ending.kind !== "finished") {
     await showStopped(inputs, io, loop, { pr: state?.pr ?? prdPr(inputs), pushed, subIssues: snapshot?.subIssues.nodes });

@@ -7,7 +7,9 @@ import { workflowRunUrl } from "../shared/common.js";
 import { COMMANDS, type DirectoryFiles, type DirectoryInput } from "../shared/contract.js";
 import type { InputValues } from "../shared/env.js";
 import { choice, json, matching, object, optional, readDirectory, text, type FileParsers, type HandOver } from "../shared/hand-over.js";
-import { BLOCKED_LABEL, FIX_LABEL, MERGE_LABEL, REVIEW_LABEL, UPDATE_BRANCH_LABEL } from "../shared/record.js";
+import { loopAccounts } from "../shared/loop-accounts.js";
+import { BLOCKED_LABEL, FIX_LABEL, MERGE_LABEL, REVIEW_LABEL, UPDATE_BRANCH_LABEL, USAGE_LIMIT } from "../shared/record.js";
+import { limitEnding } from "../shared/usage-limit.js";
 
 type Declared = (typeof COMMANDS)["update-branch:conclude"];
 type Inputs = InputValues<Declared["inputs"]>;
@@ -43,6 +45,7 @@ type Io = CommandIo<Declared["outputs"]>;
  */
 export const conclude = async (inputs: Inputs, io: Io): Promise<void> => {
   const pr = pullRequestNumber(inputs.PR_NUMBER);
+  const accounts = loopAccounts(inputs.AGENT_LOOP_LOGINS);
   const ending = endingOf(inputs);
   if (ending.kind === "refused") {
     // The gate said it and took the label off: there is nothing left to say.
@@ -76,9 +79,23 @@ export const conclude = async (inputs: Inputs, io: Io): Promise<void> => {
       bundle: bundled["failure_reason.txt"],
       publish: published["failure_reason.txt"],
     });
-    await tolerated(`Could not post the failure comment on PR #${pr}.`, () =>
-      workflow.comment(pr, failureComment(inputs, reason, retryOf(state?.pushed === true))),
-    );
+    // The plan's usage limit (#635), where nothing was pushed: a wait, which
+    // resumes by itself on the service, label on and nothing blocked.
+    const limited =
+      state?.pushed === true
+        ? undefined
+        : await limitEnding({ reason, orchestrator: inputs.ORCHESTRATOR, item: pr, label: UPDATE_BRANCH_LABEL, github: io.github, accounts, now: new Date() });
+    if (limited?.kind === "resumes") {
+      await tolerated(`Could not post the usage-limit comment on PR #${pr}.`, () =>
+        workflow.comment(pr, USAGE_LIMIT.resumes(UPDATE_BRANCH_LABEL, limited.until, limited.stopped)),
+      );
+      return;
+    }
+    const comment =
+      limited === undefined
+        ? failureComment(inputs, reason, retryOf(state?.pushed === true))
+        : USAGE_LIMIT.waits(UPDATE_BRANCH_LABEL, limited.until, workflowRunUrl(inputs));
+    await tolerated(`Could not post the failure comment on PR #${pr}.`, () => workflow.comment(pr, comment));
     await removeTrigger(pr, workflow);
     await tolerated(undefined, () => workflow.addLabel(pr, BLOCKED_LABEL));
     return;

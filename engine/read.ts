@@ -90,6 +90,12 @@ export interface WorkflowRun {
   readonly referencedWorkflows: readonly string[];
 }
 
+/** One time a label was added: when, and the login that added it, as REST spells it. */
+export interface LabelEvent {
+  readonly at: string;
+  readonly actor: string;
+}
+
 /** A comment on a pull request's conversation, as far as a record naming it needs it. */
 export interface ConversationComment {
   /** Its node id. */
@@ -273,6 +279,12 @@ export interface GitHubReader {
    * engine spells no record string.
    */
   labelledAt(number: number, label: string): Promise<readonly string[]>;
+  /**
+   * Each time `label` was added to the issue or pull request, oldest first,
+   * with who added it, off its timeline's events: `""` for a deleted account.
+   * The label is the caller's: the engine spells no record string.
+   */
+  labelEvents(number: number, label: string): Promise<readonly LabelEvent[]>;
   /**
    * Every comment on the pull request's conversation, oldest first: what a
    * conversation comment target is checked against, and where its author and
@@ -770,6 +782,21 @@ export const githubReader = (repo: string, transport: Transport): GitHubReader =
       )
         .filter((event) => event.event === "labeled" && event.label?.name === label)
         .map((event) => event.created_at),
+    labelEvents: async (number, label) =>
+      (
+        await paged(
+          `/repos/${repo}/issues/${number}/events`,
+          (page) =>
+            page as readonly {
+              readonly event: string;
+              readonly label?: { readonly name: string } | null;
+              readonly actor?: { readonly login: string } | null;
+              readonly created_at: string;
+            }[],
+        )
+      )
+        .filter((event) => event.event === "labeled" && event.label?.name === label)
+        .map((event) => ({ at: event.created_at, actor: event.actor?.login ?? "" })),
     conversationComments: async (number) => {
       const comments: ConversationComment[] = [];
       for (let after: string | null = null; ; ) {

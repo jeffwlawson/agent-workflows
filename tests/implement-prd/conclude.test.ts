@@ -177,6 +177,7 @@ const INPUTS = (over: Partial<Inputs> = {}): Inputs => ({
   LOOP_TOKEN,
   LOOP_TOKEN_SOURCE: "app",
   AGENT_LOOP_LOGINS: "",
+  ORCHESTRATOR: "actions",
   GITHUB_SERVER_URL: SERVER,
   GITHUB_REPOSITORY: REPO,
   ISSUE_NUMBER: String(PARENT),
@@ -860,4 +861,66 @@ describe("implement-prd:conclude writes the stopped slice back into the progress
     expect(body()).toBe(BUILDING);
     expect(warnings()).toContain(`::warning::The loop's token was not minted, so PRD PR #${PRD_PR}'s progress list still shows the slice building.`);
   }, CEILING);
+});
+
+describe("implement-prd:conclude ends a build the plan's usage limit stopped (#635)", () => {
+  const LIMIT = "claude-code exited with code 1: You've hit your session limit · resets 5:50am (UTC)";
+  const SERVICE = { ORCHESTRATOR: "service", AGENT_LOOP_LOGINS: "loop-app[bot]" } as const;
+  beforeEach(() => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(new Date("2026-11-01T01:10:00Z"));
+    github.discussion.set(PARENT, []);
+    github.labelled.set(PARENT, [{ label: IMPLEMENT_LABEL, at: "2026-11-01T01:00:00Z" }]);
+  });
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it(
+    "on the service, says on the parent it will resume after the reset, and leaves agent:implement on and nothing blocked",
+    async () => {
+      put("runner", "failure_reason.txt", LIMIT);
+
+      await run(AGENT_FAILED(SERVICE));
+
+      expect(comment()).toMatch(/^\*\*`agent:implement` is waiting:\*\* It hit the plan's usage limit, and will resume after 2026-11-01 05:50 UTC\./);
+      expect(writes()).not.toContain(`workflow removeLabel ${IMPLEMENT_LABEL}`);
+      expect(writes()).not.toContain(`workflow addLabel ${BLOCKED_LABEL}`);
+      expect(labels()).toEqual([IMPLEMENT_LABEL]);
+    },
+    CEILING,
+  );
+
+  it(
+    "on Actions, gives the reset time and says to add the label after it",
+    async () => {
+      put("runner", "failure_reason.txt", LIMIT);
+
+      await run(AGENT_FAILED());
+
+      expect(comment()).toBe(
+        `**\`agent:implement\` stopped:** It hit the plan's usage limit, which resets at 2026-11-01 05:50 UTC. Nothing on Actions waits for the reset, so it will not resume by itself.\n\n[Workflow run](${RUN_URL}) · To run it again, add \`agent:implement\` after 2026-11-01 05:50 UTC.\n`,
+      );
+      expect(writes().slice(0, 3)).toEqual(STOPPED_WRITES);
+      expect(labels()).toEqual([BLOCKED_LABEL]);
+    },
+    CEILING,
+  );
+
+  it(
+    "ends a second stop as any other, where the parent already resumed since a person last added the label",
+    async () => {
+      put("runner", "failure_reason.txt", LIMIT);
+      github.discussion.set(PARENT, [
+        { body: "<!-- agent:resume-after 2026-11-01T00:50:00.000Z stopped 2026-11-01T01:05:00.000Z -->", author: "loop-app[bot]", association: "NONE" },
+      ]);
+
+      await run(AGENT_FAILED(SERVICE));
+
+      expect(comment()).toMatch(/^\*\*`agent:implement` stopped:\*\* Claude-code exited with code 1: You've hit your session limit/);
+      expect(writes().slice(0, 3)).toEqual(STOPPED_WRITES);
+      expect(labels()).toEqual([BLOCKED_LABEL]);
+    },
+    CEILING,
+  );
 });

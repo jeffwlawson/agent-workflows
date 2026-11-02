@@ -283,6 +283,14 @@ export const liveAppGitHub = (appId: string, privateKey: string): AppGitHub => {
       }
       return actor;
     },
+    comments: async (repo, number) => {
+      const listed = await pages(`/repos/${repo}/issues/${number}/comments`, () => scanner(repo), (reply) => reply.json, `${repo}#${number}'s comments`);
+      return listed.flatMap((entry) => {
+        const { body, user } = record(entry);
+        const login = record(user)["login"];
+        return typeof body === "string" ? [{ body, author: typeof login === "string" ? login : "" }] : [];
+      });
+    },
     defaultBranch: async (repo) => {
       const reply = await api(`/repos/${repo}`, await scanner(repo));
       const branch = field(reply, "default_branch");

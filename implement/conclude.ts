@@ -7,7 +7,9 @@ import type { CheckoutIo } from "../shared/command-io.js";
 import { COMMANDS, type DirectoryFiles, type DirectoryInput } from "../shared/contract.js";
 import type { InputValues } from "../shared/env.js";
 import { choice, count, json, matching, object, optional, readDirectory, text, type FileParsers, type HandOver, type Parser } from "../shared/hand-over.js";
-import { BLOCKED_LABEL, IMPLEMENT_LABEL, REVIEW_LABEL } from "../shared/record.js";
+import { loopAccounts } from "../shared/loop-accounts.js";
+import { BLOCKED_LABEL, IMPLEMENT_LABEL, REVIEW_LABEL, USAGE_LIMIT } from "../shared/record.js";
+import { limitEnding } from "../shared/usage-limit.js";
 import { present, rescueIgnored, setAsideNote } from "./hand-over.js";
 
 type Declared = (typeof COMMANDS)["implement:conclude"];
@@ -52,6 +54,7 @@ type Io = CheckoutIo<Declared["outputs"]>;
  */
 export const conclude = async (inputs: Inputs, io: Io): Promise<void> => {
   const issue = issueNumber(inputs.ISSUE_NUMBER);
+  const accounts = loopAccounts(inputs.AGENT_LOOP_LOGINS);
   const ending = endingOf(inputs);
   if (ending.kind === "refused") {
     // The gate said it and took the label off, or deferred and must say nothing.
@@ -111,8 +114,24 @@ export const conclude = async (inputs: Inputs, io: Io): Promise<void> => {
     ending.kind === "stopped" && state?.pushed !== true
       ? await rescueCommits(inputs, io, loop, bundled["branch.bundle"] !== undefined, bundled["failure_reason.txt"] !== undefined)
       : ({ kind: "none" } as const);
-  const retry = retryOf(ending.kind === "undecided", state?.pr, saved, inputs.RESCUE_BRANCH);
-  await tolerated(`Could not post the failure comment on #${issue}.`, () => workflow.comment(issue, failureComment(inputs, reason, retry)));
+  // The plan's usage limit (#635), on a run that decided and left nothing on
+  // the record but its rescue: a wait, which resumes by itself on the service,
+  // label on and nothing blocked, and builds on the rescue when it does.
+  const limited =
+    ending.kind !== "stopped" || state?.pushed === true || state?.pr !== undefined
+      ? undefined
+      : await limitEnding({ reason, orchestrator: inputs.ORCHESTRATOR, item: issue, label: IMPLEMENT_LABEL, github: io.github, accounts, now: new Date() });
+  if (limited?.kind === "resumes") {
+    await tolerated(`Could not post the usage-limit comment on #${issue}.`, () =>
+      workflow.comment(issue, USAGE_LIMIT.resumes(IMPLEMENT_LABEL, limited.until, limited.stopped)),
+    );
+    return;
+  }
+  const comment =
+    limited === undefined
+      ? failureComment(inputs, reason, retryOf(ending.kind === "undecided", state?.pr, saved, inputs.RESCUE_BRANCH))
+      : USAGE_LIMIT.waits(IMPLEMENT_LABEL, limited.until, inputs.RUN_URL);
+  await tolerated(`Could not post the failure comment on #${issue}.`, () => workflow.comment(issue, comment));
   if (ending.kind === "stopped") await removeTrigger(issue, workflow);
   await tolerated(undefined, () => workflow.addLabel(issue, BLOCKED_LABEL));
 };

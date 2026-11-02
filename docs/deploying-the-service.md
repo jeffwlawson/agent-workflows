@@ -289,6 +289,12 @@ Each door also answers `GET /health` with `200`.
 - **The scan's counts are held in memory.** A restarted dispatcher forgets how many times its scans
   have dispatched each item (*The scan's limit*, below), so each item's count starts from zero
   again, and the comment saying the scan stopped may be posted once more.
+- **An item waiting on the plan's usage limit is kept by its note, not by the dispatcher.** Its
+  label stays on and its resume note names the reset time (*The worker*, below), so a scan at any
+  restart lists it. A scan before the reset reads the newest resume note and skips the item, so a
+  restart does not dispatch it into the limit again; a scan after the reset dispatches it. What
+  asks for that scan is the worker's announcement at the reset, which a restarted worker no longer
+  makes (*Restarts and outages*, below).
 
 **What a restart recovers: the scan.** At its start, and again whenever the worker announces its
 own start, the dispatcher scans for labelled work nothing holds a job for, one pass at a time (a
@@ -438,6 +444,31 @@ Jobs run in two lanes, each one job at a time, beneath a chain per pull request 
   loop branch is in its issue's chain too, since both push to that branch: a PRD PR's jobs run in
   line with its parent's implement-prd jobs (`agent/prd-<parent>-…`), and an issue branch's PR's
   with its issue's (`agent/issue-<n>-…`).
+
+**The plan's usage limit holds the agent lane** (#635). The agent's CLI stops a run that hits the
+plan's usage limit with `You've hit your session limit · resets 5:50am (UTC)`, or the same with
+another kind of limit or time. That run is not a failure: its conclude command says on the item
+that it hit the plan's usage limit and will resume after the reset time in UTC, leaves the trigger
+label on, and adds no `agent:blocked`. The worker reads the reset instant off the runner's reason
+as it ends, the next such time after the run ended, and holds the agent lane until it and two
+minutes more (`RESET_MARGIN_MINUTES`, a margin for the two hosts' clocks): no agent job starts, and
+no update-branch job's agent part, so the jobs behind the stop do not hit the same limit one by one.
+The light lane runs on meanwhile: a filing, a clean refresh, a gate that refuses. A later reset
+extends the hold. When it ends, the agent lane runs its jobs in arrival order, as before, and the
+worker announces to the dispatcher as it does at its start, so the dispatcher's scan lists the
+stopped item, its label still on, finds nothing held for it, and dispatches it, decided as any
+label's delivery is. A job held past its deadline ends at its first token request, as any late job
+does. Only the CLI's message in that shape counts: an API rate limit, a billing stop, or a zone other
+than UTC is an ordinary stop.
+
+**One automatic resume per item per limit window.** A second usage-limit stop on an item whose
+newest resume note from the App is newer than the latest time a person added its trigger label ends
+as any stopped run does: the failure comment, the label off, `agent:blocked` on. A person adding the
+label again allows one more. The note is on the record, so the bound survives either process's
+restart. A resume is a scan's dispatch, counted toward `SCAN_DISPATCH_LIMIT` as any is, but a
+resume note the stopped run posted after the scan's last counted dispatch says that job reached its
+ending, so the count starts again there, and the scan's "ended before its run did" comment is never
+what an item waiting on a reset gets.
 
 Whether a job starts an agent is often known only once its gate or merge has run, so the lane is
 the kind's, by what it *can* do. The lanes run no more than one agent at a time, so the host's
@@ -682,6 +713,16 @@ The job door also answers `GET /health` with `200`.
   ends the worker's process is dispatched again by the scan up to `SCAN_DISPATCH_LIMIT`'s number of
   times, and then left for a person, with a comment on its item saying so (*The scan's limit*,
   above).
+- **A worker restarted while the plan's usage limit holds** forgets the hold and the announcement
+  it would have made at the reset: both are in its memory only. Its start announcement makes the
+  dispatcher scan, which still skips an item whose resume note names a reset still ahead, so
+  nothing is dispatched into the limit. But nothing then asks for a scan at the reset, so a
+  waiting item waits for the next scan after it: either process's next start. And a labelled item
+  a job is not held for that has no note, such as one queued behind the stop, is dispatched at
+  that start, before the reset, hits the limit, and takes the usage-limit ending itself.
+- **A dispatcher restarted while an item waits** reads the item's resume note at its start scan
+  and skips it until the reset, so the item is not dispatched early. The worker's announcement at
+  the reset makes the new dispatcher scan as it would have the old one.
 - **Each piece restarts itself, in order.** Run both processes under something that restarts them
   at boot and after a crash (a container's restart policy, a systemd unit), with the worker
   started after its proxy, and the firewall around the worker's host in place before the worker's

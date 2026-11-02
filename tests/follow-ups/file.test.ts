@@ -4,8 +4,8 @@ import { file } from "../../follow-ups/file.js";
 import type { CommandIo, Token } from "../../shared/command-io.js";
 import type { COMMANDS } from "../../shared/contract.js";
 import { OPENING } from "../../follow-ups/checklist.js";
-import { FOLLOW_UP_STUB_LABEL, FOLLOW_UPS_LABEL, POST_MERGE_CHECKLIST_MARK, stubMarker, TRIAGE_LABEL } from "../../shared/record.js";
-import { renderFollowUpsBlock, type FollowUp } from "../../shared/review-output.js";
+import { FOLLOW_UP_STUB_LABEL, FOLLOW_UPS_LABEL, minorFindingsMarker, POST_MERGE_CHECKLIST_MARK, stubMarker, TRIAGE_LABEL } from "../../shared/record.js";
+import { followUpsPayload, renderFollowUpsBlock, type FollowUp } from "../../shared/review-output.js";
 import { fakeGitHub, fakeReader, fakeWriters, type FakeGitHub, type ReceivedRead } from "../engine/fakes.js";
 
 /**
@@ -298,6 +298,67 @@ describe("follow-ups:file on a server error filing a stub", () => {
     );
     expect(comments()).toEqual([]);
     expect(markerOn()).toBe(true);
+  });
+});
+
+/**
+ * The minor findings (#616), filed as one issue (#625): one create for the
+ * group, beside a stub for each out-of-scope follow-up.
+ */
+describe("follow-ups:file's minor-findings issue", () => {
+  const minor = (n: number): FollowUp => followUp(n, { title: `Minor ${n}`, severity: "low", id: `fu-m${n}`, kind: "minor" });
+  const recorded = (minors: readonly FollowUp[], rest: readonly FollowUp[]): void => {
+    github.reviewHistory.set(PR, [
+      { author: "github-actions", body: `A summary.\n\n${followUpsPayload([...minors, ...rest], 0, minors.length)}`, lastEditedAt: null, url: REVIEW_URL },
+    ]);
+  };
+
+  it("files the minors as one issue with the stub's labels, beside a stub each, and names it in the report", async () => {
+    recorded([minor(0), minor(1), minor(2)], [followUp(3), followUp(4)]);
+
+    await run();
+
+    expect(writes()).toEqual(["workflow createIssue", "workflow createIssue", "workflow createIssue", "workflow comment", "workflow removeLabel"]);
+    expect(filed()).toEqual([
+      [33, `Minor findings from #${PR}`, [TRIAGE_LABEL, FOLLOW_UP_STUB_LABEL]],
+      [34, "Finding 3", [TRIAGE_LABEL, FOLLOW_UP_STUB_LABEL]],
+      [35, "Finding 4", [TRIAGE_LABEL, FOLLOW_UP_STUB_LABEL]],
+    ]);
+    expect(github.filed.get(33)?.body.split("\n").at(-1)).toBe(minorFindingsMarker(PR));
+    expect(comments()[0]).toContain(`- **Filed** #33: minor findings from #${PR} (3)`);
+    expect(comments()[0]).toContain("- **Filed** · `src/f3.ts` · #34");
+    expect(markerOn()).toBe(false);
+  });
+
+  it("files no second on a retry, and reports it as already filed", async () => {
+    recorded([minor(0)], []);
+    await run();
+    github.pullRequests.get(PR)?.labels.push(FOLLOW_UPS_LABEL);
+    await run();
+
+    expect(filed().map(([number, title]) => [number, title])).toEqual([[33, `Minor findings from #${PR}`]]);
+    expect(comments()[1]).toContain(`- **Already filed by this pull request** · #33: minor findings from #${PR} (1)`);
+    expect(markerOn()).toBe(false);
+  });
+
+  it("carries on with the issue GitHub filed all the same on a server error, read back by its key", async () => {
+    recorded([minor(0)], []);
+    github.fails = (write, call) => write.type === "createIssue" && call === "POST issues" && { status: 502, landed: true };
+
+    await run();
+
+    expect(filed().map(([number, title]) => [number, title])).toEqual([[33, `Minor findings from #${PR}`]]);
+    expect(warnings()).toEqual([expect.stringMatching(/^::warning::GitHub answered filing "Minor findings from #32" with a server error .*, but #33 is that stub/)]);
+    expect(markerOn()).toBe(false);
+  });
+
+  it("files nothing where the marker was removed before the merge", async () => {
+    github.pullRequests.get(PR)?.labels.splice(0);
+    recorded([minor(0)], [followUp(1)]);
+
+    await run();
+
+    expect(writes()).toEqual([]);
   });
 });
 

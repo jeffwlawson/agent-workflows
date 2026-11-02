@@ -404,6 +404,18 @@ export const stubMarker = (location: string, prNumber: number, seq: number): str
   `<!--${embeddableJson({ version: STUB_KEY_VERSION, location, pr: prNumber, seq })}-->`;
 
 /**
+ * The key on a pull request's **minor-findings issue** (#625): the one issue
+ * its minor findings are filed as, matched by the pull request and the kind
+ * alone, since a pull request files at most one. Additive rather than a new
+ * `STUB_KEY_VERSION`: it is the same version with a shape of its own, so every
+ * stub filed under `stubMarker` is read as it always was, and a reader that
+ * knows only that shape skips this one as a payload it cannot read. Read back
+ * by the planner's `issueKey`, beside the stub's.
+ */
+export const minorFindingsMarker = (prNumber: number): string =>
+  `<!--${embeddableJson({ version: STUB_KEY_VERSION, kind: "minor", pr: prNumber })}-->`;
+
+/**
  * What `follow-ups:conclude` says of a filing run that stopped (#511), word
  * for word as the shell step *Report the failure on the PR* said it before:
  * the reason it gives where nothing more is known, and the retry. The retry

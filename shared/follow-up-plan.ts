@@ -8,7 +8,14 @@ import {
   parseFollowUpsBlock,
   type FollowUp,
 } from "./review-output.js";
-import { FOLLOW_UPS_LABEL, FOLLOW_UP_STUB_LABEL, STUB_KEY_VERSION, stubMarker, TRIAGE_LABEL } from "./record.js";
+import {
+  FOLLOW_UPS_LABEL,
+  FOLLOW_UP_STUB_LABEL,
+  minorFindingsMarker,
+  STUB_KEY_VERSION,
+  stubMarker,
+  TRIAGE_LABEL,
+} from "./record.js";
 
 /**
  * The filing decision (#48): everything gathered from GitHub in, the list of
@@ -80,8 +87,11 @@ export interface PlannedIssue {
   readonly title: string;
   readonly body: string;
   readonly labels: readonly string[];
-  /** The normalised path this was filed against — for the log, and for a reader of the plan. */
-  readonly path: string;
+  /**
+   * The normalised path this was filed against — for the log, and for a reader
+   * of the plan. Absent on the minor-findings issue (#625), which lists many.
+   */
+  readonly path?: string;
   /**
    * The token standing in for this issue's reference in `report`, to be
    * replaced with `#<number>` once the issue exists.
@@ -187,6 +197,7 @@ const normaliseLocation = (location: string): string => {
 const STUB_PAYLOAD = /<!--\s*(\{[\s\S]*?\})\s*-->/g;
 
 interface StubKey {
+  readonly kind: "stub";
   /** The `location` exactly as the review recorded it. Identity compares this. */
   readonly location: string;
   /** That location with its line number stripped. Relatedness matches on this. */
@@ -196,8 +207,15 @@ interface StubKey {
   readonly seq: number;
 }
 
+/** The key on a pull request's minor-findings issue (#625): the pull request, and nothing else. */
+interface MinorFindingsKey {
+  readonly kind: "minor";
+  readonly pr: number;
+}
+
 /**
- * The payload on a stub, or `undefined` when it has none this version can read.
+ * The payload on a filed issue, a stub's or a minor-findings issue's, or
+ * `undefined` when it has none this version can read.
  *
  * A stub without one — hand-written, or from before a format change — simply
  * does not match, so the finding is filed as a duplicate rather than skipped.
@@ -214,7 +232,7 @@ interface StubKey {
  * unrelated issue, and, where the decoy named this pull request, skipping a
  * real finding as one already filed.
  */
-const stubKey = (body: string): StubKey | undefined => {
+const issueKey = (body: string): StubKey | MinorFindingsKey | undefined => {
   for (const match of [...body.matchAll(STUB_PAYLOAD)].reverse()) {
     let payload: unknown;
     try {
@@ -228,6 +246,10 @@ const stubKey = (body: string): StubKey | undefined => {
     const location = record["location"];
     const pr = record["pr"];
     const seq = record["seq"];
+    // Read in the same pass as a stub's, so the last readable key wins
+    // whichever shape it is: the minor-findings issue quotes every finding's
+    // prose above its key, and a stub key in that prose must not speak for it.
+    if (record["kind"] === "minor" && typeof pr === "number") return { kind: "minor", pr };
     if (typeof location !== "string" || typeof pr !== "number" || typeof seq !== "number") {
       continue;
     }
@@ -235,30 +257,34 @@ const stubKey = (body: string): StubKey | undefined => {
     // by hand — or by a release whose normalisation was narrower — is still
     // related to what this run would produce. The raw string is kept beside it
     // because identity has to compare what was written, not what it reduces to.
-    return { location, path: normaliseLocation(location), pr, seq };
+    return { kind: "stub", location, path: normaliseLocation(location), pr, seq };
   }
   return undefined;
+};
+
+/** A stub's key, or `undefined` where the body carries none, the minor-findings issue's included. */
+const stubKey = (body: string): StubKey | undefined => {
+  const key = issueKey(body);
+  return key?.kind === "stub" ? key : undefined;
 };
 
 /**
  * Whether `body` is the stub `issue` files, which is how a server error on
  * creating it is read back (#510): its key is this finding's identity, `pr`,
- * `location` and `seq`, both read by `stubKey`, so the last readable payload
+ * `location` and `seq`, both read by `issueKey`, so the last readable payload
  * wins on each side and a quoted decoy in a stub's prose cannot stand in for
  * it. The planned body's own key is its last line, `stubBody` writes it there.
+ * The minor-findings issue (#625) is read back the same way, by its own key:
+ * the pull request, since it files one.
  */
 export const isStubFor =
   (issue: PlannedIssue) =>
   (body: string): boolean => {
-    const planned = stubKey(issue.body);
-    const filed = stubKey(body);
-    return (
-      planned !== undefined &&
-      filed !== undefined &&
-      filed.pr === planned.pr &&
-      filed.seq === planned.seq &&
-      filed.location === planned.location
-    );
+    const planned = issueKey(issue.body);
+    const filed = issueKey(body);
+    if (planned === undefined || filed === undefined || filed.pr !== planned.pr) return false;
+    if (planned.kind === "minor" || filed.kind === "minor") return planned.kind === filed.kind;
+    return filed.seq === planned.seq && filed.location === planned.location;
   };
 
 const isClosed = (stub: FilingStub): boolean => stub.state.toLowerCase() === "closed";
@@ -298,6 +324,16 @@ const matchIdentity = (
       key.seq === seq &&
       key.location === followUp.location
     );
+  });
+
+/**
+ * This pull request's minor-findings issue (#625), open or closed, as identity
+ * reads a stub: it files one, so the pull request is the whole key.
+ */
+const matchMinorFindings = (stubs: readonly FilingStub[], prNumber: number): FilingStub | undefined =>
+  stubs.find((stub) => {
+    const key = issueKey(stub.body);
+    return key?.kind === "minor" && key.pr === prNumber;
   });
 
 /**
@@ -405,9 +441,6 @@ const stubBody = (
   [
     followUp.body.trim(),
     "",
-    // A minor finding is this pull request's own code (#616), not a problem
-    // out of its scope, and the stub says which it is.
-    ...(isMinor(followUp) ? [MINOR_NOTE, ""] : []),
     `**Location:** \`${oneLine(followUp.location)}\``,
     "",
     `**Severity:** ${severityTextBadge(followUp.severity)}`,
@@ -423,13 +456,48 @@ const stubBody = (
   ].join("\n");
 
 /**
- * What a stub filed for a **minor finding** says it is (#616): a finding in
- * that pull request's own code, which the review recorded rather than asked
- * to have fixed, because every finding open on it was below the repository's
- * fix threshold. Names no issue and no repository, as `MOVED_NOTE` does not.
+ * What the minor-findings issue says it is (#616, #625): findings in that pull
+ * request's own code, which the review recorded rather than asked to have
+ * fixed, because every finding open on it was below the repository's fix
+ * threshold.
  */
 const MINOR_NOTE =
-  "_A minor finding in that pull request's own code: the review recorded it rather than asking for it to be fixed before the merge, since every finding open on the pull request was below the repository's `AGENT_FIX_MIN_SEVERITY`._";
+  "_Minor findings in that pull request's own code: the review recorded them rather than asking for them to be fixed before the merge, since every finding open on the pull request was below the repository's `AGENT_FIX_MIN_SEVERITY`._";
+
+/** The minor-findings issue's title (#625), naming the pull request, so it is never another's match. */
+const minorFindingsTitle = (prNumber: number): string => `Minor findings from #${prNumber}`;
+
+/** A title held to `MAX_STUB_TITLE`, cut with an ellipsis rather than refused. */
+const heldTitle = (title: string): string =>
+  title.length <= MAX_STUB_TITLE ? title : `${title.slice(0, MAX_STUB_TITLE - 1)}…`;
+
+/**
+ * The minor-findings issue's body (#625): one list item per finding, its
+ * severity, title and location on the line a triager scans, and its body
+ * collapsed beneath; then the provenance a stub carries, and its key last.
+ * No relation line: relatedness is per finding in code a pull request did not
+ * change, and these are one pull request's polish in its own.
+ */
+const minorFindingsBody = (minors: readonly FollowUp[], review: FilingReview, prNumber: number): string =>
+  [
+    MINOR_NOTE,
+    "",
+    ...minors.flatMap((followUp) => [
+      `- ${severityTextBadge(followUp.severity)} **${oneLine(followUp.title)}** · \`${oneLine(followUp.location)}\``,
+      "",
+      "  <details><summary>Details</summary>",
+      "",
+      ...followUp.body.trim().split("\n").map((line) => (line === "" ? "" : `  ${line}`)),
+      "",
+      "  </details>",
+      "",
+    ]),
+    "---",
+    "",
+    `Found in [a review](${review.url}) on #${prNumber}. An earlier review on that PR may have raised some of them first.`,
+    "",
+    minorFindingsMarker(prNumber),
+  ].join("\n");
 
 /**
  * Decide what a merged pull request's recorded findings become.
@@ -524,12 +592,44 @@ export const planFollowUps = (input: FilingInput, accounts: LoopAccounts): Filin
   const issues: PlannedIssue[] = [];
   const lines: string[] = [];
 
+  // The minor findings, filed as one issue (#625). One a release before this
+  // filed as its own stub, under the stub's key, is met by identity as any
+  // stub is and left out of the group, so a retry across the upgrade files
+  // nothing twice.
+  const grouped: FollowUp[] = [];
+  for (const [seq, followUp] of kept.entries()) {
+    if (!isMinor(followUp)) continue;
+    const already = matchIdentity(input.stubs, followUp, seq, input.prNumber);
+    if (already) {
+      lines.push(
+        `- **Already filed by this pull request** · \`${normaliseLocation(followUp.location)}\` · #${already.number}, which it opened for this same finding already.`,
+      );
+    } else grouped.push(followUp);
+  }
+  if (grouped.length > 0) {
+    const what = `minor findings from #${input.prNumber} (${grouped.length})`;
+    const already = matchMinorFindings(input.stubs, input.prNumber);
+    if (already) {
+      lines.push(`- **Already filed by this pull request** · #${already.number}: ${what}`);
+    } else {
+      const placeholder = "{{follow-up-issue-minor}}";
+      issues.push({
+        title: heldTitle(minorFindingsTitle(input.prNumber)),
+        body: minorFindingsBody(grouped, review, input.prNumber),
+        labels: STUB_LABELS,
+        placeholder,
+      });
+      lines.push(`- **Filed** ${placeholder}: ${what}`);
+    }
+  }
+
   // `seq` is the finding's index into `kept` — the reviewer's list as this run
   // reads it — and **never** a count of what has been filed. A counter only
   // advances when something files, so on a retry where findings 0 and 1 already
   // filed, finding 1 would come round as `seq` 0 and match finding 0's stub:
   // the same silent skip, reintroduced one line at a time.
   for (const [seq, followUp] of kept.entries()) {
+    if (isMinor(followUp)) continue;
     const path = normaliseLocation(followUp.location);
     const title = oneLine(followUp.title);
 
@@ -549,7 +649,7 @@ export const planFollowUps = (input: FilingInput, accounts: LoopAccounts): Filin
       // visible without opening the issue, but it eats the left edge of every
       // title in a triage list — where a scanner's eye lands — and
       // `pr-follow-up` already carries the same fact in colour.
-      title: title.length <= MAX_STUB_TITLE ? title : `${title.slice(0, MAX_STUB_TITLE - 1)}…`,
+      title: heldTitle(title),
       body: stubBody(
         followUp,
         review,
@@ -566,7 +666,7 @@ export const planFollowUps = (input: FilingInput, accounts: LoopAccounts): Filin
     // report's job was making *skips* visible and there are none left to make
     // visible; a relation is for the triager of the new stub, not for a merged
     // pull request nobody opens again.
-    lines.push(`- **Filed**${isMinor(followUp) ? " (minor finding)" : ""} · \`${path}\` · ${placeholder}`);
+    lines.push(`- **Filed** · \`${path}\` · ${placeholder}`);
   }
 
   // A readable block that asked for nothing: the retraction, and the ordinary

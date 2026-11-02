@@ -760,7 +760,8 @@ gh label create "needs-triage"     --color D93F0B --description "Maintainer need
   the filing caller (§4). The review step that adds it warns rather than failing, so without the
   label the findings still reach the review body — but nothing marks the pull request, so nothing
   can file them later and nothing can list the ones that went unfiled.
-- **`pr-follow-up`** and **`needs-triage`** are what a filed stub arrives carrying, and they are
+- **`pr-follow-up`** and **`needs-triage`** are what a filed stub arrives carrying (and the one
+  *Minor findings from #N* issue a pull request's minor findings are filed as, #625), and they are
   required **only if you install the filing caller**. Missing, the runner files the stub
   *unlabelled* and says so with a `::warning::` — a stub outside your triage queue is worth more
   than a finding nobody kept — but an unlabelled stub is invisible to exactly the queue it was
@@ -1300,8 +1301,10 @@ or not, it posts one **post-merge checklist**: the *After merge, by a human* ite
 issue's latest brief, or on a PRD PR of the parent's and every sub-issue's, each under its issue,
 read from trusted text only, and posted once (#544). And where `agent:follow-ups` is on, it files
 the pull request's recorded out-of-scope findings as triageable issues, each its own, and its
-still-unresolved **minor findings** (§3b, *The fix threshold*), each stub saying it is a minor finding
-in that pull request's code (one issue per pull request once #625 lands): the label gates the filing
+still-unresolved **minor findings** (§3b, *The fix threshold*) as **one** issue, *Minor findings from
+#N*, listing each with its severity, title and location, its text folded beneath, and the same
+labels and provenance a stub carries (#625). A pull request with no minor findings files no such
+issue, and a PRD PR files one however many slice rounds recorded them. The label gates the filing
 alone, so removing it opts out of filing and not of the checklist. Having its job is the whole of
 switching both on:
 the runner subcommand ships inside the package and the reusable lives here, but nothing invokes a

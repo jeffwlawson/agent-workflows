@@ -33,6 +33,13 @@ import { roundHeaderData } from "./hand-over.js";
  *   `agent:review` off, then `agent:blocked` where a maintainer has to act.
  * - **A run that did not finish**, the review job's or this job's: the error
  *   verdict, the failure comment, `agent:review` off, `agent:blocked`.
+ * - **A run the plan's usage limit stopped** (#635): the error verdict, then
+ *   on the service the comment saying it will resume after the reset, and
+ *   nothing more: `agent:review` stays on, `agent:blocked` is not added, and
+ *   `ended.json` says `resumes`, since the service resumes it. On Actions,
+ *   the comment giving the reset time and saying to add the label after it,
+ *   then `agent:review` off and `agent:blocked`. A second such stop with no
+ *   add of the label since the first ends as a run that did not finish.
  * - **A review that was posted**: `agent:blocked` off, the ready mark, the
  *   note that no automatic fix round is starting where one of #200's stops
  *   kept it from asking (#425), then `agent:review` off, and the hand-off:

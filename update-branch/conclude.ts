@@ -26,6 +26,13 @@ type Io = CommandIo<Declared["outputs"]>;
  * - **A run that stopped**, any of its three jobs: the failure comment, with
  *   the reason and the retry the ending calls for; `agent:update-branch`
  *   off; `agent:blocked`.
+ * - **A run the plan's usage limit stopped** (#635), where nothing was
+ *   pushed: on the service, the comment saying it will resume after the
+ *   reset, and nothing more: `agent:update-branch` stays on and
+ *   `agent:blocked` is not added, since the service resumes it. On Actions,
+ *   the comment giving the reset time and saying to add the label after it,
+ *   then `agent:update-branch` off and `agent:blocked`. A second such stop
+ *   with no add of the label since the first ends as a run that stopped.
  * - **A run that finished**, `update-branch:publish` included:
  *   `agent:update-branch` off, and asked for again where the pull request's
  *   head moved on from the one this run left; then, on a pull request

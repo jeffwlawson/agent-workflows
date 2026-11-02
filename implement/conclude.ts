@@ -34,6 +34,15 @@ type Io = CheckoutIo<Declared["outputs"]>;
  *   naming the rescue; `agent:implement` off; `agent:blocked`. Where publish
  *   opened a pull request before it stopped, the comment names it and says to
  *   add `agent:review` on it, since a retry would be refused for it.
+ * - **A run the plan's usage limit stopped** (#635), after a gate that
+ *   decided, where nothing was pushed and no pull request opened: its commits
+ *   rescued, as for any stop. On the service, the comment saying it will
+ *   resume after the reset, and nothing more: `agent:implement` stays on and
+ *   `agent:blocked` is not added, since the service resumes it and builds on
+ *   the rescue. On Actions, the comment giving the reset time and saying to
+ *   add the label after it, then `agent:implement` off and `agent:blocked`. A
+ *   second such stop with no add of the label since the first ends as a run
+ *   that stopped.
  * - **A gate that died before deciding**: the failure comment, with the
  *   retry that says to remove the label first, and `agent:blocked`, but
  *   **`agent:implement` stays on**. That run may have been the one that

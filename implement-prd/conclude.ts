@@ -43,6 +43,14 @@ type Io = CheckoutIo<Declared["outputs"]> & { readonly fetcher: GitFetcher };
  *   failure comment, with the reason and the retry the ending calls for;
  *   `agent:implement` off; `agent:blocked`; and, on a build, the stopped
  *   slice's row.
+ * - **A run the plan's usage limit stopped** (#635), after a gate that
+ *   decided, where nothing was pushed: its commits rescued and the stopped
+ *   slice's row written, as for any stop. On the service, the comment on the
+ *   parent saying it will resume after the reset: `agent:implement` stays on
+ *   and `agent:blocked` is not added, since the service resumes it. On
+ *   Actions, the comment giving the reset time and saying to add the label
+ *   after it, then `agent:implement` off and `agent:blocked`. A second such
+ *   stop with no add of the label since the first ends as a run that stopped.
  * - **A gate that died before deciding**, in either shape (no `gate.json`, or
  *   one with no `proceed`, both of which leave `REFUSED` empty): the failure
  *   comment, with the retry that says to remove the label first, and

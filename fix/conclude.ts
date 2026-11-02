@@ -31,6 +31,14 @@ type Io = CheckoutIo<Declared["outputs"]>;
  *   rescued, where nothing was pushed to the pull request; the failure
  *   comment, with the reason and the retry the ending calls for; `agent:fix`
  *   off; `agent:blocked`.
+ * - **A run the plan's usage limit stopped** (#635), where nothing was pushed
+ *   and no note posted: its commits rescued, as for any stop. On the service,
+ *   the comment saying it will resume after the reset, and nothing more:
+ *   `agent:fix` stays on and `agent:blocked` is not added, since the service
+ *   resumes it. On Actions, the comment giving the reset time and saying to
+ *   add `agent:fix` after it, then `agent:fix` off and `agent:blocked`. Not
+ *   worded as a fix that failed either way. A second such stop with no add of
+ *   the label since the first ends as a run that stopped.
  *
  * What ran and how it ended are inputs, each job's result and each step's
  * outcome as the adapter saw it, and this works out the ending from them.

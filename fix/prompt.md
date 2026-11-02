@@ -170,8 +170,8 @@ comma, colon, semicolon, parentheses, or a new sentence instead.
 Refer to issues and pull requests by `#N` alone, without restating their titles: GitHub shows the
 title beside the reference already.
 
-**You close nothing.** Every thread you reply to stays open, whichever outcome you report; the next
-review reads the code and closes the ones it can see are fixed. You are the author of the fix, so
+**You close nothing**, not yourself and not by asking for it. Every thread you reply to stays open,
+whichever outcome you report, and nothing you report resolves one; the next review reads the code and closes the ones it can see are fixed. You are the author of the fix, so
 your report is a claim about it and not a verification of it, which is why it is worth writing
 plainly enough for someone else to check.
 
@@ -256,9 +256,7 @@ write the note for that reviewer, who has to check it: quote what it rests on.
 **Silence is the default here too.** At most **two** are posted per run. A note is not a place for
 a preference, a "consider…", or anything this pull request should simply fix.
 
-Do not push. Do not edit labels. Do not create GitHub comments or reviews yourself. Do not resolve
-review threads: not yourself, and not by asking for it. Nothing you report resolves one. The
-workflow posts your replies and leaves every thread open.
+Do not push. Do not edit labels. Do not create GitHub comments or reviews yourself.
 
 When complete, output only `<promise>COMPLETE</promise>`, with no summary of what you did: the
 outcomes above are asked for after you finish, and that is the only report anything reads.

@@ -114,8 +114,7 @@ but *did the last round's findings land, and did the new commits break anything?
   **previously missed**: report it as a finding like any other, and label it as the section below
   says. It is this pull request's to fix before it merges:
   the record was wrong about the change, which is a stronger reason to stop the merge than an
-  ordinary finding rather than a weaker one. It does **not** go to `followUps`, which is where an
-  earlier version of this brief sent it.
+  ordinary finding rather than a weaker one. It does **not** go to `followUps`.
 - Anything real but outside this pull request's scope is still a `followUps` entry, on the bar
   stated with that list. Whether to re-record the entries an earlier round listed is said under
   *FOLLOW-UPS EARLIER ROUNDS RECORDED* below.
@@ -419,8 +418,7 @@ understated one sends a real problem to a follow-up instead of a fix.
 Two prose fields for the review, two for the pull request itself, and **none of them restates a
 finding.** Every finding is already in the
 posted body above them, with its severity and a link to where it was raised, so a second telling
-is the same problem read twice, which is exactly what made the body long enough to bury the
-record in it.
+is the same problem read twice.
 
 - **`assessment`**: one sentence, under about 200 characters, naming **what is unresolved**:
   *"Sequence validation, empty-column rules and undo-safe state handling are each wrong in a way

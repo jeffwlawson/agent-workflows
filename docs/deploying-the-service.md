@@ -272,6 +272,7 @@ so does an App whose own record cannot be read, since that is where the App's ow
 | `JOB_DEADLINE_MARGIN_MINUTES` | optional | `60` | added to a job's own time limit for its deadline, review's (its CI wait and `AGENT_REVIEW_TIMEOUT_MINUTES`) or fix's, update-branch's and implement's (`AGENT_TIMEOUT_MINUTES`), or implement-prd's (35 minutes and `AGENT_TIMEOUT_MINUTES`), or follow-ups' (10 minutes), or merge's (20 minutes), covering the phases around the runner's and the time a job waits in the worker's queue: in its lane, behind an earlier job for its item, and, for an update-branch whose merge conflicted, for the agent lane, a hold on the plan's usage limit included (*The worker*, below) |
 | `EXTRA_OWNERS` | optional | `""` | accounts, comma-separated, whose installations the dispatcher serves besides the App owner's; empty is none. An installation on any other account is refused |
 | `SCAN_DISPATCH_LIMIT` | optional | `2` | how many times the scan dispatches an item for a label that stays on across scans before it leaves the item for a person, and comments once to say so (*The scan's limit*, below), never applied to `agent:merge`. At least `1`: `0` is refused at start, since it would not turn the scan off |
+| `SCAN_MERGED_WINDOW_DAYS` | optional | `7` | how many days back the scan lists merged pull requests still carrying `agent:follow-ups` (*What a restart recovers*, below), so one someone left the label on for months is not dispatched at every restart. A positive whole number: `0` is refused at start |
 
 Each door also answers `GET /health` with `200`.
 
@@ -279,6 +280,9 @@ Each door also answers `GET /health` with `200`.
 
 - **A delivery that arrives while the dispatcher is down is lost.** GitHub does not redeliver on
   its own; redeliver it from the App's *Recent Deliveries*, or remove the label and add it again.
+  The scan below recovers what a label still says is owed: a trigger label on an open item, and
+  `agent:follow-ups` on a pull request merged within `SCAN_MERGED_WINDOW_DAYS`. A merge whose pull
+  request carried no label says nothing is owed, so its post-merge checklist stays lost.
 - **The jobs it dispatched are held in memory, and only the started ones are lost to a restart.** Each
   job carries the id of the dispatcher instance that sent it, fresh at each start, and the scan at
   a restarted dispatcher's start names its own at the worker's held door. The worker drops every
@@ -309,8 +313,20 @@ event for that label stands in for one, held to the same rule: the App's own log
 can write to the repository *now*. An item with no such event is skipped and logged, never
 dispatched on a guess.
 
-`agent:follow-ups` is never scanned: it is a marker that stays on until the pull request is merged
-and filed, not a label that says a run is working, and a merge's follow-ups job comes from the merge.
+`agent:follow-ups` is not listed among the open items: on an open pull request it is a marker that
+stays on until the merge, not a label that says a run is working. On a **merged** pull request it
+says the filing is owed, since `follow-ups:file` takes it off last, after it has filed and
+reported. So the scan also lists the pull requests merged within `SCAN_MERGED_WINDOW_DAYS` (default
+`7`) that still carry it, closed without a merge left alone, and decides each as the merge's
+delivery is decided: the same opt-in, a head in the same repository (a fork's is refused and
+logged), and the same follow-ups job, carrying the pull request's number alone. No author gate runs
+on who merged, as none runs on a merge's delivery, but the label is held to the scan's rule above:
+the actor of its latest `labeled` event is the App or someone who can write now, or the item is
+skipped and logged. A filing that refuses leaves the label on by design, an edited review being the
+standing case, and nothing on the record tells that from a run that never happened, so a refused
+filing is dispatched again at each restart within the window, up to the scan's limit below, and
+then left for a person. A merge whose pull request carried no label is not listed, so its
+post-merge checklist, lost with its delivery, is not recovered.
 `agent:merge` is not a run's label either, but the maintainer's standing decision, so a gate that
 ends with it on is the normal case: the scan dispatches a merge job for an armed pull request
 nothing holds one for, so a dropped gate, or a check that completed while the service was down, is
@@ -358,13 +374,14 @@ dispatches its scans make, whatever started the scan, per item and label: anothe
 another label on the same item, count apart. Past `SCAN_DISPATCH_LIMIT` (default `2`) a crashing
 job is tried no more: each later scan skips the item with a line naming it, the label and the
 limit, and the first one comments once on the item, naming the label to remove and add again by
-hand. A comment that cannot be posted is logged, the scan goes on, and the next scan tries it
+hand. On a merged pull request's `agent:follow-ups` the comment says instead that the filing refused
+or failed, which leaves the label on by design, or ended before its run did. A comment that cannot be posted is logged, the scan goes on, and the next scan tries it
 again. The comment is posted with a token minted for it alone; the scan's reads stay read-only.
 That label's delivery, from a person adding it again or from the App, passes the same checks as
 any, is dispatched, and resets the count, so the scan answers the item again up to the limit. A
 delivery's own dispatch is never counted, and neither is a scan's for `agent:merge`. An item a scan no longer lists with the label had its
 job end and the label taken off, so its count is forgotten, and a label added to it later is
-counted from zero.
+counted from zero; so is a merged pull request that has left the window.
 
 Every line a scan logs starts `scan:`, with the item and the reason it was dispatched, skipped or
 refused; a repository or a listing that cannot be read is logged and the scan goes on.
@@ -723,7 +740,9 @@ The job door also answers `GET /health` with `200`.
   redeliver on its own (*What it does not keep*, above): after an outage, redeliver from the App's
   *Recent Deliveries*, or remove the label and add it again. A label a lost delivery added
   to an open item is picked up by the scan at the dispatcher's start (*What it does not keep*,
-  above). What a scan does not list stays lost: a merge's follow-ups, above all.
+  above), and so is `agent:follow-ups` on a pull request merged within `SCAN_MERGED_WINDOW_DAYS`,
+  whose filing the lost merge never started. What a scan does not list stays lost: the post-merge
+  checklist of a merge whose pull request carried no label, above all.
 - **A dispatcher restarted alone** recovers the jobs the worker holds queued from it: its start
   scan has the worker drop them and dispatches their items again. Only the jobs that had started
   are lost: the one running in each lane, and every update-branch job waiting for the agent lane
@@ -928,5 +947,6 @@ starts, `agentnet-firewall` puts the rules in and starts the VM, the VM's units 
 stays public. About 11 minutes from *Reboot* to a review. Restarting the VM service alone does
 **not** bring it back (Unraid cannot remount `libvirt.img` until a reboot), so reboot the server
 instead of turning VM Manager off and on. Deliveries made while it was down are lost, as above,
-but a label they added to an open item is dispatched by the dispatcher's start scan; only what a
-scan does not list, a merge's follow-ups above all, needs a hand.
+but a label they added to an open item is dispatched by the dispatcher's start scan, and so is a
+recent merge's filing where `agent:follow-ups` is still on; only what a scan does not list, the
+post-merge checklist of a merge carrying no label above all, needs a hand.

@@ -97,7 +97,7 @@ const answer = (url: string, init?: RequestInit): Response => {
   if (pathname === `/repos/${REPO}/issues`) {
     const label = searchParams.get("labels") ?? "";
     const listed = world.issues
-      .filter((issue) => issue.labels.includes(label) && (searchParams.get("state") !== "open" || issue.state === "open"))
+      .filter((issue) => issue.labels.includes(label) && (searchParams.get("state") ?? "open") === issue.state)
       .map(({ labels, pull, ...issue }) => ({ ...issue, labels: labels.map((name) => ({ name })), ...(pull === true ? { pull_request: { url: "…" } } : {}) }));
     return reply(200, paged(listed));
   }
@@ -278,6 +278,47 @@ describe("liveAppGitHub: what the scan reads (#581)", () => {
     expect(queried).toContain(`/repos/${REPO}/issues?state=open&labels=agent%3Areview&per_page=100&page=1`);
     expect(minted).toEqual([SCAN_PERMISSIONS]);
     expect(mintedFor).toEqual([["repo"]]);
+  });
+
+  it("lists the merged pull requests carrying a label from `since` on, each as its own record reads it, and no other closed item (#603)", async () => {
+    world.issues = [
+      { number: 7, title: "Merged inside", state: "closed", labels: ["agent:follow-ups"], pull: true },
+      { number: 8, title: "Merged before", state: "closed", labels: ["agent:follow-ups"], pull: true },
+      { number: 9, title: "Closed unmerged", state: "closed", labels: ["agent:follow-ups"], pull: true },
+      { number: 10, title: "Open", state: "open", labels: ["agent:follow-ups"], pull: true },
+      { number: 11, title: "An issue", state: "closed", labels: ["agent:follow-ups"] },
+    ];
+    const merged = { ...PULL, state: "closed", merged: true };
+    world.pulls = {
+      7: { ...merged, number: 7, merged_at: "2026-10-30T09:00:00Z" },
+      8: { ...merged, number: 8, merged_at: "2026-10-20T09:00:00Z" },
+      9: { ...PULL, number: 9, state: "closed", merged_at: null },
+      10: { ...PULL, number: 10 },
+    };
+    const since = new Date("2026-10-26T00:00:00Z");
+
+    expect(await liveAppGitHub("1", KEY).mergedLabelled(REPO, "agent:follow-ups", since)).toEqual([
+      {
+        type: "pull_request",
+        number: 7,
+        state: "closed",
+        merged: true,
+        draft: false,
+        branch: PULL.head.ref,
+        headSha: PULL.head.sha,
+        headRepo: REPO,
+        baseRef: "main",
+        mergedAt: new Date("2026-10-30T09:00:00Z"),
+      },
+    ]);
+    expect(queried).toContain(`/repos/${REPO}/issues?state=closed&labels=agent%3Afollow-ups&since=2026-10-26T00%3A00%3A00.000Z&per_page=100&page=1`);
+    expect(minted).toEqual([SCAN_PERMISSIONS]);
+  });
+
+  it("throws, rather than listing fewer, where a merged pull request's own record could not be read", async () => {
+    world.issues = [{ number: 7, title: "A thing", state: "closed", labels: ["agent:follow-ups"], pull: true }];
+
+    await expect(liveAppGitHub("1", KEY).mergedLabelled(REPO, "agent:follow-ups", new Date(0))).rejects.toThrow(/owner\/repo#7 answered 404/);
   });
 
   it("reads a pull request whose head repository was deleted as having none", async () => {

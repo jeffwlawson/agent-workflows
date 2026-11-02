@@ -99,6 +99,7 @@ describe("the dispatcher's start", () => {
     TOKEN_PORT: "8791",
     JOB_DEADLINE_MARGIN_MINUTES: "60",
     EXTRA_OWNERS: "",
+    SCAN_MERGED_WINDOW_DAYS: "7",
   } as const;
 
   // #596: a limit of 0 would not turn the scan off, only stop it dispatching.
@@ -114,6 +115,30 @@ describe("the dispatcher's start", () => {
     ).rejects.toThrow(refusal);
 
     expect(lines).toEqual([]);
+  });
+
+  // #603: a window of 0 days would list no merge at all.
+  it.each([
+    ["0", /`SCAN_MERGED_WINDOW_DAYS` is `0`.*at least 1/],
+    ["-1", /`SCAN_MERGED_WINDOW_DAYS` is `-1`, which is not a whole number/],
+    ["a week", /`SCAN_MERGED_WINDOW_DAYS` is `a week`, which is not a whole number/],
+  ])("refuses a SCAN_MERGED_WINDOW_DAYS of %s, naming the setting, before it reads the App's key", async (days, refusal) => {
+    const lines: string[] = [];
+    const key = path.join(scratch, "no-such-key.pem");
+
+    await expect(
+      serveDispatcher({ ...DISPATCHER_SETTINGS, GITHUB_APP_PRIVATE_KEY_FILE: key, SCAN_DISPATCH_LIMIT: "2", SCAN_MERGED_WINDOW_DAYS: days }, (text) => lines.push(text)),
+    ).rejects.toThrow(refusal);
+
+    expect(lines).toEqual([]);
+  });
+
+  it("starts past a SCAN_MERGED_WINDOW_DAYS of 1, as far as reading the App's key", async () => {
+    const key = path.join(scratch, "no-such-key.pem");
+
+    await expect(
+      serveDispatcher({ ...DISPATCHER_SETTINGS, GITHUB_APP_PRIVATE_KEY_FILE: key, SCAN_DISPATCH_LIMIT: "2", SCAN_MERGED_WINDOW_DAYS: "1" }, () => {}),
+    ).rejects.toThrow(/`GITHUB_APP_PRIVATE_KEY_FILE` names/);
   });
 
   it("starts past a SCAN_DISPATCH_LIMIT of 1, as far as reading the App's key", async () => {

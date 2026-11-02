@@ -240,13 +240,20 @@ export const IMPLEMENT_PRD_POSTING_MINUTES = 15;
 
 /**
  * `RUN_URL` on the service, which has no run page: the App's own page, which
- * names the App that ran it. The implement commands require it, and link it
- * from the start comment, the pull request's frame, the link on the issue and
- * the failure comment, where Actions links the workflow run.
+ * names the App that ran it, with a fragment naming the job, `#job-<id>`
+ * (#604). GitHub ignores the fragment, so the link still opens; the id in it
+ * is the one the run's directory under `WORK_DIR/runs` is named for and its
+ * `SUMMARY_FILE` holds, which `deploy/unraid/runs.sh` finds the run by. The id
+ * is no credential: a token is minted only for a request signed with the
+ * shared secret. The implement, implement-prd and follow-ups commands require
+ * it, and link it from the start comment, the pull request's frame, the link
+ * on the issue and the failure comment, where Actions links the workflow run.
+ * Review, fix and update-branch take no `RUN_URL`: on the service they post
+ * no run link.
  */
-export const serviceRunUrl = (appLogin: string): string => `https://github.com/apps/${appLogin.replace(/\[bot\]$/, "")}`;
+export const serviceRunUrl = (appLogin: string, jobId: string): string =>
+  `https://github.com/apps/${appLogin.replace(/\[bot\]$/, "")}#job-${encodeURIComponent(jobId)}`;
 
-/** The run summary's name in the run's directory. */
 export const SUMMARY_FILE = "summary.json";
 
 /** What stands in for a token in the run summary and the worker's log. */
@@ -1569,7 +1576,7 @@ const runUpdateBranch = async (job: UpdateBranchJob, edges: JobEdges): Promise<r
 const runImplement = async (job: ImplementJob, edges: JobEdges): Promise<readonly Phase[]> => {
   const { note, limit, outputDir, checkout, ask, run, runAgent, setup, notStarted, done } = startRun(job, edges);
   const publishCheckout = path.join(edges.runDir, "publish-checkout");
-  const runUrl = serviceRunUrl(job.appLogin);
+  const runUrl = serviceRunUrl(job.appLogin, job.id);
   const rescueBranch = issueRescueBranch(job.issue);
   /**
    * The base branch by its name, as each of the reusable's jobs checks it
@@ -1876,7 +1883,7 @@ const runImplementPrd = async (job: ImplementPrdJob, edges: JobEdges): Promise<r
     ISSUE_NUMBER: String(job.issue),
     ISSUE_TITLE: job.title,
     BASE_REF: job.baseRef,
-    RUN_URL: serviceRunUrl(job.appLogin),
+    RUN_URL: serviceRunUrl(job.appLogin, job.id),
     AGENT_LOOP_LOGINS: job.appLogin,
   };
 
@@ -2266,7 +2273,7 @@ const runFollowUps = async (job: FollowUpsJob, edges: JobEdges): Promise<readonl
     {
       ...common,
       GH_TOKEN: write,
-      RUN_URL: serviceRunUrl(job.appLogin),
+      RUN_URL: serviceRunUrl(job.appLogin, job.id),
       // A time limit ends a job on Actions as a cancel, which the measuring
       // step then reads as a timeout.
       JOB_STATUS: filed.timedOut ? "cancelled" : filed.ok ? "success" : "failure",

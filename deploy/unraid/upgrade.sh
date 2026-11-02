@@ -168,6 +168,9 @@ if [ "${named#\*}" != "$tarball" ] || ! (cd "$stage" && sha256sum -c --quiet "$t
 fi
 echo "Downloaded $tarball; it matches its .sha256."
 to_copy=("$stage/$tarball" "$stage/$tarball.sha256" "$here/upgrade-box.sh" "$here/check-box.sh")
+# The run index (#604), where it is beside this script: copied for a person to
+# run on the box, and not required, so an upgrade from before it still runs.
+if [ -f "$here/runs.sh" ]; then to_copy+=("$here/runs.sh"); fi
 if [ -f "$conf" ]; then to_copy+=("$conf"); fi
 copied=$(for file in "${to_copy[@]}"; do basename "$file"; done | paste -sd ' ')
 if ! scp "${ssh_opts[@]}" "${to_copy[@]}" "$box:"; then

@@ -42,6 +42,7 @@ import {
   RESET_MARGIN_MINUTES,
   REDACTED,
   runJob,
+  serviceRunUrl,
   SETUP_PHASE,
   startRun,
   SUMMARY_FILE,
@@ -1794,7 +1795,7 @@ const IMPLEMENT_JOB: ImplementJob = {
 };
 const BRANCH = "agent/issue-12-add-a-thing";
 const TIP = "e".repeat(40);
-const RUN_URL = "https://github.com/apps/loop-app";
+const RUN_URL = "https://github.com/apps/loop-app#job-job-1";
 
 /** The files each implement subcommand writes on a run that goes ahead and opens its pull request. */
 const IMPLEMENT_ORDINARY: Readonly<Partial<Record<Subcommand, Canned>>> = {
@@ -2689,6 +2690,44 @@ describe("the worker's follow-ups job", () => {
     const malformed = send({ ...FOLLOW_UPS_JOB, pr: 0 });
     expect(malformed.status).toBe(400);
     expect(JSON.parse(malformed.body)).toEqual({ refusal: "`pr` is not a positive integer" });
+  });
+});
+
+describe("the run's link, on the service (#604)", () => {
+  /** An id shaped as the dispatcher mints one, `randomUUID`. */
+  const ID = "3f2b8c1e-5d4a-4e6f-9a7b-0c1d2e3f4a5b";
+
+  it("is the App's own page, with a fragment naming the job", () => {
+    expect(serviceRunUrl("loop-app[bot]", ID)).toBe(`https://github.com/apps/loop-app#job-${ID}`);
+    expect(serviceRunUrl("loop-app", "job-1")).toBe("https://github.com/apps/loop-app#job-job-1");
+  });
+
+  it.each([
+    ["implement", { ...IMPLEMENT_JOB, id: ID }, IMPLEMENT_ORDINARY],
+    ["implement-prd", { ...PRD_JOB, id: ID }, PRD_BUILD],
+    ["follow-ups", { ...FOLLOW_UPS_JOB, id: ID }, {}],
+  ] as const)("names, for a %s job, the id its run's summary holds, in every subcommand handed it", async (_kind, job, canned) => {
+    const s = setup(canned);
+    await runJob(job, s.edges);
+
+    const given = s.launched.flatMap((launch) => (launch.env["RUN_URL"] === undefined ? [] : [launch.env["RUN_URL"]]));
+    expect(given.length).toBeGreaterThan(0);
+    expect(new Set(given)).toEqual(new Set([`https://github.com/apps/loop-app#job-${ID}`]));
+    const summary = JSON.parse(fs.readFileSync(path.join(s.runDir, SUMMARY_FILE), "utf8")) as { job: Job };
+    expect(summary.job.id).toBe(ID);
+    expect(given[0]?.endsWith(`#job-${summary.job.id}`)).toBe(true);
+  });
+
+  it.each([
+    ["review", JOB, ORDINARY],
+    ["fix", FIX_JOB, FIX_ORDINARY],
+    ["update-branch", UPDATE_BRANCH_JOB, UB_CLEAN],
+  ] as const)("is handed to no subcommand of a %s job, whose commands take none on the service", async (_kind, job, canned) => {
+    const s = setup(canned);
+    await runJob(job, s.edges);
+
+    expect(s.launched.length).toBeGreaterThan(0);
+    expect(s.launched.filter((launch) => "RUN_URL" in launch.env)).toEqual([]);
   });
 });
 

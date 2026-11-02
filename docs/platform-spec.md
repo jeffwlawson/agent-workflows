@@ -748,9 +748,14 @@ build, and an orchestrator other than Actions sets its environment in its own co
 >   `implement:gate`'s `failure_reason.txt`.
 > - **`RESCUE_BRANCH` is `agent/rescue/issue-<n>`**, as `issueRescueBranch` in `shared/record.ts`
 >   spells it, the name `implement.yml` gives it.
-> - **`RUN_URL` is the App's own page**, `https://github.com/apps/<slug>`: the service has no run
->   page, and the commands require a link, which the start comment, the pull request's frame, the
->   link on the issue and the failure comment give where Actions links its workflow run.
+> - **`RUN_URL` is the App's own page, with the job's id in its fragment**,
+>   `https://github.com/apps/<slug>#job-<id>` (`serviceRunUrl` in `service/worker.ts`): the service
+>   has no run page, and the commands require a link, which the start comment, the pull request's
+>   frame, the link on the issue and the failure comment give where Actions links its workflow run.
+>   GitHub ignores the fragment, so the link opens the App's page; the id is the one the run's
+>   directory under `WORK_DIR/runs` is named for and its `summary.json` holds, and
+>   `deploy/unraid/runs.sh <id>`, the run index, prints that run. The id is no credential. No
+>   command parses the link: it stays a required, free-form `RUN_URL`.
 > - **The time limits are the jobs'.** `implement:gate` gets the gate job's 10 minutes. The agent's
 >   job's steps share `AGENT_TIMEOUT_MINUTES` (30 where unset or not a positive integer), and one
 >   still running at it is ended with every process it started: the agent's job is then
@@ -1303,7 +1308,8 @@ earlier run of this PRD left commits on `RESCUE_BRANCH`, that branch fetched to
 >   `implement-prd:gate`'s `failure_reason.txt`.
 > - **`RESCUE_BRANCH` is `agent/rescue/prd-<parent>`**, as `prdRescueBranch` in `shared/record.ts`
 >   spells it, the name `implement-prd.yml` gives it.
-> - **`RUN_URL` is the App's own page**, `https://github.com/apps/<slug>`, as for implement (§6).
+> - **`RUN_URL` is the App's own page with the job's id in its fragment**,
+>   `https://github.com/apps/<slug>#job-<id>`, as for implement (§6).
 >   `GITHUB_SERVER_URL` and `GITHUB_REPOSITORY` are unset, so the approved slice's note names its
 >   head unlinked and the progress list links no diffs.
 > - **The time limits are the jobs'.** `implement-prd:gate` gets the gate job's 10 minutes, the
@@ -3728,8 +3734,8 @@ PR of the parent's and every sub-issue's, each under its issue. Then, only where
 > directory. `follow-ups:file` gets the 10 minutes, and one still running at it is ended:
 > `follow-ups:conclude` is then told `JOB_STATUS` `cancelled` and `TIMED_OUT` `true`, as the
 > *Measure* step says it, and `TIMEOUT_MINUTES` 10, and gets 10 minutes of its own. Otherwise it is
-> told `success` or `failure`, and `TIMED_OUT` `false`. `RUN_URL` is the App's own page, as the
-> implement commands are given. Where no token is granted, neither command runs, the marker stays
+> told `success` or `failure`, and `TIMED_OUT` `false`. `RUN_URL` is the App's own page with the job's
+> id in its fragment, as the implement commands are given (§6). Where no token is granted, neither command runs, the marker stays
 > on, and the worker's log says why.
 >
 > The token is the App's, so the stubs are filed as the App's bot, where Actions files them with

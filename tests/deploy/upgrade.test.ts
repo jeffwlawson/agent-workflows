@@ -315,6 +315,16 @@ describe("upgrade.sh", () => {
     expect(touches(calls)).toEqual([]);
   });
 
+  it("copies the run index to the box where it is beside the script", () => {
+    const root = setUp();
+    fs.copyFileSync(path.join(DEPLOY, "runs.sh"), path.join(root, "unraid", "runs.sh"));
+    const { status, output } = run(root);
+
+    expect(status).toBe(0);
+    expect(output).toContain(`Copied ${TARBALL} ${TARBALL}.sha256 upgrade-box.sh check-box.sh runs.sh agent-service.conf to `);
+    expect(fs.readFileSync(path.join(root, "box-home", "runs.sh"), "utf8")).toBe(fs.readFileSync(path.join(DEPLOY, "runs.sh"), "utf8"));
+  });
+
   it("upgrades onto machines with no package installed yet, printing no stray error", () => {
     const root = setUp({ fresh: true, conf: `PACKAGE_SOURCE=owner/repo\nPACKAGE_NAME=${NAME}` });
     const { status, output } = run(root);

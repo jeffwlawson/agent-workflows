@@ -27,7 +27,7 @@ conf="$(dirname "$0")/agent-service.conf"
 if [ -f "$conf" ]; then . "$conf"; fi
 
 NODE_VERSION=${NODE_VERSION:-24.21.0}
-CLAUDE_CODE_VERSION=${CLAUDE_CODE_VERSION:-2.1.290}
+CLAUDE_CODE_VERSION=${CLAUDE_CODE_VERSION:-2.1.316}
 WORKER_USER=${WORKER_USER:-worker}
 PREFIX=${PREFIX:-/opt/agent-workflows}
 PKG_JSON=$PREFIX/node_modules/@jeffwlawson/agent-workflows/package.json

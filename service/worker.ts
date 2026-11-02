@@ -796,8 +796,7 @@ const runReview = async (job: ReviewJob, edges: JobEdges): Promise<readonly Phas
       {
         ...common,
         GH_TOKEN: runnerToken,
-        AGENT_MODEL: job.variables.AGENT_MODEL,
-        AGENT_MODEL_REVIEW: job.variables.AGENT_MODEL_REVIEW,
+        ...job.variables,
         BASE_REF: job.baseRef,
         ROUND: gate["round"],
         CI_STATUS_FILE: path.join(checks, "ci_status.md"),
@@ -1102,8 +1101,7 @@ const runFix = async (job: FixJob, edges: JobEdges): Promise<readonly Phase[]> =
         {
           ...common,
           GH_TOKEN: runnerToken,
-          AGENT_MODEL: job.variables.AGENT_MODEL,
-          AGENT_MODEL_FIX: job.variables.AGENT_MODEL_FIX,
+          ...job.variables,
           BASE_REF: job.baseRef,
           RESCUE_BRANCH: rescueBranch,
         },
@@ -1406,8 +1404,7 @@ const runUpdateBranch = async (job: UpdateBranchJob, edges: JobEdges): Promise<r
         {
           ...common,
           GH_TOKEN: runnerToken,
-          AGENT_MODEL: job.variables.AGENT_MODEL,
-          AGENT_MODEL_UPDATE_BRANCH: job.variables.AGENT_MODEL_UPDATE_BRANCH,
+          ...job.variables,
         },
         checkout,
         agentLimit.signal,
@@ -1690,8 +1687,7 @@ const runImplement = async (job: ImplementJob, edges: JobEdges): Promise<readonl
         {
           ...common,
           GH_TOKEN: runnerToken,
-          AGENT_MODEL: job.variables.AGENT_MODEL,
-          AGENT_MODEL_IMPLEMENT: job.variables.AGENT_MODEL_IMPLEMENT,
+          ...job.variables,
           BRANCH: branch,
           RESCUE_BRANCH: rescueBranch,
         },
@@ -2071,8 +2067,7 @@ const runImplementPrd = async (job: ImplementPrdJob, edges: JobEdges): Promise<r
         {
           ...common,
           GH_TOKEN: runnerToken,
-          AGENT_MODEL: job.variables.AGENT_MODEL,
-          AGENT_MODEL_IMPLEMENT_PRD: job.variables.AGENT_MODEL_IMPLEMENT_PRD,
+          ...job.variables,
           BRANCH: prdBranch,
           SUB_NUMBER: sub,
           SUB_TITLE: slice.title,

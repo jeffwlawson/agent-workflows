@@ -21,6 +21,9 @@
 # nobody:users).
 #APPDATA=/mnt/user/appdata/agent-dispatcher
 #CONTAINER_USER=99:100
+# The dispatcher's one writable folder, mounted at /state, where its STATE_FILE
+# keeps its dispatched jobs and the scan's counts across a restart.
+#STATE_DIR=/mnt/user/appdata/agent-dispatcher/state
 
 # The Funnel port GitHub's webhooks arrive on.
 #FUNNEL_PORT=10000

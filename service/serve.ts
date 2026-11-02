@@ -4,6 +4,7 @@ import * as path from "node:path";
 import { hostEnvironment, type InputValues } from "../shared/env.js";
 import { VERSION } from "../shared/manifest.js";
 import { sandboxRefusal } from "../shared/sandbox.js";
+import { liveStateFiles, openState } from "./dispatcher-state.js";
 import { appGaps, createDispatcher, parseOwners, type AppRecord, type DoorRequest, type DoorResponse } from "./dispatcher.js";
 import { liveAppGitHub } from "./github-app.js";
 import type { Job } from "./job.js";
@@ -97,6 +98,9 @@ export const serveDispatcher = async (
   if (mergedWindowDays === 0) {
     throw new Error("`SCAN_MERGED_WINDOW_DAYS` is `0`, a window no merge is inside. It must be at least 1.");
   }
+  // Opened before anything else is read, so a path that cannot be written is
+  // refused at once (#618); unset, the dispatcher keeps its state in memory.
+  const state = settings.STATE_FILE === "" ? undefined : openState("STATE_FILE", settings.STATE_FILE, liveStateFiles, log);
   let privateKey: string;
   try {
     privateKey = fs.readFileSync(settings.GITHUB_APP_PRIVATE_KEY_FILE, "utf8");
@@ -138,6 +142,7 @@ export const serveDispatcher = async (
     scanLimit,
     mergedWindowDays,
     version: VERSION,
+    ...(state === undefined ? {} : { state }),
   });
 
   const webhook = door(

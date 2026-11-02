@@ -100,6 +100,7 @@ describe("the dispatcher's start", () => {
     JOB_DEADLINE_MARGIN_MINUTES: "60",
     EXTRA_OWNERS: "",
     SCAN_MERGED_WINDOW_DAYS: "7",
+    STATE_FILE: "",
   } as const;
 
   // #596: a limit of 0 would not turn the scan off, only stop it dispatching.
@@ -139,6 +140,29 @@ describe("the dispatcher's start", () => {
     await expect(
       serveDispatcher({ ...DISPATCHER_SETTINGS, GITHUB_APP_PRIVATE_KEY_FILE: key, SCAN_DISPATCH_LIMIT: "2", SCAN_MERGED_WINDOW_DAYS: "1" }, () => {}),
     ).rejects.toThrow(/`GITHUB_APP_PRIVATE_KEY_FILE` names/);
+  });
+
+  // #618: a state file that silently does not persist is the failure it ends.
+  it("refuses a STATE_FILE it cannot write to, naming the setting, before it reads the App's key", async () => {
+    const lines: string[] = [];
+    const key = path.join(scratch, "no-such-key.pem");
+    const file = path.join(scratch, "no-such-directory", "dispatcher.json");
+
+    await expect(
+      serveDispatcher({ ...DISPATCHER_SETTINGS, GITHUB_APP_PRIVATE_KEY_FILE: key, SCAN_DISPATCH_LIMIT: "2", STATE_FILE: file }, (text) => lines.push(text)),
+    ).rejects.toThrow(new RegExp(`^\`STATE_FILE\` names ${file.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}, which cannot be written: `));
+    expect(fs.existsSync(path.dirname(file))).toBe(false);
+  });
+
+  it("starts past a STATE_FILE it can write to, as far as reading the App's key, and leaves the file written", async () => {
+    const key = path.join(scratch, "no-such-key.pem");
+    const file = path.join(scratch, "dispatcher.json");
+
+    await expect(
+      serveDispatcher({ ...DISPATCHER_SETTINGS, GITHUB_APP_PRIVATE_KEY_FILE: key, SCAN_DISPATCH_LIMIT: "2", STATE_FILE: file }, () => {}),
+    ).rejects.toThrow(/`GITHUB_APP_PRIVATE_KEY_FILE` names/);
+    expect(JSON.parse(fs.readFileSync(file, "utf8"))).toEqual({ version: 1, asks: [], jobs: [] });
+    expect(fs.readdirSync(scratch)).toEqual(["dispatcher.json"]);
   });
 
   it("starts past a SCAN_DISPATCH_LIMIT of 1, as far as reading the App's key", async () => {

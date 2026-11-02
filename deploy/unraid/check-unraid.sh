@@ -220,6 +220,13 @@ if [ -f "$key" ] && [ "$(stat -c '%a %u' "$key")" = "600 ${CONTAINER_USER%%:*}" 
 else
   fail "the App's key at $key is missing, or not '600' and owned by uid ${CONTAINER_USER%%:*} ($(stat -c '%a uid %u' "$key" 2>/dev/null))"
 fi
+# Where STATE_FILE keeps the dispatcher's jobs and the scan's counts (#618): a
+# warning, not a failure, since without it the dispatcher runs, memory-only.
+if docker inspect -f '{{range .Mounts}}{{println .Destination .RW}}{{end}}' "$CONTAINER" 2>/dev/null | grep -qx "/state true"; then
+  pass "the container has a writable /state, for STATE_FILE"
+else
+  warn "the container has no writable /state: the dispatcher keeps its jobs and scan counts in memory only (install-unraid.sh recreates it with one)"
+fi
 
 section "Its doors and the Funnel"
 code=$(status "http://127.0.0.1:$WEBHOOK_PORT/health")

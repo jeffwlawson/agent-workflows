@@ -32,6 +32,7 @@ import {
   verifySignature,
   type Job,
 } from "../../service/job.js";
+import { openState, type StateFiles } from "../../service/dispatcher-state.js";
 import { admit, heldDoor, jobDoor, lanes } from "../../service/worker.js";
 import { STUB_LABELS } from "../../shared/follow-up-plan.js";
 import {
@@ -93,6 +94,48 @@ interface Installations {
   merged: { label: string; since: string }[];
 }
 
+/** Where a test's state file is (#618), on its fake disk. */
+const STATE_PATH = "/state/dispatcher.json";
+
+/**
+ * A fake disk for the dispatcher's state file (#618): what each path holds,
+ * how many writes reached the file, and the faults a test can turn on.
+ */
+const fakeFiles = () => {
+  const disk = new Map<string, string>();
+  const faults = { unreadable: false, write: false, rename: false };
+  const f = {
+    disk,
+    faults,
+    /** How many writes were renamed over the file: each one a whole write of it. */
+    written: 0,
+    /** What the file holds now, parsed. */
+    held: () => JSON.parse(disk.get(STATE_PATH) ?? "null") as { version: number; asks: { number: number; dispatches: number; told: boolean }[]; jobs: { id: string }[] },
+    files: {
+      read: (path) => {
+        if (faults.unreadable) throw new Error("EACCES: permission denied");
+        return disk.get(path);
+      },
+      write: (path, text) => {
+        if (faults.write) throw new Error("EACCES: permission denied");
+        disk.set(path, text);
+      },
+      rename: (from, to) => {
+        if (faults.rename) throw new Error("EIO: i/o error");
+        const text = disk.get(from);
+        if (text === undefined) throw new Error("ENOENT: no such file");
+        disk.delete(from);
+        disk.set(to, text);
+        f.written += 1;
+      },
+      remove: (path) => {
+        disk.delete(path);
+      },
+    } satisfies StateFiles,
+  };
+  return f;
+};
+
 /** The App's owner, which is the repository's owner too, unless a test says otherwise. */
 const APP_OWNER = "owner";
 
@@ -109,6 +152,8 @@ const setup = (
     queue?: boolean;
     /** How many minutes the worker's clock runs ahead of the dispatcher's, behind where negative (#601). */
     workerAhead?: number;
+    /** The disk the dispatcher's state file is on, kept across its restarts (#618); unset, it keeps its state in memory. */
+    files?: ReturnType<typeof fakeFiles>;
   } = {},
 ) => {
   const repository: Repository = {
@@ -248,6 +293,7 @@ const setup = (
       instance: `dispatcher-${(starts += 1)}`,
       now: () => clock,
       newId: () => `job-${(ids += 1)}`,
+      ...(options.files === undefined ? {} : { state: openState("STATE_FILE", STATE_PATH, options.files.files, (line) => lines.push(line)) }),
     });
   const s = {
     dispatcher: start(),
@@ -2446,5 +2492,227 @@ describe("the scan and agent:merge", () => {
 
     expect(s.posted).toEqual([]);
     expect(s.lines).toContain("scan: refused on owner/repo#7: triager cannot write to owner/repo, and added `agent:merge` last");
+  });
+});
+
+/**
+ * The dispatcher's state on disk (#618): with `STATE_FILE` set, a restarted
+ * dispatcher keeps the scan's counts and the jobs it dispatched, and adopts a
+ * job the worker is still running; unset, it forgets both, as before.
+ */
+describe("the dispatcher's state file", () => {
+  const ids = (jobs: readonly Job[]) => jobs.map((job) => job.id);
+  const tick = () => new Promise((resolve) => setImmediate(resolve));
+
+  /** An item scanned to its limit and told so: two dispatches, then the comment. */
+  const countedOut = async (s: ReturnType<typeof setup>) => {
+    s.repository.items = [pullItem([REVIEW_LABEL])];
+    await s.dispatcher.scan();
+    await crash(s);
+    await crash(s);
+    expect(s.posted).toHaveLength(2);
+    expect(s.comments).toHaveLength(1);
+  };
+
+  it("unset, forgets the scan's counts at a restart, as before: the item is dispatched again and the comment may be posted once more", async () => {
+    const s = setup();
+    await countedOut(s);
+
+    s.restart();
+    await crash(s);
+    await crash(s);
+    await crash(s);
+
+    expect(s.posted).toHaveLength(4);
+    expect(s.comments).toHaveLength(2);
+  });
+
+  it("keeps the scan's counts across a restart: an item at the limit is not dispatched again, and its comment is not posted a second time", async () => {
+    const files = fakeFiles();
+    const s = setup({ files });
+    await countedOut(s);
+    expect(files.held().asks).toEqual([expect.objectContaining({ number: 7, dispatches: 2, told: true })]);
+
+    s.restart();
+    await crash(s);
+    s.restart();
+    await crash(s);
+
+    expect(s.posted).toHaveLength(2);
+    expect(s.comments).toHaveLength(1);
+    expect(linesOn(s, "owner/repo#7").slice(-1)).toEqual([STOPPED("owner/repo#7", REVIEW_LABEL)]);
+  });
+
+  it("keeps a count a delivery reset, and drops one for an item no longer listed with its label, as in memory", async () => {
+    const files = fakeFiles();
+    const s = setup({ files });
+    await countedOut(s);
+
+    await deliver(s, labelled());
+    expect(files.held().asks).toEqual([]);
+    s.restart();
+    await crash(s);
+    expect(s.posted).toHaveLength(4);
+    expect(files.held().asks).toEqual([expect.objectContaining({ number: 7, dispatches: 1, told: false })]);
+
+    s.repository.items = [];
+    await crash(s);
+    expect(files.held().asks).toEqual([]);
+  });
+
+  it("answers the next token request of a job the worker is still running when only the dispatcher restarted, and the job ends normally", async () => {
+    const files = fakeFiles();
+    const s = setup({ queue: true, files });
+    s.repository.items = [pullItem([REVIEW_LABEL]), issueItem([IMPLEMENT_LABEL])];
+    await deliver(s, labelled());
+    await deliver(s, issueLabelled(), undefined, "issues");
+    await tick();
+    expect(ids(s.ran)).toEqual(["job-1"]);
+
+    s.restart();
+    await s.dispatcher.scan();
+
+    expect((await s.dispatcher.token(tokenRequest({ jobId: "job-1", kind: "write" }))).status).toBe(200);
+    // The queued jobs of the previous instance are still dropped (#597), and the scan re-creates them.
+    expect(ids(s.queue.held())).toEqual(["job-1", "job-4", "job-5"]);
+    expect(linesOn(s, "owner/repo#7")).toEqual(["scan: skipped on owner/repo#7: the worker holds a job for it"]);
+    expect(files.held().jobs.map((job) => job.id)).toEqual(["job-1", "job-4", "job-5"]);
+    expect((await s.dispatcher.token(tokenRequest({ jobId: "job-2", kind: "read" }))).status).toBe(404);
+
+    await s.finish();
+    await s.finish();
+    await s.finish();
+    expect(ids(s.ran)).toEqual(["job-1", "job-4", "job-5"]);
+  });
+
+  it("drops at start a stored record of a job the worker no longer holds", async () => {
+    const files = fakeFiles();
+    const s = setup({ files });
+    await deliver(s, labelled());
+    expect(files.held().jobs.map((job) => job.id)).toEqual(["job-1"]);
+
+    s.worker.holds = [];
+    s.restart();
+    await s.dispatcher.scan();
+
+    expect(files.held().jobs).toEqual([]);
+    expect((await s.dispatcher.token(tokenRequest({ jobId: "job-1", kind: "read" }))).status).toBe(404);
+  });
+
+  it("keeps the stored records where the worker cannot be reached at start, for the scan's retry", async () => {
+    const files = fakeFiles();
+    const s = setup({ files });
+    await deliver(s, labelled());
+
+    s.restart();
+    s.worker.down = true;
+    await s.dispatcher.scan();
+
+    expect(files.held().jobs.map((job) => job.id)).toEqual(["job-1"]);
+    expect((await s.dispatcher.token(tokenRequest({ jobId: "job-1", kind: "read" }))).status).toBe(200);
+
+    s.worker.down = false;
+    s.worker.holds = [];
+    await announce(s);
+    expect(files.held().jobs).toEqual([]);
+  });
+
+  it("does not take a stored job past its deadline", async () => {
+    const files = fakeFiles();
+    const s = setup({ files });
+    await deliver(s, labelled());
+
+    s.advance(24 * 60);
+    s.restart();
+
+    expect((await s.dispatcher.token(tokenRequest({ jobId: "job-1", kind: "read" }))).status).toBe(404);
+  });
+
+  it.each<[string, (files: ReturnType<typeof fakeFiles>) => void, string]>([
+    ["is not JSON", (files) => files.disk.set(STATE_PATH, "{ half a file"), `state: ${STATE_PATH} is not a state file this release reads: it is not JSON`],
+    [
+      "has an unknown version",
+      (files) => files.disk.set(STATE_PATH, JSON.stringify({ version: 2, asks: [], jobs: [] })),
+      `state: ${STATE_PATH} is not a state file this release reads: its \`version\` is 2, not 1, the one this release reads`,
+    ],
+    [
+      "is not valid",
+      (files) => files.disk.set(STATE_PATH, JSON.stringify({ version: 1, asks: [{ repo: REPO, number: 7, label: REVIEW_LABEL, dispatches: "two", told: false }], jobs: [] })),
+      `state: ${STATE_PATH} is not a state file this release reads: \`asks\` entry 1's \`dispatches\` is not a whole number`,
+    ],
+    [
+      "cannot be read",
+      (files) => {
+        files.disk.set(STATE_PATH, "{}");
+        files.faults.unreadable = true;
+      },
+      `state: ${STATE_PATH} could not be read: EACCES: permission denied`,
+    ],
+  ])("logs a file that %s by name with its reason, starts empty, and replaces it", async (_name, arrange, line) => {
+    const files = fakeFiles();
+    arrange(files);
+    const s = setup({ files });
+
+    expect(s.lines).toEqual([`${line}. Starting empty; the next write replaces it`]);
+    expect(files.held()).toEqual({ version: 1, asks: [], jobs: [] });
+    expect((await deliver(s, labelled())).outcome).toMatch(/^dispatched owner\/repo#7/);
+    expect(files.held().jobs.map((job) => job.id)).toEqual(["job-1"]);
+  });
+
+  it("refuses at start a path that cannot be written, naming the setting", () => {
+    const files = fakeFiles();
+    files.faults.write = true;
+
+    expect(() => setup({ files })).toThrow(`\`STATE_FILE\` names ${STATE_PATH}, which cannot be written: EACCES: permission denied`);
+  });
+
+  it("leaves the previous file whole where a write fails before its rename, logs it and goes on, and the next change writes it", async () => {
+    const files = fakeFiles();
+    const s = setup({ files });
+    await deliver(s, labelled());
+    const before = files.disk.get(STATE_PATH);
+
+    files.faults.rename = true;
+    expect((await deliver(s, issueLabelled(), undefined, "issues")).outcome).toMatch(/^dispatched owner\/repo#12 to implement/);
+
+    expect(files.disk.get(STATE_PATH)).toBe(before);
+    expect([...files.disk.keys()]).toEqual([STATE_PATH]);
+    expect(s.lines).toContain(`state: the state file ${STATE_PATH} could not be written: EIO: i/o error. The dispatcher goes on, and the next change tries again`);
+
+    files.faults.rename = false;
+    await deliver(s, labelled({ label: FIX_LABEL }));
+    expect(files.held().jobs.map((job) => job.id)).toEqual(["job-1", "job-2", "job-3", "job-4"]);
+  });
+
+  it("writes a scan over many items once", async () => {
+    const files = fakeFiles();
+    const s = setup({ files });
+    s.repository.items = [8, 9, 10, 11].map((number) => ({ ...pullItem([REVIEW_LABEL]), number }));
+    const before = files.written;
+
+    await s.dispatcher.scan();
+
+    expect(s.posted).toHaveLength(4);
+    expect(files.written - before).toBe(1);
+    expect(files.held().jobs).toHaveLength(4);
+    expect(files.held().asks).toHaveLength(4);
+  });
+
+  it("holds no token, key, secret or signature: identifiers, counts, flags and dates only, and no instance id", async () => {
+    const files = fakeFiles();
+    const s = setup({ files });
+    await countedOut(s);
+    const job = await dispatched(s, labelled({ label: FIX_LABEL }));
+    const granted = await s.dispatcher.token(tokenRequest({ jobId: job.id, kind: "push" }));
+    expect(granted.status).toBe(200);
+
+    const text = files.disk.get(STATE_PATH) ?? "";
+    for (const secret of [WORKER_SECRET, WEBHOOK_SECRET, "minted-token", "dispatcher-1", "sha256", ...s.posted.map((post) => post.headers[SIGNATURE_HEADER] ?? "")]) {
+      expect(text).not.toContain(secret);
+    }
+    const held = files.held() as unknown as { asks: Record<string, unknown>[]; jobs: Record<string, unknown>[] };
+    expect(Object.keys(held)).toEqual(["version", "asks", "jobs"]);
+    for (const ask of held.asks) expect(Object.keys(ask).sort()).toEqual(["at", "dispatches", "label", "number", "repo", "told"]);
+    for (const job of held.jobs) expect(Object.keys(job).sort()).toEqual(["deadline", "id", "number", "order", "posted", "repo", "scanned", "workflow"]);
   });
 });

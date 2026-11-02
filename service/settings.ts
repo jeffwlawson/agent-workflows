@@ -53,6 +53,11 @@ const REQUIRED = { required: true } as const;
  *   requests still carrying `agent:follow-ups`, a filing that never ran or
  *   stopped partway (#603), so one someone left the label on for months is
  *   not dispatched at every restart. At least `1`.
+ * - `STATE_FILE`: the path of the file the dispatcher keeps its dispatched
+ *   jobs and the scan's counts in across a restart (#618,
+ *   `dispatcher-state.ts`). Empty is none: both are held in memory only, and
+ *   a restart forgets them. A path the dispatcher cannot write to is refused
+ *   at start. One dispatcher per file.
  */
 export const DISPATCHER = {
   GITHUB_APP_ID: REQUIRED,
@@ -68,6 +73,7 @@ export const DISPATCHER = {
   EXTRA_OWNERS: { required: false, default: "" },
   SCAN_DISPATCH_LIMIT: { required: false, default: "2" },
   SCAN_MERGED_WINDOW_DAYS: { required: false, default: "7" },
+  STATE_FILE: { required: false, default: "" },
 } as const satisfies Inputs;
 
 /**

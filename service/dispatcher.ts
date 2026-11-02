@@ -13,6 +13,7 @@ import {
   UPDATE_BRANCH_LABEL,
 } from "../shared/record.js";
 import { newestResumeNote } from "../shared/usage-limit.js";
+import type { DispatcherState, StateStore } from "./dispatcher-state.js";
 import {
   parseHeld,
   parseTokenRequest,
@@ -191,6 +192,12 @@ export interface DispatcherEdges {
    * held-door question names (#597): fresh at each start, a UUID unless given.
    */
   readonly instance?: string;
+  /**
+   * Where the dispatcher keeps its jobs and the scan's counts across a
+   * restart (#618), opened at start by `openState`; `undefined` keeps them in
+   * memory only. What it held is read here, once, before the first scan.
+   */
+  readonly state?: StateStore;
 }
 
 /** A request as either door received it: its headers, lower-cased, and its raw body. */
@@ -549,11 +556,55 @@ export const createDispatcher = (edges: DispatcherEdges) => {
   let reservations = 0;
   /**
    * Each item's label a scan has dispatched for, by `askedKey` (#596). Kept in
-   * memory only, so a dispatcher's restart forgets it; dropped when a scan no
-   * longer lists the item with the label, and reset by a delivery for it.
+   * memory, and in the state file where there is one (#618); dropped when a
+   * scan no longer lists the item with the label, and reset by a delivery for it.
    */
   const asks = new Map<string, Asked>();
   const askedKey = (repo: string, number: number, label: string): string => `${repo}#${number} ${label}`;
+
+  /**
+   * What the state file held at start (#618). Each job is taken as posted,
+   * whether or not its post had been answered when the last instance stopped:
+   * the first scan's question to the worker (`askWorker`) then keeps only the
+   * ones it still holds, which, with every job queued by another instance
+   * dropped before it answers (#597), are the ones that have started. Each of
+   * those is answered at its next token request and ends normally. A job past
+   * its deadline is not taken at all.
+   */
+  for (const { id, ...job } of edges.state?.initial.jobs ?? []) {
+    if (job.deadline.getTime() > now().getTime()) jobs.set(id, { ...job, posted: true });
+    reservations = Math.max(reservations, job.order);
+  }
+  for (const ask of edges.state?.initial.asks ?? []) asks.set(askedKey(ask.repo, ask.number, ask.label), { ...ask });
+
+  /** Whether a scan's pass is running, during which every change is written once, at its end. */
+  let scanning = false;
+  /** Whether a change has not been written yet: one that came during a pass, or whose write failed. */
+  let unwritten = false;
+  const snapshot = (): DispatcherState => ({
+    jobs: [...jobs].map(([id, job]) => ({ id, ...job })),
+    asks: [...asks.values()].map(({ repo, number, label, dispatches, told, at }) => ({ repo, number, label, dispatches, told, ...(at === undefined ? {} : { at }) })),
+  });
+  const write = (): void => {
+    if (edges.state === undefined) return;
+    unwritten = false;
+    try {
+      edges.state.save(snapshot());
+    } catch (error) {
+      unwritten = true;
+      edges.log(`state: ${message(error)}. The dispatcher goes on, and the next change tries again`);
+    }
+  };
+  /**
+   * Called at each change to `jobs` or `asks`: writes the state file at once,
+   * or, during a scan's pass, once at its end, so a scan over many items is
+   * one write.
+   */
+  const changed = (): void => {
+    if (edges.state === undefined) return;
+    if (scanning) unwritten = true;
+    else write();
+  };
 
   /**
    * Forget every job past its deadline, which no request can be granted for
@@ -561,7 +612,14 @@ export const createDispatcher = (edges: DispatcherEdges) => {
    * each dispatch; a token request for a forgotten job is refused as unknown.
    */
   const prune = (): void => {
-    for (const [id, job] of jobs) if (job.deadline.getTime() <= now().getTime()) jobs.delete(id);
+    let pruned = false;
+    for (const [id, job] of jobs) {
+      if (job.deadline.getTime() <= now().getTime()) {
+        jobs.delete(id);
+        pruned = true;
+      }
+    }
+    if (pruned) changed();
   };
 
   /**
@@ -633,20 +691,24 @@ export const createDispatcher = (edges: DispatcherEdges) => {
     reservations += 1;
     const entry = { repo: job.repo, deadline, workflow: job.workflow, number: "issue" in job ? job.issue : job.pr, scanned, order: reservations };
     jobs.set(job.id, { ...entry, posted: false });
+    changed();
     const body = JSON.stringify(job);
     let status: number;
     try {
       status = await edges.postJob(body, { "content-type": "application/json", [SIGNATURE_HEADER]: sign(edges.workerSecret, body) });
     } catch (error) {
       jobs.delete(job.id);
+      changed();
       return `failed on ${where}: the worker could not be reached: ${error instanceof Error ? error.message : String(error)}`;
     }
     if (status < 200 || status >= 300) {
       jobs.delete(job.id);
+      changed();
       return `failed on ${where}: the worker answered ${status}`;
     }
     if (jobs.has(job.id)) jobs.set(job.id, { ...entry, posted: true });
     if ("taken" in origin) origin.taken();
+    changed();
     return `dispatched ${where}${at} as job ${job.id}, deadline ${job.deadline}`;
   };
 
@@ -784,7 +846,7 @@ export const createDispatcher = (edges: DispatcherEdges) => {
     const distrust = await untrusted(repo, sender, login);
     if (distrust !== undefined) return `refused on ${where}: ${distrust}`;
     // A fresh ask, so the scan answers the label again up to its limit (#596).
-    asks.delete(askedKey(repo, pr, label));
+    if (asks.delete(askedKey(repo, pr, label))) changed();
     if (kind === "follow-ups") return dispatch({ workflow: kind, repo, pr }, login, where, " on its label", origin);
     const fields = { repo, pr, branch, headSha, baseRef, state, merged };
     // The one delivery that may arm: the gate reads whether the sender can write, and arms the head this names.
@@ -887,7 +949,7 @@ export const createDispatcher = (edges: DispatcherEdges) => {
     const login = appLogin((await edges.github.app()).slug);
     const distrust = await untrusted(repo, sender, login);
     if (distrust !== undefined) return `refused on ${where}: ${distrust}`;
-    asks.delete(askedKey(repo, number, label));
+    if (asks.delete(askedKey(repo, number, label))) changed();
     return dispatchIssue(kinds, { repo, issue: number, title, state, baseRef }, login, where, origin);
   };
 
@@ -938,6 +1000,7 @@ export const createDispatcher = (edges: DispatcherEdges) => {
     if (job === undefined) return answer(404, { refusal: `job ${asked.jobId} is not one this dispatcher dispatched` });
     if (job.deadline.getTime() <= now().getTime()) {
       jobs.delete(asked.jobId);
+      changed();
       return answer(403, { refusal: `job ${asked.jobId} is past its deadline, ${job.deadline.toISOString()}` });
     }
     // A GitHub that cannot be read is refused like a repository that has
@@ -982,7 +1045,7 @@ export const createDispatcher = (edges: DispatcherEdges) => {
     const held = parseHeld(json(Buffer.from(reply.body)));
     if (typeof held === "string") throw new Error(`the worker's answer is not a list of jobs: ${held}`);
     const ids = new Set(held.map((job) => job.id));
-    for (const id of answered) if (!ids.has(id)) jobs.delete(id);
+    for (const id of answered) if (!ids.has(id) && jobs.delete(id)) changed();
     return held;
   };
 
@@ -1060,6 +1123,7 @@ export const createDispatcher = (edges: DispatcherEdges) => {
       return `${skip}; the comment saying so could not be posted, and is tried again at the next scan: ${message(error)}`;
     }
     asked.told = true;
+    changed();
     return `${skip}; commented on it`;
   };
 
@@ -1088,6 +1152,7 @@ export const createDispatcher = (edges: DispatcherEdges) => {
     if (asked?.at !== undefined && note.stopped.getTime() >= asked.at) {
       asked.dispatches = 0;
       asked.told = false;
+      changed();
     }
     return undefined;
   };
@@ -1184,7 +1249,12 @@ export const createDispatcher = (edges: DispatcherEdges) => {
    */
   const forgetUnlisted = (repo: string, label: string, items: readonly { readonly number: number }[]): void => {
     const listed = new Set(items.map((item) => item.number));
-    for (const [key, asked] of asks) if (asked.repo === repo && asked.label === label && !listed.has(asked.number)) asks.delete(key);
+    for (const [key, asked] of asks) {
+      if (asked.repo === repo && asked.label === label && !listed.has(asked.number)) {
+        asks.delete(key);
+        changed();
+      }
+    }
   };
 
   /**
@@ -1236,6 +1306,17 @@ export const createDispatcher = (edges: DispatcherEdges) => {
    * and the rest of the pass goes on.
    */
   const pass = async (): Promise<void> => {
+    scanning = true;
+    try {
+      await passOnce();
+    } finally {
+      scanning = false;
+      if (unwritten) write();
+    }
+  };
+
+  /** One pass's work, whose changes `pass` writes once, at its end. */
+  const passOnce = async (): Promise<void> => {
     let held: readonly HeldJob[];
     try {
       held = await askWorker();

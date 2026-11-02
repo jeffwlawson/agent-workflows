@@ -10,7 +10,7 @@
 #     address reserved for its network card;
 #   - the agentnet-firewall User Script, which keeps the box off the LAN;
 #   - the dispatcher: its settings (making the shared secret), the package in
-#     appdata, its container;
+#     appdata, the writable state/ folder its STATE_FILE is in, its container;
 #   - the Tailscale Funnel that publishes the dispatcher's webhook door.
 #
 # It does not create the VM: make it in the VM form (docs/deploying-the-service.md's
@@ -44,6 +44,10 @@ IMAGE=${IMAGE:-node:24-alpine}
 # uid 99 has no home in the image, and /app is read-only, so it starts in /tmp
 # with HOME there: anything written relative to either lands somewhere writable.
 CONTAINER_USER=${CONTAINER_USER:-99:100}
+# The one place the dispatcher writes to (#618): its state file, which keeps its
+# dispatched jobs and the scan's counts across a restart. Owned by
+# CONTAINER_USER, and mounted read-write at /state.
+STATE_DIR=${STATE_DIR:-$APPDATA/state}
 TZ_NAME=${TZ_NAME:-UTC}
 CHAIN=${CHAIN:-AGENT-EGRESS}
 WAIT_SECONDS=${WAIT_SECONDS:-60}
@@ -240,6 +244,9 @@ echo "== The dispatcher's settings"
 mkdir -p "$APPDATA"
 chown "$CONTAINER_USER" "$APPDATA/app.pem"
 chmod 600 "$APPDATA/app.pem"
+mkdir -p "$STATE_DIR"
+chown "$CONTAINER_USER" "$STATE_DIR"
+chmod 700 "$STATE_DIR"
 # A setting's value, without quotes around it: Docker would keep them as part of it.
 value() {
   grep -m1 "^$1=" "$ENV_FILE" 2>/dev/null | cut -d= -f2- | sed -e 's/^"\(.*\)"$/\1/' -e "s/^'\(.*\)'$/\1/" || true
@@ -277,6 +284,7 @@ WEBHOOK_PORT=$WEBHOOK_PORT
 TOKEN_HOST=$HOST_IP
 TOKEN_PORT=$TOKEN_PORT
 WORKER_SECRET=$secret
+STATE_FILE=/state/dispatcher.json
 EOF
 )" || true
 unset webhook secret
@@ -329,7 +337,9 @@ drift() {
   [ "$(docker inspect -f '{{join .Config.Cmd " "}}' "$CONTAINER")" = "$cmd" ] || echo "command"
   [ "$(docker inspect -f '{{.Config.User}}' "$CONTAINER")" = "$CONTAINER_USER" ] || echo "user"
   [ "$(docker inspect -f '{{.Config.WorkingDir}}' "$CONTAINER")" = "/tmp" ] || echo "working directory"
-  docker inspect -f '{{range .Mounts}}{{println .Source .Destination .RW}}{{end}}' "$CONTAINER" | grep -qx "$APPDATA /app false" || echo "mount"
+  mounts=$(docker inspect -f '{{range .Mounts}}{{println .Source .Destination .RW}}{{end}}' "$CONTAINER")
+  grep -qx "$APPDATA /app false" <<<"$mounts" || echo "mount"
+  grep -qx "$STATE_DIR /state true" <<<"$mounts" || echo "state mount"
   env=$(docker inspect -f '{{range .Config.Env}}{{println .}}{{end}}' "$CONTAINER")
   grep -qx "TZ=$TZ_NAME" <<<"$env" || echo "time zone"
   grep -qx "HOME=/tmp" <<<"$env" || echo "home"
@@ -357,7 +367,7 @@ else
   fi
   docker run -d --name "$CONTAINER" --restart unless-stopped --network host \
     --user "$CONTAINER_USER" -w /tmp -e HOME=/tmp -e "TZ=$TZ_NAME" \
-    --env-file "$ENV_FILE" -v "$APPDATA:/app:ro" "$IMAGE" $cmd >/dev/null
+    --env-file "$ENV_FILE" -v "$APPDATA:/app:ro" -v "$STATE_DIR:/state" "$IMAGE" $cmd >/dev/null
   echo "  created    $CONTAINER"
 fi
 ready=

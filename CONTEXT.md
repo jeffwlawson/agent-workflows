@@ -736,6 +736,11 @@ that had started (#582: one running in each lane, and any update-branch waiting 
 A scan's dispatches are counted per item and label (#596), so a job that ends the worker's process,
 and keeps its label through every restart, is dispatched at most `SCAN_DISPATCH_LIMIT` times and
 then left for a person, with one comment on the item; that label's delivery resets the count.
+What the record cannot hold of this, the scan's counts and the jobs the dispatcher dispatched, is
+the dispatcher's own bookkeeping, kept in memory unless `STATE_FILE` names its **state file**
+(#618, `service/dispatcher-state.ts`): one atomically written JSON file, read at start, holding no
+secret. With it a restarted dispatcher keeps its counts, and adopts each job the worker still holds
+once the queued ones are dropped, the ones that had started, so they end normally.
 
 The **worker** (#457) runs each job the way its workflow's reusable runs it, `review.yml` for a
 `review` job, `fix.yml` for a `fix` job, `update-branch.yml` for an `update-branch` job and

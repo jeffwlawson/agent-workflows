@@ -1,0 +1,6 @@
+schema_version: "1.1"
+name: published-prd-of-slices
+context:
+  scaffold_script: place-files.sh
+expected_outcome: |
+  Checks PRD #730, whose sub-issues #731 and #732 are /to-tickets slices (criteria in the body, ready-for-agent, no brief comment), and reports it ready as a PRD, telling Jeff to add agent:implement to #730 himself; sends no slice to /triage, calls no slice the wrong level, and writes nothing to GitHub.

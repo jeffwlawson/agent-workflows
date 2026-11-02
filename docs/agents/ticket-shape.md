@@ -29,14 +29,21 @@ what a consumer can and cannot see — is in
 [`issue-tracker.md`](./issue-tracker.md#native-relations-sub-issues-and-blocking), with the
 mechanics for setting both.
 
-Upstream carries both relationships, but **as body prose, not natively**.
+Upstream now carries both relationships natively. That is recent, and this file was written
+before it. **History, as of 2026-08:** upstream carried both as body prose, not natively.
 jeffwlawson/winget-manifest-lint#93 checked `mattpocock/course-video-manager` on 2026-08-07 — its
 newest feature at the time, issues 1514–1518 — and found mattpocock/course-video-manager#1517 with
 `## Parent` → `#1514` and `## Blocked by` → `- #1516` written into its body, while the API reports
 `parent: null`, `blocked_by: 0` and no sub-issues on mattpocock/course-video-manager#1514
-(re-verified 2026-08-08). That is the `/to-tickets` defect below (mattpocock/skills#513) seen from
-the outside, and it is what this file exists to correct. Only the labels already match: every ticket
-carries `ready-for-agent` and no workflow trigger label.
+(re-verified 2026-08-08). That was the `/to-tickets` defect mattpocock/skills#513 recorded, seen from
+the outside, and it was what this file first existed to correct.
+
+**Upstream moved on 2026-10-06** (mattpocock/skills `cffab50`): `/to-tickets` now uses native
+blocking and, when its source is an existing issue, attaches each ticket to it as a sub-issue, and
+it publishes in dependency order, blockers first. mattpocock/skills#262, #513 and #554 are all
+closed. What this file still adds is what upstream does not promise: that the sub-issue list is the
+execution order the chain walks, and that no ticket carries a workflow trigger label. Every ticket
+carries `ready-for-agent`, as upstream's do.
 
 ## Creation order is execution order
 
@@ -138,11 +145,14 @@ exactly that reason. Park it as a standalone issue and link it from the PRD body
 
 ## Verify natively before labelling anything
 
-Not optional, and not a formality: upstream's `/to-tickets` does **not** reliably emit native
-relations. As of jeffwlawson/winget-manifest-lint#93 (2026-08-08), mattpocock/skills#513 records it
-writing a prose `Blocked by:` line instead, and mattpocock/skills#262 — the issue tracking it — is
-still open. So a batch can look perfect in the issue bodies and carry no edges at all. The prose
-reads the same either way; only the API tells you which one you got.
+Not optional, and not a formality, though cheaper to pass than it was. Until 2026-10-06 upstream's
+`/to-tickets` did not reliably emit native relations: as of jeffwlawson/winget-manifest-lint#93
+(2026-08-08), mattpocock/skills#513 recorded it writing a prose `Blocked by:` line instead, so a
+batch could look perfect in the issue bodies and carry no edges at all. Upstream `cffab50` fixed
+that, and the issues tracking it are closed. The check stays because it is cheap, because a batch
+created some other way, or by an older install of the skill, can still carry prose edges that read
+the same as native ones, and because it checks the one thing upstream never promises: that the
+sub-issue list is in the order the chain must build it. Only the API tells you which you got.
 
 Re-read all three, and read them the way the workflow does:
 
@@ -199,12 +209,13 @@ being consumed.
 `/to-tickets`' slicing judgement is the reason to run it, and it is kept in full: tracer bullets,
 sizing each slice to one context, surfacing prefactoring first, expand–contract for wide refactors.
 
-Overridden here, and only here:
+Overridden here, and only here. Upstream's default of flat peers with no ordering contract was
+overridden too, until upstream `cffab50` (2026-10-06) made it attach sub-issues natively and publish
+blockers first, which is what this file asks for; that row is gone because nothing is overridden
+there any more.
 
 | Upstream default | Here |
 |---|---|
-| publishes flat peers joined by blocking edges | a parent PRD with native sub-issues |
-| no ordering contract on creation | created in dependency order, blockers first |
 | `ready-for-agent` on every ticket "unless instructed otherwise" | kept — this file is that instruction for the `agent:*` labels only |
 
 That last row is the seam. `/to-tickets` applies triage labels by default and says so; this file

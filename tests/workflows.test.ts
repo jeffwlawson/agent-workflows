@@ -7080,6 +7080,20 @@ describe("the adoption doc gives every label a lifecycle, in a column", () => {
    * harmless to get wrong twice; the **name** is not, and it is the same line
    * that carries both.
    */
+  /**
+   * **A triaged issue carries one category and one state role** (#609), as
+   * upstream's `/triage` has it. `issues-to-prd`'s triage reference tells a
+   * reader to apply "a category label (`triage-labels.md`)", so the file it
+   * points at lists them, in a table row each.
+   */
+  it("lists the category roles beside the state roles", () => {
+    const triage = fs.readFileSync(TRIAGE, "utf8");
+    for (const category of ["bug", "enhancement"]) {
+      expect(triage, category).toMatch(new RegExp(`^\\| \`${category}\` \\| \`${category}\` \\|`, "m"));
+    }
+    expect(triage).toMatch(/one category role and one state role/);
+  });
+
   it("defines a label the same way wherever it is defined twice", () => {
     const LABEL_COMMAND = /^gh label create +"([^"]+)" +--color +(\S+) +--description +"([^"]+)"$/gm;
     const definitionsIn = (file: string): ReadonlyMap<string, string> =>

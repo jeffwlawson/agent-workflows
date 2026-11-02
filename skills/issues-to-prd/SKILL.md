@@ -29,12 +29,14 @@ Read the issue, its comments, its labels, its native links (parent, sub-issues, 
 |---|---|
 | Closed, or a `wayfinder:*` ticket | **Not implementable**, and why. |
 | An `agent:*` label on it, or an open linked PR | **Already running**: name the PR or run. |
-| A sub-issue of a PRD | **Wrong level**: "Label the parent #P instead; it builds its sub-issues in order." |
-| A PRD parent | **Ready as a PRD** if its sub-issues pass this gate; otherwise name the ones that do not. |
-| No *Agent Brief* comment, or still `needs-triage` | **Triage first**: "Run `/triage #N`." |
+| A sub-issue of a PRD, unless the gate is checking that PRD's sub-issues | **Wrong level**: "Label the parent #P instead; it builds its sub-issues in order." |
+| A PRD parent | **Ready as a PRD** if each of its sub-issues passes this gate, skipping the row above and counting a blocker that is an earlier sub-issue of the same PRD as no wait; otherwise name the ones that do not. |
+| Still `needs-triage`, or not briefed (below) | **Triage first**: "Run `/triage #N`." |
 | A brief, but a file its *Where things are* names is gone, or commits landed on one since the brief was read | **Re-triage**: "The brief predates <commit>, which changed <file>" (or "names <file>, which no longer exists"). "Run `/triage #N`." Add one line on what that commit means for the criteria: built already, in conflict, or only moved code. That line decides whether triage narrows the issue, closes it, or only re-points it. |
 | A native blocker still open | **Ready, but waits**: "Add `agent:implement` once #M closes; implement refuses it until then." |
 | Otherwise | **Ready**: "Add `agent:implement` to #N." |
+
+**Briefed** means an *Agent Brief* comment, or a body that carries an *Acceptance criteria* heading on an issue labelled `ready-for-agent`. The second is a `/to-tickets` slice: it carries its criteria in its body and no brief comment, and it is agent-ready as published, so do not send it to `/triage`. The rows after *Triage first* still apply to it, the stale-brief row wherever its body has a dated *Where things are* part.
 
 The stale-brief row is `git log <read-at>..origin/main -- <files>` after `git fetch origin main`, where `<read-at>` is the commit the brief's *Where things are* says it was read at. A range catches what a date misses: commit dates carry their author's offset. With no commit named, fall back to `--since=<brief date>`. A deleted file has no new commits, so check each one still exists (`git cat-file -e origin/main:<file>`).
 

@@ -16,7 +16,7 @@ Clean context per issue. Send all of them in one message. Each gets this brief, 
 
 ## 2. Check the load-bearing claims yourself
 
-For each question, open the code the subagent's recommendation rests on and confirm it. Then form your own recommendation. Disagree where the evidence says so: in the run this came from, the orchestrator disagreed once and the maintainer took its call (under an unsandboxed mode, locking down one step protects nothing the agent cannot already reach).
+For each question, open the code the subagent's recommendation rests on and confirm it. Then form your own recommendation. Disagree where the evidence says so.
 
 ## 3. Bring the maintainer the questions
 

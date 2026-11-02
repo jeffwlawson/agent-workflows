@@ -257,7 +257,8 @@ comment carries one, **it replaces the issue body's list for review rather than 
 
 Used by `/wayfinder`. The **map** is a single issue with **child** issues as tickets.
 
-- **Map**: a single issue labelled `wayfinder:map`, holding the Notes / Decisions-so-far / Fog body.
+- **Map**: a single issue labelled `wayfinder:map`, holding the Destination /
+  Notes / Decisions so far / Not yet specified / Out of scope body.
   `gh issue create --label wayfinder:map`.
 - **Child ticket**: an issue linked to the map as a native sub-issue (above). Labels:
   `wayfinder:<type>` (`research`/`prototype`/`grilling`/`task`). Once claimed, the ticket is
@@ -268,7 +269,7 @@ Used by `/wayfinder`. The **map** is a single issue with **child** issues as tic
   (`issue_dependencies_summary.blocked_by > 0`) or an assignee; first in map order wins.
 - **Claim**: `gh issue edit <n> --add-assignee @me` — the session's first write.
 - **Resolve**: `gh issue comment <n> --body "<answer>"`, then `gh issue close <n>`, then append a
-  context pointer to the map's Decisions-so-far.
+  context pointer to the map's Decisions so far.
 - **Close the map**: the map's terminal state, reached only after it has been sliced into a PRD,
   or, for a map that ends in standalone issues, once its last child ticket closes, and never from
   inside a `/wayfinder` session — step 5 of the path out, in

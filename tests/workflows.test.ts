@@ -1116,7 +1116,7 @@ describe("every reusable that starts the agent installs one pinned Claude Code",
    * The service orchestrator's worker installs `CLAUDE_CODE_VERSION` (#651),
    * which the box's install script defaults and the example conf repeats: held
    * to the reusables' pin, so a box freshly installed at a release runs the
-   * Claude Code its reusables do. An upgrade leaves `service.env` as it is, so
+   * Claude Code its reusables do. An upgrade leaves `worker.env` as it is, so
    * this holds the default only, not what an upgraded box runs.
    */
   it("is the version the service's worker installs by default", () => {

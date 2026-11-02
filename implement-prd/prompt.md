@@ -64,15 +64,23 @@ One of three things is true:
 
 # EXECUTION
 
-Do red-green-refactor where a test seam already exists:
+Do red-green-refactor:
 
 1. RED: write a failing test
 2. GREEN: implement the smallest correct change
 3. REPEAT until the slice is done
 4. REFACTOR
 
-Do not improvise new test seams: for example, extracting a function purely so it can be
-tested in isolation. That creates spaghetti tests.
+A test seam is the public surface the criteria are observed through: a command and its output, a
+function's contract, a check's pass and fail. On this chain the brief is the slice's brief, or the
+PRD's where the slice names none. Where the brief names a test seam, write the tests there;
+otherwise write them at a seam that already exists. Where the named seam does not exist in the
+code, or cannot observe a criterion, test at the nearest existing seam and say so in the commit
+message. Carry on with the run either way: a seam the code lacks is a gap in the brief for a human
+to read in that message.
+
+Test through a seam the code already has, rather than one made for the test: extracting a function
+purely so it can be tested in isolation, for example, creates spaghetti tests.
 
 While iterating, run the test files that cover your change, not the whole suite. Run the verify
 command `CLAUDE.md` names once, before committing. It must pass. Run it again only if anything

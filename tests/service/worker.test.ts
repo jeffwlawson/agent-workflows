@@ -1,7 +1,7 @@
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { SANDBOX_WORKTREE } from "../../engine/bwrap-args.js";
 import { CI_WAIT_SECONDS } from "../../review/collect-checks.js";
 import { issueRescueBranch } from "../../shared/record.js";
@@ -630,19 +630,26 @@ describe("the worker's job, where a phase fails", () => {
 
 describe("the worker's job, where the plan's usage limit stops its agent (#635)", () => {
   const LIMIT = "claude-code exited with code 1: You've hit your session limit · resets 5:50am (UTC)";
-  const HOUR_MS = 60 * 60 * 1000;
+  // The worker reads the message on its own clock, so the test holds that
+  // clock: on the real one the answer is today's 05:50 for the grace after it
+  // (#665).
+  afterEach(() => {
+    vi.useRealTimers();
+  });
 
-  it("tells the queue the reset instant, and tells conclude it runs on the service, with the loop's account", async () => {
+  it.each([
+    { stopped: "2026-11-01T01:10:00Z", resets: "2026-11-01T05:50:00.000Z" },
+    { stopped: "2026-11-01T07:00:00Z", resets: "2026-11-02T05:50:00.000Z" },
+  ])("tells the queue the next reset instant, at $resets for a run stopped at $stopped, and tells conclude it runs on the service, with the loop's account", async ({ stopped, resets }) => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(new Date(stopped));
     const s = setup({ ...ORDINARY, review: { files: { "failure_reason.txt": `${LIMIT}\n` }, exit: 1 } });
     const limited: Date[] = [];
-    const before = Date.now();
     const phases = await runJob(JOB, { ...s.edges, limited: (until) => limited.push(until) });
 
     expect(limited).toHaveLength(1);
     const until = limited[0]!;
-    expect(until.getUTCHours() * 60 + until.getUTCMinutes()).toBe(5 * 60 + 50);
-    expect(until.getTime()).toBeGreaterThan(before);
-    expect(until.getTime() - before).toBeLessThanOrEqual(24 * HOUR_MS);
+    expect(until.toISOString()).toBe(resets);
     expect(phases).toContainEqual({ name: "usage limit", outcome: `the plan's usage limit stopped review; it resets at ${until.toISOString()}` });
     expect(s.env("review:conclude")).toMatchObject({ ORCHESTRATOR: "service", AGENT_LOOP_LOGINS: JOB.appLogin, FAILURE_REASON: LIMIT });
   });

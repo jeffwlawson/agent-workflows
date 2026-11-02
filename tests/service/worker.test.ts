@@ -38,6 +38,7 @@ import {
   jobDoor,
   lanes,
   LANES,
+  RESET_MARGIN_MINUTES,
   REDACTED,
   runJob,
   SETUP_PHASE,
@@ -619,6 +620,38 @@ describe("the worker's job, where a phase fails", () => {
   });
 });
 
+describe("the worker's job, where the plan's usage limit stops its agent (#635)", () => {
+  const LIMIT = "claude-code exited with code 1: You've hit your session limit · resets 5:50am (UTC)";
+  const HOUR_MS = 60 * 60 * 1000;
+
+  it("tells the queue the reset instant, and tells conclude it runs on the service, with the loop's account", async () => {
+    const s = setup({ ...ORDINARY, review: { files: { "failure_reason.txt": `${LIMIT}\n` }, exit: 1 } });
+    const limited: Date[] = [];
+    const before = Date.now();
+    const phases = await runJob(JOB, { ...s.edges, limited: (until) => limited.push(until) });
+
+    expect(limited).toHaveLength(1);
+    const until = limited[0]!;
+    expect(until.getUTCHours() * 60 + until.getUTCMinutes()).toBe(5 * 60 + 50);
+    expect(until.getTime()).toBeGreaterThan(before);
+    expect(until.getTime() - before).toBeLessThanOrEqual(24 * HOUR_MS);
+    expect(phases).toContainEqual({ name: "usage limit", outcome: `the plan's usage limit stopped review; it resets at ${until.toISOString()}` });
+    expect(s.env("review:conclude")).toMatchObject({ ORCHESTRATOR: "service", AGENT_LOOP_LOGINS: JOB.appLogin, FAILURE_REASON: LIMIT });
+  });
+
+  it("tells the queue nothing where the runner failed any other way, or a command gave the message", async () => {
+    const s = setup({
+      ...ORDINARY,
+      review: { files: { "failure_reason.txt": "The agent's model refused the token.\n" }, exit: 1 },
+      "review:conclude": { files: { "failure_reason.txt": LIMIT }, exit: 1 },
+    });
+    const limited: Date[] = [];
+    await runJob(JOB, { ...s.edges, limited: (until) => limited.push(until) });
+
+    expect(limited).toEqual([]);
+  });
+});
+
 describe("the worker's job, on a PRD pull request", () => {
   const PRD: ReviewJob = { ...JOB, branch: "agent/prd-453-the-service" };
   const reviewed = {
@@ -693,6 +726,14 @@ describe("the worker's job, on a PRD pull request", () => {
     await runJob(PRD, s.edges);
 
     expect(s.env("review:advance")).toMatchObject({ REVIEW_RESULT: "cancelled", POSTING_RESULT: "success" });
+  });
+
+  it("does not advance where the plan's usage limit stopped the review and it resumes (#635)", async () => {
+    const s = setup({ ...ORDINARY, review: { exit: 1 }, "review:conclude": { files: { "ended.json": { moved: false, resumes: true } } } });
+    await runJob(PRD, s.edges);
+
+    expect(s.events.at(-1)).toBe("review:conclude");
+    expect(s.events).not.toContain("review:advance");
   });
 
   it("logs that the chain was not advanced where no token to advance it with was granted", async () => {
@@ -3081,7 +3122,7 @@ describe("the worker's queue", () => {
   const implementPrd = (id: string, issue: number): ImplementPrdJob => ({ ...PRD_JOB, id, issue });
 
   /** A queue whose jobs' work waits for the test: each start, each agent part's start and each end, in order. */
-  const queued = () => {
+  const queued = (hold: Parameters<typeof lanes>[2] = {}) => {
     const events: string[] = [];
     const errors: unknown[] = [];
     const ends = new Map<string, () => void>();
@@ -3120,6 +3161,7 @@ describe("the worker's queue", () => {
           });
         }),
       (error) => errors.push(error),
+      hold,
     );
     return {
       queue,
@@ -3145,6 +3187,114 @@ describe("the worker's queue", () => {
       },
     };
   };
+
+  describe("while the plan's usage limit holds (#635)", () => {
+    const MINUTE_MS = 60 * 1000;
+    const HOUR_MS = 60 * MINUTE_MS;
+    /** A clock the test moves, and the timers it fires as it does. */
+    const fakeClock = (start: number) => {
+      let now = start;
+      const timers: { at: number; then: () => void }[] = [];
+      return {
+        clock: { now: () => now, after: (ms: number, then: () => void) => void timers.push({ at: now + ms, then }) },
+        advance: async (minutes: number) => {
+          now += minutes * MINUTE_MS;
+          for (const timer of timers.filter((t) => t.at <= now)) {
+            timers.splice(timers.indexOf(timer), 1);
+            timer.then();
+          }
+          await settle();
+        },
+      };
+    };
+    const START = Date.parse("2026-11-01T01:10:00Z");
+    const RESETS = new Date("2026-11-01T05:50:00Z");
+    const UNTIL = (5 * 60 + 50 - 70) + RESET_MARGIN_MINUTES;
+    /** A deadline past the hold, so the job keeps its place. */
+    const LATER = "2026-11-01T09:00:00.000Z";
+
+    it("starts no agent job until the reset, runs a job that starts no agent meanwhile, then the held jobs in arrival order, and asks for a scan", async () => {
+      const time = fakeClock(START);
+      let resets = 0;
+      const w = queued({ clock: time.clock, reset: () => (resets += 1) });
+      w.queue.add(review("limited"));
+      await settle();
+      w.queue.limit(RESETS);
+      await w.end("limited");
+
+      w.queue.add({ ...implement("build"), deadline: LATER });
+      w.queue.add({ ...review("second", 8), deadline: LATER });
+      w.queue.add({ ...followUps("file", 9), deadline: LATER });
+      w.queue.add({ ...updateBranch("clean", 10), deadline: LATER });
+      w.queue.add({ ...updateBranch("conflicted", 11), deadline: LATER });
+      await settle();
+      expect(w.queue.heldUntil()).toEqual(new Date(RESETS.getTime() + RESET_MARGIN_MINUTES * MINUTE_MS));
+
+      // The light lane runs on: the filing, the clean refresh, and the conflicted one up to its agent part.
+      await w.end("file");
+      await w.end("clean");
+      await w.conflict("conflicted");
+      expect(w.events.slice(2)).toEqual(["file starts", "file ends", "clean starts", "clean ends", "conflicted starts"]);
+
+      // At the reset itself the margin still holds; at its end the agent lane runs as before.
+      await time.advance(UNTIL - RESET_MARGIN_MINUTES);
+      expect(w.events.at(-1)).toBe("conflicted starts");
+      expect(resets).toBe(0);
+      await time.advance(RESET_MARGIN_MINUTES);
+      expect(resets).toBe(1);
+      expect(w.queue.heldUntil()).toBeUndefined();
+      expect(w.events.at(-1)).toBe("build starts");
+      await w.end("build");
+      expect(w.events.at(-1)).toBe("second starts");
+      await w.end("second");
+      expect(w.events.at(-1)).toBe("conflicted has the agent lane");
+      expect(w.mostAgentParts()).toBe(1);
+    });
+
+    it("is extended by a later reset, and not shortened by an earlier one", async () => {
+      const time = fakeClock(START);
+      let resets = 0;
+      const w = queued({ clock: time.clock, reset: () => (resets += 1) });
+      w.queue.limit(RESETS);
+      w.queue.limit(new Date(RESETS.getTime() + HOUR_MS));
+      w.queue.limit(new Date(RESETS.getTime() - HOUR_MS));
+      w.queue.add({ ...implement("build"), deadline: LATER });
+      await settle();
+
+      await time.advance(UNTIL);
+      expect(w.events).toEqual([]);
+      expect(resets).toBe(0);
+      await time.advance(60);
+      expect(w.events).toEqual(["build starts"]);
+      expect(resets).toBe(1);
+    });
+
+    // A hold is often hours, a deadline its kind's time limit and a margin:
+    // a job queued past it would end at its first token with nothing posted.
+    it("drops every queued job past its deadline as it ends, before asking for the scan, so the scan dispatches each again", async () => {
+      const time = fakeClock(START);
+      const late: string[][] = [];
+      let heldAtReset: string[] = [];
+      const w = queued({
+        clock: time.clock,
+        reset: (dropped) => {
+          late.push(dropped.map((job) => job.id));
+          heldAtReset = w.queue.held().map((job) => job.id);
+        },
+      });
+      w.queue.limit(RESETS);
+      w.queue.add({ ...implement("stale"), deadline: "2026-11-01T03:00:00.000Z" });
+      w.queue.add({ ...review("fresh", 8), deadline: LATER });
+      w.queue.add({ ...review("stale-behind", 9), deadline: "2026-11-01T05:52:00.000Z" });
+      await settle();
+
+      await time.advance(UNTIL);
+
+      expect(late).toEqual([["stale", "stale-behind"]]);
+      expect(heldAtReset).toEqual(["fresh"]);
+      expect(w.events).toEqual(["fresh starts"]);
+    });
+  });
 
   it("classes each kind by what it can do: follow-ups is light, update-branch hands off, and every other kind starts an agent", () => {
     expect(LANES).toEqual({

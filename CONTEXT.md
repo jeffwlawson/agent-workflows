@@ -91,9 +91,11 @@ before the upgrade and is not built again, and a pull request from the older rel
 or closes it by hand.
 
 **A trigger label is on while its run works** (#236). The run leaves it on as it starts and takes
-it off in its last step, however it ends: success, failure, refusal, timeout or cancel. So the
-label on an issue or a pull request is the run working on it now, or the one queued behind it, and
-`agent:in-progress`, which said the same thing in a second write, is retired. On a PRD parent that
+it off in its last step, however it ends: success, failure, refusal, timeout or cancel, except a
+run the plan's usage limit stopped on the service, which leaves it on (#635). So the
+label on an issue or a pull request is the run working on it now, or the one queued behind it, or,
+on the service, the one waiting for the plan's usage limit to reset, which resumes by itself
+(#635), and `agent:in-progress`, which said the same thing in a second write, is retired. On a PRD parent that
 makes `agent:implement` on only during each build run; the advance puts it back. Two rules
 follow from GitHub firing no event for a label already there. The loop adds a trigger label by
 **removing it first**, so a stale one cannot swallow the request. And a request made **while a run
@@ -104,13 +106,17 @@ run would answer the threads it answered. There is no lifetime "in progress" lab
 an open issue with a linked pull request, a draft, and `agent:blocked` already give that view.
 
 Every run ends in **one order**: post every result, take its own label off, then add the label
-naming the next step. A hand-off removes its trigger label just before it adds `agent:review`; a
+naming the next step. The one run that keeps its label is one the plan's usage limit stopped on
+the service (#635): it posts its comment and ends there, label on and nothing added, since the
+service resumes it after the reset. A hand-off removes its trigger label just before it adds `agent:review`; a
 failure comments, then removes it, then adds `agent:blocked`; a refusal does the same where the
 maintainer has to act, and one that leaves nothing to act on (a closed issue or pull request, a
 finished PRD, a deleted branch, a fix with nothing to do) comments and removes it, and adds nothing
 (#253). Every such comment is in one of two patterns: `**`agent:X` stopped:**` and the reason, the
 run and what to do, for a run that started; `**`agent:X` didn't run:**` and a sentence saying why
-and what to do, for one refused before it did anything. So nothing ever carries a run's label and the next step's at once, or `agent:blocked` with no word of why. A
+and what to do, for one refused before it did anything. The service's usage-limit ending is a
+third, `**`agent:X` is waiting:**` and the reset time it resumes after, ending in its resume note
+(#635); on Actions the same stop says `stopped:`, as any does. So nothing ever carries a run's label and the next step's at once, or `agent:blocked` with no word of why. A
 review that found the head moved hands off one way only, and says so as `moved`: its fix-round and
 advance hand-offs stand down, since its verdict is about a commit the pull request has left, and
 `update-branch` asks for itself again only where it did not just ask for a review.

@@ -4,7 +4,8 @@ import { SANDBOX_WORKTREE } from "../engine/bwrap-args.js";
 import { COMMANDS, RUNNERS, type Command, type Runner } from "../shared/contract.js";
 import type { HostEnvironment } from "../shared/env.js";
 import { sandboxRefusal } from "../shared/sandbox.js";
-import { branchIssue, fixRescueBranch, issueRescueBranch, PRD_BRANCH_PREFIX, prdRescueBranch } from "../shared/record.js";
+import { branchIssue, fixRescueBranch, issueRescueBranch, PRD_BRANCH_PREFIX, prdRescueBranch, SERVICE_ORCHESTRATOR } from "../shared/record.js";
+import { usageLimitReset } from "../shared/usage-limit.js";
 import type { DoorRequest, DoorResponse } from "./dispatcher.js";
 import {
   FOLLOW_UPS_MINUTES,
@@ -168,6 +169,12 @@ export interface JobEdges {
    * conflicted, before its agent's job. Resolves at once where unset.
    */
   readonly agentLane?: () => Promise<void>;
+  /**
+   * Told the instant the plan's usage limit resets, where a runner ended on
+   * the CLI's usage-limit message (#635): the worker's queue holds its agent
+   * lane until then (`lanes`). Nothing is told where unset.
+   */
+  readonly limited?: (until: Date) => void;
 }
 
 /**
@@ -492,6 +499,13 @@ export const startRun = (job: Job, edges: JobEdges): Run => {
     }
     const why = code === 0 ? undefined : reason(dir, "failure_reason.txt");
     note(subcommand, code === 0 ? "success" : `failure (exit ${code})${why === undefined ? "" : `: ${why}`}`);
+    // A runner the plan's usage limit stopped (#635): every agent job after
+    // it would stop the same way until the reset, so the queue is told.
+    const until = subcommand in RUNNERS ? usageLimitReset(why, new Date()) : undefined;
+    if (until !== undefined) {
+      note("usage limit", `the plan's usage limit stopped ${subcommand}; it resets at ${until.toISOString()}`);
+      edges.limited?.(until);
+    }
     return { ok: code === 0, timedOut: false, dir };
   };
 
@@ -627,9 +641,10 @@ export const runJob = async (job: Job, edges: JobEdges): Promise<readonly Phase[
  *    found fixed stay open and are listed so.
  * 7. A `write` token, or publish's where that was `write`, then
  *    `review:conclude`, however the phases before it ended, told how each did.
- * 8. On a PRD pull request, where the gate went ahead and the head did not
- *    move, a `write` token and `review:advance`, told how the review and the
- *    posting ended.
+ * 8. On a PRD pull request, where the gate went ahead, the head did not
+ *    move and conclude does not say the review resumes after the plan's
+ *    usage limit, a `write` token and `review:advance`, told how the review
+ *    and the posting ended.
  *
  * Each subcommand gets a fresh output directory of its own, and a command
  * that reads another's files is pointed at that one's. A phase that fails is
@@ -857,6 +872,7 @@ const runReview = async (job: ReviewJob, edges: JobEdges): Promise<readonly Phas
     {
       ...common,
       GH_TOKEN: concluding,
+      ORCHESTRATOR: SERVICE_ORCHESTRATOR,
       LOOP_TOKEN: concluding,
       LOOP_TOKEN_SOURCE: TOKEN_SOURCE,
       PUBLISH_DIR: publishDir,
@@ -889,7 +905,11 @@ const runReview = async (job: ReviewJob, edges: JobEdges): Promise<readonly Phas
   // went ahead, since a refusal ended no round, and where the head did not
   // move, since the review of the new head decides. Every job is from this
   // repository: the dispatcher refuses a fork.
-  if (!job.branch.startsWith(PRD_BRANCH_PREFIX) || gate["proceed"] !== "true" || ended["moved"] === "true") return done();
+  // Nor where the plan's usage limit stopped the review and it resumes (#635):
+  // the round has not ended, so there is nothing to advance or park on.
+  if (!job.branch.startsWith(PRD_BRANCH_PREFIX) || gate["proceed"] !== "true" || ended["moved"] === "true" || ended["resumes"] === "true") {
+    return done();
+  }
   // The posting job's result: failed where a step of it did, cancelled where
   // one was ended at its limit, as `needs.post-review.result` says it.
   const postingResult =
@@ -1179,6 +1199,7 @@ const runFix = async (job: FixJob, edges: JobEdges): Promise<readonly Phase[]> =
     {
       ...common,
       GH_TOKEN: concluding,
+      ORCHESTRATOR: SERVICE_ORCHESTRATOR,
       LOOP_TOKEN: concluding,
       LOOP_TOKEN_SOURCE: TOKEN_SOURCE,
       HEAD_SHA: job.headSha,
@@ -1483,6 +1504,7 @@ const runUpdateBranch = async (job: UpdateBranchJob, edges: JobEdges): Promise<r
     {
       ...common,
       GH_TOKEN: concluding,
+      ORCHESTRATOR: SERVICE_ORCHESTRATOR,
       LOOP_TOKEN: concluding,
       LOOP_TOKEN_SOURCE: TOKEN_SOURCE,
       HEAD_SHA: job.headSha,
@@ -1768,6 +1790,7 @@ const runImplement = async (job: ImplementJob, edges: JobEdges): Promise<readonl
     {
       ...common,
       GH_TOKEN: concluding,
+      ORCHESTRATOR: SERVICE_ORCHESTRATOR,
       // The loop's token is the `push` token alone: empty where the mint
       // failed, as the publish job's is, so conclude rescues nothing then.
       LOOP_TOKEN: push,
@@ -2160,6 +2183,7 @@ const runImplementPrd = async (job: ImplementPrdJob, edges: JobEdges): Promise<r
     {
       ...common,
       GH_TOKEN: concluding,
+      ORCHESTRATOR: SERVICE_ORCHESTRATOR,
       // The loop's token is the `push` token alone: empty where the mint
       // failed, as the publish job's is, so conclude rescues nothing then.
       LOOP_TOKEN: push,
@@ -2508,6 +2532,40 @@ interface Held {
 }
 
 /**
+ * How long after the plan's usage limit resets the agent lane opens and the
+ * dispatcher is asked to scan (#635): a margin for the two machines' clocks,
+ * which the held door holds within a minute of each other, so the scan finds
+ * the resume note's time passed.
+ */
+export const RESET_MARGIN_MINUTES = 2;
+
+/** The clock the agent lane's hold reads (#635): now, in milliseconds, and a timer. */
+export interface HoldClock {
+  readonly now: () => number;
+  /** Calls `then` once `ms` have passed. */
+  readonly after: (ms: number, then: () => void) => void;
+}
+
+const REAL_CLOCK: HoldClock = {
+  now: () => Date.now(),
+  after: (ms, then) => {
+    setTimeout(then, ms);
+  },
+};
+
+/** The worker's queue: a queue of jobs, which the plan's usage limit can hold. */
+export interface Lanes extends Queue<Job> {
+  /**
+   * Holds the agent lane until `until`, the instant the plan's usage limit
+   * resets, and `RESET_MARGIN_MINUTES` after it (#635). A later instant
+   * extends the hold; an earlier one changes nothing.
+   */
+  readonly limit: (until: Date) => void;
+  /** When the agent lane's hold ends, or `undefined` where it is not held. */
+  readonly heldUntil: () => Date | undefined;
+}
+
+/**
  * **The worker's queue** (#582): two lanes, each running one job at a time,
  * beneath a chain per pull request or issue.
  *
@@ -2528,16 +2586,31 @@ interface Held {
  *   never overlap, whatever their lanes. A PRD chain is one item: its
  *   parent's jobs and its PRD PR's share the parent (`itemsOf`).
  *
- * Nothing here reads a deadline: it is the dispatcher's, set at dispatch, so a
- * job's wait counts against it in either lane, and a job late by its turn ends
- * at its first token request, as one late in a single queue did. A job that
- * throws does not stop the ones behind it, and one dropped before its turn is
- * passed over.
+ * - **While the plan's usage limit holds** (#635, `limit`), the agent lane
+ *   starts nothing: no agent job, and no hand-off's agent part, until the
+ *   reset and its margin. The light lane runs on meanwhile. At the end of the
+ *   hold every queued job already past its deadline is dropped, the agent
+ *   lane runs the rest in arrival order, as before, and `reset` is called
+ *   with the dropped ones, which asks the dispatcher to scan, so it
+ *   dispatches each dropped job's item again. The hold is in memory only, so
+ *   a restarted worker forgets it.
+ *
+ * Nothing else here reads a deadline: it is the dispatcher's, set at dispatch, so a
+ * job's wait counts against it in either lane, a hold's included, and a job
+ * late by its turn ends at its first token request, as one late in a single
+ * queue did. A job that throws does not stop the ones behind it, and one
+ * dropped before its turn is passed over.
  */
-export const lanes = (work: (job: Job, agentLane: () => Promise<void>) => Promise<void>, onError: (error: unknown) => void): Queue<Job> => {
+export const lanes = (
+  work: (job: Job, agentLane: () => Promise<void>) => Promise<void>,
+  onError: (error: unknown) => void,
+  { clock = REAL_CLOCK, reset = () => {} }: { readonly clock?: HoldClock; readonly reset?: (late: readonly Job[]) => void } = {},
+): Lanes => {
   const entries: Held[] = [];
   let light: Held | undefined;
   let agent: Held | undefined;
+  /** When the agent lane's hold ends, in milliseconds, or `undefined` where it is not held. */
+  let until: number | undefined;
 
   /** No job sharing one of its items arrived before it and is still held. */
   const itemFree = (entry: Held): boolean =>
@@ -2566,7 +2639,8 @@ export const lanes = (work: (job: Job, agentLane: () => Promise<void>) => Promis
   };
 
   const pump = (): void => {
-    if (agent === undefined) {
+    const held = until !== undefined && clock.now() < until;
+    if (agent === undefined && !held) {
       const front = entries.find((entry) => entry.lane !== "light");
       if (front?.state === "waiting") {
         agent = front;
@@ -2601,6 +2675,25 @@ export const lanes = (work: (job: Job, agentLane: () => Promise<void>) => Promis
       return taken.map((entry) => entry.job);
     },
     running: () => light?.job ?? agent?.job,
+    limit: (resets) => {
+      const ends = resets.getTime() + RESET_MARGIN_MINUTES * 60_000;
+      if (until !== undefined && ends <= until) return;
+      until = ends;
+      clock.after(Math.max(0, ends - clock.now()), () => {
+        // A later limit extended the hold, and its own timer ends it.
+        if (until !== ends) return;
+        until = undefined;
+        // A job queued past its deadline would end at its first token request
+        // with nothing posted, its label still on: dropped here instead, so
+        // the scan `reset` asks for finds nothing held for its item and
+        // dispatches it again, with a deadline of its own.
+        const late = entries.filter((entry) => entry.state === "queued" && Date.parse(entry.job.deadline) <= clock.now());
+        for (const entry of late) entries.splice(entries.indexOf(entry), 1);
+        reset(late.map((entry) => entry.job));
+        pump();
+      });
+    },
+    heldUntil: () => (until === undefined || clock.now() >= until ? undefined : new Date(until)),
   };
 };
 

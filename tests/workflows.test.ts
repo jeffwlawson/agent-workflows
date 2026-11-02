@@ -2951,9 +2951,11 @@ describe("the review posts last, from one job", () => {
     // Actions sets the three run-link variables itself, and Node's own
     // `NODE_AUTH_TOKEN` is the install's. `AGENT_LOOP_LOGINS` is left unset:
     // Actions posts as the default account, which the list always holds (#376).
+    // `ORCHESTRATOR` is left unset too: its default, `actions`, is this one,
+    // and only the service's worker sets `service` (#635).
     const set = Object.keys(conclude?.env ?? {}).filter((name) => name !== "NODE_AUTH_TOKEN");
     const declared = Object.keys(COMMANDS["review:conclude"].inputs).filter(
-      (name) => !name.startsWith("GITHUB_") && name !== "GH_REPO" && name !== "PR_NUMBER" && name !== "AGENT_LOOP_LOGINS",
+      (name) => !name.startsWith("GITHUB_") && name !== "GH_REPO" && name !== "PR_NUMBER" && name !== "AGENT_LOOP_LOGINS" && name !== "ORCHESTRATOR",
     );
     expect(set.sort()).toEqual(declared.sort());
     expect(posting().env).toMatchObject({ PR_NUMBER: "${{ github.event.pull_request.number }}", GH_REPO: "${{ github.repository }}" });

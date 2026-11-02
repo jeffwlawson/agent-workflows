@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { loopAccounts } from "../shared/loop-accounts.js";
 import { isLoopStatus } from "../shared/loop-checks.js";
 import {
   FIX_LABEL,
@@ -11,6 +12,7 @@ import {
   SERVICE_ORCHESTRATOR,
   UPDATE_BRANCH_LABEL,
 } from "../shared/record.js";
+import { newestResumeNote } from "../shared/usage-limit.js";
 import {
   parseHeld,
   parseTokenRequest,
@@ -115,6 +117,12 @@ export interface AppGitHub {
    * `repo`'s issue or pull request `number`, or `undefined` where there is none.
    */
   labeller(repo: string, number: number, label: string): Promise<string | undefined>;
+  /**
+   * Every comment on `repo`'s issue or pull request `number`, oldest first,
+   * each with the login that posted it: where the scan reads the newest
+   * resume note (#635).
+   */
+  comments(repo: string, number: number): Promise<readonly { readonly body: string; readonly author: string }[]>;
   /** `repo`'s default branch. */
   defaultBranch(repo: string): Promise<string>;
   /**
@@ -464,6 +472,8 @@ interface Asked {
   readonly label: string;
   dispatches: number;
   told: boolean;
+  /** When a scan's dispatch was last counted, in milliseconds. */
+  at?: number;
 }
 
 /** The comment a scan leaves on an item it stops dispatching for `label` (#596). */
@@ -992,6 +1002,7 @@ export const createDispatcher = (edges: DispatcherEdges) => {
         const key = askedKey(repo, number, label);
         const asked = asks.get(key) ?? { repo, number, label, dispatches: 0, told: false };
         asked.dispatches += 1;
+        asked.at = now().getTime();
         asks.set(key, asked);
       },
     };
@@ -1021,10 +1032,40 @@ export const createDispatcher = (edges: DispatcherEdges) => {
   };
 
   /**
+   * **An item waiting on the plan's usage limit** (#635): why a scan skips
+   * `repo`'s item `number`, or `undefined` where it does not. Read off the
+   * newest resume note the App posted there, never one anyone else did.
+   *
+   * - **Its reset is still ahead**: skipped, and not counted, so a scan at a
+   *   restart does not dispatch it into the limit again. The worker asks for
+   *   the scan that dispatches it, at the reset.
+   * - **Its reset has passed**, and the run that posted it stopped after the
+   *   scan's last counted dispatch for `label`: that job ended its run, so it
+   *   is not one that "ended before its run did", and the count starts again.
+   *   The resume is a scan's dispatch like any, counted toward
+   *   `SCAN_DISPATCH_LIMIT`, and the comment saying the scan stopped is never
+   *   the one an item waiting on a reset gets.
+   */
+  const waitsOnReset = async (repo: string, number: number, label: string, login: string, where: string): Promise<string | undefined> => {
+    const note = newestResumeNote(await edges.github.comments(repo, number), loopAccounts(login));
+    if (note === undefined) return undefined;
+    if (note.until.getTime() > now().getTime()) {
+      return `skipped on ${where}: it waits on the plan's usage limit, which resets at ${note.until.toISOString()}, and the worker asks for a scan then`;
+    }
+    const asked = asks.get(askedKey(repo, number, label));
+    if (asked?.at !== undefined && note.stopped.getTime() >= asked.at) {
+      asked.dispatches = 0;
+      asked.told = false;
+    }
+    return undefined;
+  };
+
+  /**
    * One item a scan lists, decided as its label's delivery would be past the
    * opt-in, which its repository passed, and built into the same job. An item
    * the system already holds a job for, of a kind its label starts, is skipped,
-   * and so is one a scan has dispatched for its label the limit's number of times.
+   * and so is one a scan has dispatched for its label the limit's number of times,
+   * and one waiting on the plan's usage limit (`waitsOnReset`).
    *
    * **`agent:merge` is the exception** (#591). It is a standing authorisation,
    * not a label that says a run is working, so a gate that ends with it on is
@@ -1044,6 +1085,8 @@ export const createDispatcher = (edges: DispatcherEdges) => {
       if (kinds === undefined) return `ignored on ${where}: \`${label}\` is not a label a scan answers on an issue`;
       const skip = heldFor(repo, item.number, kinds, held);
       if (skip !== undefined) return `skipped on ${where}: ${skip}`;
+      const waits = await waitsOnReset(repo, item.number, label, login, where);
+      if (waits !== undefined) return waits;
       const stopped = await countedOut(repo, item.number, label, where);
       if (stopped !== undefined) return stopped;
       const asker = await unasked(repo, item.number, label, login, where);
@@ -1056,6 +1099,8 @@ export const createDispatcher = (edges: DispatcherEdges) => {
     const skip = heldFor(repo, item.number, [kind], held);
     if (skip !== undefined) return `skipped on ${where}: ${skip}`;
     const standing = kind === "merge";
+    const waits = standing ? undefined : await waitsOnReset(repo, item.number, label, login, where);
+    if (waits !== undefined) return waits;
     const stopped = standing ? undefined : await countedOut(repo, item.number, label, where);
     if (stopped !== undefined) return stopped;
     const refusal = pullRefusal(repo, kind, item.state, item.headRepo);

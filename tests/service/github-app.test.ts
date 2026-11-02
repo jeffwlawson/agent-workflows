@@ -28,6 +28,8 @@ interface World {
   pulls: Record<number, unknown>;
   /** Each item's events, oldest first, by number. */
   events: Record<number, unknown[]>;
+  /** Each item's comments, oldest first, by number, as the comments list gives them. */
+  comments?: Record<number, unknown[]>;
 }
 
 /**
@@ -108,6 +110,8 @@ const answer = (url: string, init?: RequestInit): Response => {
     commented.push({ path: pathname, body: JSON.parse(typeof init.body === "string" ? init.body : "{}"), authorization: new Headers(init.headers).get("authorization") });
     return reply(201, { id: 1 });
   }
+  const conversation = /^\/repos\/owner\/repo\/issues\/(\d+)\/comments$/.exec(pathname);
+  if (conversation !== null) return reply(200, paged(world.comments?.[Number(conversation[1])] ?? []));
   const events = /^\/repos\/owner\/repo\/issues\/(\d+)\/events$/.exec(pathname);
   if (events !== null) return reply(200, paged(world.events[Number(events[1])] ?? []));
   const own = /^\/repos\/owner\/repo\/actions\/variables\/(.+)$/.exec(pathname);
@@ -315,6 +319,25 @@ describe("liveAppGitHub: what the scan reads (#581)", () => {
 
     expect(await github.labeller(REPO, 7, "agent:review")).toBeUndefined();
     expect(await github.labeller(REPO, 8, "agent:review")).toBeUndefined();
+  });
+
+  // #635: where the scan reads the newest resume note.
+  it("reads every comment on an item, oldest first, past the first page, each with who posted it", async () => {
+    world.comments = {
+      7: [
+        ...Array.from({ length: 120 }, (_, i) => ({ body: `comment ${i}`, user: { login: "someone" } })),
+        { body: "the newest", user: { login: "loop-app[bot]" } },
+        { body: "a deleted account's", user: null },
+      ],
+    };
+
+    const comments = await liveAppGitHub("1", KEY).comments(REPO, 7);
+
+    expect(comments).toHaveLength(122);
+    expect(comments.slice(-2)).toEqual([
+      { body: "the newest", author: "loop-app[bot]" },
+      { body: "a deleted account's", author: "" },
+    ]);
   });
 
   it("reads the repository's default branch", async () => {

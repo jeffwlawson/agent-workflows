@@ -8,7 +8,9 @@ import { workflowRunUrl } from "../shared/common.js";
 import { COMMANDS } from "../shared/contract.js";
 import type { InputValues } from "../shared/env.js";
 import { choice, json, matching, object, optional, readDirectory, text } from "../shared/hand-over.js";
-import { BLOCKED_LABEL, FIX_LABEL, REVIEW_LABEL } from "../shared/record.js";
+import { loopAccounts } from "../shared/loop-accounts.js";
+import { BLOCKED_LABEL, FIX_LABEL, REVIEW_LABEL, USAGE_LIMIT } from "../shared/record.js";
+import { limitEnding } from "../shared/usage-limit.js";
 import { present, rescueIgnored, setAsideNote } from "./hand-over.js";
 
 type Declared = (typeof COMMANDS)["fix:conclude"];
@@ -29,6 +31,14 @@ type Io = CheckoutIo<Declared["outputs"]>;
  *   rescued, where nothing was pushed to the pull request; the failure
  *   comment, with the reason and the retry the ending calls for; `agent:fix`
  *   off; `agent:blocked`.
+ * - **A run the plan's usage limit stopped** (#635), where nothing was pushed
+ *   and no note posted: its commits rescued, as for any stop. On the service,
+ *   the comment saying it will resume after the reset, and nothing more:
+ *   `agent:fix` stays on and `agent:blocked` is not added, since the service
+ *   resumes it. On Actions, the comment giving the reset time and saying to
+ *   add `agent:fix` after it, then `agent:fix` off and `agent:blocked`. Not
+ *   worded as a fix that failed either way. A second such stop with no add of
+ *   the label since the first ends as a run that stopped.
  *
  * What ran and how it ended are inputs, each job's result and each step's
  * outcome as the adapter saw it, and this works out the ending from them.
@@ -43,6 +53,7 @@ type Io = CheckoutIo<Declared["outputs"]>;
  */
 export const conclude = async (inputs: Inputs, io: Io): Promise<void> => {
   const pr = pullRequestNumber(inputs.PR_NUMBER);
+  const accounts = loopAccounts(inputs.AGENT_LOOP_LOGINS);
   const ending = endingOf(inputs);
   if (ending.kind === "refused") {
     // The gate said it and took the label off: there is nothing left to say.
@@ -94,7 +105,24 @@ export const conclude = async (inputs: Inputs, io: Io): Promise<void> => {
     publish: published["failure_reason.txt"],
   });
   const saved = pushed ? { kind: "none" as const } : await rescueCommits(inputs, io, loop, started, bundled["branch.bundle"] !== undefined);
-  const comment = failureComment(inputs, reason, retryOf(pushed, state?.notesPosted === true, saved, inputs.RESCUE_BRANCH));
+
+  // The plan's usage limit (#635) is a wait, not a fix that failed, and said
+  // as one. Not where anything was pushed or posted, whose retry is a review.
+  // A rescue is made as for any stop, and the run that resumes builds on it.
+  const limited =
+    pushed || state?.notesPosted === true
+      ? undefined
+      : await limitEnding({ reason, orchestrator: inputs.ORCHESTRATOR, item: pr, label: FIX_LABEL, github: io.github, accounts, now: new Date() });
+  if (limited?.kind === "resumes") {
+    await tolerated(`Could not post the usage-limit comment on PR #${pr}.`, () =>
+      workflow.comment(pr, USAGE_LIMIT.resumes(FIX_LABEL, limited.until, limited.stopped)),
+    );
+    return;
+  }
+  const comment =
+    limited === undefined
+      ? failureComment(inputs, reason, retryOf(pushed, state?.notesPosted === true, saved, inputs.RESCUE_BRANCH))
+      : USAGE_LIMIT.waits(FIX_LABEL, limited.until, workflowRunUrl(inputs));
 
   await tolerated(`Could not post the failure comment on PR #${pr}.`, () => workflow.comment(pr, comment));
   await removeTrigger(pr, workflow);

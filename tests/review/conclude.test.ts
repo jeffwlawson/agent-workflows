@@ -76,6 +76,7 @@ const INPUTS = (over: Partial<Inputs> = {}): Inputs => ({
   GH_REPO: "o/r",
   GH_TOKEN: "workflow-token",
   AGENT_LOOP_LOGINS: "",
+  ORCHESTRATOR: "actions",
   LOOP_TOKEN: "loop-token",
   LOOP_TOKEN_SOURCE: "app",
   PR_NUMBER: String(PR),
@@ -959,5 +960,59 @@ describe("review:conclude's writes are its own", () => {
       "finished",
     ]);
     expect(logLines().map((line) => line["token"]).slice(0, -1)).toEqual(["workflow", "workflow", "workflow", "workflow"]);
+  });
+});
+
+describe("review:conclude ends a review the plan's usage limit stopped (#635)", () => {
+  const LIMIT = "claude-code exited with code 1: You've hit your session limit · resets 5:50am (UTC)";
+  const SERVICE = { ORCHESTRATOR: "service", AGENT_LOOP_LOGINS: "loop-app[bot]", GITHUB_RUN_ID: "" } as const;
+  beforeEach(() => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(new Date("2026-11-01T07:00:00Z"));
+    github.pullRequests.get(PR)!.labels = ["agent:review"];
+    github.labelled.set(PR, [{ label: "agent:review", at: "2026-11-01T06:00:00Z" }]);
+  });
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it("on the service, posts the error verdict and says it will resume after the reset, label on and nothing blocked", async () => {
+    await run(INPUTS(reviewEnded("failure", { FAILURE_REASON: LIMIT, ...SERVICE })));
+
+    expect(writes()).toEqual([`workflow setCommitStatus ${VERDICT_CONTEXT}=error`, "workflow comment"]);
+    expect(comments()).toEqual([
+      "**`agent:review` is waiting:** It hit the plan's usage limit, and will resume after 2026-11-02 05:50 UTC. `agent:review` stays on: the service runs it again once the limit resets, and nobody needs to add it.\n\n<!-- agent:resume-after 2026-11-02T05:50:00.000Z stopped 2026-11-01T07:00:00.000Z -->\n",
+    ]);
+    expect(labels()).toEqual(["agent:review"]);
+    expect(ended()).toEqual({ moved: false, resumes: true });
+  });
+
+  it("on Actions, gives the reset time and says to add the label after it", async () => {
+    await run(INPUTS(reviewEnded("failure", { FAILURE_REASON: LIMIT })));
+
+    expect(writes()).toEqual([`workflow setCommitStatus ${VERDICT_CONTEXT}=error`, "workflow comment", "workflow removeLabel agent:review", "workflow addLabel agent:blocked"]);
+    expect(comments()[0]).toContain(`[Workflow run](${RUN_URL}) · To run it again, add \`agent:review\` after 2026-11-02 05:50 UTC.`);
+    expect(labels()).toEqual(["agent:blocked"]);
+    expect(ended()).toEqual({ moved: false, resumes: false });
+  });
+
+  it("ends a second stop as any other, where the pull request already resumed since a person last added the label", async () => {
+    github.discussion.set(PR, [
+      { body: "<!-- agent:resume-after 2026-11-01T05:50:00.000Z stopped 2026-11-01T06:10:00.000Z -->", author: "loop-app[bot]", association: "NONE" },
+    ]);
+
+    await run(INPUTS(reviewEnded("failure", { FAILURE_REASON: LIMIT, ...SERVICE })));
+
+    expect(comments()[0]).toMatch(/^\*\*`agent:review` stopped:\*\* Claude-code exited with code 1: You've hit your session limit/);
+    expect(comments()[0]).toContain("To try again, add `agent:review`.");
+    expect(labels()).toEqual(["agent:blocked"]);
+    expect(ended()).toEqual({ moved: false });
+  });
+
+  it("ends any other failure exactly as before", async () => {
+    await run(INPUTS(reviewEnded("failure", { FAILURE_REASON: "The model refused.", ...SERVICE })));
+
+    expect(comments()).toEqual(["**`agent:review` stopped:** The model refused.\n\nTo try again, add `agent:review`.\n"]);
+    expect(labels()).toEqual(["agent:blocked"]);
   });
 });

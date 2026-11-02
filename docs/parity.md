@@ -96,7 +96,7 @@ claims in primary sources at authoring time is what actually closed it before
 |---|:--:|:--:|---|
 | Triggered by label on an issue | ✅ | ✅ | |
 | Job-level `if` (skip before provisioning a runner) | ✅ | ✅ | |
-| Trigger label / `blocked` transitions | ✅ | ✅ | CVM consumes the trigger label on entry and holds `in-progress`; ours holds the trigger label while the run works and takes it off when it ends, so `in-progress` is retired (#236) |
+| Trigger label / `blocked` transitions | ✅ | ✅ | CVM consumes the trigger label on entry and holds `in-progress`; ours holds the trigger label while the run works and takes it off when it ends, so `in-progress` is retired (#236); a run the plan's usage limit stopped on the service keeps it and resumes by itself (#635) |
 | Deterministic branch name `agent/issue-<n>-<slug>` | ✅ | ✅ | |
 | Refuses when a PR already targets the issue | ✅ | ✅ | |
 | Refuses a **closed** issue | ✅ | ✅ | added jeffwlawson/winget-manifest-lint#102. Must precede the PR check, which lists *open* PRs only — so a merged-and-closed issue otherwise looks untouched |

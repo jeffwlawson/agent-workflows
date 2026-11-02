@@ -15,9 +15,11 @@ import {
   PRD_BRANCH_PREFIX,
   REVIEW_LABEL,
   UPDATE_BRANCH_LABEL,
+  USAGE_LIMIT,
   VERDICT_CONTEXT,
 } from "../shared/record.js";
 import { roundHeader, withHeader } from "../shared/round-header.js";
+import { limitEnding, type LimitEnding } from "../shared/usage-limit.js";
 import { newestVerdict } from "../shared/verdict-status.js";
 import { roundHeaderData } from "./hand-over.js";
 
@@ -31,6 +33,13 @@ import { roundHeaderData } from "./hand-over.js";
  *   `agent:review` off, then `agent:blocked` where a maintainer has to act.
  * - **A run that did not finish**, the review job's or this job's: the error
  *   verdict, the failure comment, `agent:review` off, `agent:blocked`.
+ * - **A run the plan's usage limit stopped** (#635): the error verdict, then
+ *   on the service the comment saying it will resume after the reset, and
+ *   nothing more: `agent:review` stays on, `agent:blocked` is not added, and
+ *   `ended.json` says `resumes`, since the service resumes it. On Actions,
+ *   the comment giving the reset time and saying to add the label after it,
+ *   then `agent:review` off and `agent:blocked`. A second such stop with no
+ *   add of the label since the first ends as a run that did not finish.
  * - **A review that was posted**: `agent:blocked` off, the ready mark, the
  *   note that no automatic fix round is starting where one of #200's stops
  *   kept it from asking (#425), then `agent:review` off, and the hand-off:
@@ -89,6 +98,22 @@ export const conclude = async (
   }
 
   if (ending.kind === "stopped") {
+    // The plan's usage limit (#635) is a wait, not a failure: one ending of
+    // its own, which resumes by itself on the service.
+    const limited = await limitEnding({
+      reason: ending.reason,
+      orchestrator: inputs.ORCHESTRATOR,
+      item: pr,
+      label: REVIEW_LABEL,
+      github: io.github,
+      accounts,
+      now: new Date(),
+    });
+    if (limited !== undefined) {
+      await limitStopped(inputs, say, limited);
+      io.outputs.writeJson("ended.json", { moved: false, resumes: limited.kind === "resumes" });
+      return;
+    }
     await stopped(inputs, say, ending.comment);
     io.outputs.writeJson("ended.json", { moved: false });
     return;
@@ -133,7 +158,7 @@ export const conclude = async (
 type Ending =
   | { readonly kind: "undecided" }
   | { readonly kind: "refused" }
-  | { readonly kind: "stopped"; readonly comment: string }
+  | { readonly kind: "stopped"; readonly comment: string; readonly reason?: string }
   | { readonly kind: "posted" };
 
 type Inputs = InputValues<(typeof COMMANDS)["review:conclude"]["inputs"]>;
@@ -141,7 +166,7 @@ type Inputs = InputValues<(typeof COMMANDS)["review:conclude"]["inputs"]>;
 const endingOf = (inputs: Inputs, publishReason: string | undefined): Ending => {
   if (inputs.PROCEED === "false") return { kind: "refused" };
   const runUrl = workflowRunUrl(inputs);
-  const stoppedWith = (reason: string): Ending => ({ kind: "stopped", comment: stoppedComment(reason, runUrl) });
+  const stoppedWith = (reason: string): Ending => ({ kind: "stopped", comment: stoppedComment(reason, runUrl), reason });
   // A gate that failed before it decided (#420), as a package that would not
   // install does, is a run that stopped, said with what reason it gave and
   // with no verdict, since no commit was settled. Only a cancel that early
@@ -217,6 +242,33 @@ interface Say {
  * comment, then this run's own label off, then `agent:blocked` (#236).
  */
 const stopped = async (inputs: Inputs, { pr, workflow }: Say, comment: string): Promise<void> => {
+  await errorVerdict(inputs, workflow, "The review run did not finish, so there's no verdict. Check the run, then re-add agent:review.");
+  await tolerated(`Could not post the failure comment on PR #${pr}.`, () => workflow.comment(pr, comment));
+  await removeTrigger({ pr, workflow });
+  await tolerated(undefined, () => workflow.addLabel(pr, BLOCKED_LABEL));
+};
+
+/**
+ * **A run the plan's usage limit stopped** (#635): the error verdict too,
+ * since the head has no verdict either way, then the limit's own comment. On
+ * the service the label stays on and nothing more is written, since the item
+ * waits on the run that resumes it; on Actions the label comes off and
+ * `agent:blocked` goes on, as for any stop, since a person adds it again.
+ */
+const limitStopped = async (inputs: Inputs, { pr, workflow }: Say, limited: LimitEnding): Promise<void> => {
+  await errorVerdict(inputs, workflow, "The review hit the plan's usage limit, so there's no verdict yet.");
+  const comment =
+    limited.kind === "resumes"
+      ? USAGE_LIMIT.resumes(REVIEW_LABEL, limited.until, limited.stopped)
+      : USAGE_LIMIT.waits(REVIEW_LABEL, limited.until, workflowRunUrl(inputs));
+  await tolerated(`Could not post the usage-limit comment on PR #${pr}.`, () => workflow.comment(pr, comment));
+  if (limited.kind === "resumes") return;
+  await removeTrigger({ pr, workflow });
+  await tolerated(undefined, () => workflow.addLabel(pr, BLOCKED_LABEL));
+};
+
+/** The error verdict on the reviewed commit, where the review named one, saying `description`. */
+const errorVerdict = async (inputs: Inputs, workflow: Writer, description: string): Promise<void> => {
   const sha = inputs.REVIEWED_SHA;
   if (sha === "") {
     console.log("::warning::The review job named no reviewed commit, so no error verdict was posted.");
@@ -229,14 +281,11 @@ const stopped = async (inputs: Inputs, { pr, workflow }: Say, comment: string): 
           sha,
           context: VERDICT_CONTEXT,
           state: "error",
-          description: "The review run did not finish, so there's no verdict. Check the run, then re-add agent:review.",
+          description,
           ...(runUrl === undefined ? {} : { targetUrl: runUrl }),
         }),
     );
   }
-  await tolerated(`Could not post the failure comment on PR #${pr}.`, () => workflow.comment(pr, comment));
-  await removeTrigger({ pr, workflow });
-  await tolerated(undefined, () => workflow.addLabel(pr, BLOCKED_LABEL));
 };
 
 /**

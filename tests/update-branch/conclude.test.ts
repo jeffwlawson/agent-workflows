@@ -84,6 +84,8 @@ const INPUTS = (over: Partial<Inputs> = {}): Inputs => ({
   OUTPUT_DIR: path.join(root, "out"),
   GH_REPO: "o/r",
   GH_TOKEN: "workflow-token",
+  AGENT_LOOP_LOGINS: "",
+  ORCHESTRATOR: "actions",
   LOOP_TOKEN: "loop-token",
   LOOP_TOKEN_SOURCE: "pat",
   PR_NUMBER: String(PR),
@@ -753,5 +755,65 @@ describe("update-branch:conclude hands an armed pull request back to the merge g
     await run();
 
     expect(warnings().some((line) => line.includes("hand the refreshed head back to the merge gate"))).toBe(true);
+  });
+});
+
+describe("update-branch:conclude ends a run the plan's usage limit stopped (#635)", () => {
+  const LIMIT = "claude-code exited with code 1: You've hit your session limit · resets 5:50am (UTC)";
+  const SERVICE = { ORCHESTRATOR: "service", AGENT_LOOP_LOGINS: "loop-app[bot]" } as const;
+  const labels = (): string[] => github.pullRequests.get(PR)?.labels ?? [];
+  beforeEach(() => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(new Date("2026-11-01T05:49:00Z"));
+    github.labelled.set(PR, [{ label: UPDATE_BRANCH_LABEL, at: "2026-11-01T05:00:00Z" }]);
+  });
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it("on the service, says it will resume after the reset, later today, and leaves the label on and nothing blocked", async () => {
+    put("runner", "failure_reason.txt", LIMIT);
+
+    await run(INPUTS(CONFLICTS("failure", SERVICE)));
+
+    expect(comment()).toMatch(/^\*\*`agent:update-branch` is waiting:\*\* It hit the plan's usage limit, and will resume after 2026-11-01 05:50 UTC\./);
+    expect(writes()).toEqual(["workflow comment"]);
+    expect(labels()).toEqual([UPDATE_BRANCH_LABEL]);
+  });
+
+  // Conclude runs after the runner, on its own clock: a reset that passed
+  // between the two is today's, which the worker's hold reads too.
+  it("reads a reset that passed while it was reaching conclude as today's, not the next day's", async () => {
+    vi.setSystemTime(new Date("2026-11-01T05:51:00Z"));
+    put("runner", "failure_reason.txt", LIMIT);
+
+    await run(INPUTS(CONFLICTS("failure", SERVICE)));
+
+    expect(comment()).toContain("will resume after 2026-11-01 05:50 UTC.");
+    expect(comment()).toContain("<!-- agent:resume-after 2026-11-01T05:50:00.000Z stopped 2026-11-01T05:51:00.000Z -->");
+  });
+
+  it("on Actions, gives the reset time and says to add the label after it", async () => {
+    put("runner", "failure_reason.txt", LIMIT);
+
+    await run(INPUTS(CONFLICTS("failure")));
+
+    expect(comment()).toContain("It hit the plan's usage limit, which resets at 2026-11-01 05:50 UTC.");
+    expect(comment()).toContain("To run it again, add `agent:update-branch` after 2026-11-01 05:50 UTC.");
+    expect(writes()).toEqual(STOPPED_WRITES);
+    expect(labels()).toEqual([BLOCKED_LABEL]);
+  });
+
+  it("ends a second stop as any other, where the pull request already resumed since a person last added the label", async () => {
+    put("runner", "failure_reason.txt", LIMIT);
+    github.discussion.set(PR, [
+      { body: "<!-- agent:resume-after 2026-11-01T05:40:00.000Z stopped 2026-11-01T05:10:00.000Z -->", author: "loop-app[bot]", association: "NONE" },
+    ]);
+
+    await run(INPUTS(CONFLICTS("failure", SERVICE)));
+
+    expect(comment()).toMatch(STOPPED);
+    expect(comment()).toContain(RETRY);
+    expect(writes()).toEqual(STOPPED_WRITES);
   });
 });

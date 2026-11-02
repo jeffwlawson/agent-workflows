@@ -96,6 +96,8 @@ const INPUTS = (over: Partial<Inputs> = {}): Inputs => ({
   OUTPUT_DIR: path.join(root, "out"),
   GH_REPO: "acme/widgets",
   GH_TOKEN: "workflow-token",
+  AGENT_LOOP_LOGINS: "",
+  ORCHESTRATOR: "actions",
   LOOP_TOKEN: "loop-token",
   LOOP_TOKEN_SOURCE: "app",
   ISSUE_NUMBER: String(ISSUE),
@@ -812,5 +814,60 @@ describe("implement:conclude says a rescue was set aside", () => {
 
     expect(comments()).toHaveLength(1);
     expect(comment()).toContain("The runner wrote this.");
+  });
+});
+
+describe("implement:conclude ends a run the plan's usage limit stopped (#635)", () => {
+  const LIMIT = "claude-code exited with code 1: You've hit your session limit · resets 11am (UTC)";
+  const SERVICE = { ORCHESTRATOR: "service", AGENT_LOOP_LOGINS: "loop-app[bot]" } as const;
+  beforeEach(() => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(new Date("2026-11-01T22:00:00Z"));
+    github.discussion.set(ISSUE, []);
+    github.labelled.set(ISSUE, [{ label: IMPLEMENT_LABEL, at: "2026-11-01T21:00:00Z" }]);
+  });
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it("on the service, says it will resume after the reset, the next day's, and leaves agent:implement on and nothing blocked", async () => {
+    put("runner", "failure_reason.txt", LIMIT);
+
+    await run(INPUTS(AGENT("failure", SERVICE)));
+
+    expect(comment()).toMatch(/^\*\*`agent:implement` is waiting:\*\* It hit the plan's usage limit, and will resume after 2026-11-02 11:00 UTC\./);
+    expect(writes()).toEqual([`workflow comment ${ISSUE}`]);
+    expect(github.issueLabels.get(ISSUE)).toEqual([IMPLEMENT_LABEL]);
+  });
+
+  it("on Actions, gives the reset time and says to add the label after it", async () => {
+    put("runner", "failure_reason.txt", LIMIT);
+
+    await run(INPUTS(AGENT("failure")));
+
+    expect(comment()).toContain("It hit the plan's usage limit, which resets at 2026-11-02 11:00 UTC.");
+    expect(comment()).toContain(`[Workflow run](${RUN_URL}) · To run it again, add \`agent:implement\` after 2026-11-02 11:00 UTC.`);
+    expect(writes()).toEqual(STOPPED_WRITES);
+    expect(github.issueLabels.get(ISSUE)).toEqual([BLOCKED_LABEL]);
+  });
+
+  it("ends a second stop as any other, where the issue already resumed since a person last added the label", async () => {
+    put("runner", "failure_reason.txt", LIMIT);
+    github.discussion.set(ISSUE, [
+      { body: "<!-- agent:resume-after 2026-11-01T11:00:00.000Z stopped 2026-11-01T21:30:00.000Z -->", author: "loop-app[bot]", association: "NONE" },
+    ]);
+
+    await run(INPUTS(AGENT("failure", SERVICE)));
+
+    expect(comment()).toMatch(STOPPED);
+    expect(comment()).toContain(RETRY);
+    expect(writes()).toEqual(STOPPED_WRITES);
+  });
+
+  it("ends a gate that never decided as before, whatever its reason says", async () => {
+    await run(INPUTS(UNDECIDED("failure", { GATE_REASON: LIMIT, ...SERVICE })));
+
+    expect(comment()).toContain(UNDECIDED_RETRY);
+    expect(writes()).toEqual(UNDECIDED_WRITES);
   });
 });

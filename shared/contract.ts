@@ -148,6 +148,18 @@ const LOOP_ACCOUNTS = {
 } as const satisfies Inputs;
 
 /**
+ * **Which orchestrator runs the command** (#635): `actions`, the default, or
+ * `service`, which the service's worker sets. Read by each conclude command of
+ * a kind that starts an agent, for a run the plan's usage limit stopped: on
+ * the service it resumes by itself, and on Actions a person adds the label
+ * again. Declared beside `AGENT_LOOP_LOGINS`, which the bound on that resume
+ * reads.
+ */
+const ORCHESTRATED = {
+  ORCHESTRATOR: { required: false, default: "actions", accepts: ["actions", "service"] },
+} as const satisfies Inputs;
+
+/**
  * **The sandbox the agent runs in** (`docs/platform-spec.md` §3), chosen by the
  * agent driver, `agentSandbox` in `shared/agent.ts`, from these. Every runner
  * starts the agent, so every runner reads them, and an orchestrator that sets
@@ -1229,6 +1241,8 @@ export const COMMANDS = {
   "fix:conclude": {
     inputs: {
       ...EVERY_SUBCOMMAND,
+      ...ORCHESTRATED,
+      ...LOOP_ACCOUNTS,
       ...LOOP_IF_MINTED,
       PR_NUMBER: REQUIRED,
       BRANCH: REQUIRED,
@@ -1295,6 +1309,8 @@ export const COMMANDS = {
   "implement:conclude": {
     inputs: {
       ...EVERY_SUBCOMMAND,
+      ...ORCHESTRATED,
+      ...LOOP_ACCOUNTS,
       ...LOOP_IF_MINTED,
       ISSUE_NUMBER: REQUIRED,
       BASE_REF: REQUIRED,
@@ -1338,6 +1354,7 @@ export const COMMANDS = {
   "implement-prd:conclude": {
     inputs: {
       ...EVERY_SUBCOMMAND,
+      ...ORCHESTRATED,
       ...LOOP_IF_MINTED,
       ...LOOP_ACCOUNTS,
       ...PULL_REQUEST_LINK,
@@ -1443,6 +1460,7 @@ export const COMMANDS = {
   "review:conclude": {
     inputs: {
       ...EVERY_SUBCOMMAND,
+      ...ORCHESTRATED,
       ...LOOP_IF_MINTED,
       ...LOOP_ACCOUNTS,
       PR_NUMBER: REQUIRED,
@@ -1542,6 +1560,8 @@ export const COMMANDS = {
   "update-branch:conclude": {
     inputs: {
       ...EVERY_SUBCOMMAND,
+      ...ORCHESTRATED,
+      ...LOOP_ACCOUNTS,
       ...LOOP_IF_MINTED,
       PR_NUMBER: REQUIRED,
       HEAD_SHA: REQUIRED,

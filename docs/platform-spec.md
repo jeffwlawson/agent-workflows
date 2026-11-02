@@ -507,6 +507,7 @@ string the agent wrote, so the agent cannot forge one of those through a review.
 | `<!-- agent:post-merge-checklist -->` | The end of the post-merge checklist on a merged pull request (§11). | `follow-ups:file`, as `POST_MERGE_CHECKLIST_MARK` in `shared/record.ts` spells it | `follow-ups:file`, to not post it twice on a retry |
 | `<!-- agent:merge-red <sha> -->` | The end of the comment saying an armed head `<sha>` is not green, so it was not merged and the arm stays (§12). | `merge:gate`, as `mergeRedMark` and `mergeRedComment` in `shared/record.ts` spell it | `merge:gate`, to say it once per head |
 | `<!-- agent:merge-behind <sha> -->` | The end of the comment saying an armed head `<sha>` is behind its base, so `agent:update-branch` was asked for, and the arm stays (§12). | `merge:gate`, as `mergeBehindMark` and `mergeBehindComment` in `shared/record.ts` spell it | `merge:gate`, to say it once per head |
+| `<!-- agent:resume-after <until> stopped <stopped> -->` | The end of a **resume note** (#635): the comment saying a run the plan's usage limit stopped is waiting, `**`<label>` is waiting:** It hit the plan's usage limit, and will resume after <time> UTC.`, as `USAGE_LIMIT.resumes` in `shared/record.ts` spells it. `<until>` is the reset instant and `<stopped>` when the run stopped, each ISO 8601 in UTC, as `resumeNoteMark` spells them. Posted on the service only, on the item its trigger label is on, which keeps the label. Read only off a post by one of the loop's accounts. The Actions ending, `USAGE_LIMIT.waits`, gives the reset time too and carries no marker, since nothing there waits. | the conclude command of each kind that starts an agent (`review:conclude`, `fix:conclude`, `update-branch:conclude`, `implement:conclude`, `implement-prd:conclude`) | the same five, as **the bound**: a usage-limit stop on an item whose newest resume note's `<stopped>` is later than the latest time its trigger label was added, by anyone, ends as any stopped run does, so an item resumes by itself once per request (the resume adds no label) and any add of the label after the note, a person's or the loop's own, allows one more; the service's dispatcher, whose scan skips an item whose newest note's `<until>` is still ahead |
 | `### After merge, by a human`, or `**After merge, by a human:**` on a line of its own | A brief's list of checks only a person can make after merging, in the linked issue's latest brief (the text the review reads its criteria from). Read from a trusted author's text only (§4.1). | triage, by hand | `follow-ups:file`, for the post-merge checklist |
 
 **Markers in a pull request's body.** The orchestrator writes the body, and a regular pull
@@ -571,6 +572,7 @@ counted only where its creator is the loop token's account, a narrower set (§4.
 | Event | What it records | Read by |
 |---|---|---|
 | `agent:fix` added to the pull request | One fix round, automatic or by hand, each time it was added. | `review`, `fix`, `implement-prd`, to count rounds |
+| A trigger label added to an issue or pull request | Read for the bound on a usage-limit resume (#635): the latest time anyone, a person or the loop's own account, added the run's own trigger label. | the five conclude commands of the kinds that start an agent, through `labelledAt` |
 | `agent:follow-ups` on the pull request | Findings wait to be filed. It gates the filing alone, not the post-merge checklist (§11). Read live, and taken off once filed, by `follow-ups:file` through `removeLabel`, last, and left on by any run that fails: `follow-ups:conclude`, which says so, never takes it off. | `follow-ups:file` |
 | `agent:merge` on the pull request | The maintainer's merge decision, standing until the merge or a disarm: armed until merged or disarmed. Its addition by someone who can write arms the head it was added at; an addition by the loop token's account arms nothing. Re-added by the loop's token, removed first, to re-start the gate: by `update-branch:conclude` on a run that finished, and by `review:conclude` on an approval (#589). Taken off by `merge:gate` on a refusal or a disarm, by `merge:publish` after the merge, and by `merge:conclude` on a run that stopped, never by a run that merely ended. | `merge:gate`, through the event, and through `SENDER` for who added it |
 | `pr-follow-up` on an issue | An issue `follow-ups:file` filed earlier, labelled as `createIssue` creates it, where the repository has the label, and read with its body's key. | `follow-ups:file` |
@@ -1101,10 +1103,14 @@ written, and costs the comment no reason another producer gave; the runner's two
 each on its own. Every write is tolerated: one GitHub refuses is a warning, so a run that cannot
 comment still takes its label off. Every write but the rescue is made with `GH_TOKEN`.
 
+**A run the plan's usage limit stopped** (#635): where the stopped run's reason is the agent's CLI's usage-limit message, `hit your <kind> limit · resets <h>[:<mm>]<am|pm> (UTC)` and no other shape, read by `usageLimitReset` in `shared/usage-limit.ts` as the next such instant after the run ended, one up to `RESET_GRACE_MINUTES` (an hour) past read as today's, so a conclude reading it after the worker did, or on a clock ahead, answers the same instant. With `ORCHESTRATOR` `service`, the comment `` **`agent:implement` is waiting:** `` saying it hit the plan's usage limit and will resume after the reset time in UTC, ending in the resume note's marker (§4.3); `agent:implement` **stays on** and `agent:blocked` is not added, since the item waits on the run the service resumes. With `actions`, the comment `` **`agent:implement` stopped:** `` giving the reset time and saying to add `agent:implement` after it, then `agent:implement` off and `agent:blocked`, as for any stop. **The bound**: on the service, an item whose newest resume note is newer than the latest time anyone added `agent:implement` ends as any stopped run does, and so does one whose comments or label events cannot be read. Only on a run that decided, pushed nothing and opened no pull request; a gate that never decided ends as it does today. Any other reason, a limit in a shape it does not know included, ends as before.
+
 #### Inputs
 
 | Input | Kind | Default | What it is |
 |---|---|---|---|
+| `AGENT_LOOP_LOGINS` | optional | `""` | The loop's accounts, a comma-separated list, recognised beside `github-actions[bot]` (§4.1). Empty is that one alone. Read only for the bound on a usage-limit resume, whose note counts only where one of them posted it. |
+| `ORCHESTRATOR` | optional | `actions` | Accepts `actions` or `service`: which orchestrator runs it, for a run the plan's usage limit stopped (§4.3, #635). `service` resumes by itself; `actions` waits for a person. The service's worker sets `service`; the Actions reusables set nothing. |
 | `LOOP_TOKEN` | optional | `""` | The loop's token, which the rescue is pushed with. Empty where it was not minted, and nothing is rescued. |
 | `LOOP_TOKEN_SOURCE` | optional | `""` | Where `LOOP_TOKEN` came from: `app`, `pat` or `workflow`. |
 | `ISSUE_NUMBER` | required | | The issue. |
@@ -1156,6 +1162,8 @@ comment still takes its label off. Every write but the rescue is made with `GH_T
 > the job's, and `BRANCH` and `BASE_SHA` the gate job's `branch` and `base` outputs. It is handed
 > the workflow token as `GH_TOKEN` and the loop's, empty where the mint failed. Both commands' write
 > logs are uploaded `always()`.
+> Actions has no scheduler, so `ORCHESTRATOR` is left unset there and a usage-limit stop waits
+> for a person to add `agent:implement` again after the reset time its comment gives.
 
 ## 7. `implement-prd`
 
@@ -1821,10 +1829,13 @@ Each file of each directory is read on its own, so a file that does not read is 
 read as not written, and costs the comment nothing another file gave. Every write is tolerated:
 one GitHub refuses is a warning. The note, the comment and the labels are made with `GH_TOKEN`.
 
+**A run the plan's usage limit stopped** (#635): where the stopped run's reason is the agent's CLI's usage-limit message, `hit your <kind> limit · resets <h>[:<mm>]<am|pm> (UTC)` and no other shape, read by `usageLimitReset` in `shared/usage-limit.ts` as the next such instant after the run ended, one up to `RESET_GRACE_MINUTES` (an hour) past read as today's, so a conclude reading it after the worker did, or on a clock ahead, answers the same instant. With `ORCHESTRATOR` `service`, the comment `` **`agent:implement` is waiting:** `` saying it hit the plan's usage limit and will resume after the reset time in UTC, ending in the resume note's marker (§4.3); `agent:implement` **stays on** and `agent:blocked` is not added, since the item waits on the run the service resumes. With `actions`, the comment `` **`agent:implement` stopped:** `` giving the reset time and saying to add `agent:implement` after it, then `agent:implement` off and `agent:blocked`, as for any stop. **The bound**: on the service, an item whose newest resume note is newer than the latest time anyone added `agent:implement` ends as any stopped run does, and so does one whose comments or label events cannot be read. Only on a run that decided and pushed nothing, and its comment, label and `agent:blocked` are on the parent. The stopped slice's row is written as for any stop, and the rescue is made as for any stop, so the run that resumes builds on it. Any other reason, a limit in a shape it does not know included, ends as before.
+
 #### Inputs
 
 | Input | Kind | Default | What it is |
 |---|---|---|---|
+| `ORCHESTRATOR` | optional | `actions` | Accepts `actions` or `service`: which orchestrator runs it, for a run the plan's usage limit stopped (§4.3, #635). `service` resumes by itself; `actions` waits for a person. The service's worker sets `service`; the Actions reusables set nothing. |
 | `LOOP_TOKEN` | optional | `""` | The loop's token, which the rescue and the row are written with. Empty where it was not minted, and neither is written. |
 | `LOOP_TOKEN_SOURCE` | optional | `""` | Where `LOOP_TOKEN` came from: `app`, `pat` or `workflow`. |
 | `AGENT_LOOP_LOGINS` | optional | `""` | The loop's accounts, a comma-separated list, recognised beside `github-actions[bot]` (§4.1). Empty is that one alone. This is trust. |
@@ -1891,6 +1902,8 @@ one GitHub refuses is a warning. The note, the comment and the labels are made w
 > `AGENT_TIMEOUT_MINUTES` or 30, and the outcomes of the mint, the agent's download and
 > `implement-prd:publish`. It is handed the workflow token as `GH_TOKEN` and the loop's. Nothing of
 > the agent's job is read but its artifact and `timed-out`.
+> Actions has no scheduler, so `ORCHESTRATOR` is left unset there and a usage-limit stop waits
+> for a person to add `agent:implement` again after the reset time its comment gives.
 
 ## 8. `review`
 
@@ -2491,10 +2504,13 @@ that cannot comment still takes its label off. The labels a run fires on (`agent
 `agent:fix`, `agent:merge` again) and the ready mark are made with `LOOP_TOKEN`; everything else
 with `GH_TOKEN`.
 
+**A run the plan's usage limit stopped** (#635): where the stopped run's reason is the agent's CLI's usage-limit message, `hit your <kind> limit · resets <h>[:<mm>]<am|pm> (UTC)` and no other shape, read by `usageLimitReset` in `shared/usage-limit.ts` as the next such instant after the run ended, one up to `RESET_GRACE_MINUTES` (an hour) past read as today's, so a conclude reading it after the worker did, or on a clock ahead, answers the same instant. With `ORCHESTRATOR` `service`, the comment `` **`agent:review` is waiting:** `` saying it hit the plan's usage limit and will resume after the reset time in UTC, ending in the resume note's marker (§4.3); `agent:review` **stays on** and `agent:blocked` is not added, since the item waits on the run the service resumes. With `actions`, the comment `` **`agent:review` stopped:** `` giving the reset time and saying to add `agent:review` after it, then `agent:review` off and `agent:blocked`, as for any stop. **The bound**: on the service, an item whose newest resume note is newer than the latest time anyone added `agent:review` ends as any stopped run does, and so does one whose comments or label events cannot be read. The error verdict is posted either way, with its own description, since the head has no verdict. `ended.json` says `resumes`, `true` on the service's ending and `false` on Actions', and the service's worker runs no `review:advance` where it is `true`: the round has not ended. Any other reason, a limit in a shape it does not know included, ends as before.
+
 #### Inputs
 
 | Input | Kind | Default | What it is |
 |---|---|---|---|
+| `ORCHESTRATOR` | optional | `actions` | Accepts `actions` or `service`: which orchestrator runs it, for a run the plan's usage limit stopped (§4.3, #635). `service` resumes by itself; `actions` waits for a person. The service's worker sets `service`; the Actions reusables set nothing. |
 | `LOOP_TOKEN` | optional | `""` | The token whose writes start the loop's next workflow. Empty where it was not minted, which is one of the endings this reports. |
 | `LOOP_TOKEN_SOURCE` | optional | `""` | Where `LOOP_TOKEN` came from: `app`, `pat` or `workflow`. |
 | `AGENT_LOOP_LOGINS` | optional | `""` | The loop's accounts, a comma-separated list, recognised beside `github-actions[bot]` (§4.1). Empty is that one alone. This is trust. |
@@ -2527,7 +2543,7 @@ with `GH_TOKEN`.
 
 | Output | When it is written |
 |---|---|
-| `ended.json` | `moved`, whether the head moved while the review ran, and `reviewUrl`, the posted review's, where there is one. Written before the fix round's hand-off, so a round that does not start still has it. |
+| `ended.json` | `moved`, whether the head moved while the review ran, `reviewUrl`, the posted review's, where there is one, and `resumes`, where the plan's usage limit stopped the review: `true` where it resumes by itself on the service. Written before the fix round's hand-off, so a round that does not start still has it. |
 | `write_log.jsonl` | Every write as it lands, one JSON line each, and a last line for how the command ended. A write's line lists its GitHub calls, each `<call> ok`, `<call> expected: <reason>` for a refusal the write accepts (`label not present`), or `<call> <status> <reason>` with GitHub's own `message`; a `failed` or `partial` write also keeps GitHub's answer, capped, as `response`. |
 
 **`doctor` cannot check this.** These tables are the command's, for the reason §6 gives.
@@ -2548,6 +2564,8 @@ with `GH_TOKEN`.
 > budget step's `budget` and `spent`. `ended.json` is copied by a glue step into the job's two outputs,
 > `moved` and `review-url`, which the advance job reads with the job's result. It fails only on a
 > fix round that did not start, so the job's result still means "everything posted".
+> Actions has no scheduler, so `ORCHESTRATOR` is left unset there and a usage-limit stop waits
+> for a person to add `agent:review` again after the reset time its comment gives.
 
 ### `review:advance`
 
@@ -3042,10 +3060,14 @@ that far, reading the pull request or checking the hand-over. Every write is
 tolerated: one GitHub refuses is a warning, so a run that cannot comment still takes its label
 off. The rescue is made with `LOOP_TOKEN`; everything else with `GH_TOKEN`.
 
+**A run the plan's usage limit stopped** (#635): where the stopped run's reason is the agent's CLI's usage-limit message, `hit your <kind> limit · resets <h>[:<mm>]<am|pm> (UTC)` and no other shape, read by `usageLimitReset` in `shared/usage-limit.ts` as the next such instant after the run ended, one up to `RESET_GRACE_MINUTES` (an hour) past read as today's, so a conclude reading it after the worker did, or on a clock ahead, answers the same instant. With `ORCHESTRATOR` `service`, the comment `` **`agent:fix` is waiting:** `` saying it hit the plan's usage limit and will resume after the reset time in UTC, ending in the resume note's marker (§4.3); `agent:fix` **stays on** and `agent:blocked` is not added, since the item waits on the run the service resumes. With `actions`, the comment `` **`agent:fix` stopped:** `` giving the reset time and saying to add `agent:fix` after it, then `agent:fix` off and `agent:blocked`, as for any stop. **The bound**: on the service, an item whose newest resume note is newer than the latest time anyone added `agent:fix` ends as any stopped run does, and so does one whose comments or label events cannot be read. Only where `published.json` says nothing was pushed and no note was posted. It is not worded as a fix that failed, and spends no round: a round is the review's `agent-fix-round` status, which the review that asked for this one already posted. The rescue is made as for any stop, so the run that resumes builds on it. Any other reason, a limit in a shape it does not know included, ends as before.
+
 #### Inputs
 
 | Input | Kind | Default | What it is |
 |---|---|---|---|
+| `AGENT_LOOP_LOGINS` | optional | `""` | The loop's accounts, a comma-separated list, recognised beside `github-actions[bot]` (§4.1). Empty is that one alone. Read only for the bound on a usage-limit resume, whose note counts only where one of them posted it. |
+| `ORCHESTRATOR` | optional | `actions` | Accepts `actions` or `service`: which orchestrator runs it, for a run the plan's usage limit stopped (§4.3, #635). `service` resumes by itself; `actions` waits for a person. The service's worker sets `service`; the Actions reusables set nothing. |
 | `LOOP_TOKEN` | optional | `""` | The token whose writes start the loop's next workflow: the rescue's push. Empty where it was not minted, which is one of the endings this reports. |
 | `LOOP_TOKEN_SOURCE` | optional | `""` | Where `LOOP_TOKEN` came from: `app`, `pat` or `workflow`. |
 | `PR_NUMBER` | required | | The pull request. |
@@ -3095,6 +3117,8 @@ off. The rescue is made with `LOOP_TOKEN`; everything else with `GH_TOKEN`.
 > `OUTPUT_DIR`, and `PREPARE_DIR`, `FIX_DIR` and `BUNDLE_DIR` where the agent's artifact is downloaded, a
 > directory of its own under `runner.temp`. It is handed both tokens, the loop's empty where the
 > mint failed; with `fix:publish`, the only steps in the job that are.
+> Actions has no scheduler, so `ORCHESTRATOR` is left unset there and a usage-limit stop waits
+> for a person to add `agent:fix` again after the reset time its comment gives.
 
 ## 10. `update-branch`
 
@@ -3611,10 +3635,14 @@ read asks for nothing again. Every write is tolerated: one GitHub refuses is a w
 that cannot comment still takes its label off. The re-request and the hand-back are made with
 `LOOP_TOKEN`; everything else with `GH_TOKEN`.
 
+**A run the plan's usage limit stopped** (#635): where the stopped run's reason is the agent's CLI's usage-limit message, `hit your <kind> limit · resets <h>[:<mm>]<am|pm> (UTC)` and no other shape, read by `usageLimitReset` in `shared/usage-limit.ts` as the next such instant after the run ended, one up to `RESET_GRACE_MINUTES` (an hour) past read as today's, so a conclude reading it after the worker did, or on a clock ahead, answers the same instant. With `ORCHESTRATOR` `service`, the comment `` **`agent:update-branch` is waiting:** `` saying it hit the plan's usage limit and will resume after the reset time in UTC, ending in the resume note's marker (§4.3); `agent:update-branch` **stays on** and `agent:blocked` is not added, since the item waits on the run the service resumes. With `actions`, the comment `` **`agent:update-branch` stopped:** `` giving the reset time and saying to add `agent:update-branch` after it, then `agent:update-branch` off and `agent:blocked`, as for any stop. **The bound**: on the service, an item whose newest resume note is newer than the latest time anyone added `agent:update-branch` ends as any stopped run does, and so does one whose comments or label events cannot be read. Only where `published.json` says nothing was pushed. Any other reason, a limit in a shape it does not know included, ends as before.
+
 #### Inputs
 
 | Input | Kind | Default | What it is |
 |---|---|---|---|
+| `AGENT_LOOP_LOGINS` | optional | `""` | The loop's accounts, a comma-separated list, recognised beside `github-actions[bot]` (§4.1). Empty is that one alone. Read only for the bound on a usage-limit resume, whose note counts only where one of them posted it. |
+| `ORCHESTRATOR` | optional | `actions` | Accepts `actions` or `service`: which orchestrator runs it, for a run the plan's usage limit stopped (§4.3, #635). `service` resumes by itself; `actions` waits for a person. The service's worker sets `service`; the Actions reusables set nothing. |
 | `LOOP_TOKEN` | optional | `""` | The token whose writes start the loop's next workflow: the re-request and the hand-back. Empty where it was not minted, which is one of the endings this reports. |
 | `LOOP_TOKEN_SOURCE` | optional | `""` | Where `LOOP_TOKEN` came from: `app`, `pat` or `workflow`. |
 | `PR_NUMBER` | required | | The pull request. |
@@ -3665,6 +3693,8 @@ that cannot comment still takes its label off. The re-request and the hand-back 
 > where the agent's artifact is downloaded. It is handed both tokens, the loop's empty where the
 > mint failed; with `update-branch:publish`, the only steps in the job that are. Both commands'
 > write logs are uploaded `always()`.
+> Actions has no scheduler, so `ORCHESTRATOR` is left unset there and a usage-limit stop waits
+> for a person to add `agent:update-branch` again after the reset time its comment gives.
 
 ## 11. `follow-ups`
 

@@ -93,6 +93,8 @@ const INPUTS = (over: Partial<Inputs> = {}): Inputs => ({
   OUTPUT_DIR: path.join(root, "out"),
   GH_REPO: "o/r",
   GH_TOKEN: "workflow-token",
+  AGENT_LOOP_LOGINS: "",
+  ORCHESTRATOR: "actions",
   LOOP_TOKEN: "loop-token",
   LOOP_TOKEN_SOURCE: "app",
   PR_NUMBER: String(PR),
@@ -749,5 +751,76 @@ describe("fix:conclude writes within its limits", () => {
     await run(INPUTS(AGENT_FAILED()));
 
     expect(writes()).toEqual(STOPPED_WRITES);
+  });
+});
+
+describe("fix:conclude ends a run the plan's usage limit stopped (#635)", () => {
+  const LIMIT = "claude-code exited with code 1: You've hit your session limit · resets 5:50am (UTC)";
+  beforeEach(() => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(new Date("2026-11-01T01:10:00Z"));
+    github.labelled.set(PR, [{ label: FIX_LABEL, at: "2026-11-01T01:00:00Z" }]);
+  });
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it("on the service, says it will resume after the reset, and leaves agent:fix on and nothing blocked", async () => {
+    put("fix", "failure_reason.txt", LIMIT);
+
+    await run(INPUTS(AGENT_FAILED({ ORCHESTRATOR: "service", AGENT_LOOP_LOGINS: "loop-app[bot]", GITHUB_RUN_ID: "" })));
+
+    expect(comment()).toMatch(/^\*\*`agent:fix` is waiting:\*\* It hit the plan's usage limit, and will resume after 2026-11-01 05:50 UTC\./);
+    expect(comment()).toContain("<!-- agent:resume-after 2026-11-01T05:50:00.000Z stopped 2026-11-01T01:10:00.000Z -->");
+    expect(comment()).not.toContain("failed");
+    expect(writes()).toEqual(["workflow comment"]);
+    expect(labels()).toEqual([FIX_LABEL]);
+  });
+
+  it("on Actions, gives the reset time and says to add the label after it, not as a fix that failed", async () => {
+    put("fix", "failure_reason.txt", LIMIT);
+
+    await run(INPUTS(AGENT_FAILED()));
+
+    expect(comment()).toBe(
+      `**\`agent:fix\` stopped:** It hit the plan's usage limit, which resets at 2026-11-01 05:50 UTC. Nothing on Actions waits for the reset, so it will not resume by itself.\n\n[Workflow run](${RUN_URL}) · To run it again, add \`agent:fix\` after 2026-11-01 05:50 UTC.\n`,
+    );
+    expect(writes()).toEqual(STOPPED_WRITES);
+    expect(labels()).toEqual([BLOCKED_LABEL]);
+  });
+
+  it("ends a second stop as any other, where the pull request already resumed since a person last added agent:fix", async () => {
+    put("fix", "failure_reason.txt", LIMIT);
+    github.discussion.set(PR, [
+      { body: "<!-- agent:resume-after 2026-11-01T00:50:00.000Z stopped 2026-10-31T20:00:00.000Z -->", author: "loop-app[bot]", association: "NONE" },
+    ]);
+    github.labelled.set(PR, [{ label: FIX_LABEL, at: "2026-10-31T19:00:00Z" }]);
+
+    await run(INPUTS(AGENT_FAILED({ ORCHESTRATOR: "service", AGENT_LOOP_LOGINS: "loop-app[bot]", GITHUB_RUN_ID: "" })));
+
+    expect(comment()).toBe(`**\`agent:fix\` stopped:** ${LIMIT.charAt(0).toUpperCase()}${LIMIT.slice(1)}.\n\nTo try again, add \`agent:fix\`.\n`);
+    expect(writes()).toEqual(STOPPED_WRITES);
+    expect(labels()).toEqual([BLOCKED_LABEL]);
+  });
+
+  it("resumes once more where a person added agent:fix after the last resume note", async () => {
+    put("fix", "failure_reason.txt", LIMIT);
+    github.discussion.set(PR, [
+      { body: "<!-- agent:resume-after 2026-11-01T00:50:00.000Z stopped 2026-10-31T20:00:00.000Z -->", author: "loop-app[bot]", association: "NONE" },
+    ]);
+
+    await run(INPUTS(AGENT_FAILED({ ORCHESTRATOR: "service", AGENT_LOOP_LOGINS: "loop-app[bot]", GITHUB_RUN_ID: "" })));
+
+    expect(comment()).toContain("is waiting:");
+    expect(labels()).toEqual([FIX_LABEL]);
+  });
+
+  it("ends a limit in a shape it does not know as any other stop", async () => {
+    put("fix", "failure_reason.txt", "You've hit your session limit · resets 5:50am (PST)");
+
+    await run(INPUTS(AGENT_FAILED({ ORCHESTRATOR: "service" })));
+
+    expect(comment()).toMatch(STOPPED);
+    expect(labels()).toEqual([BLOCKED_LABEL]);
   });
 });

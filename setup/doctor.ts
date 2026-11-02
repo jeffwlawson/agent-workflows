@@ -1,3 +1,6 @@
+import * as fs from "node:fs";
+import * as path from "node:path";
+
 import { commonWriters, safeGh } from "../shared/common.js";
 import { PACKAGE_NAME } from "../shared/manifest.js";
 import {
@@ -160,7 +163,31 @@ export interface RepoFacts {
    * known. Ruled on only where the service orchestrator serves the repository.
    */
   readonly agentSetup: string | null | undefined;
+  /**
+   * The domain model's files at the checkout's root (#611), read from the
+   * checkout rather than asked of `gh`: whether `CONTEXT.md` is there, and
+   * which of upstream's names for it (`GLOSSARY.md`, `GLOSSARY-MAP.md`) are.
+   * `undefined` where the root could not be listed, which is never "neither".
+   */
+  readonly domainModel: DomainModel | undefined;
 }
+
+/** What `gatherFacts` found of the domain model at a checkout's root. */
+export interface DomainModel {
+  readonly context: boolean;
+  /** Upstream's names for the same file, in {@link GLOSSARY_FILES} order. */
+  readonly glossaries: readonly string[];
+}
+
+/** The file every runner prompt reads the domain model from. */
+export const CONTEXT_FILE = "CONTEXT.md";
+
+/**
+ * Upstream's names for it since its rename (mattpocock/skills `d80fa0f`). A
+ * re-run of its setup offers to `git mv` `CONTEXT.md` to the first, and the
+ * prompts read neither.
+ */
+export const GLOSSARY_FILES = ["GLOSSARY.md", "GLOSSARY-MAP.md"] as const;
 
 /** The repository variable the service reads the repository's setup from. */
 export const SETUP_VARIABLE = "AGENT_SETUP";
@@ -578,6 +605,16 @@ export const diagnose = (
   callers: readonly InstalledCaller[],
   facts: RepoFacts,
   packageName: string = PACKAGE_NAME,
+): readonly Finding[] => [
+  ...diagnoseOrchestrated(callers, facts, packageName),
+  // Ruled the same for either orchestrator: the prompts read the file whoever runs them.
+  ...domainModelFindings(facts.domainModel),
+];
+
+const diagnoseOrchestrated = (
+  callers: readonly InstalledCaller[],
+  facts: RepoFacts,
+  packageName: string,
 ): readonly Finding[] => {
   // The service orchestrator (#455) is ruled on by checks of its own, and
   // none of what follows applies to it: every job of every reusable skips.
@@ -1500,6 +1537,82 @@ const labelFindings = (needed: readonly LabelSpec[], labels: readonly string[] |
 };
 
 /**
+ * Whether the runners will find the domain model (#611). Every runner prompt
+ * reads `CONTEXT.md` by name, and a missing file reads as an empty one, so a
+ * checkout that accepted upstream's rename to `GLOSSARY.md` runs every agent
+ * on no domain model and nothing says so. A checkout with neither file is
+ * left alone: writing one is the adopter's, as `setup/SETUP.md` §4 says.
+ */
+const domainModelFindings = (domain: DomainModel | undefined): readonly Finding[] => {
+  if (domain === undefined) {
+    return [
+      {
+        severity: "warning",
+        check: "domain model",
+        problem:
+          `Could not list the checkout's root, so nothing here knows whether \`${CONTEXT_FILE}\`, ` +
+          `the file every runner prompt reads the domain model from, is there.`,
+        fix:
+          `Check by hand that \`${CONTEXT_FILE}\` is at the repository root, and that it has not been ` +
+          `renamed to \`${GLOSSARY_FILES[0]}\`.`,
+      },
+    ];
+  }
+  if (domain.glossaries.length === 0) return [];
+  const named = domain.glossaries.map((file) => `\`${file}\``).join(" and ");
+  if (!domain.context) {
+    return [
+      {
+        severity: "error",
+        check: "domain model",
+        problem:
+          `There is ${named} at the repository root and no \`${CONTEXT_FILE}\`. Every runner prompt ` +
+          `reads the domain model from \`${CONTEXT_FILE}\` by name, and a missing file reads as an ` +
+          `empty one, so every agent runs with no domain model and nothing reports it.`,
+        fix:
+          `\`git mv ${domain.glossaries[0] ?? GLOSSARY_FILES[0]} ${CONTEXT_FILE}\`, and decline the rename ` +
+          `when upstream's setup skill offers it again.`,
+      },
+    ];
+  }
+  return [
+    {
+      severity: "note",
+      check: "domain model",
+      problem:
+        `There is ${named} at the repository root beside \`${CONTEXT_FILE}\`. The runner prompts read ` +
+        `only \`${CONTEXT_FILE}\`, so whatever is only in the other is never read by an agent.`,
+      fix:
+        `Nothing to fix if that is what you want. Otherwise move what the agents need into ` +
+        `\`${CONTEXT_FILE}\` and delete the other.`,
+    },
+  ];
+};
+
+/**
+ * Read the domain model's files off a checkout's root. Listed rather than
+ * tested one by one, so the names are compared exactly, as a case-sensitive
+ * runner would open them; `undefined` where the root cannot be listed.
+ */
+export const readDomainModel = (dir: string): DomainModel | undefined => {
+  let entries: ReadonlySet<string>;
+  try {
+    entries = new Set(
+      fs
+        .readdirSync(dir, { withFileTypes: true })
+        .filter((entry) => entry.isFile() || entry.isSymbolicLink())
+        .map((entry) => entry.name),
+    );
+  } catch {
+    return undefined;
+  }
+  return {
+    context: entries.has(CONTEXT_FILE),
+    glossaries: GLOSSARY_FILES.filter((file) => entries.has(file)),
+  };
+};
+
+/**
  * Rule on a repository served by the service orchestrator (#455). Every job
  * of every Actions reusable skips there, so the Actions-only checks (secrets,
  * permissions, the `pull_request_target` policy, Actions opening pull
@@ -1871,6 +1984,7 @@ export const gatherFacts = (dir: string, packageName: string = PACKAGE_NAME): Re
         : Object.fromEntries(TIMEOUT_VARIABLES.map(({ name }) => [name, variable(name)])),
     orchestrator: variable(ORCHESTRATOR_VARIABLE),
     agentSetup: variable(SETUP_VARIABLE),
+    domainModel: readDomainModel(path.resolve(dir)),
   };
 };
 
@@ -1889,9 +2003,11 @@ export interface DoctorOptions {
  * off the whole record rather than a chosen field, so a fact added later is
  * covered by construction: the question is "was anything about the repository
  * knowable", and every field of it is `undefined` for exactly that reason.
+ * The one field read from the checkout instead, the domain model, is not
+ * `gh`'s answer, so it is left out of the question.
  */
 const nothingRead = (facts: RepoFacts): boolean =>
-  Object.values(facts).every((value) => value === undefined);
+  Object.entries(facts).every(([name, value]) => name === "domainModel" || value === undefined);
 
 const TAGS: Readonly<Record<Severity, string>> = { error: "FAIL", warning: "warn", note: "note" };
 

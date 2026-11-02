@@ -1943,7 +1943,10 @@ inside your architecture and one that invents a new one per issue.
 - **`CONTEXT.md`** — the domain model. Not API docs; the *concepts*, their relationships, and the
   seams between them. In this repo it earned its cost immediately: an agent implementing a
   cross-file rule deferred part of the job to a sibling rule it could not see, reasoning purely from
-  the domain model, and documented the boundary for whoever picked up the sibling.
+  the domain model, and documented the boundary for whoever picked up the sibling. Keep that name:
+  the loop's prompts read `CONTEXT.md` by name, so renaming it to `GLOSSARY.md`, as Matt Pocock's
+  setup skill now offers to, leaves them reading nothing, silently; `doctor` fails a checkout in
+  that state.
 - **`CLAUDE.md`** — commands and conventions. Most importantly the **one command that gates
   everything** (`npm run verify` here). CI runs exactly it; the agent is told to run exactly it.
 

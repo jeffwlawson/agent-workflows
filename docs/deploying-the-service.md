@@ -970,6 +970,15 @@ index `runs.sh` where it is beside it, and the conf, where the digest is checked
 installs on both with neither service touched, waits for the worker to hold no job, restarts the
 worker and straight after it the dispatcher, and runs both check scripts, failing where their versions or the shared secret's fingerprints differ.
 
+A run asks for the box's ssh password once (not at all with a key) and for its `sudo` password
+once, so run it from a terminal. It opens one ssh connection that every later ssh and scp of the
+run shares, its socket in a private directory under the system temp directory (`/boot` is FAT and
+cannot hold one), and hands the `sudo` password to each `sudo` on the box on its stdin, never on a
+command line, in output or in a file. A key `BOX_SSH_KEY` names is used through a mode 600 copy in
+the same directory, removed at the end. With no terminal to read the password from, a `sudo` that
+wants one fails, saying so; where the shared connection cannot be opened, each step connects on its
+own, and ssh may ask again.
+
 The wait is there because the worker's queue is in memory (*The worker's queue is in memory too*,
 above): a restart drops every job it holds, and a running one, which may have run for most of its
 time limit, starts again from the beginning. So the script asks the worker's held door which jobs

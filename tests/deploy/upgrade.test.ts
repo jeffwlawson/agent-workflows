@@ -34,11 +34,35 @@ const INSTALLED_PATH = path.join("node_modules", ...NAME.split("/"), "package.js
 
 /** The dispatcher container's WORKER_SECRET, which no output or command line may carry. */
 const SECRET = "the-shared-secret-0123456789";
+/** The box's sudo password, typed at the terminal: on no command line, in no output or file. */
+const SUDO_PASSWORD = "the-sudo-password-9876543210";
+
+/**
+ * What ssh and scp both record of their options (#690): the mode of the key
+ * `-i` names, as it is when they run, in `state/key-modes`.
+ */
+const SSH_KEY_MODE = `
+prev=
+for a in "$@"; do
+  if [ "$prev" = -i ]; then stat -c '%a %n' "$a" >>"$FAKE/state/key-modes"; fi
+  prev=$a
+done`;
 
 const STUBS: Record<string, string> = {
   id: `echo 0`,
-  sleep: `exit 0`,
-  sudo: `exec "$@"`,
+  // FAKE_INTERRUPT stands for a Ctrl-C while upgrade.sh waits for the worker.
+  sleep: `if [ -n "\${FAKE_INTERRUPT:-}" ]; then kill -TERM "$PPID"; fi`,
+  // The box's sudo, wanting a password on stdin as `sudo -S -p ''` reads it,
+  // unless its command names FAKE_SUDO_NOPASSWD. Each password it reads is
+  // counted in state/sudo-reads.
+  sudo: `
+if [ "$1" != -S ] || [ "$2" != -p ] || [ "$3" != "" ]; then echo "sudo: not -S -p ''" >&2; exit 1; fi
+shift 3
+case " $* " in *" \${FAKE_SUDO_NOPASSWD:-@none@} "*) exec "$@" ;; esac
+IFS= read -r password || true
+if [ "$password" != '${SUDO_PASSWORD}' ]; then echo "sudo: a password is required" >&2; exit 1; fi
+echo read >>"$FAKE/state/sudo-reads"
+exec "$@"`,
   curl: `
 out= url=
 while [ $# -gt 0 ]; do
@@ -47,7 +71,7 @@ done
 src="$FAKE/release/$(basename "$url")"
 [ -f "$src" ] || exit 22
 cp "$src" "$out"`,
-  scp: `
+  scp: `${SSH_KEY_MODE}
 files=()
 while [ $# -gt 1 ]; do
   case "$1" in -o|-i) shift 2 ;; *) files+=("$1"); shift ;; esac
@@ -57,7 +81,20 @@ for f in "\${files[@]}"; do
   cp "$f" "$FAKE/box-home/"
   case "$f" in *.tgz) if [ -n "\${FAKE_CORRUPT_SCP:-}" ]; then echo x >>"$FAKE/box-home/$(basename "$f")"; fi ;; esac
 done`,
-  ssh: `HOME="$FAKE/box-home" bash -c "\${@: -1}"`,
+  // The shared connection: -M -N -f opens it, recording its ControlPath
+  // directory's mode, and -O exit closes it. Anything else runs its last
+  // argument in the box admin's home.
+  ssh: `${SSH_KEY_MODE}
+for a in "$@"; do
+  case "$a" in
+    -M)
+      control=$(printf '%s\\n' "$@" | sed -n 's/^ControlPath=//p')
+      stat -c '%a %n' "$(dirname "$control")" >>"$FAKE/state/control-dirs"
+      exit "\${FAKE_MASTER_STATUS:-0}" ;;
+    -O) exit 0 ;;
+  esac
+done
+HOME="$FAKE/box-home" bash -c "\${@: -1}"`,
   npm: `
 prefix= tgz=
 while [ $# -gt 0 ]; do
@@ -104,10 +141,10 @@ echo "  INFO  dispatcher version: $(cat "$FAKE/state/dispatcher-running") (the b
 echo "  INFO  shared secret fingerprint: \${FAKE_FP_UNRAID:-0123456789abcdef} (the box's check prints its own: they must match)"
 exit "\${FAKE_CHECK_UNRAID_STATUS:-0}"
 `;
-// Through ssh -t, the box's lines arrive ending in a carriage return.
+// With no terminal on the box's end of ssh, its lines arrive as written.
 const CHECK_BOX = `#!/usr/bin/env bash
-printf '  INFO  worker version: %s (check-unraid.sh prints the other)\\r\\n' "\${FAKE_BOX_VERSION:-$(cat "$FAKE/state/worker-running")}"
-printf '  INFO  shared secret fingerprint: %s (check-unraid.sh prints its own: they must match)\\r\\n' "\${FAKE_FP_BOX:-0123456789abcdef}"
+printf '  INFO  worker version: %s (check-unraid.sh prints the other)\\n' "\${FAKE_BOX_VERSION:-$(cat "$FAKE/state/worker-running")}"
+printf '  INFO  shared secret fingerprint: %s (check-unraid.sh prints its own: they must match)\\n' "\${FAKE_FP_BOX:-0123456789abcdef}"
 `;
 
 const FAKE_FETCH = `import * as fs from "node:fs";
@@ -160,6 +197,8 @@ const setUp = (setup: Setup = {}): string => {
   fs.writeFileSync(path.join(root, "unraid", "check-unraid.sh"), CHECK_UNRAID);
   fs.writeFileSync(path.join(root, "unraid", "check-box.sh"), CHECK_BOX);
   fs.writeFileSync(path.join(root, "fetch.mjs"), FAKE_FETCH);
+  // The terminal the operator types the box's sudo password at.
+  fs.writeFileSync(path.join(root, "tty"), `${SUDO_PASSWORD}\n`);
   if (setup.held !== undefined) fs.writeFileSync(path.join(root, "held-answers.json"), JSON.stringify(setup.held));
   fs.writeFileSync(
     path.join(root, "unraid", "agent-service.conf"),
@@ -205,6 +244,7 @@ const run = (root: string, env: Record<string, string> = {}, args: readonly stri
       PATH: `${path.join(root, "bin")}:${process.env["PATH"] ?? ""}`,
       HOME: path.join(root, "home"),
       FAKE: root,
+      PROMPT_TTY: path.join(root, "tty"),
       ...env,
     },
   });
@@ -537,16 +577,147 @@ describe("upgrade.sh", () => {
       expect(call).not.toContain("StrictHostKeyChecking=no");
       expect(call).toContain("admin@box.example");
     }
-    expect(remote.filter((call) => call.startsWith("ssh ")).every((call) => call.includes(" -t "))).toBe(true);
+    // No box command has a terminal (#690): its sudo reads the password on stdin.
+    expect(remote.filter((call) => call.includes(" -t "))).toEqual([]);
   });
 
-  it("passes the key BOX_SSH_KEY names to every ssh and scp", () => {
-    const root = setUp({ conf: `PACKAGE_SOURCE=owner/repo\nBOX_SSH_KEY=${DEPLOY}/upgrade.sh` });
-    const { status, calls } = run(root);
+  describe("one connection and one sudo password (#690)", () => {
+    const remote = (calls: readonly string[]) => calls.filter((call) => /^(ssh|scp) /.test(call));
+    const controlPath = (call: string): string | undefined => call.match(/-o ControlPath=(\S+)/)?.[1];
 
-    expect(status).toBe(0);
-    const remote = calls.filter((call) => /^(ssh|scp) /.test(call));
-    expect(remote.every((call) => call.includes(`-i ${DEPLOY}/upgrade.sh`))).toBe(true);
+    it("opens one master connection, which every other ssh and scp shares, and closes it", () => {
+      const { status, calls } = run(setUp());
+
+      expect(status).toBe(0);
+      const masters = calls.filter((call) => call.startsWith("ssh ") && / -M -N -f /.test(call));
+      expect(masters).toHaveLength(1);
+      const [master] = masters;
+      const path_ = controlPath(master ?? "");
+      expect(path_).toMatch(/\/%C$/);
+      const rest = remote(calls).filter((call) => call !== master);
+      expect(rest.length).toBeGreaterThan(0);
+      for (const call of rest) expect(controlPath(call)).toBe(path_);
+      // Opened before the copy, and asked to exit last.
+      expect(remote(calls)[0]).toBe(master);
+      expect(remote(calls).at(-1)).toMatch(/^ssh .* -O exit admin@box\.example$/);
+    });
+
+    it.each<[string, () => string, Record<string, string>, number]>([
+      ["a successful run", () => setUp(), {}, 0],
+      ["a failed run", () => setUp(), { FAKE_WORKER_RESTART_FAIL: "1" }, 1],
+      ["an interrupted run", () => setUp({ held: [heldJobs(["fix", "owner/repo", 7])] }), { FAKE_INTERRUPT: "1" }, 143],
+    ])("keeps the socket in a private directory outside the conf's and /boot, gone after %s", (_, make, env, expected) => {
+      const root = make();
+      const { status, calls } = run(root, env);
+
+      expect(status).toBe(expected);
+      const [recorded] = fs.readFileSync(path.join(root, "state", "control-dirs"), "utf8").trim().split("\n");
+      const [mode, dir] = (recorded ?? "").split(" ");
+      expect(mode).toBe("700");
+      expect(dir).toBe(path.dirname(controlPath(calls.find((call) => / -M /.test(call)) ?? "") ?? ""));
+      expect(path.dirname(dir ?? "")).toBe(os.tmpdir());
+      expect(dir?.startsWith(path.join(root, "unraid"))).toBe(false);
+      expect(dir?.startsWith("/boot")).toBe(false);
+      expect(fs.existsSync(dir ?? "")).toBe(false);
+      expect(calls.filter((call) => / -O exit /.test(call))).toHaveLength(1);
+      expect(fs.readdirSync(path.join(root, "stage"))).toEqual([]);
+    });
+
+    it("goes on, a connection a step, where the master cannot be opened", () => {
+      const root = setUp();
+      const { status, output } = run(root, { FAKE_MASTER_STATUS: "255" });
+
+      expect(status).toBe(0);
+      expect(output).toContain("Could not open one shared connection to admin@box.example");
+      expect(output).toContain("Both machines run 1.2.3 and share the secret.");
+    });
+
+    it("reads the sudo password once and hands it to each box sudo on stdin, never on a command line, in output or in a file", () => {
+      const root = setUp();
+      const { status, output, calls } = run(root);
+
+      expect(status).toBe(0);
+      // The install, the restart and the check each ran sudo, which read it.
+      const sudos = calls.filter((call) => call.startsWith("sudo "));
+      expect(sudos.map((call) => call.split(" ").slice(0, 5).join(" "))).toEqual([
+        "sudo -S -p  bash",
+        "sudo -S -p  bash",
+        "sudo -S -p  bash",
+      ]);
+      expect(fs.readFileSync(path.join(root, "state", "sudo-reads"), "utf8").trim().split("\n")).toHaveLength(3);
+      expect(output.match(/admin@box\.example's sudo password: /g)).toHaveLength(1);
+      expect(calls.join("\n")).not.toContain(SUDO_PASSWORD);
+      expect(output).not.toContain(SUDO_PASSWORD);
+      const files = (dir: string): string[] =>
+        fs.readdirSync(dir, { withFileTypes: true }).flatMap((entry) => {
+          const full = path.join(dir, entry.name);
+          return entry.isDirectory() ? files(full) : [full];
+        });
+      // The terminal and the sudo stub hold it before the run starts; any other file is the run's.
+      const leaving = files(root).filter((file) => ![path.join(root, "tty"), path.join(root, "bin", "sudo")].includes(file));
+      expect(leaving.filter((file) => fs.readFileSync(file, "utf8").includes(SUDO_PASSWORD))).toEqual([]);
+    });
+
+    it("parses the box's check, which comes through no terminal, with no carriage return to strip", () => {
+      const { status, output } = run(setUp());
+
+      expect(status).toBe(0);
+      expect(output).toContain("worker version:            1.2.3\n");
+      expect(output).toContain("box secret fingerprint:    0123456789abcdef\n");
+    });
+
+    it("with no terminal to read the password from, fails the step whose sudo wants one, naming the terminal and the commands that finish", () => {
+      const root = setUp();
+      const { status, output, calls } = run(root, { PROMPT_TTY: path.join(root, "no-such-terminal"), FAKE_SUDO_NOPASSWD: "--install" });
+
+      expect(status).toBe(1);
+      expect(installed(root, "opt")).toBe("1.2.3");
+      expect(output).not.toContain("sudo password: ");
+      expect(output).toContain("There was no terminal to read the box's sudo password from");
+      expect(output).toContain("run upgrade.sh from a terminal");
+      expect(output).toContain("the dispatcher was not restarted");
+      expect(output).toMatch(/-t admin@box\.example 'sudo bash ~\/upgrade-box\.sh --restart 1\.2\.3'/);
+      expect(calls.filter((call) => call.startsWith("docker restart"))).toEqual([]);
+    });
+
+    it("uses a mode 600 copy of the key BOX_SSH_KEY names for every ssh and scp, removed at the end, the original untouched", () => {
+      const root = setUp();
+      const key = path.join(root, "unraid", "box_key");
+      fs.writeFileSync(key, "a private key\n", { mode: 0o644 });
+      fs.chmodSync(key, 0o644);
+      const conf = path.join(root, "unraid", "agent-service.conf");
+      fs.appendFileSync(conf, `BOX_SSH_KEY=${key}\n`);
+      const { status, output, calls } = run(root);
+
+      expect(status).toBe(0);
+      const copy = calls.find((call) => call.startsWith("ssh "))?.match(/ -i (\S+)/)?.[1] ?? "";
+      const dir = path.dirname(controlPath(calls.find((call) => call.startsWith("ssh ")) ?? "") ?? "");
+      expect(copy).toBe(path.join(dir, "key"));
+      for (const call of remote(calls)) {
+        expect(call).toContain(` -i ${copy} `);
+        expect(call).not.toContain(` -i ${key} `);
+      }
+      const modes = fs.readFileSync(path.join(root, "state", "key-modes"), "utf8").trim().split("\n");
+      expect(modes).toHaveLength(remote(calls).length);
+      for (const line of modes) expect(line).toBe(`600 ${copy}`);
+      expect(fs.existsSync(copy)).toBe(false);
+      expect(fs.statSync(key).mode & 0o777).toBe(0o644);
+      expect(fs.readFileSync(key, "utf8")).toBe("a private key\n");
+      // The commands for an operator to paste name the original: the copy is gone by then.
+      expect(output).not.toContain(copy);
+    });
+
+    it("pastes the original key, not the copy, into the commands that finish", () => {
+      const root = setUp();
+      const key = path.join(root, "unraid", "box_key");
+      fs.writeFileSync(key, "a private key\n");
+      fs.appendFileSync(path.join(root, "unraid", "agent-service.conf"), `BOX_SSH_KEY=${key}\n`);
+      const { status, output } = run(root, { FAKE_WORKER_RESTART_FAIL: "1" });
+
+      expect(status).toBe(1);
+      expect(output).toContain(`-i ${key} -t admin@box.example 'sudo bash ~/upgrade-box.sh --restart 1.2.3'`);
+      expect(output).not.toContain("ControlPath");
+    });
   });
 
   it("stops before either machine is touched when the tarball does not match its .sha256", () => {

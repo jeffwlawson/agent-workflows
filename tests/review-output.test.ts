@@ -3311,6 +3311,22 @@ describe("the review's finding vocabulary", () => {
     expect(PROMPT).not.toMatch(/acknowledging it|may be reinforced/);
   });
 
+  /**
+   * The verification pass in one paragraph (#704, M11): the question, the
+   * two things it does, where *previously missed* is defined, and what
+   * `howChecked` says. The no-fix-round paragraph said nothing `HISTORY`
+   * does not.
+   */
+  it("prompt.md states the verification pass once, pointing at the label's definition", () => {
+    const pass = plain(PROMPT).match(/# WHAT THIS REVIEW FOLLOWS.*?(?= # )/s)?.[0] ?? "";
+
+    expect(pass).toMatch(/did the last round's findings land, and did the new commits break anything/);
+    expect(pass).toMatch(/previously missed \(THE TWO KINDS OF FINDING\)/);
+    expect(pass).toMatch(/never a `followUps` entry/);
+    expect(pass).toMatch(/Say in `howChecked` that this was a verification pass/);
+    expect(pass).not.toMatch(/follows no fix round|That is the pass/);
+  });
+
   it("names needsYou and the three cases it is for", () => {
     expect(PROMPT).toContain("needsYou");
     expect(EXTRACTION).toContain("needsYou");

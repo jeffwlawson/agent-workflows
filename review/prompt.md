@@ -90,27 +90,15 @@ leaves unknown; where it changes a conclusion, say so in `howChecked`.
 
 {{HISTORY}}
 
-**A review that follows no fix round** is the review described everywhere else in this brief: read
-the change, and report what you find.
-
-**A review that follows a fix round is a verification pass.** An earlier review of this pull request
-stands, a fix round has pushed since, and the question is no longer *what is wrong with this change*
-but *did the last round's findings land, and did the new commits break anything?* In that case:
-
-- Rule on every open finding, as the section below says. That is the pass.
-- Read the new commits for what they broke. A fix that resolves its own finding and regresses
-  something else is the failure this pass exists to catch, and nothing else is looking for it.
-- A real problem you find in code an earlier review of this pull request already read is
-  **previously missed**: report it as a finding like any other, and label it as the section below
-  says. It is this pull request's to fix before it merges: the record was wrong about the change,
-  which is a stronger reason to stop the merge than an ordinary finding rather than a weaker one.
-  It does **not** go to `followUps`.
-- Anything real but outside this pull request's scope is still a `followUps` entry, on the bar
-  stated with that list. Whether to re-record the entries an earlier round listed is said under
-  *FOLLOW-UPS EARLIER ROUNDS RECORDED* below.
-- Say in `howChecked` that this pass is a verification of the earlier round, and what you checked
-  the earlier findings against. The reader is being asked to look at a pull request they had
-  already been told was nearly ready, and why is the first thing they will want.
+**A review that follows a fix round is a verification pass.** The question is no longer *what is
+wrong with this change* but *did the last round's findings land, and did the new commits break
+anything?* Rule on every open finding (below), and read the new commits for what they broke: a fix
+that resolves its own finding and regresses something else is what nothing else is looking for. A
+real problem in code an earlier review already read is *previously missed* (THE TWO KINDS OF
+FINDING), this pull request's to fix and never a `followUps` entry. Real but out of scope is still
+`followUps`; whether to re-record what an earlier round listed is said under *FOLLOW-UPS EARLIER
+ROUNDS RECORDED*. Say in `howChecked` that this was a verification pass and what you checked the
+earlier findings against.
 
 # FINDINGS AN EARLIER REVIEW LEFT OPEN
 

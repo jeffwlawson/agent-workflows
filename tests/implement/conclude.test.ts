@@ -840,6 +840,16 @@ describe("implement:conclude ends a run the plan's usage limit stopped (#635)", 
     expect(github.issueLabels.get(ISSUE)).toEqual([IMPLEMENT_LABEL]);
   });
 
+  it("on the service, reads the CLI's 5-hour wording as the same ending (#739)", async () => {
+    put("runner", "failure_reason.txt", "Claude-code exited with code 1: You've hit your 5-hour limit · resets 6:50pm (UTC).");
+
+    await run(INPUTS(AGENT("failure", SERVICE)));
+
+    expect(comment()).toMatch(/^\*\*`agent:implement` is waiting:\*\* It hit the plan's usage limit, and will resume after 2026-11-02 18:50 UTC\./);
+    expect(writes()).toEqual([`workflow comment ${ISSUE}`]);
+    expect(github.issueLabels.get(ISSUE)).toEqual([IMPLEMENT_LABEL]);
+  });
+
   it("on Actions, gives the reset time and says to add the label after it", async () => {
     put("runner", "failure_reason.txt", LIMIT);
 

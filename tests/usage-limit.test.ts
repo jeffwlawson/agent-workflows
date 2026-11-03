@@ -11,6 +11,8 @@ import { limitEnding, newestResumeNote, RESET_GRACE_MINUTES, usageLimitReset } f
 
 const SESSION = "claude-code exited with code 1: You've hit your session limit · resets 5:50am (UTC)";
 const HOURLY = "claude-code exited with code 1: You've hit your session limit · resets 11am (UTC)";
+// The CLI's wording on 2026-11-03 (#739): a kind that starts with a digit.
+const FIVE_HOUR = "Claude-code exited with code 1: You've hit your 5-hour limit · resets 6:50pm (UTC).";
 const at = (iso: string): Date => new Date(iso);
 const MINUTE_MS = 60 * 1000;
 
@@ -43,6 +45,14 @@ describe("usageLimitReset reads the reset instant off the CLI's message", () => 
     expect(usageLimitReset(LATE, at("2027-01-01T00:10:00Z"))).toEqual(at("2026-12-31T23:50:00Z"));
   });
 
+  it("reads a kind with digits or a hyphen in it as it reads the session limit's (#739)", () => {
+    expect(usageLimitReset(FIVE_HOUR, at("2026-11-03T17:31:00Z"))).toEqual(at("2026-11-03T18:50:00Z"));
+    expect(usageLimitReset(FIVE_HOUR, at("2026-11-03T20:00:00Z"))).toEqual(at("2026-11-04T18:50:00Z"));
+    expect(usageLimitReset("You've hit your 24-hour limit · resets 9am (UTC)", at("2026-11-03T08:00:00Z"))).toEqual(at("2026-11-03T09:00:00Z"));
+    expect(usageLimitReset("You've hit your 7-day Opus limit · resets 12:30pm (UTC)", at("2026-11-03T08:00:00Z"))).toEqual(at("2026-11-03T12:30:00Z"));
+    expect(usageLimitReset("You've hit your per-model limit · resets 5:50am (UTC)", at("2026-11-03T01:00:00Z"))).toEqual(at("2026-11-03T05:50:00Z"));
+  });
+
   it("reads 12am as midnight and 12pm as noon", () => {
     expect(usageLimitReset("You've hit your session limit · resets 12am (UTC)", at("2026-11-01T20:00:00Z"))).toEqual(at("2026-11-02T00:00:00Z"));
     expect(usageLimitReset("You've hit your weekly limit · resets 12:30pm (UTC)", at("2026-11-01T08:00:00Z"))).toEqual(at("2026-11-01T12:30:00Z"));
@@ -56,6 +66,9 @@ describe("usageLimitReset reads the reset instant off the CLI's message", () => 
       "You've hit your session limit",
       "You've hit your session limit · resets 13:50am (UTC)",
       "You've hit your session limit · resets 5:75am (UTC)",
+      "You've hit your 5-hour limit · resets 6:50pm (Europe/London)",
+      "You've hit your 5-hour limit · resets 6:50pm",
+      "You've hit your 5-hour limit",
       "claude-code exited with code 1: rate limited, try again later",
       "It timed out after 30 minutes.",
       "",

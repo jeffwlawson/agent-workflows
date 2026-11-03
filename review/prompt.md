@@ -249,8 +249,8 @@ the change touches; where it has no glossary, read it whole.
    yours to list.
 5. **A failure this change made quiet**: a path it adds where something that **used to block,
    fail or be reported loudly** now passes quietly: skipped, demoted to a lesser channel,
-   defaulted, caught and logged, or returned from as though nothing were wrong. Checking the one
-   input the change was written for is not checking this:
+   defaulted, caught and logged, or returned from as though nothing were wrong. The input the
+   change was written for is the least likely to reach the quiet path:
    - **List every input that can reach the quiet path**, every kind the surrounding code can be
      handed, not only the intended one, and check each of them against the code.
    - **Report every gap you find in one round, grouped as one class.** One finding naming the class
@@ -287,9 +287,7 @@ the change touches; where it has no glossary, read it whole.
    - **What can it carry?** A secret, a credential inside a URL, a private path, untrusted input.
    - **Is the new place read more widely than where the text came from?**
    - **Is it cleaned of what it can carry before it gets there?** Cleaned means that specific
-     thing is removed or masked: the credential stripped from the URL, the token replaced. Passing
-     through some cleanup step is not enough, and a cleanup that removes something else does not
-     count.
+     thing is removed or masked (the credential stripped from the URL, the token replaced).
    - **Text that can carry a secret to a more widely read place, uncleaned, is a fix-before-merge
      finding**, anchored at the change that sends it there, as *Where a finding is posted* says.
    - **A private path or untrusted input reaching a more widely read place, uncleaned, is ruled

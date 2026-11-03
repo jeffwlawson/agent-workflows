@@ -3518,6 +3518,7 @@ describe("the review brief asks for the class rather than the member", () => {
 
   it("asks for every input that can reach the quiet path, not only the intended one", () => {
     expect(plain(PROMPT)).toMatch(/every input that can reach/i);
+    expect(plain(PROMPT)).toMatch(/The input the change was written for is the least likely to reach the quiet path/);
   });
 
   it("asks for the gaps in one round, grouped as one class", () => {
@@ -3688,10 +3689,15 @@ describe("the review brief asks what text sent somewhere new can carry", () => {
     expect(item7()).toMatch(/read more widely than where the text came from/i);
   });
 
-  it("asks whether it is cleaned of that thing, and a cleanup removing something else does not count", () => {
+  /**
+   * Cleaned of *that specific thing* (#704, L7): the positive says it, so the
+   * negations naming the shortcut ("some cleanup step is not enough") are
+   * gone.
+   */
+  it("asks whether it is cleaned of that specific thing", () => {
     expect(item7()).toMatch(/cleaned of what it can carry/i);
-    expect(item7()).toMatch(/removed or masked/i);
-    expect(item7()).toMatch(/cleanup that removes something else does not count/i);
+    expect(item7()).toMatch(/that specific thing is removed or masked/i);
+    expect(item7()).not.toMatch(/is not enough|does not count/);
   });
 
   it("makes a secret reaching a more widely read place a fix-before-merge finding at the change", () => {

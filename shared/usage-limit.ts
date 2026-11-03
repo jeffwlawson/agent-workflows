@@ -14,11 +14,12 @@ import { RESUME_NOTE_MARKER, SERVICE_ORCHESTRATOR } from "./record.js";
  */
 
 /**
- * The CLI's message, as seen: `hit your <kind> limit · resets <h>[:<mm>]<am|pm> (UTC)`.
- * Narrow on purpose. Any other shape, a zone other than UTC included, is not
+ * The CLI's message, as seen: `hit your <kind> limit · resets <h>[:<mm>]<am|pm> (UTC)`,
+ * where `<kind>` is words, digits and hyphens: `session` and `5-hour` (#739)
+ * both seen. Narrow on purpose. Any other shape, a zone other than UTC included, is not
  * this ending, and the run ends as any other stopped run does.
  */
-const LIMIT_MESSAGE = /hit your [a-z][a-z -]* limit · resets ([0-9]{1,2})(?::([0-9]{2}))?(am|pm) \(UTC\)/i;
+const LIMIT_MESSAGE = /hit your [a-z0-9][a-z0-9 -]* limit · resets ([0-9]{1,2})(?::([0-9]{2}))?(am|pm) \(UTC\)/i;
 
 /**
  * How long past the stated time a reader still takes it as today's reset.

@@ -638,13 +638,17 @@ describe("the worker's job, where the plan's usage limit stops its agent (#635)"
     vi.useRealTimers();
   });
 
+  // The CLI's wording on 2026-11-03 (#739).
+  const FIVE_HOUR = "Claude-code exited with code 1: You've hit your 5-hour limit · resets 6:50pm (UTC).";
+
   it.each([
-    { stopped: "2026-11-01T01:10:00Z", resets: "2026-11-01T05:50:00.000Z" },
-    { stopped: "2026-11-01T07:00:00Z", resets: "2026-11-02T05:50:00.000Z" },
-  ])("tells the queue the next reset instant, at $resets for a run stopped at $stopped, and tells conclude it runs on the service, with the loop's account", async ({ stopped, resets }) => {
+    { reason: LIMIT, stopped: "2026-11-01T01:10:00Z", resets: "2026-11-01T05:50:00.000Z" },
+    { reason: LIMIT, stopped: "2026-11-01T07:00:00Z", resets: "2026-11-02T05:50:00.000Z" },
+    { reason: FIVE_HOUR, stopped: "2026-11-03T17:31:00Z", resets: "2026-11-03T18:50:00.000Z" },
+  ])("tells the queue the next reset instant, at $resets for a run stopped at $stopped, and tells conclude it runs on the service, with the loop's account", async ({ reason, stopped, resets }) => {
     vi.useFakeTimers({ toFake: ["Date"] });
     vi.setSystemTime(new Date(stopped));
-    const s = setup({ ...ORDINARY, review: { files: { "failure_reason.txt": `${LIMIT}\n` }, exit: 1 } });
+    const s = setup({ ...ORDINARY, review: { files: { "failure_reason.txt": `${reason}\n` }, exit: 1 } });
     const limited: Date[] = [];
     const phases = await runJob(JOB, { ...s.edges, limited: (until) => limited.push(until) });
 
@@ -652,7 +656,7 @@ describe("the worker's job, where the plan's usage limit stops its agent (#635)"
     const until = limited[0]!;
     expect(until.toISOString()).toBe(resets);
     expect(phases).toContainEqual({ name: "usage limit", outcome: `the plan's usage limit stopped review; it resets at ${until.toISOString()}` });
-    expect(s.env("review:conclude")).toMatchObject({ ORCHESTRATOR: "service", AGENT_LOOP_LOGINS: JOB.appLogin, FAILURE_REASON: LIMIT });
+    expect(s.env("review:conclude")).toMatchObject({ ORCHESTRATOR: "service", AGENT_LOOP_LOGINS: JOB.appLogin, FAILURE_REASON: reason });
   });
 
   it("tells the queue nothing where the runner failed any other way, or a command gave the message", async () => {

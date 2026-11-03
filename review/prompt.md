@@ -273,7 +273,7 @@ the change touches; where it has no glossary, read it whole.
      that made it false, with the stale `path:line` in its text, as *Where a finding is posted*
      says. It is not a follow-up: the change caused it, so it is this pull request's to fix.
    - **A hit that was already false before this change** was not caused by it, and is a `followUps`
-     entry on that list's bar.
+     entry (*A follow-up*, under THE TWO KINDS OF FINDING).
    - **Say in `howChecked` the phrases you searched for and how many hits you read**, within its
      limit. A change that alters no behaviour (a comment, a rename the tests pin, documentation
      alone) owes no sweep, and `howChecked` says so.
@@ -294,7 +294,7 @@ the change touches; where it has no glossary, read it whole.
      finding**, anchored at the change that sends it there, as *Where a finding is posted* says.
    - **A private path or untrusted input reaching a more widely read place, uncleaned, is ruled
      the same way**: a finding where this change causes it. An exposure this change did not cause
-     is a `followUps` entry on that list's bar.
+     is a `followUps` entry (*A follow-up*, under THE TWO KINDS OF FINDING).
    - **In `howChecked`, name the new destinations you found, or say there were none**, in one
      clause within its limit. A change that sends no text anywhere new (a comment, a rename,
      documentation alone) owes nothing more than that clause.
@@ -311,8 +311,10 @@ one nobody can act on without reading for it. The label is for whoever reads the
 forget to write still counts and is still recorded, so it is not a dial for how serious you meant
 it.
 
-**A follow-up**: real, but not this pull request's to fix. Those go to the `followUps` list your
-structured output carries, on the bar stated with it.
+**A follow-up**: real, but not this pull request's to fix. It goes to `followUps`, and only with all
+three: one `path` or `path:line` to open first, the code or check result it rests on, and what this
+pull request would have to change that is not its subject. Gather them while the code is open; one
+missing any of the three is left out. The extraction step states the format and the cap.
 
 **Previously missed** is the first kind with one more thing said about it: a real problem in code
 an earlier review of this pull request already read. Open its body with `**Previously missed.**`
@@ -500,12 +502,12 @@ the finding's text, where a reader can follow it. On `src/api.ts:42`:
 > **Fix before merge.** This changes the signature of `parse()`, but `docs/api.md:18` still
 > describes the old one.
 
-**If nothing in the diff causes it, it is a follow-up.** Put it in `followUps`, on the bar stated
-with that list, rather than in `findings`. The workflow checks this and does not take your word for
-it: a finding whose `path` is in no file this pull request changes is **moved to `followUps`**,
-filed when the pull request merges, and the review body says it was moved and why. Nothing is lost,
-but a finding anchored away from the change stops counting against the merge, so anchoring it at
-the cause is the whole of keeping it.
+**If nothing in the diff causes it, it is a follow-up.** Put it in `followUps`, with the three
+things a follow-up needs (THE TWO KINDS OF FINDING), rather than in `findings`. The workflow checks
+this and does not take your word for it: a finding whose `path` is in no file this pull request
+changes is **moved to `followUps`**, filed when the pull request merges, and the review body says it
+was moved and why. Nothing is lost, but a finding anchored away from the change stops counting
+against the merge, so anchoring it at the cause is the whole of keeping it.
 
 Give the anchor that is true, and never the nearest line inside the diff to something else. A
 finding aimed at a line it is not about is one a reader has to re-find, and one a fix round will
@@ -532,11 +534,11 @@ only where the lines it replaces are in the diff.
 - **Literal content**: the replacement lines exactly as they should appear, with the surrounding
   indentation.
 
-Good candidates, and each is a finding you would report anyway: a comment whose claim the diff
-made false, a misspelled identifier that breaks the thing it names, a bound that is off by one.
-A suggestion is a way to make a *fix before merge* cheap to apply. Where the fix needs judgement, spans
-several places, or changes behaviour, describe it in prose and leave it to `agent:fix`; a wrong
-suggestion is one click from being committed.
+Good candidates, and each is a finding you would report anyway: a comment whose claim the diff made
+false, a misspelled identifier that breaks the thing it names, a bound that is off by one. A
+suggestion is a way to make a *fix before merge* cheap to apply. Where the fix needs judgement,
+spans several places, or changes behaviour, describe it in prose and leave it to `agent:fix`; a
+wrong suggestion is one click from being committed.
 
 # BOUNDARIES
 

@@ -3340,6 +3340,22 @@ describe("the review's finding vocabulary", () => {
     expect(ci).not.toMatch(/third case|a red one/);
   });
 
+  /**
+   * The follow-up bar where the work pass can act on it (#704, M5): "on the
+   * bar stated with that list" pointed at extraction.md, which this pass
+   * never sees, so the evidence was gathered, if at all, after the code was
+   * closed.
+   */
+  it("prompt.md states the follow-up bar once, and points at it by name", () => {
+    const followUp = plain(PROMPT).match(/A follow-up: real, but not this pull request's to fix\..*?(?= Previously missed )/s)?.[0] ?? "";
+
+    expect(followUp).toMatch(/only with all three/);
+    expect(followUp).toMatch(/one `path` or `path:line` to open first/);
+    expect(followUp).toMatch(/the code or check result it rests on/);
+    expect(followUp).toMatch(/would have to change that is not its subject/);
+    expect(PROMPT).not.toMatch(/bar stated|list's bar/);
+  });
+
   it("names needsYou and the three cases it is for", () => {
     expect(PROMPT).toContain("needsYou");
     expect(EXTRACTION).toContain("needsYou");

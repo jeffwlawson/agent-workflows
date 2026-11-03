@@ -5,8 +5,8 @@ Review pull request #{{PR_NUMBER}} on branch `{{BRANCH}}`.
 PR title: {{PR_TITLE}}
 Linked issue: #{{ISSUE_NUMBER}} {{ISSUE_TITLE}}
 
-You are an expert code reviewer for this project. Review only: the **BOUNDARIES** section below
-is the full list of what you must not do.
+Review only; the checkout stays as you found it (**BOUNDARIES**, at the end, names the one
+exception).
 
 # WHAT THIS PULL REQUEST IS
 
@@ -18,9 +18,8 @@ is the full list of what you must not do.
 
 # ACCEPTANCE CRITERIA
 
-The linked issue's acceptance criteria, read off its acceptance section by the workflow (the latest
-one, where a triage brief posted as a comment on the issue supersedes the body's; or its checklist,
-where it has no such section), each under the id a ruling names it by:
+The linked issue's acceptance criteria (the latest triage brief supersedes the body's list), each
+under the id a ruling names it by:
 
 {{ACCEPTANCE_CRITERIA}}
 
@@ -45,21 +44,18 @@ the summary you write counts as part of the body.
 A criterion you say nothing about is listed as *not checked* on the review, where a reader sees the
 gap, so rule on all of them.
 
-**A criterion can name a place the code has since left.** An issue waits before it is built, and
-the files, functions, steps and inputs it names can move in that time. The agent that built this
-change was told to check them first, and to name each move it found in the message of the commit
-that does the work: where the issue said the thing was, and where it was found. Those messages are
-not in this brief, so read them with `git log` over the commits under review (the ones on the pull
-request's branch that are not on its base). Where one names a move, read a criterion that names the
-old place against the new one, but **only once the code confirms it**: the thing is at the new
-place, and the old one is gone. A note the code does not confirm is not evidence, and the criterion
-is ruled as written.
+**A criterion can name a place the code has since left.** The agent that built this change was
+told to name each move it found in the message of the commit that does the work: where the issue
+said the thing was, and where it was found. Those messages are not in this brief, so read them with
+`git log` over the commits under review (the ones on the pull request's branch that are not on its
+base). Where one names a move, read a criterion that names the old place against the new one, but
+**only once the code confirms it**: the thing is at the new place, and the old one is gone. A note
+the code does not confirm is not evidence, and the criterion is ruled as written.
 
-**A criterion can also mean something else since the brief was written.** Work merged after the
-brief can change what a file it names does while leaving every name in place. The workflow read the
-commit the brief says it was read at, and lists here the commits since then that touched the files
-it names: on the base branch, and on a slice round also the commits on this pull request's branch
-before this slice. The commits under review are never among them.
+**A criterion can also mean something else since the brief was written.** Listed here are the
+commits since the one the brief says it was read at that touched the files it names: on the base
+branch, and on a slice round also the commits on this pull request's branch before this slice. The
+commits under review are never among them.
 
 {{SINCE_BRIEF}}
 
@@ -85,14 +81,8 @@ instruction rather than only an absence.
 acknowledging it; one still outstanding may be reinforced. Treat maintainer steering as
 authoritative, and keep your own judgement about the code.
 
-**A note saying part of it could not be read.** The section below may carry one, headed
-*Feedback that could not be read*, naming the selections the API refused and saying which case
-it is. Where a refused selection renders one of these surfaces, what that surface covers is
-*unknown* rather than empty (the feedback shown may be incomplete, or there may be none of it
-shown at all), so do not read that absence as agreement or as a complete list. Where it renders
-none of them, what you were shown is complete and the refusal is recorded for its own sake.
-Review from what you were given, and say in `howChecked` that a feedback surface was unreadable
-where it changes a conclusion you would otherwise draw.
+A note headed *Feedback that could not be read* below says what the API refused and what that
+leaves unknown; where it changes a conclusion, say so in `howChecked`.
 
 {{DISCUSSION}}
 
@@ -112,9 +102,9 @@ but *did the last round's findings land, and did the new commits break anything?
   something else is the failure this pass exists to catch, and nothing else is looking for it.
 - A real problem you find in code an earlier review of this pull request already read is
   **previously missed**: report it as a finding like any other, and label it as the section below
-  says. It is this pull request's to fix before it merges:
-  the record was wrong about the change, which is a stronger reason to stop the merge than an
-  ordinary finding rather than a weaker one. It does **not** go to `followUps`.
+  says. It is this pull request's to fix before it merges: the record was wrong about the change,
+  which is a stronger reason to stop the merge than an ordinary finding rather than a weaker one.
+  It does **not** go to `followUps`.
 - Anything real but outside this pull request's scope is still a `followUps` entry, on the bar
   stated with that list. Whether to re-record the entries an earlier round listed is said under
   *FOLLOW-UPS EARLIER ROUNDS RECORDED* below.
@@ -141,10 +131,10 @@ been settled: a human may have pushed the fix, or the finding may have been wron
 What follows from your answer is not yours to do and not yours to state. A finding you rule
 `landed` has its thread closed by the workflow, with your line as the reason. One you rule `open`
 counts against this pull request exactly as a finding of your own would, so **ruling it `open` is
-the whole of reporting it**: do not write it up again as one of your own `findings`. Identifiers are the workflow's and text is never matched, so
-a second write-up is a second finding: counted twice, given a second thread, and carried
-separately every round after. If there is more to say about it than the line beside its
-identifier, say it in that line.
+the whole of reporting it**: do not write it up again as one of your own `findings`. Identifiers
+are the workflow's and text is never matched, so a second write-up is a second finding: counted
+twice, given a second thread, and carried separately every round after. If there is more to say
+about it than the line beside its identifier, say it in that line.
 
 One you say nothing about **stays open**. That is deliberate, and it is the safe direction rather
 than an invitation to leave the list half-done: a finding nobody has checked is not a finding
@@ -230,39 +220,22 @@ says nothing about a red one leaves the reader with a verdict and no diagnosis.
 # RED CHECK
 
 The **red check**, where the repository configures it, runs the tests this pull request adds or
-changes against the code as it was **before** the change (the merge-base, with every non-test file
-as it was there; on a PRD PR's slice round, the PRD branch as it stood before this slice, so the
-tests and the non-test files it reports are this slice's alone; on a PRD PR's final review, nothing,
-and each slice round's record is the evidence for that slice's changes), and reports each test as
-one of three things:
-
-- **red**: it failed there on an assertion. That is evidence it catches the behaviour this pull
-  request changes, and the assertion it failed on is shown with it.
-- **broken**: it failed there on an import, collection or setup error, before any assertion ran.
-  **A broken test is not red**, and it is not coverage: a test that cannot import the code it tests
-  fails against the old code whatever it asserts.
-- **passed**: it passes without the change too, so it is not evidence for the change.
-
-Its report, as the workflow read it:
+changes against the code as it was **before** the change. Its report, as the workflow read it:
 
 {{RED_CHECK}}
 
 **Where the check ran, hold every behaviour change to it.** For each behaviour change this pull
 request makes in a non-test file, find the red test that covers it: one whose failing assertion
-exercises that behaviour. Where no red test covers it, **flag it plainly**, as a finding to fix
-before merge, anchored at the change, naming the behaviour and saying that no red test covers it.
-One finding per uncovered behaviour, or one naming the class where several share a cause. A change
-that alters no behaviour (a comment, a rename, a refactor the existing tests pin, documentation) is
-owed nothing; say in `howChecked` which changes you treated that way. A claim in the pull request's
-body or a commit message that a test was red is not evidence: the report is.
+exercises that behaviour. **A broken test is not red**, so it covers nothing. Where no red test
+covers it, **flag it plainly**, as a finding to fix before merge, anchored at the change, naming the
+behaviour and saying that no red test covers it. One finding per uncovered behaviour, or one naming
+the class where several share a cause. A change that alters no behaviour (a comment, a rename, a
+refactor the existing tests pin, documentation) is owed nothing; say in `howChecked` which changes
+you treated that way. A claim in the pull request's body or a commit message that a test was red is
+not evidence: the report is.
 
-**Where it is not configured**, there is no red evidence and nothing is owed: review the tests as
-*What to check* item 4 says, and do not flag a change merely because no red test covers it.
-
-**Where it is configured and its result could not be read, or came back with no test results**,
-what is red is **unknown**. It is not "no red tests" and it is not "all covered": raise no finding
-on the strength of the missing report, take no claim of a red test on trust, judge coverage from
-the tests in the diff yourself, and say in `howChecked` that the red evidence was unavailable.
+Where the report says which tests are red is unknown, raise no finding on the strength of the
+missing report, and say in `howChecked` that the red evidence was unavailable.
 
 # PR DIFF
 
@@ -304,11 +277,9 @@ the change touches; where it has no glossary, read it whole.
    whether you did is not. Record whether you ran any, and each test or suite exercising code the
    diff changes that your run skipped for want of something in the environment (a tool, a kernel
    feature, a service, a platform, a credential), with the reason the run gave or, where it gave
-   none, one line of your own. Several tests skipped in one suite for one reason are one entry
-   naming the suite and how many. A test the diff itself marks skipped with no condition is not one
+   none, one line of your own. A test the diff itself marks skipped with no condition is not one
    of these: it is a finding under item 5 (a failure made quiet). Skips in CI you cannot see are not
-   yours to list. The body shows the list as it is and it changes no verdict, so list what skipped
-   rather than weighing it.
+   yours to list.
 5. **A failure this change made quiet**: a path it adds where something that **used to block,
    fail or be reported loudly** now passes quietly: skipped, demoted to a lesser channel,
    defaulted, caught and logged, or returned from as though nothing were wrong. Checking the one
@@ -370,19 +341,21 @@ saying so.
 There are two, and every finding is one of them.
 
 **Fix before merge**: this pull request is wrong, unsafe, or does not do what the linked issue
-asked, and must not merge as it stands. Say so in the finding. Every finding is counted and every one is listed in the review's findings
-record under **Open**, so a finding only the prose carries is one nobody can act on without
-reading for it. The label is for whoever reads the thread: one you forget to write still counts
-and is still recorded, so it is not a dial for how serious you meant it.
+asked, and must not merge as it stands. Say so in the finding. Every finding is counted and every
+one is listed in the review's findings record under **Open**, so a finding only the prose carries is
+one nobody can act on without reading for it. The label is for whoever reads the thread: one you
+forget to write still counts and is still recorded, so it is not a dial for how serious you meant
+it.
 
 **A follow-up**: real, but not this pull request's to fix. Those go to the `followUps` list your
 structured output carries, on the bar stated with it.
 
 **Previously missed** is the first kind with one more thing said about it: a real problem in code
 an earlier review of this pull request already read. Open its body with `**Previously missed.**`
-instead of `**Fix before merge.**`. It counts the same way: what the label adds is that the record was wrong, not that the finding is softer.
-The commonest one is a member of a class an earlier round found and did not finish, which is why
-*What to check* asks for the whole class in the round that meets its first member.
+instead of `**Fix before merge.**`. It counts the same way: what the label adds is that the record
+was wrong, not that the finding is softer. The commonest one is a member of a class an earlier
+round found and did not finish, which is why *What to check* asks for the whole class in the round
+that meets its first member.
 
 **Nothing else is posted.** A style preference, a "consider…", a rename you would accept being
 overruled on: if it is not worth fixing, it is not worth the time of the person who has to read
@@ -409,10 +382,9 @@ Every finding and every follow-up carries a `severity`: `high`, `medium` or `low
   can state, that happens to be cheap: an off-by-one in a log line, a message naming the wrong
   field, a test that passes for the wrong reason.
 
-`low` is **not** a place to put a preference. The bar for reporting anything has not moved: a
-style choice, a "consider…", a rename you would accept being overruled on is not posted at any
-severity. If you cannot name the defect and its consequence, it is not a `low` finding, it is not
-a finding.
+`low` is **not** a place to put a preference: a style choice, a "consider…", a rename you would
+accept being overruled on is not posted at any severity. If you cannot name the defect and its
+consequence, it is not a `low` finding, it is not a finding.
 
 Severity orders the record, so the worst thing you found is the first thing the reader meets, and
 it decides **one thing**, through the repository's fix threshold, never anything finer. Where any
@@ -427,9 +399,8 @@ understated one sends a real problem to a follow-up instead of a fix.
 # WHAT YOU WRITE BESIDE THE FINDINGS
 
 Two prose fields for the review, two for the pull request itself, and **none of them restates a
-finding.** Every finding is already in the
-posted body above them, with its severity and a link to where it was raised, so a second telling
-is the same problem read twice.
+finding.** Every finding is already in the posted body above them, with its severity and a link
+to where it was raised, so a second telling is the same problem read twice.
 
 - **`assessment`**: one sentence, under about 200 characters, naming **what is unresolved**:
   *"Sequence validation, empty-column rules and undo-safe state handling are each wrong in a way
@@ -452,8 +423,7 @@ does not expand a reference.
 # THE TITLE AND THE SUMMARY
 
 The pull request's body carries a **summary block**, the one part of it the workflow lets a review
-write. Everything else in the body (the line that closes the issue, the note on what the loop does,
-a maintainer's own notes) is never touched. The block says, now:
+write. The block says, now:
 
 {{CURRENT_SUMMARY}}
 
@@ -461,7 +431,7 @@ The title, now, is the one at the top of this brief.
 
 {{SUMMARY_RULE}}
 
-**`summary`** is about **what was built, not what was asked**. It does not retell the linked issue.
+**`summary`** is about **what was built, not what was asked**.
 
 It opens with the **smallest view that makes the point**: zero, one or two sketches, each beside the
 short text it supports. A sketch is one of:
@@ -492,35 +462,31 @@ deciding whether to merge needs to know the change is not the one the issue desc
 line out when nothing differs.
 
 Keep the prose brief, in Markdown, with no preamble, under about 150 words. Sketches do not count
-against those words; the prose does. Where the project's own docs define a domain term for
+against those words. Where the project's own docs define a domain term for
 something, use that term rather than a word of your own. Describe the pull request as it
 stands now, all of it, and not only the commits since the last summary. Where the block already
 says something (an earlier review's summary, or a maintainer's edit to it), treat it as **input**:
 keep what is still true, in its words where they still fit, and correct whatever the code now
-contradicts. A maintainer's edit is not a lock, and it is not to be thrown away either.
+contradicts.
 
-The workflow puts the pull request's **Evidence** under your summary, beginning at a `## Evidence`
-heading: what the red check's report found failing before this change, beside CI's result now.
-Leave that section out of `summary`: it is rewritten from the report every time, and anything you
-write from it is replaced. Where the report lists tests as red, you may sketch what up to three of
-them check in `testSketches`, as the extraction step describes; a sketch of any other test is
-dropped.
+`summary` ends before `## Evidence`: the workflow lays out the Evidence and the Merge Danger after
+it. The **Evidence** is what the red check's report found failing before this change, beside CI's
+result now. Where the report lists tests as red, you may sketch what up to three of them check in
+`testSketches`, as the extraction step describes; a sketch of any other test is dropped.
 
-Last, the workflow puts the pull request's **Merge Danger**, beginning at a `## Merge Danger`
-heading, laid out from fields you write beside `summary`, and its **known issues** from your
-`followUps`, which are filed when it merges. Leave that section out of `summary` too. Write:
+The **Merge Danger**, at a `## Merge Danger` heading, is laid out from fields you write beside
+`summary`, and its **known issues** from your `followUps`, which are filed when it merges. Write:
 
 - **`door`**: `one-way` or `two-way`. A **one-way door is one a revert cannot undo**: a published
   release, deleted data, a migration. Anything a revert restores is two-way, however many it reaches
   and however soon. Keep the two questions apart: a change cheap to revert whose danger is *when* it
   takes effect, live the moment it merges, is a two-way door with a wide blast radius.
 - **`doorNote`**: only for a one-way door, saying what a revert leaves behind, or a two-way door
-  with a catch. "A revert restores it" is what two-way means, and is not worth a note.
+  with a catch.
 - **`blastRadius`**: **one word** for who or what the change reaches, in the project's own terms.
 - **`blastRadiusNote`**: who is reached, and **from when**: on merge, or at the next release. Name
   what is reached on merge only where something is (a file read from the default branch, rather
-  than from a release, is live the moment it merges); do not restate the default, which is not
-  worth saying.
+  than from a release, is live the moment it merges).
 - **`breaking`**: one line per change a caller or a user has to act on, saying what they must do.
   An empty list where there is none.
 
@@ -621,7 +587,6 @@ it. Where a check needs an input that does not exist, build it in a **scratch di
 checkout** (`mktemp -d`) and run the program there. That is the whole of the exception: somewhere
 to put an input, not permission to touch the branch.
 
-Do not push. Do not edit labels. Do not create GitHub comments or reviews yourself; your findings
-are returned as structured output and posted by the workflow.
+Your findings are returned as structured output and posted by the workflow.
 
 When your review is complete, output `<promise>COMPLETE</promise>`.

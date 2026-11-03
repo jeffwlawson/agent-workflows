@@ -1595,10 +1595,12 @@ export const fetchPullRequestFeedback = (
     // close and this loop's own unmarked status notes are shown for their
     // evidence and ask for nothing, so a PR holding only those must still
     // refuse rather than spend a run with nothing to act on. A review summary
-    // counts as it always has.
+    // counts where a trusted human wrote it (#642): this loop's own bodies are
+    // not in a fix run's prompt, and what they ask for is counted already, as
+    // the unresolved threads and the minor findings.
     // A minor finding counts too (#616): it is work a fix run is handed, with
     // no thread and no comment to carry it.
-    hasFeedback: summaries !== "" || answerable.length > 0 || conversationComments.length > 0 || minorFindings.length > 0,
+    hasFeedback: humanSummaries !== "" || answerable.length > 0 || conversationComments.length > 0 || minorFindings.length > 0,
     status,
     unreadable,
   };

@@ -1,5 +1,11 @@
 import { git } from "../shared/common.js";
-import { DIFF_READ_LIMIT_BYTES, diffCommandAgainstBase, type PullRequestFeedback } from "../shared/pr-feedback.js";
+import { parseRenameSources } from "../shared/diff-lines.js";
+import {
+  DIFF_READ_LIMIT_BYTES,
+  changedFilesCommandAgainstBase,
+  diffCommandAgainstBase,
+  type PullRequestFeedback,
+} from "../shared/pr-feedback.js";
 
 /**
  * The diff a fix run's prompt carries under `# PR DIFF` (#642).
@@ -64,8 +70,18 @@ export const readFixDiff = (feedback: PullRequestFeedback, baseRef: string): Fix
   const rest = feedback.changedFiles.filter((file) => !files.includes(file));
   if (rest.length === 0) return whole;
 
-  const diff = read(["--literal-pathspecs", ...diffCommandAgainstBase(baseRef), "--", ...files]);
-  const stat = read(["--literal-pathspecs", ...diffCommandAgainstBase(baseRef), "--stat=1000", "--", ...rest]).trimEnd();
+  // A rename's source beside its destination, in both pathspecs: with the
+  // destination alone git cannot see the move, and shows moved code as a new
+  // file this pull request wrote.
+  const sources = parseRenameSources(read(changedFilesCommandAgainstBase(baseRef)));
+  const withSources = (paths: readonly string[]): string[] =>
+    paths.flatMap((file) => {
+      const source = sources.get(file);
+      return source === undefined ? [file] : [source, file];
+    });
+
+  const diff = read(["--literal-pathspecs", ...diffCommandAgainstBase(baseRef), "--", ...withSources(files)]);
+  const stat = read(["--literal-pathspecs", ...diffCommandAgainstBase(baseRef), "--stat=1000", "--", ...withSources(rest)]).trimEnd();
   if (diff.length + stat.length >= feedback.diff.length) return whole;
   return { kind: "named", files, stat, diff };
 };

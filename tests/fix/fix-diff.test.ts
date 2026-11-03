@@ -120,6 +120,50 @@ describe("readFixDiff", () => {
     ceiling,
   );
 
+  /**
+   * A rename (#642): with only its destination in the pathspec, git cannot see
+   * the move and shows moved code as a new file this pull request wrote. Each
+   * case renames `src/a.ts` with a line added, on git's own `R` output.
+   */
+  const rename = (): void => {
+    g("mv", "src/a.ts", "src/moved.ts");
+    write("src/moved.ts", lines("src/a.ts", 60) + "one line more\n");
+    g("add", "-A");
+    g("commit", "-q", "-m", "refactor: move a");
+    expect(g(...changedFilesCommandAgainstBase("main"))).toMatch(/(^|\0)R\d*\0src\/a\.ts\0src\/moved\.ts\0/);
+  };
+
+  it(
+    "shows a named file the pull request renamed as the rename, not as a new file",
+    () => {
+      rename();
+      const d = readFixDiff(feedback({ threadPaths: ["src/moved.ts"] }), "main");
+
+      expect(d.kind).toBe("named");
+      if (d.kind !== "named") return;
+      expect(d.files).toEqual(["src/moved.ts"]);
+      expect(d.diff).toContain("rename from src/a.ts");
+      expect(d.diff).toContain("rename to src/moved.ts");
+      expect(d.diff).not.toContain("new file mode");
+      expect(d.diff).toContain("+one line more");
+      expect(d.diff).not.toContain("+src/a.ts line 1\n");
+    },
+    ceiling,
+  );
+
+  it(
+    "shows a renamed file in the stat of the rest as the rename",
+    () => {
+      rename();
+      const d = readFixDiff(feedback({ threadPaths: ["src/b.ts"] }), "main");
+
+      expect(d.kind).toBe("named");
+      if (d.kind !== "named") return;
+      expect(d.stat).toMatch(/src\/\{a\.ts => moved\.ts\}\s*\|\s*1 \+\n/);
+    },
+    ceiling,
+  );
+
   it.each<readonly [string, Partial<PullRequestFeedback>]>([
     ["a conversation-only finding", { conversationComments: [{ commentId: "IC_1", author: "maintainer" }] }],
     ["a conversation comment beside a thread", { threadPaths: ["src/b.ts"], conversationComments: [{ commentId: "IC_1", author: "maintainer" }] }],

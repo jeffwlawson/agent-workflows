@@ -1836,6 +1836,32 @@ describe("the findings an earlier review left open", () => {
     ).toMatch(/^\(could not be read: /);
   });
 
+  it("has nothing to act on where the loop's own review body is the only feedback, and counts a maintainer's", () => {
+    // This loop's bodies are not in a fix run's prompt (#642), so they cannot
+    // be what keeps a run from stopping with its nothing-to-act-on note.
+    ghAnswers(() => response({ reviews: { nodes: [{ body: "round 1 body", state: "COMMENTED", ...AGENT }] } }));
+    const loopOnly = fetchPullRequestFeedback("o/r", "12", "main", ACCOUNTS);
+
+    expect(loopOnly.summaries).toContain("round 1 body");
+    expect(loopOnly.hasFeedback).toBe(false);
+    expect(nothingToActOn(loopOnly)).toBe(true);
+
+    ghAnswers(() =>
+      response({
+        reviews: {
+          nodes: [
+            { body: "round 1 body", state: "COMMENTED", ...AGENT },
+            { body: "Please keep the old flag working.", state: "COMMENTED", ...MAINTAINER },
+          ],
+        },
+      }),
+    );
+    const human = fetchPullRequestFeedback("o/r", "12", "main", ACCOUNTS);
+
+    expect(human.hasFeedback).toBe(true);
+    expect(nothingToActOn(human)).toBe(false);
+  });
+
   it("hands the review no summaries section where only the loop has reviewed", () => {
     ghAnswers(() => response({ reviews: { nodes: [{ body: "round 1 body", state: "COMMENTED", ...AGENT }] } }));
 

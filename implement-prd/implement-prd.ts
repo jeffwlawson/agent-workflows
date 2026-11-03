@@ -116,9 +116,7 @@ try {
       promptFile: path.join(import.meta.dirname, "prompt.md"),
       promptArgs: {
         ISSUE_NUMBER,
-        ISSUE_TITLE,
         SUB_NUMBER,
-        SUB_TITLE,
         BRANCH,
         BASE_REF,
         PRD_CONTEXT: prdContext,

@@ -12,19 +12,22 @@ const read = (prompt: string): string => fs.readFileSync(prompt, "utf8").replace
 describe.each(["implement/prompt.md", "implement-prd/prompt.md"])("%s tests at the brief's seam", (prompt) => {
   const text = read(prompt);
 
-  it("writes the tests at the seam the brief names, otherwise at an existing one", () => {
-    expect(text).toContain("Where the brief names a test seam, write the tests there; otherwise write them at a seam that already exists.");
+  it("writes the tests at the seam the brief names, otherwise at the nearest existing one", () => {
+    expect(text).toContain(
+      "Where the brief names a test seam, write the tests there; otherwise write them at the nearest seam the code already has, rather than one made for the test",
+    );
   });
 
   it("uses the nearest existing seam where the named one is missing or cannot observe a criterion, and says so", () => {
     expect(text).toContain(
-      "Where the named seam does not exist in the code, or cannot observe a criterion, test at the nearest existing seam and say so in the commit message.",
+      "Where the named seam does not exist in the code, or cannot observe a criterion, use that nearest seam too and say so in the commit message; carry on with the run either way.",
     );
   });
 
-  it("keeps the guidance against a seam made for the test once, in the positive form, with its example", () => {
+  it("keeps the guidance against a seam made for the test once (#706), in the positive form, with its example", () => {
     expect(text).not.toContain("Do not improvise new test seams");
-    expect(text.match(/Test through a seam the code already has/g)).toHaveLength(1);
+    expect(text.match(/seam the code already has/g)).toHaveLength(1);
+    expect(text.match(/seam that already exists|nearest existing seam/g)).toBeNull();
     expect(text).toContain("extracting a function purely so it can be tested in isolation");
   });
 

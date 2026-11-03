@@ -1,17 +1,15 @@
 # TASK
 
-Implement issue #{{SUB_NUMBER}}: {{SUB_TITLE}}
+Implement issue #{{SUB_NUMBER}}.
 
-It is one slice of PRD #{{ISSUE_NUMBER}}: {{ISSUE_TITLE}}.
+It is one slice of PRD #{{ISSUE_NUMBER}}.
 
 You are on the PRD branch `{{BRANCH}}`, at its tip.
-It holds **every earlier slice of this PRD**, so they are already in your checkout:
-build on them rather than redo them. Later slices are not yet written and are not yours.
+It holds **every earlier slice of this PRD**, so they are already in your checkout.
 
-Implement **only** #{{SUB_NUMBER}}. Do not start the next sub-issue, even if it looks small, and
-even if the code you are writing would be tidier with it done. Another run does that one, on this
-same branch once this slice is reviewed, with this same context, and a slice that quietly absorbs
-its successor leaves that run with nothing to do and a sub-issue nobody can honestly close.
+Implement **only** #{{SUB_NUMBER}}. The next slice is another run's, built on this branch once this
+slice is reviewed; absorbing it, even where it looks small or the code you are writing would be
+tidier with it done, leaves that run nothing to do and a sub-issue nobody can honestly close.
 
 {{RESUME}}
 # THE SLICE
@@ -27,31 +25,26 @@ a second task list.
 
 # CONTEXT
 
-Read `CONTEXT.md` before changing code: the domain model (the concepts this project is built
-from, the distinctions it holds between them, and where the seams are). Reason from it, not from
-what the code appears to do.
+Read `CONTEXT.md` before changing code, and reason from it, not from what the code appears to do.
 In `CONTEXT.md`, read the `## Glossary` at the top first, then only the sections below it that
 the change touches; where it has no glossary, read it whole.
 
 `CLAUDE.md` is already in your context; do not read it again. It is the rules to follow: the
 commands, the conventions, and the contract anything you add here has to satisfy, including any
 step-by-step it gives for the kind of change this slice asks for. Follow it there rather than from
-memory: it is the copy that is kept current, and anything restating it (this prompt included) would
-be a second copy already drifting from it.
+memory: it is the copy that is kept current.
 
 Then read what the earlier slices already did: `git log {{BASE_REF}}..HEAD` and
 `git diff {{BASE_REF}}...HEAD`.
-Build on that rather than beside it: matching a convention an earlier slice established matters
-more here than in a standalone issue, because every later slice is built on top of this one.
-
-Explore the code the slice touches, and its tests, before editing. Match what is there.
+Build on that rather than beside it: match a convention an earlier slice established, because every
+later slice is built on top of this one.
 
 # CHECK THE SLICE AGAINST THE CODE
 
 A slice can wait days before it is built, and the code it names can move in that time. Before you
-change any code, check that the files, functions, steps, inputs and commands the slice names (in
-its body, its comments and any brief on it) still exist as described, reading the PRD for context.
-One of three things is true:
+change any code, read the code and tests the slice touches, and check that the files, functions,
+steps, inputs and commands the slice names (in its body, its comments and any brief on it) still
+exist as described, reading the PRD for context. One of three things is true:
 
 1. **Everything is where the slice says.** Carry on. There is nothing to report.
 2. **Something moved, and where it went is clear**: a step became a command, or a function changed
@@ -69,40 +62,29 @@ One of three things is true:
 Do red-green-refactor:
 
 1. RED: write a failing test
-2. GREEN: implement the smallest correct change
+2. GREEN: implement the smallest correct change, matching what is there
 3. REPEAT until the slice is done
 4. REFACTOR
 
 A test seam is the public surface the criteria are observed through: a command and its output, a
 function's contract, a check's pass and fail. On this chain the brief is the slice's brief, or the
 PRD's where the slice names none. Where the brief names a test seam, write the tests there;
-otherwise write them at a seam that already exists. Where the named seam does not exist in the
-code, or cannot observe a criterion, test at the nearest existing seam and say so in the commit
-message. Carry on with the run either way: a seam the code lacks is a gap in the brief for a human
-to read in that message.
-
-Test through a seam the code already has, rather than one made for the test: extracting a function
-purely so it can be tested in isolation, for example, creates spaghetti tests.
+otherwise write them at the nearest seam the code already has, rather than one made for the test:
+extracting a function purely so it can be tested in isolation, for example, creates spaghetti
+tests. Where the named seam does not exist in the code, or cannot observe a criterion, use that
+nearest seam too and say so in the commit message; carry on with the run either way.
 
 While iterating, run the test files that cover your change, not the whole suite. Run the verify
-command `CLAUDE.md` names once, before committing. It must pass. Run it again only if anything
-changed after it passed. It covers the earlier slices too, so a failure may be yours or may be an
-interaction with what is already on the branch; read the failure before assuming which.
+command `CLAUDE.md` names before committing. It must pass. It covers the earlier slices too, so a
+failure may be yours or may be an interaction with what is already on the branch; read the failure
+before assuming which.
 
-A verify failure after your change is yours unless it also fails without your change. To show that,
-run the failing tests, not the whole suite, on `{{BASE_REF}}` in a separate worktree
-(`git worktree add`), with its dependencies installed the way this checkout's were. If they fail
-there too, with the same message, they belong to the environment: do not edit code or tests to make
-them pass. Where the failure says how to set the environment up and the sandbox allows it, do that
-and run again. Otherwise commit, and name in the commit message each test still failing, its
-message, and that it fails on the base too. An interaction with an earlier slice passes on the base
-and fails on the branch, so it is yours to fix in this slice. A failure you did not reproduce on the
-base is yours.
+Do not use em dashes in anything you write; use a comma, colon, semicolon, parentheses, or a new sentence instead.
 
 # BEFORE YOU COMMIT
 
 Review your own slice: read the diff you are about to commit as though someone else wrote it.
-This is not ceremony: this slice is reviewed on its own, as a round on the PRD's pull request, and
+This slice is reviewed on its own, as a round on the PRD's pull request, and
 the next slice is built only once that review approves it. A design problem you
 catch now costs one edit; one the review catches costs a round.
 
@@ -113,7 +95,15 @@ the PRD: `feat: ... (#{{SUB_NUMBER}})`.
 Commit as soon as the work first passes the verify command `CLAUDE.md` names, and make later changes
 as further commits. A run can be stopped at its time limit, and only committed work survives that.
 A later commit is a change after that pass, so run the verify command again before making it.
-Do not use em dashes in anything you write; use a comma, colon, semicolon, parentheses, or a new sentence instead.
+
+A verify failure after your change is yours unless it also fails without your change. To show that,
+run the failing tests, not the whole suite, on `{{BASE_REF}}` in a separate worktree, with its
+dependencies installed the way this checkout's were. If they fail there too, with the same message,
+they belong to the environment: do not edit code or tests to make them pass. Where the failure says
+how to set the environment up and the sandbox allows it, do that and run again. Otherwise commit,
+and name in the commit message each test still failing, its message, and that it fails on the base
+too. An interaction with an earlier slice passes on the base and fails on the branch, so it is yours
+to fix in this slice. A failure you did not reproduce on the base is yours.
 
 Do not push. Do not edit labels. Do not create GitHub comments.
 Do not close #{{SUB_NUMBER}} or #{{ISSUE_NUMBER}}. Do not create or edit PRs.

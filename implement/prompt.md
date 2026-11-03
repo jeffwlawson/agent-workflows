@@ -1,6 +1,6 @@
 # TASK
 
-Implement issue #{{ISSUE_NUMBER}}: {{ISSUE_TITLE}}
+Implement issue #{{ISSUE_NUMBER}}.
 
 You are on branch `{{BRANCH}}`, already created from `{{BASE_REF}}`.
 
@@ -11,25 +11,21 @@ You are on branch `{{BRANCH}}`, already created from `{{BASE_REF}}`.
 
 # CONTEXT
 
-Read `CONTEXT.md` before changing code: the domain model (the concepts this project is built
-from, the distinctions it holds between them, and where the seams are). Reason from it, not from
-what the code appears to do.
+Read `CONTEXT.md` before changing code, and reason from it, not from what the code appears to do.
 In `CONTEXT.md`, read the `## Glossary` at the top first, then only the sections below it that
 the change touches; where it has no glossary, read it whole.
 
 `CLAUDE.md` is already in your context; do not read it again. It is the rules to follow: the
 commands, the conventions, and the contract anything you add here has to satisfy, including any
 step-by-step it gives for the kind of change this issue asks for. Follow it there rather than from
-memory: it is the copy that is kept current, and anything restating it (this prompt included) would
-be a second copy already drifting from it.
-
-Explore the code the issue touches, and its tests, before editing. Match what is there.
+memory: it is the copy that is kept current.
 
 # CHECK THE ISSUE AGAINST THE CODE
 
 An issue can wait days before it is built, and the code it names can move in that time. Before you
-change any code, check that the files, functions, steps, inputs and commands the issue and its
-brief name still exist as described. One of three things is true:
+change any code, read the code and tests the issue touches, and check that the files, functions,
+steps, inputs and commands the issue and its brief name still exist as described. One of three
+things is true:
 
 1. **Everything is where the issue says.** Carry on. There is nothing to report.
 2. **Something moved, and where it went is clear**: a step became a command, or a function changed
@@ -47,32 +43,22 @@ brief name still exist as described. One of three things is true:
 Do red-green-refactor:
 
 1. RED: write a failing test
-2. GREEN: implement the smallest correct change
+2. GREEN: implement the smallest correct change, matching what is there
 3. REPEAT until the issue is done
 4. REFACTOR
 
 A test seam is the public surface the criteria are observed through: a command and its output, a
 function's contract, a check's pass and fail. Where the brief names a test seam, write the tests
-there; otherwise write them at a seam that already exists. Where the named seam does not exist in
-the code, or cannot observe a criterion, test at the nearest existing seam and say so in the commit
-message. Carry on with the run either way: a seam the code lacks is a gap in the brief for a human
-to read in that message.
-
-Test through a seam the code already has, rather than one made for the test: extracting a function
-purely so it can be tested in isolation, for example, creates spaghetti tests.
+there; otherwise write them at the nearest seam the code already has, rather than one made for the
+test: extracting a function purely so it can be tested in isolation, for example, creates spaghetti
+tests. Where the named seam does not exist in the code, or cannot observe a criterion, use that
+nearest seam too and say so in the commit message; carry on with the run either way.
 
 While iterating, run the test files that cover your change, not the whole suite. Run the verify
-command `CLAUDE.md` names once, before committing. It must pass. Run it again only if anything
-changed after it passed. Save the full output of a test run to a file and search that file, rather
-than running the tests again to search them.
+command `CLAUDE.md` names before committing. It must pass. Save the full output of a test run to a
+file and search that file, rather than running the tests again to search them.
 
-A verify failure after your change is yours unless it also fails without your change. To show that,
-run the failing tests, not the whole suite, on `{{BASE_REF}}` in a separate worktree
-(`git worktree add`), with its dependencies installed the way this checkout's were. If they fail
-there too, with the same message, they belong to the environment: do not edit code or tests to make
-them pass. Where the failure says how to set the environment up and the sandbox allows it, do that
-and run again. Otherwise commit, and name in the commit message each test still failing, its
-message, and that it fails on the base too. A failure you did not reproduce on the base is yours.
+Do not use em dashes in anything you write; use a comma, colon, semicolon, parentheses, or a new sentence instead.
 
 # COMMIT
 
@@ -80,7 +66,14 @@ Make one or more commits on `{{BRANCH}}` with conventional commit messages.
 Commit as soon as the work first passes the verify command `CLAUDE.md` names, and make later changes
 as further commits. A run can be stopped at its time limit, and only committed work survives that.
 A later commit is a change after that pass, so run the verify command again before making it.
-Do not use em dashes in anything you write; use a comma, colon, semicolon, parentheses, or a new sentence instead.
+
+A verify failure after your change is yours unless it also fails without your change. To show that,
+run the failing tests, not the whole suite, on `{{BASE_REF}}` in a separate worktree, with its
+dependencies installed the way this checkout's were. If they fail there too, with the same message,
+they belong to the environment: do not edit code or tests to make them pass. Where the failure says
+how to set the environment up and the sandbox allows it, do that and run again. Otherwise commit,
+and name in the commit message each test still failing, its message, and that it fails on the base
+too. A failure you did not reproduce on the base is yours.
 
 Do not push. Do not edit labels. Do not create GitHub comments.
 Do not close the issue. Do not create or edit PRs.

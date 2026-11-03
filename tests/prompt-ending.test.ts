@@ -28,20 +28,19 @@ it.each(["implement/prompt.md", "implement-prd/prompt.md"])("%s's stale stop sti
 
 /**
  * implement-prd (#338) and implement (#272) verified after every round of edits. It runs the tests
- * that cover the change while iterating, and the verify command once, which
- * the commit-early line (#303) and a later commit's re-run agree with.
+ * that cover the change while iterating, and the verify command before committing. When to run it
+ * again is said once (#706), at the commit it gates: a later commit is a change after the pass.
  */
-describe.each(["implement/prompt.md", "implement-prd/prompt.md"])("%s verifies once", (prompt) => {
+describe.each(["implement/prompt.md", "implement-prd/prompt.md"])("%s verifies before committing", (prompt) => {
   const text = read(prompt);
 
   it("runs the test files that cover the change while iterating", () => {
     expect(text).toContain("While iterating, run the test files that cover your change, not the whole suite.");
   });
 
-  it("runs the verify command once before committing, and again only after a change", () => {
-    expect(text).toContain(
-      "Run the verify command `CLAUDE.md` names once, before committing. It must pass. Run it again only if anything changed after it passed.",
-    );
+  it("runs the verify command before committing, and states its re-run only at the commit", () => {
+    expect(text).toContain("Run the verify command `CLAUDE.md` names before committing. It must pass.");
+    expect(text).not.toContain("Run it again only if anything changed after it passed.");
   });
 
   it("words a later commit as the change that re-runs it", () => {

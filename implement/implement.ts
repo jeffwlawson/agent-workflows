@@ -89,7 +89,6 @@ try {
       promptFile: path.join(import.meta.dirname, "prompt.md"),
       promptArgs: {
         ISSUE_NUMBER,
-        ISSUE_TITLE,
         BRANCH,
         BASE_REF,
         ISSUE_CONTEXT: issueContext,

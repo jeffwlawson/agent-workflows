@@ -1,0 +1,31 @@
+# PR #732's first fix round: a minor finding beside a maintainer's
+# conversation comment, with no thread (#719).
+#
+# The head is a00633d, where Review 1 (2026-11-03T14:23Z) recommended
+# approval with one minor finding (fu-0b4e2f81: the comparison check accepts
+# an Eval-Waiver line from any comment, though the README puts it in the
+# body). The maintainer then commented (IC_kwDOTzVKqM8AAAABicpGXw, 14:39Z)
+# with a run of the grader controls and three changes to make: grade a
+# control's text rather than an echo of it, look at restart-order grader 04,
+# and replace a README sentence. The round that answered both (14:56Z)
+# pushed aeb9997, which did all of it and fixed the minor finding, named by
+# its id in the commit; Review 2 approved it.
+#
+# The inputs are as the fix runner rendered them at 14:40Z, through
+# shared/pr-feedback.ts (fetchPullRequestFeedback, surfaceText,
+# renderMinorFindingsForFix) over the pull request's reviews and comments as
+# they stood. It had no review thread, so INLINE_COMMENTS is "(none)": with
+# maintainer-direction-size-guard (a thread and a conversation comment), the
+# fix cases hold each of the three kinds of feedback, though no real round has
+# been handed all three at once.
+pr: 732
+repository: https://github.com/jeffwlawson/agent-workflows.git
+base_ref: main
+base: b5652c3a051ec5e182dfe4917b41c757db024f86
+head: a00633dbacf0cec048365cbcf55d2edd273051a7
+# The minor finding the run is graded against; the comment is in CONVERSATION.md.
+brief: inputs/MINOR_FINDINGS.md
+inputs:
+  PR_NUMBER: "732"
+  BRANCH: agent/issue-718-eval-graders-hygiene-a-drift-test-and-a-ci-check-t
+  INLINE_COMMENTS: "(none)"

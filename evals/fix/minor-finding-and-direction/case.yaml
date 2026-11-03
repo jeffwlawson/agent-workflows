@@ -1,0 +1,6 @@
+schema_version: "1.1"
+name: minor-finding-and-direction
+context:
+  scaffold_script: place-files.sh
+expected_outcome: |
+  Fixes the minor finding (the comparison check reads `Eval-Waiver:` from the pull request's body only), makes the controls grade a control's own text rather than a model's echo of it, settles which of restart-order's grader 04 and its control was wrong, and reports the maintainer's comment addressed.

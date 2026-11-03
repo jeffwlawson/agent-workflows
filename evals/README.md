@@ -20,6 +20,7 @@ and touches no network.
 | `review/rescue-deleted-before-open` | #570 | `4d56bbc` | publish deletes the rescue before the pull request opens; a set-aside rescue is overwritten (#578) |
 | `review/held-door-replay` | #601 | `bceed0c` | **security hygiene**: the held door, which now drops queued jobs, takes a replayed question; another release's job is refused before its version is checked |
 | `review/clean-doctor-service-guard` | #566 | `85a04f0` | **clean**: no finding to fix before merge |
+| `review/clean-explained-difference` | #698 | `5528a12` | **clean**, the scope-creep mirror: a departure from a criterion the maintainer directed is not a finding |
 | `review/clean-domain-model-guard` | #678 | `b18b87f` | **clean**: no finding to fix before merge |
 | `review/clean-full-ref-names` | #584 | `1159e02` | **clean**: no finding to fix before merge |
 | `review/clean-upgrade-one-password` | #692 | `9d5c407` | **clean**: no finding to fix before merge |
@@ -27,6 +28,7 @@ and touches no network.
 | `fix/rescue-deleted-before-open` | #570 | `b41cecd` | the fix moves the deletion, adds or updates a test, and changes nothing else |
 | `fix/declined-unrunnable-eval` | #698 | `e0bd934` | **clean**: no change (a deterministic grader), and both threads declined because no change answers them |
 | `fix/maintainer-direction-size-guard` | #698 | `e0bd934` | a maintainer's conversation comment is made and reported addressed; both threads declined on that direction |
+| `fix/minor-finding-and-direction` | #732 | `a00633d` | a minor finding is fixed beside a maintainer's comment: the waiver read from the body only, controls graded on their own text |
 
 Each head is found from the `agent-review` status history: the commit where the verdict turned
 success, before the merge-check (or a later round) found what it missed. **Not the merged head**,
@@ -57,6 +59,17 @@ approved at their first review, so their negative control is another pull reques
 report gives each clean case's rate, and with more than one, the rate over all of them, which pools
 runs of different pull requests and is read beside the per-case lines.
 
+`clean-explained-difference` is the mirror #614 asks for beside a scope-creep case: #698 at its
+merged head departs from its criterion C5 (a golden-PR eval) because the maintainer said so in the
+pull request's conversation, and the review that approved it ruled C5 changed. Its DISCUSSION holds
+that comment, which no other case's does, since every other case's conversation is a first review's,
+empty. **The scope-creep case itself is not yet built**: no real one was found. The loop's review
+has asked the question only since #697 (2026-11-03); the maintainer's pre-merge checks read for
+this (#572, #577, #601) raise no unrequested behaviour; and a search of the pull requests for "scope
+creep" finds only #697, whose own evals say no case contains it. A synthetic
+commit on a clean head, the audit's cheaper route, would have no real review text that raises it, so
+no positive control (*Controls*, below), and is not a commit `checkout.sh` could fetch.
+
 The inputs of these cases, and of the fix cases on #698, were rendered with the runners' own
 renderers (`fetchPullRequestContext`, `fetchPullRequestFeedback` and `surfaceText` over the pull
 request's GitHub records, through a stand-in `gh`); for #566 that reproduces its inputs byte for
@@ -68,8 +81,10 @@ eval, which is a paid run by hand), and the round rightly changed nothing: the m
 directed the pull request not to try. So `declined-unrunnable-eval` is **the clean case for fix**: a
 run that changes anything has failed it. In the third, a maintainer's conversation comment asked for
 a code change and set the same two threads aside, which `maintainer-direction-size-guard` grades:
-the precedence and conversation-outcome paths of `fix/prompt.md`. No fix round here has been handed
-a thread, a conversation comment and a minor finding at once, so no case holds all three.
+the precedence and conversation-outcome paths of `fix/prompt.md`. `minor-finding-and-direction` is
+#732's first fix round, handed a minor finding (#616) and a maintainer's comment, and no thread: the
+one case that reaches *MINOR FINDINGS*. No fix round here has been handed a thread, a conversation
+comment and a minor finding at once, so the three kinds are held by two cases, not one.
 
 ## What a case is
 

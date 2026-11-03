@@ -1,17 +1,18 @@
 # Baseline
 
-The golden-PR evals for the `review` and `fix` prompts, run once by hand against the prompts as they
-stand in v0.9.10 (#634). A change to the review prompt is measured against this: the same cases, the
-same `--runs` and the same `--model`, both reports in the pull request (`README.md`, *Comparing a
-before and an after*). The `fix` section is not a before report for anything run since #716 (see
-below); a change to the fix prompt needs a new fix baseline first.
+The golden-PR evals for the `review` and `fix` prompts, run by hand against the prompts as they
+stand at the revisions named below (#634). A change to a prompt is measured against its section here:
+the same cases, the same `--runs` and the same `--model`, both reports in the pull request
+(`README.md`, *Comparing a before and an after*). The `review` section was taken on 2026-11-02 with 3
+runs per case; the `fix` section was taken on 2026-11-03 with 6 runs, after the fix graders were
+repaired to read the working-tree diff (#716), and is the only fix baseline that later fix runs are
+comparable with.
 
-- **Run:** 2026-11-02, from `0226bf92e98a`, the `main` commit that last changed either prompt (#610).
+- **`review` run:** 2026-11-02, from `0226bf92e98a`, the `main` commit that last changed either prompt (#610).
   `07e016a`, the v0.9.10 release commit, holds the same two prompt files.
-- **Command:** `node scripts/eval-prompts.ts review --model claude-opus-5-5 --max-cost-usd 60` and
-  `node scripts/eval-prompts.ts fix --model claude-opus-5-5 --max-cost-usd 20`; three runs per case.
-- **Model:** claude-opus-5-5. **Claude Code:** 2.1.307. **Cost:** $9.76 for `review`, $4.86 for `fix`.
-- **Prompts:** `review/prompt.md` blob `cdeb260a5a2a`, `fix/prompt.md` blob `699278db27cb`.
+- **Command:** `node scripts/eval-prompts.ts review --model claude-opus-5-5 --max-cost-usd 60`; three runs per case.
+- **`review` model:** claude-opus-5-5. **Claude Code:** 2.1.307. **Cost:** $9.76. **Prompt:** `review/prompt.md` blob `cdeb260a5a2a`.
+- **`fix` run:** 2026-11-03, from `15beba09ffac` (the pull request head of #722, whose merge is `038257c`), with `fix/prompt.md` blob `388e1cf8ee9b`, the prompt on `main` after #700. `node scripts/eval-prompts.ts fix --model claude-opus-5-5 --max-cost-usd 25 --runs 6`. claude-opus-5-5, Claude Code 2.1.307, **cost $11.46**, no run errored.
 
 Misses are part of the baseline: several graders pass in none of their runs. The tables are the
 runner's own reports, unedited; it cuts each grader's text at 80 characters, and the full text is in
@@ -40,15 +41,13 @@ the grader's file under `review/` or `fix/`.
 
 ## `fix`
 
-**Not comparable with a fix run made since #716.** These runs were graded by the earlier fix
-graders, which read the trace for "the committed change"; a fix replay cannot commit, so they graded
-something the run could not produce. Since #716 the graders read the working-tree diff printed in
-the final message (`README.md`, *What a fix replay cannot exercise*). Kept as the record of what was
-run; a new fix baseline, on the current graders and from the same prompt blob, is needed before a
-fix-prompt change can be measured.
+Graded on the working-tree diff each run prints in its final message (`README.md`, *What a fix replay
+cannot exercise*). Grader 01 passed 1 of 26 runs under the earlier wording that asked for a commit,
+which a fix replay cannot make; those older fix reports are not comparable with this one. Graders 02
+and 03 are at the ceiling, so this baseline can show a regression in them but not an improvement.
 
 | Case | PR | Runs | Grader | Passed | Rate |
 | --- | --- | --- | --- | --- | --- |
-| rescue-deleted-before-open | #570 | 3 | 01: The run commits a change to `implement/publish.ts` that deletes the rescue branch only af… | 0/3 | 0% |
-| rescue-deleted-before-open | #570 | 3 | 02: The committed change adds or updates a test that fails if the rescue is deleted before th… | 2/3 | 67% |
-| rescue-deleted-before-open | #570 | 3 | 03: The committed change touches nothing the finding did not ask for: beyond the deletion's o… | 3/3 | 100% |
+| rescue-deleted-before-open | #570 | 6 | 01: The diff in the final message changes `implement/publish.ts` so that the rescue branch is… | 5/6 | 83% |
+| rescue-deleted-before-open | #570 | 6 | 02: The diff in the final message adds or updates a test that fails if the rescue is deleted … | 6/6 | 100% |
+| rescue-deleted-before-open | #570 | 6 | 03: The diff in the final message touches nothing the finding did not ask for: beyond the del… | 6/6 | 100% |

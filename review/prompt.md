@@ -137,25 +137,12 @@ are the workflow's and text is never matched, so a second write-up is a second f
 twice, given a second thread, and carried separately every round after. If there is more to say
 about it than the line beside its identifier, say it in that line.
 
-**`declined` is the third answer, and it is not yours.** Where a maintainer has replied on the
-thread saying they will not fix it ("won't fix", "this is intended", "leave it"), rule it
-`declined`. The workflow then closes that thread as *won't fix*, quoting their reply. You are
-reporting what they decided, not deciding anything: you never overrule a maintainer, and you never
-decline a finding on your own authority.
-
-A reply you cannot read as a decline leaves the thread `open`. Somebody explaining the code,
-asking a question, or saying they will get to it has not declined anything, and reading a maybe as
-a no closes a finding nobody settled.
-
-**Their latest reply on the thread is the only one you may rule on.** The workflow quotes that
-comment and no other when it closes, so a refusal somebody has since revisited ("won't fix", then
-"actually, please do fix this") is `open`. Two maintainers on one thread work the same way: the
-last of them is the position, and a thread closed under somebody else's words is a decision nobody
-took.
-
-Only a reply the workflow has **already gated** can close a thread this way. You will not see an
-untrusted author's comment at all, and a decline you attribute to one leaves the thread open
-whatever you rule.
+**`declined` is a maintainer's decision, and you only report it.** Rule a finding `declined` only
+on the maintainer's latest reply on its thread when that reply refuses it in words ("won't fix",
+"this is intended", "leave it"). The workflow closes that thread as *won't fix*, quoting that reply
+and no other. Every other reply (an explanation, a question, "I'll get to it", or a refusal the
+maintainer has since revisited, as in "won't fix" then "actually, please do fix this") leaves the
+finding `open`.
 
 # WHAT THE MAINTAINER HAS SETTLED
 

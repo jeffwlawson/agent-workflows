@@ -3272,6 +3272,20 @@ describe("the review's finding vocabulary", () => {
     expect(plain(text)).toMatch(/latest reply/i);
   });
 
+  /**
+   * The work pass's `declined` is one positive rule (#704, M7): the latest
+   * reply refusing it in words, and every other reply leaves it open. The
+   * five negations it replaced, and the untrusted-author sentence about a
+   * comment the agent is never shown, are gone from the prompt.
+   */
+  it("prompt.md states declined as one rule on the latest reply, every other reply open", () => {
+    const declined = plain(PROMPT).match(/`declined` is a maintainer's decision.*?(?= # )/s)?.[0] ?? "";
+
+    expect(declined).toMatch(/latest reply on its thread when that reply refuses it in words/);
+    expect(declined).toMatch(/Every other reply .* leaves the finding `open`/);
+    expect(declined).not.toMatch(/never overrule|untrusted author|own authority/);
+  });
+
   it("names needsYou and the three cases it is for", () => {
     expect(PROMPT).toContain("needsYou");
     expect(EXTRACTION).toContain("needsYou");

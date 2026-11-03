@@ -300,9 +300,6 @@ the change touches; where it has no glossary, read it whole.
      documentation alone) owes nothing more than that clause.
 8. **Clarity and edge cases** worth a second look.
 
-Prefer a few high-signal comments over many trivial ones. A clean change gets a short review
-saying so.
-
 # THE TWO KINDS OF FINDING
 
 There are two, and every finding is one of them.

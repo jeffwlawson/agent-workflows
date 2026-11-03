@@ -3623,6 +3623,16 @@ describe("the review brief sweeps the checkout for text the change made false", 
     expect(item6()).toMatch(/verification pass sweeps the behaviours its new commits change/i);
   });
 
+  /**
+   * No brevity bound beside the exhaustive ones (#704, M4): "prefer a few
+   * high-signal comments" told a reviewer who found the first member of a
+   * class to stop, against items 5 and 6. The bar on what is posted is the
+   * basis rule.
+   */
+  it("asks for no fewer findings than the items find", () => {
+    expect(PROMPT).not.toMatch(/high-signal|prefer a few/i);
+  });
+
   it("keeps clarity and edge cases last, after the item on what text can carry", () => {
     expect(plain(PROMPT)).toMatch(/ 7\. What text sent somewhere new can carry/);
     expect(plain(PROMPT)).toMatch(/ 8\. Clarity and edge cases/);

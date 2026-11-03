@@ -1075,6 +1075,16 @@ describe("the deploy scripts", () => {
     }
   });
 
+  // CI's shellcheck runs without -x and knows no shell for a file with neither:
+  // a script read with `.` names its shell in a directive instead (#737).
+  it("name their shell on the first line, by a shebang or, for one read with ., a shellcheck directive", () => {
+    expect(scripts).toContain("dispatcher-container.sh");
+    for (const file of scripts) {
+      const first = fs.readFileSync(path.join(DEPLOY, file), "utf8").split("\n")[0];
+      expect(first, file).toMatch(/^(#!\/usr\/bin\/env bash|# shellcheck shell=bash)$/);
+    }
+  });
+
   it("name no owner, address or account in the orchestrator", () => {
     const text = fs.readFileSync(path.join(DEPLOY, "upgrade.sh"), "utf8");
     const code = text.split("\n").filter((line) => !line.trimStart().startsWith("#")).join("\n");

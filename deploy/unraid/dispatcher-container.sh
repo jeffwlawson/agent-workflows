@@ -1,3 +1,4 @@
+# shellcheck shell=bash
 # dispatcher-container.sh: the dispatcher's container as install-unraid.sh and
 # upgrade-unraid.sh both build it (#691). Not run on its own: each of them reads
 # it with `.`, after agent-service.conf, so one drift check and one create step
@@ -23,6 +24,7 @@ STATE_DIR=${STATE_DIR:-$APPDATA/state}
 TZ_NAME=${TZ_NAME:-UTC}
 
 # The line of service.env that turns the state file on, at the mount's path.
+# shellcheck disable=SC2034 # read by install-unraid.sh and upgrade-unraid.sh
 DISPATCHER_STATE_LINE=STATE_FILE=/state/dispatcher.json
 dispatcher_cmd="node /app/pkg/node_modules/@jeffwlawson/agent-workflows/dist/cli.js dispatcher"
 

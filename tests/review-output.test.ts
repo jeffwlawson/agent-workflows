@@ -3514,6 +3514,7 @@ describe("the review brief sweeps the checkout for text the change made false", 
   const PROMPT = fs.readFileSync(path.join("review", "prompt.md"), "utf8");
   const plain = (text: string): string => text.replace(/[*_]/g, "").replace(/\s+/g, " ");
   const item6 = (): string => plain(PROMPT).match(/ 6\. Text this change made false.*?(?= 7\. )/s)?.[0] ?? "";
+  const howChecked = (): string => plain(PROMPT).match(/- `howChecked`:.*?(?= - `title`)/s)?.[0] ?? "";
 
   it("asks for the phrases that described the old behaviour, searched over the whole checkout", () => {
     expect(item6()).toMatch(/phrases that described/i);
@@ -3525,10 +3526,9 @@ describe("the review brief sweeps the checkout for text the change made false", 
     expect(item6()).toMatch(/done only when every hit/i);
   });
 
-  it("asks howChecked for the phrases searched for and how many hits were read", () => {
-    expect(item6()).toContain("howChecked");
-    expect(item6()).toMatch(/phrases you searched for/i);
-    expect(item6()).toMatch(/how many hits you read/i);
+  it("points the sweep at howChecked, whose contract asks for the phrases searched for and the hits read", () => {
+    expect(item6()).toContain("(`howChecked` records");
+    expect(howChecked()).toMatch(/the phrases you searched for and how many hits you read/i);
   });
 
   it("makes a hit the change made false a fix-before-merge finding at the change, not a follow-up", () => {
@@ -3567,6 +3567,7 @@ describe("the review brief asks what text sent somewhere new can carry", () => {
   const plain = (text: string): string => text.replace(/[*_]/g, "").replace(/\s+/g, " ");
   const item7 = (): string =>
     plain(PROMPT).match(/ 7\. What text sent somewhere new can carry.*?(?= 8\. )/s)?.[0] ?? "";
+  const howChecked = (): string => plain(PROMPT).match(/- `howChecked`:.*?(?= - `title`)/s)?.[0] ?? "";
 
   it("covers a new destination for existing text and a value added to an existing one", () => {
     expect(item7()).toMatch(/new destination for text that already existed/i);
@@ -3602,10 +3603,9 @@ describe("the review brief asks what text sent somewhere new can carry", () => {
     expect(item7()).toMatch(/did not cause.*?followUps/i);
   });
 
-  it("asks howChecked to name the new destinations, or say there were none, within its limit", () => {
-    expect(item7()).toContain("howChecked");
-    expect(item7()).toMatch(/name the new destinations you found, or say there were none/i);
-    expect(item7()).toMatch(/within its limit/i);
+  it("points at howChecked, whose contract asks for the new destinations found, or that there were none", () => {
+    expect(item7()).toContain("(`howChecked` records");
+    expect(howChecked()).toMatch(/the new destinations you found, or that there were none/i);
   });
 });
 
@@ -4075,6 +4075,115 @@ describe("reviewOutputSchema: notChecked", () => {
     expect(body).toContain("- **a suite**: no tool");
     expect(body).not.toContain(forged);
     expect(body).not.toContain("hidden");
+  });
+});
+
+/**
+ * The steps in order, and one bar the output is checked against (#745, audit
+ * H1). The rulings the brief asks for were each demanded inside a data section,
+ * hundreds of lines from where a reviewer finishes the diff, and "complete"
+ * named nothing to check. So the brief opens with the work in order and a bar
+ * a reader can hold each part of the output to.
+ */
+describe("the review brief opens with its steps and a completion bar", () => {
+  const PROMPT = fs.readFileSync(path.join("review", "prompt.md"), "utf8");
+  const plain = (text: string): string => text.replace(/[*_]/g, "").replace(/\s+/g, " ");
+  const headings = (): string[] => [...PROMPT.matchAll(/^# (.+)$/gm)].map((m) => m[1] ?? "");
+  const steps = (): string => plain(PROMPT).match(/# HOW THIS REVIEW RUNS.*?(?= # )/s)?.[0] ?? "";
+
+  it("puts the steps right after the task, ahead of every section of data", () => {
+    expect(headings().slice(0, 2)).toEqual(["TASK", "HOW THIS REVIEW RUNS"]);
+  });
+
+  it("orders the work: read, rule on every id, work the items, write the fields", () => {
+    const text = steps();
+    const order = [/ 1\. Read `CONTEXT\.md`/, / 2\. Rule on every id/, / 3\. Work the eight items/, / 4\. Write the fields/];
+    const at = order.map((re) => text.search(re));
+
+    expect(at.every((i) => i >= 0), String(at)).toBe(true);
+    expect([...at].sort((a, b) => a - b)).toEqual(at);
+  });
+
+  it("names every list a ruling goes in", () => {
+    for (const field of ["criteria", "verified", "noteRulings", "followUpRulings", "sinceBrief"]) {
+      expect(steps(), field).toContain(`\`${field}\``);
+    }
+  });
+
+  it("states one bar: every id ruled, every item worked, every finding anchored, howChecked written", () => {
+    const bar = steps().match(/The review is complete when.*/s)?.[0] ?? "";
+
+    expect(bar).toMatch(/every id handed to you has a ruling/i);
+    expect(bar).toMatch(/every item under WHAT TO CHECK has been worked/i);
+    expect(bar).toMatch(/every finding is anchored at something this pull request changed/i);
+    expect(bar).toMatch(/`howChecked` is written/);
+    expect(bar).toContain("<promise>COMPLETE</promise>");
+  });
+
+  /**
+   * The first attempt's bar said a ruling is "never also a finding", which a
+   * note dropped as this pull request's to fix contradicts: that one is a
+   * finding of the reviewer's own. The bar adds no rule of its own about what
+   * a ruling replaces; each section keeps its own.
+   */
+  it("adds no rule about what a ruling replaces", () => {
+    expect(steps()).not.toMatch(/never also|whole of reporting/i);
+  });
+
+  it("ends by pointing at the bar", () => {
+    expect(PROMPT.trimEnd().split("\n").at(-1)).toMatch(/completion bar under \*HOW THIS REVIEW RUNS\*.*<promise>COMPLETE<\/promise>/);
+  });
+});
+
+/**
+ * `howChecked` as one contract (#745, audit H3). It was asked for in eight
+ * places, two of them "within its limit", against a 100-word cap that is cut
+ * from the end: the later items' parts were the likeliest lost, and nothing
+ * said which to keep. Now one list, in the order a cut should lose them, with
+ * the bound stated once; every other place points at it.
+ */
+describe("the review brief asks for howChecked once, as one ordered contract", () => {
+  const PROMPT = fs.readFileSync(path.join("review", "prompt.md"), "utf8");
+  const plain = (text: string): string => text.replace(/[*_]/g, "").replace(/\s+/g, " ");
+  const contract = (): string => plain(PROMPT).match(/- `howChecked`:.*?(?= - `title`)/s)?.[0] ?? "";
+
+  it("states its parts in order: what was run, the sweep, the destinations, then the conditional ones", () => {
+    const text = contract();
+    const order = [
+      /what you ran or read past the diff/i,
+      /the phrases you searched for and how many hits you read/i,
+      /the new destinations you found, or that there were none/i,
+      /only where it applies/i,
+    ];
+    const at = order.map((re) => text.search(re));
+
+    expect(at.every((i) => i >= 0), String(at)).toBe(true);
+    expect([...at].sort((a, b) => a - b)).toEqual(at);
+  });
+
+  it("carries each conditional part the other sections used to ask for", () => {
+    const text = contract();
+
+    expect(text).toMatch(/verification pass, and what you checked the earlier findings against/i);
+    expect(text).toMatch(/whole diff/i);
+    expect(text).toMatch(/feedback could not be read/i);
+    expect(text).toMatch(/red evidence was unavailable/i);
+    expect(text).toMatch(/owing no red test/i);
+  });
+
+  it("states its length bound once, in the contract", () => {
+    expect(contract()).toMatch(/100 words/);
+    expect(plain(PROMPT).match(/100 words/g)).toHaveLength(1);
+    expect(PROMPT).not.toMatch(/within its limit/);
+  });
+
+  it("is asked for nowhere else: every other mention points at it", () => {
+    const rest = plain(PROMPT).replace(contract(), "").replace(/# HOW THIS REVIEW RUNS.*?(?= # )/s, "");
+    const mentions = [...rest.matchAll(/.?`howChecked`/g)].map((m) => m[0]);
+
+    expect(mentions.length).toBeGreaterThan(0);
+    for (const mention of mentions) expect(mention).toBe("(`howChecked`");
+    expect(rest).not.toMatch(/(say|said) (so )?in `howChecked`/i);
   });
 });
 

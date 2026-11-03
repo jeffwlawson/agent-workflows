@@ -658,8 +658,8 @@ describe("fetchPullRequestHeading — the jq program survives the crossing", () 
    * the program's text — the failure being guarded is a program that still
    * *looks* right and no longer renders right.
    *
-   * Skipped where jq is absent: this repo is authored on Windows and gated on
-   * Linux CI, where jq is preinstalled, so the gate that matters runs it.
+   * Skipped where jq is absent. CI's runner has jq preinstalled, so the gate
+   * that matters runs it.
    */
   /**
    * Both spawns below are bounded, and this one is where it matters most: the

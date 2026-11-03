@@ -266,7 +266,7 @@ the change touches; where it has no glossary, read it whole.
    - **For each behaviour the diff changes, write down the phrases that described the old
      behaviour**, then search the whole checkout for each, not only the changed files.
    - **Rule on every hit**: still true, or made false by this change. The step is done only when
-     every hit has been ruled on, not when the first few have been.
+     every hit has been ruled on.
    - **A hit this change made false is a fix-before-merge finding**, anchored at the changed line
      that made it false, with the stale `path:line` in its text, as *Where a finding is posted*
      says. It is not a follow-up: the change caused it, so it is this pull request's to fix.
@@ -296,7 +296,7 @@ the change touches; where it has no glossary, read it whole.
    - **In `howChecked`, name the new destinations you found, or say there were none**, in one
      clause within its limit. A change that sends no text anywhere new (a comment, a rename,
      documentation alone) owes nothing more than that clause.
-8. **Clarity and edge cases** worth a second look.
+8. **Edge cases** the change handles wrongly: name the input.
 
 # THE TWO KINDS OF FINDING
 

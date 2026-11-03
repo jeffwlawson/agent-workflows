@@ -3653,9 +3653,14 @@ describe("the review brief sweeps the checkout for text the change made false", 
     expect(PROMPT).not.toMatch(/no nested code fence|no diff `-`/);
   });
 
-  it("keeps clarity and edge cases last, after the item on what text can carry", () => {
+  /**
+   * Item 8 with a bound and an output (#704, L6): an edge case the change
+   * handles wrongly, by the input, rather than a catch-all inviting nits.
+   */
+  it("keeps edge cases last, after the item on what text can carry, each named by its input", () => {
     expect(plain(PROMPT)).toMatch(/ 7\. What text sent somewhere new can carry/);
-    expect(plain(PROMPT)).toMatch(/ 8\. Clarity and edge cases/);
+    expect(plain(PROMPT)).toMatch(/ 8\. Edge cases the change handles wrongly: name the input\./);
+    expect(PROMPT).not.toMatch(/worth a second look|not when the first few/);
   });
 });
 

@@ -201,6 +201,113 @@ describe("readPromptDiff on a verification pass", () => {
   );
 });
 
+/**
+ * A merge of the base branch since the reviewed head (#698): `update-branch`
+ * merges the base into the pull request, and its review still follows the fix
+ * round. Each fixture is made by git itself: a commit on `main`, then `git
+ * merge main` on the pull request's branch.
+ */
+describe("readPromptDiff after a merge of the base branch", () => {
+  /** Commits on `main`, then back to the pull request's branch. */
+  const onMain = (change: () => void): void => {
+    g("checkout", "-q", "main");
+    change();
+    commitAll("base: someone else's change");
+    g("checkout", "-q", "agent/issue-1-change");
+  };
+  const mergeMain = (): void => {
+    g("merge", "-q", "--no-edit", "main");
+  };
+
+  it.each([
+    ["after the fix commit", false],
+    ["before the fix commit", true],
+  ] as const)(
+    "leaves the base branch's changes out of what changed since, where the merge landed %s",
+    (_name, mergeFirst) => {
+      write("src/a.ts", lines("a, changed", 40));
+      write("src/b.ts", lines("b, changed", 120));
+      const reviewed = commitAll("feat: the change");
+      onMain(() => {
+        write("docs/c.md", lines("c, on main", 80));
+        write("src/other.ts", lines("other, on main", 60));
+      });
+      const fix = (): void => {
+        write("src/a.ts", lines("a, changed", 40).replace("a, changed line 7", "a, fixed line 7"));
+        commitAll("fix: the finding on a");
+      };
+      if (mergeFirst) mergeMain();
+      fix();
+      if (!mergeFirst) mergeMain();
+      const { whole, changed } = pullRequest();
+      // Two-dot, the merge's changes are in the range: the defect this guards.
+      expect(g("diff", "--name-only", reviewed, "HEAD")).toContain("src/other.ts");
+
+      const scoped = readPromptDiff(afterFixRound(reviewed), undefined, "main", whole, changed);
+
+      expect(scoped.kind).toBe("since");
+      if (scoped.kind !== "since") return;
+      expect(scoped.mergedBase).toBe(g("merge-base", "main", "HEAD").trim());
+      expect(scoped.files).toEqual(["src/a.ts"]);
+      expect(scoped.since).toContain("a, fixed line 7");
+      expect(scoped.since).not.toContain("on main");
+      expect(scoped.since).not.toContain("src/other.ts");
+      expect(scoped.stat).not.toContain("src/other.ts");
+      expect(section(scoped).length).toBeLessThan(whole.length);
+      expect(renderDiffScope(scoped, "main")).toContain(`git merge-tree --write-tree ${reviewed.slice(0, 7)}`);
+    },
+    ceiling,
+  );
+
+  it(
+    "leaves out the base branch's change to a file the pull request also changes",
+    () => {
+      write("src/b.ts", lines("b", 120).replace("b line 100", "b, changed line 100"));
+      const reviewed = commitAll("feat: the change");
+      onMain(() => write("src/b.ts", lines("b", 120).replace("b line 5", "b, on main line 5")));
+      mergeMain();
+      write("src/b.ts", g("show", "HEAD:src/b.ts").replace("b, changed line 100", "b, fixed line 100"));
+      commitAll("fix: the finding on b");
+      const { whole, changed } = pullRequest();
+
+      const scoped = readPromptDiff(afterFixRound(reviewed), undefined, "main", whole, changed);
+
+      expect(scoped.kind).toBe("since");
+      if (scoped.kind !== "since") return;
+      expect(scoped.files).toEqual(["src/b.ts"]);
+      expect(scoped.since).toContain("b, fixed line 100");
+      expect(scoped.since).not.toContain("on main");
+    },
+    ceiling,
+  );
+
+  it(
+    "carries the whole diff, and asks howChecked to say why, where the merge conflicted",
+    () => {
+      write("src/a.ts", lines("a", 40).replace("a line 7", "a, changed line 7"));
+      const reviewed = commitAll("feat: the change");
+      onMain(() => write("src/a.ts", lines("a", 40).replace("a line 7", "a, on main line 7")));
+      try {
+        mergeMain();
+      } catch {
+        // The conflict, resolved as a person would: the pull request's side.
+      }
+      write("src/a.ts", lines("a", 40).replace("a line 7", "a, resolved line 7"));
+      commitAll("merge main");
+      const { whole, changed } = pullRequest();
+
+      const d = readPromptDiff(afterFixRound(reviewed), undefined, "main", whole, changed);
+
+      expect(d.kind).toBe("unreadable");
+      expect(d.diff).toBe(whole);
+      const scope = renderDiffScope(d, "main");
+      expect(scope).toContain(`does not merge cleanly into ${reviewed.slice(0, 7)}`);
+      expect(scope).toContain("Say so in `howChecked`");
+    },
+    ceiling,
+  );
+});
+
 describe("readPromptDiff on any other review", () => {
   it(
     "carries the whole diff on a first review, a final review and a slice round",

@@ -31,10 +31,17 @@ export type PromptDiff =
    * the whole pull request's `git diff --stat`, and `diff` the pull request's
    * diff of `files`, the files those commits touch that the pull request
    * changes.
+   *
+   * `mergedBase` is present where a merge of the base branch landed since the
+   * reviewed head (an `update-branch` run, or a merge pushed by hand): it is
+   * the merge base the pull request now has, and `since` is read against the
+   * reviewed head merged with it, so the base branch's own changes are not
+   * presented as the pull request's.
    */
   | {
       readonly kind: "since";
       readonly reviewedHead: string;
+      readonly mergedBase?: string;
       readonly stat: string;
       readonly since: string;
       readonly files: readonly string[];
@@ -55,8 +62,9 @@ const read = (args: readonly string[]): string => git(args, { maxBuffer: DIFF_RE
  * `whole` is the diff the run already read, and `changedFiles` the files it
  * changes, as `review-context.ts` keyed them: a file the commits since touch
  * but the pull request does not change (a file the fix round put back as the
- * base has it, or one a merge of the base brought in) has no hunk of the pull
- * request's to show, and its change is in `since`.
+ * base has it) has no hunk of the pull request's to show, and its change is in
+ * `since`. A merge of the base branch since the reviewed head is read past, not
+ * into `since`: see `readSinceFrom`.
  */
 export const readPromptDiff = (
   history: ReviewHistory,
@@ -72,21 +80,75 @@ export const readPromptDiff = (
 
   const short = head.slice(0, 7);
   try {
-    const since = read(["-c", "core.quotePath=false", "diff", head, "HEAD"]);
+    const old = readSinceFrom(head, baseRef);
+    if (old.kind === "conflict") {
+      return {
+        kind: "unreadable",
+        reason: `the base branch merged since ${short}, the head the last review read, does not merge cleanly into ${short}, so what the pull request's own commits changed since cannot be told apart from what the merge brought in`,
+        diff: whole,
+      };
+    }
+    const since = read(["-c", "core.quotePath=false", "diff", old.from, "HEAD"]);
     const changed = new Set(changedFiles);
-    const files = read(["diff", "--name-only", "-z", head, "HEAD"])
+    const files = read(["diff", "--name-only", "-z", old.from, "HEAD"])
       .split("\0")
       .filter((file) => file !== "" && changed.has(file))
       .sort();
     const stat = read([...diffCommandAgainstBase(baseRef), "--stat=1000"]);
     const diff = files.length === 0 ? "" : read(["--literal-pathspecs", ...diffCommandAgainstBase(baseRef), "--", ...files]);
-    return { kind: "since", reviewedHead: head, stat: stat.trimEnd(), since: since.trimEnd(), files, diff };
+    return {
+      kind: "since",
+      reviewedHead: head,
+      ...(old.mergedBase === undefined ? {} : { mergedBase: old.mergedBase }),
+      stat: stat.trimEnd(),
+      since: since.trimEnd(),
+      files,
+      diff,
+    };
   } catch (error) {
     return {
       kind: "unreadable",
       reason: `git could not read the commits since ${short}, the head the last review read (${firstLine(error)})`,
       diff: whole,
     };
+  }
+};
+
+/**
+ * What `since` is read from. Where the pull request's merge base is still an
+ * ancestor of the reviewed head, no base change has come in since, and it is
+ * the reviewed head itself. Where it is not, a merge of the base branch landed
+ * since, and a two-dot diff from the reviewed head would present every base
+ * change in between as the fix round's (#698): the reviewed head is merged
+ * with the merge base the pull request has now (`git merge-tree`, which writes
+ * a tree and touches neither the index nor the worktree), and `since` is read
+ * from that tree, which is the pull request as it was reviewed, on the base it
+ * is on now. A merge that conflicts has no such tree.
+ */
+const readSinceFrom = (
+  head: string,
+  baseRef: string,
+): { readonly kind: "clean"; readonly from: string; readonly mergedBase?: string } | { readonly kind: "conflict" } => {
+  const mergeBase = read(["merge-base", baseRef, "HEAD"]).trim();
+  if (isAncestor(mergeBase, head)) return { kind: "clean", from: head };
+  let tree: string;
+  try {
+    tree = read(["merge-tree", "--write-tree", "--no-messages", head, mergeBase]);
+  } catch (error) {
+    // Exit status 1 is a conflict; anything else is git failing to read.
+    if ((error as { status?: unknown }).status === 1) return { kind: "conflict" };
+    throw error;
+  }
+  return { kind: "clean", from: tree.split("\n")[0]?.trim() ?? "", mergedBase: mergeBase };
+};
+
+const isAncestor = (ancestor: string, of: string): boolean => {
+  try {
+    read(["merge-base", "--is-ancestor", ancestor, of]);
+    return true;
+  } catch (error) {
+    if ((error as { status?: unknown }).status === 1) return false;
+    throw error;
   }
 };
 
@@ -112,7 +174,9 @@ export const renderDiffScope = (promptDiff: PromptDiff, baseRef: string): string
     `This review follows a fix round, so this section holds **what changed since the last review**, which read \`${short}\`, rather than the whole pull request. The rest of the pull request's diff is on disk: ${range} reads it, and \`git diff ${baseRef}...HEAD -- <file>\` one file of it. Read it wherever a judgement needs more than is here. A finding may be anchored on any line the pull request changes, not only on the lines shown here.`,
     `The whole pull request, \`git diff --stat ${baseRef}...HEAD\`:`,
     fence("text", promptDiff.stat),
-    `The commits since \`${short}\`, \`git diff ${short} HEAD\`:`,
+    promptDiff.mergedBase === undefined
+      ? `The commits since \`${short}\`, \`git diff ${short} HEAD\`:`
+      : `The commits since \`${short}\`, with what the merge of \`${baseRef}\` since brought in taken out: \`git diff <tree> HEAD\`, where the tree is \`git merge-tree --write-tree ${short} ${promptDiff.mergedBase.slice(0, 7)}\`, the pull request as \`${short}\` had it on the base it is on now. The merge's own changes are the base branch's, and are not this review's to judge:`,
     fence("diff", promptDiff.since),
     touched,
   ].join("\n\n");

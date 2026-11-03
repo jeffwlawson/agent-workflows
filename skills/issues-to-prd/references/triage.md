@@ -23,8 +23,6 @@ For each question, open the code the subagent's recommendation rests on and conf
 
 Per issue, each question in SKILL.md's asking shape, with the subagent's recommendation **and yours**, marked where they differ. Each `[OPEN]` point in a draft is a question, unless the issue's own words settle it: then quote those words and list it as a decision. Questions that change nothing are decided by you and listed as decisions, not asked.
 
-When the maintainer asks for one plainer ("explain like I'm not a network engineer"): what each side gains and loses, what common practice is, then the recommendation again.
-
 ## 4. On their answers
 
 1. Update each draft until no `[OPEN]` is left, recording their decisions as decisions.

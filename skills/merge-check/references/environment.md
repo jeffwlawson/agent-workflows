@@ -28,7 +28,7 @@ Ready for review, resolving review threads and auto-merge have no REST route; th
 gh api -X PUT repos/<owner>/<repo>/pulls/<n>/merge -f merge_method=squash -f sha=<reviewed-head>
 ```
 
-**Arm** the loop instead, where the maintainer says so: `agent:merge` is their merge decision for the head it lands on, so check the head is still the one you reviewed, then add it. Where the head has moved, add nothing and say so; the review is of a commit the PR has left.
+**Arm** the loop instead, where the maintainer says so: `agent:merge` is their merge decision for the head it lands on, so check the head is still the one you reviewed, then add it. The loop merges that head once it is current and green, refreshing it from the base on the way, and drops the arm if anything else lands on it. Where the head has moved, add nothing and say so; the review is of a commit the PR has left.
 
 ```bash
 test "$(gh api repos/<owner>/<repo>/pulls/<n> --jq .head.sha)" = <reviewed-head> \
@@ -58,5 +58,5 @@ Run the repo's verify command (its `CLAUDE.md`, else its CI config) on the PR's 
    git worktree add --detach ../pr-<n> <head-sha>
    ```
 
-4. **Diff against fresh `main`.** Fetch `origin main` first (a stale local `main` gives a diff full of other PRs' changes), then diff against `git merge-base HEAD origin/main`.
-5. **Run** `scripts/verify.sh ../pr-<n> $TMPDIR/pr-<n> <verify command>`. Set `TOOL_BIN` to the required toolchain's `bin` when the default is wrong, and `INSTALL` to the repo's install command when it is not `npm ci` from a lockfile. It prints the head, the toolchain and what the repo declares, and the verdict. Compare the printed head with the SHA you reviewed.
+4. **Diff** against `git merge-base HEAD origin/main` (step 3 fetched it; a stale local `main` fills the diff with other PRs' changes).
+5. **Run** this skill's `scripts/verify.sh ../pr-<n> $TMPDIR/pr-<n> <verify command>`. Set `TOOL_BIN` to the required toolchain's `bin` when the default is wrong, and `INSTALL` to the repo's install command when it is not `npm ci` from a lockfile. It prints the head, the toolchain and what the repo declares, and the verdict. Compare the printed head with the SHA you reviewed.

@@ -116,6 +116,34 @@ describe("the review evals' cases", () => {
   });
 });
 
+/**
+ * A fix run cannot commit (#716): `claude plugin eval` denies writes to the
+ * run's `.git`, so its change is only ever in the working tree. The replay note
+ * has the run print that, untracked files included, in its final message, and
+ * the graders read that message, never a commit.
+ */
+describe("the fix evals' grading", () => {
+  const suite = readSuite(ROOT, "fix");
+  const cases = caseDirs(ROOT, "fix").map(readCase);
+
+  it("asks for the working tree's diff in the final message, new files included", () => {
+    expect(suite.note).toContain("git diff origin/{{BRANCH}}");
+    expect(suite.note).toContain("git diff --no-index /dev/null");
+    expect(suite.note).toMatch(/final message/);
+    // A diff of commits, which prints nothing for a change that could not be committed.
+    expect(suite.note).not.toContain("..HEAD");
+  });
+
+  describe.each(cases.map((c) => [c.name, c] as const))("case %s", (_name, c) => {
+    it.each(c.graders)("grader %s reads the final message and asks for no commit", (grader) => {
+      const parsed = frontmatter(fs.readFileSync(path.join(c.dir, "graders", grader), "utf8"));
+
+      expect(parsed["focus"]).toBe("last_message");
+      expect(parsed["body"]).not.toMatch(/commit/i);
+    });
+  });
+});
+
 describe("evals/", () => {
   // `tsconfig.json` includes every `.ts` in the checkout, and a `.ts` here would
   // be one more file the build could reach. The runner is in `scripts/`.

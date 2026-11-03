@@ -17,12 +17,25 @@ inputs:
 # Appended after the rendered prompt. Nothing pushes here, and the runner's
 # second phase, which turns the run into structured output, does not run, so
 # the change and the outcomes have to be in the run for a grader to read.
+#
+# The run cannot commit: `claude plugin eval` denies writes to the run's
+# `.git` (evals/README.md, "What a fix replay cannot exercise"). So the change
+# is the working tree's, against the head, untracked files included, and it is
+# printed in the final message, which is what the graders read (#716).
 note: |
   # EVAL REPLAY
 
   This fix run is a replay, run to measure the brief above. Nothing is pushed and GitHub is not
   reachable; the branch was checked out at `{{HEAD}}`, and `origin/{{BRANCH}}` still points there.
+  This checkout's `.git` is read-only, so a commit fails here: leave the change in the working tree,
+  which is what the replay grades.
 
-  When you are done, run `git log --stat origin/{{BRANCH}}..HEAD` and `git diff origin/{{BRANCH}}..HEAD`
-  so their output is in this run. Then, in your **final message**, before `<promise>COMPLETE</promise>`,
-  give each thread's outcome (addressed or declined) and the reply you would post on it.
+  When you are done, your **final message** gives, in this order:
+
+  1. The change, as the output of `git diff origin/{{BRANCH}}`, followed by
+     `git diff --no-index /dev/null <file>` for each file `git ls-files --others --exclude-standard`
+     lists, so a new file is in it too. Paste the output whole, not a summary of it.
+  2. The commit message you would have written.
+  3. Each thread's outcome (addressed or declined) and the reply you would post on it.
+
+  Then `<promise>COMPLETE</promise>`.

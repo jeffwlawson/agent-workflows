@@ -1,9 +1,10 @@
 # Baseline
 
 The golden-PR evals for the `review` and `fix` prompts, run once by hand against the prompts as they
-stand in v0.9.10 (#634). A change to either prompt is measured against this: the same cases, the same
-`--runs` and the same `--model`, both reports in the pull request (`README.md`, *Comparing a before
-and an after*).
+stand in v0.9.10 (#634). A change to the review prompt is measured against this: the same cases, the
+same `--runs` and the same `--model`, both reports in the pull request (`README.md`, *Comparing a
+before and an after*). The `fix` section is not a before report for anything run since #716 (see
+below); a change to the fix prompt needs a new fix baseline first.
 
 - **Run:** 2026-11-02, from `0226bf92e98a`, the `main` commit that last changed either prompt (#610).
   `07e016a`, the v0.9.10 release commit, holds the same two prompt files.
@@ -38,6 +39,13 @@ the grader's file under `review/` or `fix/`.
 - **clean-doctor-service-guard:** 0 of 3 completed runs raised a false finding (0%).
 
 ## `fix`
+
+**Not comparable with a fix run made since #716.** These runs were graded by the earlier fix
+graders, which read the trace for "the committed change"; a fix replay cannot commit, so they graded
+something the run could not produce. Since #716 the graders read the working-tree diff printed in
+the final message (`README.md`, *What a fix replay cannot exercise*). Kept as the record of what was
+run; a new fix baseline, on the current graders and from the same prompt blob, is needed before a
+fix-prompt change can be measured.
 
 | Case | PR | Runs | Grader | Passed | Rate |
 | --- | --- | --- | --- | --- | --- |

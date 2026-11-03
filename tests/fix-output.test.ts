@@ -366,6 +366,53 @@ describe("the fix brief on a finding that is one of a class", () => {
 });
 
 /**
+ * **A behaviour finding's test is written first, on the head the round was given** (#613).
+ *
+ * The red check compares against the merge-base, so for behaviour this pull
+ * request adds, a fix-round test that would also pass on the unfixed head still
+ * looks red there, and the next review has to work out for itself whether the
+ * fix landed. A test seen failing on the given head, on the symptom the finding
+ * names, is the evidence it needs. Where no seam reaches the path, the fix is
+ * still made and the gap is said, since a round that stops there fixed nothing.
+ * Mechanical, because the paragraph reads as redundant with the class rule
+ * beside it to anyone tightening this brief.
+ */
+describe("the fix brief on a finding about behaviour", () => {
+  const PROMPT = fs.readFileSync("fix/prompt.md", "utf8");
+  const plain = (text: string): string => text.replace(/[*_]/g, "").replace(/\s+/g, " ");
+  const rule = (): string => plain(PROMPT).match(/a finding about behaviour gets its test first.{0,1600}/i)?.[0] ?? "";
+
+  it("writes the test first and runs it on the head the round was given", () => {
+    expect(rule()).toMatch(/write its test first/i);
+    expect(rule()).toMatch(/on the head you were given/i);
+  });
+
+  it("asks that the test fails there, on the symptom the finding names", () => {
+    expect(rule()).toMatch(/it must fail there, on the symptom the finding names/i);
+  });
+
+  it("says a test that could not be made to fail is not evidence, in the thread reply", () => {
+    expect(rule()).toMatch(/could not make fail is not evidence/i);
+    expect(rule()).toMatch(/thread reply/i);
+  });
+
+  it("fixes it anyway where no seam reaches the path, and says so and why", () => {
+    expect(rule()).toMatch(/no seam reaches/i);
+    expect(rule()).toMatch(/fix it anyway/i);
+    expect(rule()).toMatch(/no test could be written, and why/i);
+    expect(rule()).toMatch(/missing seam .{0,80}out-of-scope note/i);
+  });
+
+  it("asks the commit message to name the cause fixed, not only the symptom", () => {
+    expect(rule()).toMatch(/commit message, name the cause you fixed/i);
+  });
+
+  it("exempts a finding that is not about behaviour", () => {
+    expect(rule()).toMatch(/text, a rename or a comment .{0,60}is exempt/i);
+  });
+});
+
+/**
  * **A maintainer's comment is the direction** (PRD #101, decision 5).
  *
  * The review half has carried "treat maintainer steering as authoritative"

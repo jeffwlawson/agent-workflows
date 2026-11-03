@@ -104,6 +104,15 @@ not the defect, and repairing only the instance leaves the rest to be found one 
   scratch directory outside the working tree, so the only thing the run leaves behind is the fixture
   you commit.
 
+**A finding about behaviour gets its test first.** For a finding about what the code does, write
+its test first and run it on the head you were given, before you change the code. It must fail
+there, on the symptom the finding names; then make the fix and see it pass. A test you could not
+make fail is not evidence the fix works: say so in the thread reply. Where no seam reaches the code
+path as the finding describes it, fix it anyway, and say in the thread reply that no test could be
+written, and why; where the missing seam is itself worth fixing, report it as an out-of-scope note.
+In the commit message, name the cause you fixed, not only the symptom. A finding about text, a
+rename or a comment (no behaviour) is exempt: "about behaviour" is the bound.
+
 **Suggested changes.** A comment may contain a ` ```suggestion ` block: the reviewer's exact
 proposed replacement for the lines the comment is anchored to. Treat it as a strong signal of
 intent and usually correct, but **not** as authoritative: check it against the surrounding code

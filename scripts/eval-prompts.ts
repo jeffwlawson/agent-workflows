@@ -565,7 +565,9 @@ const single = (values: readonly string[], what: string, side: string): string =
  *
  * Only a declared primary or guard gets a verdict: `rose` or `fell` at
  * p < EFFECT_P, `not shown` otherwise, `void` where a side has two or more
- * errored runs of its case. Every other row is descriptive.
+ * errored runs of its case or no completed run of it (a case one side never
+ * ran, or ran only into errors): that side measured nothing, so there is no
+ * result to call. Every other row is descriptive.
  */
 export const compare = (before: readonly RunRecord[], after: readonly RunRecord[], options: CompareOptions = {}): string => {
   const labels = options.labels ?? { before: "Before", after: "After" };
@@ -649,7 +651,7 @@ export const compare = (before: readonly RunRecord[], after: readonly RunRecord[
     const verdict =
       r === undefined
         ? "descriptive"
-        : counts.some((c) => c.errored >= VOID_ERRORS)
+        : counts.some((c) => c.errored >= VOID_ERRORS || c.n === 0)
           ? "void"
           : p !== undefined && p < EFFECT_P
             ? a.passed / a.n > b.passed / b.n
@@ -698,6 +700,55 @@ const runsRoot = (): string =>
 
 const readJson = <T>(file: string): T => JSON.parse(fs.readFileSync(file, "utf8")) as T;
 
+const realOr = (dir: string): string => {
+  try {
+    return fs.realpathSync(dir);
+  } catch {
+    return dir;
+  }
+};
+
+/**
+ * The sandbox the tool kept for a run, from its trace path: the directory the
+ * tool made with `mkdtemp`, which is `claude-eval-*` under the temp dir, or on
+ * macOS `e-*` under `/tmp` (Claude Code 2.1.316 shortens it there). The tool
+ * names it by its real path, so on macOS it is under `/private/tmp`.
+ * `undefined` where the trace is in no such directory.
+ */
+export const sandboxOf = (trace: string, platform: NodeJS.Platform = process.platform, tmp: string = os.tmpdir()): string | undefined => {
+  const [base, prefix] = platform === "darwin" ? ["/tmp", "e-"] : [tmp, "claude-eval-"];
+  const bases = new Set([base, realOr(base)]);
+  for (let up = path.dirname(trace); up !== path.dirname(up); up = path.dirname(up)) {
+    if (path.basename(up).startsWith(prefix) && bases.has(path.dirname(up))) return up;
+  }
+  return undefined;
+};
+
+/**
+ * Removes a kept sandbox, and says so where it cannot. With `--keep-temp` the
+ * tool seals it: its root is left read-only (0500) and the `sealed/` directory
+ * holding the run's home and tmp at mode 000, so a plain recursive remove fails
+ * with EACCES. Every directory is opened (0700) before it is read, which its
+ * owner may do whatever its mode. A removal that still fails is a warning
+ * naming the path, not the end of the run: the traces are already copied.
+ */
+export const removeSandbox = (sandbox: string): boolean => {
+  try {
+    const open = (dir: string): void => {
+      fs.chmodSync(dir, 0o700);
+      for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+        if (entry.isDirectory()) open(path.join(dir, entry.name));
+      }
+    };
+    open(sandbox);
+    fs.rmSync(sandbox, { recursive: true, force: true });
+    return true;
+  } catch (error) {
+    console.log(`::warning::Could not remove the kept sandbox ${sandbox}: ${error instanceof Error ? error.message : String(error)}. Remove it by hand.`);
+    return false;
+  }
+};
+
 /**
  * Keeps what the tool would delete: each run's trace, copied from its sandbox
  * (kept by `--keep-temp`) into `traces/<case>/<run>.jsonl`, after which the
@@ -716,13 +767,11 @@ const persistRuns = (dir: string): void => {
       fs.mkdirSync(path.join(dir, path.dirname(rel)), { recursive: true });
       fs.copyFileSync(from, path.join(dir, rel));
       copied.set(`${c.name}\n${i + 1}`, rel);
-      // The sandbox the tool kept: the `claude-eval-*` directory under the temp dir holding the trace.
-      for (let up = path.dirname(from); up !== path.dirname(up); up = path.dirname(up)) {
-        if (path.basename(up).startsWith("claude-eval-") && path.dirname(up) === os.tmpdir()) sandboxes.add(up);
-      }
+      const sandbox = sandboxOf(from);
+      if (sandbox !== undefined) sandboxes.add(sandbox);
     });
   }
-  for (const sandbox of sandboxes) fs.rmSync(sandbox, { recursive: true, force: true });
+  for (const sandbox of sandboxes) removeSandbox(sandbox);
   const records = runRecords(meta, result, path.basename(dir), (name, run) => copied.get(`${name}\n${run}`) ?? null);
   fs.writeFileSync(path.join(dir, "runs.json"), `${JSON.stringify(records, null, 2)}\n`);
   const runs = result.cases.reduce((n, c) => n + (c.arms.with?.length ?? 0), 0);

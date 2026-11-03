@@ -162,7 +162,9 @@ and not `/tmp`, which is cleared. It holds:
 - `result.json`: the tool's own result, with each grader's capped `evidence` (the judge's input);
 - `traces/<case>/<run>.jsonl`: each run's full trace. The tool deletes a run's sandbox, trace
   included, unless given `--keep-temp`, so the script passes it, copies each trace out, and removes
-  the `claude-eval-*` sandbox it came from. A sandbox with no trace (a run that never started) is
+  the sandbox it came from (`claude-eval-*` in the temp dir; `e-*` in `/tmp` on macOS), opening
+  the directories the tool sealed first. One it cannot remove is a warning naming the path. A
+  sandbox with no trace (a run that never started) is
   left in the temp dir;
 - `runs.json`: one record per run, which `compare` reads: case, arm, prompt blob, model, judge
   model, Claude Code version, error, cost, judge cost, turns, trace, and per grader its result, its
@@ -193,7 +195,8 @@ A run made before run directories existed has no grader hashes, which the compar
 
 `--primary <case>/<grader>` and `--guard <case>/<grader>` (each repeatable) mark the graders declared
 before the run. Only they get a verdict: `rose` or `fell` at p < 0.029, `not shown` otherwise, and
-`void` where a side has two or more errored runs of the case. Every other row says `descriptive`.
+`void` where a side has two or more errored runs of the case, or no completed run of it (a case
+one side never ran, or ran only into errors). Every other row says `descriptive`.
 
 ## Comparing a before and an after: the protocol
 

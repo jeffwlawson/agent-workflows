@@ -1,4 +1,5 @@
 import * as fs from "node:fs";
+import * as os from "node:os";
 import * as path from "node:path";
 import { describe, expect, it } from "vitest";
 import { parse } from "yaml";
@@ -11,8 +12,10 @@ import {
   placeholders,
   readCase,
   readSuite,
+  removeSandbox,
   report,
   runRecords,
+  sandboxOf,
   type EvalResult,
   type RunRecord,
   type StageMeta,
@@ -335,6 +338,17 @@ describe("a comparison", () => {
     expect(() => compare(before, after, { primary: ["escape/09"] })).toThrow(/escape\/09/);
   });
 
+  it("voids a declared grader a side has no completed run of, rather than ruling on 0/0", () => {
+    const onlyErrored = [record({ blob: "f".repeat(40), error: "timed out", passed: {} })];
+    const otherCase = [...after, record({ blob: "f".repeat(40), case: "clean", passed: { "01": true } })];
+
+    // A side whose only run of the case errored.
+    expect(compare(before, onlyErrored, { primary: ["escape/01"] })).toMatch(/\| escape \| 01 \(primary\) \|.*\| n\/a \| void \|/);
+    // A case only one side's session ran (different `--case` sets).
+    expect(compare(otherCase, after, { guards: ["clean/01"] })).toMatch(/\| clean \| 01 \(guard\) \|.*\| n\/a \| void \|/);
+    expect(compare(before.concat(record({ case: "clean", passed: { "01": true } })), after, { guards: ["clean/01"] })).toMatch(/\| clean \| 01 \(guard\) \|.*\| n\/a \| void \|/);
+  });
+
   it("voids a side with two or more errored runs on the case", () => {
     const errored = [...after, record({ blob: "f".repeat(40), error: "plan limit", passed: {} })];
 
@@ -365,5 +379,34 @@ describe("a comparison", () => {
 
   it("says when both sides ran one blob, so every difference is noise", () => {
     expect(compare(before, before.map((r) => ({ ...r, session: "s2" })))).toMatch(/same prompt blob/i);
+  });
+});
+
+describe("a kept sandbox", () => {
+  // As Claude Code 2.1.316 names it: `mkdtemp` of `claude-eval-` in the temp
+  // dir, or of `/tmp/e-` on macOS, by its real path; the trace in `out/`.
+  it("is found from a run's trace on Linux and on macOS", () => {
+    expect(sandboxOf("/tmp/claude-eval-Ab12/out/trace.jsonl", "linux", "/tmp")).toBe("/tmp/claude-eval-Ab12");
+    expect(sandboxOf("/tmp/e-Ab12/out/trace.jsonl", "darwin")).toBe("/tmp/e-Ab12");
+    expect(sandboxOf("/private/tmp/e-Ab12/out/trace.jsonl", "darwin")).toBe(fs.existsSync("/private/tmp") ? "/private/tmp/e-Ab12" : undefined);
+    expect(sandboxOf("/tmp/e-Ab12/out/trace.jsonl", "linux", "/tmp")).toBeUndefined();
+    expect(sandboxOf("/elsewhere/claude-eval-Ab12/out/trace.jsonl", "linux", "/tmp")).toBeUndefined();
+  });
+
+  it("is removed when the tool has sealed it, and a removal that fails is a warning", () => {
+    // The seal `--keep-temp` leaves: home/ and tmp/ moved into sealed/ at mode
+    // 000, and the root at 0500.
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "claude-eval-test-"));
+    fs.mkdirSync(path.join(root, "out"));
+    fs.writeFileSync(path.join(root, "out", "trace.jsonl"), "{}\n");
+    fs.mkdirSync(path.join(root, "sealed", "home", "cwd"), { recursive: true });
+    fs.mkdirSync(path.join(root, "sealed", "tmp"));
+    fs.writeFileSync(path.join(root, "sealed", "home", "cwd", "file"), "x");
+    fs.chmodSync(path.join(root, "sealed"), 0o000);
+    fs.chmodSync(root, 0o500);
+
+    expect(removeSandbox(root)).toBe(true);
+    expect(fs.existsSync(root)).toBe(false);
+    expect(removeSandbox(path.join(root, "missing"))).toBe(false);
   });
 });

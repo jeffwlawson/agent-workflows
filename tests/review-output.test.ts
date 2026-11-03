@@ -3212,6 +3212,18 @@ describe("the review's finding vocabulary", () => {
   });
 
   /**
+   * **No escape clause beside the demand to rule on every id** (#704, H2).
+   * That an unruled finding stays open, or an unruled note is promoted, is
+   * the workflow's guarantee and holds whether or not the agent reads it;
+   * told to the agent as "the safe direction" it is leave to skip. The work
+   * pass gets the positive rule instead.
+   */
+  it("rules a carried finding open where the code does not clearly resolve it, and offers no safe direction", () => {
+    expect(plain(PROMPT)).toMatch(/`open` is the ruling for a finding the current code does not clearly resolve/);
+    expect(PROMPT).not.toMatch(/safe direction/);
+  });
+
+  /**
    * **Anchored at the change that causes it** (#127, decision 2).
    *
    * The brief is the half that makes the workflow's half worth having. The
@@ -3339,11 +3351,18 @@ describe("the review brief's carried follow-ups", () => {
   const plain = (text: string): string => text.replace(/[*_]/g, "").replace(/\s+/g, " ");
   const carried = (): string => plain(RUNNER.match(/function renderCarriedFollowUps\(.*?\n}\n/s)?.[0] ?? "");
 
-  it("asks for a ruling on each, open or resolved with a reason, and keeps one not ruled on", () => {
+  /**
+   * Open where the code does not clearly show it fixed (#704, H2). The
+   * workflow keeps a follow-up nobody ruled on, but that is its guarantee, not
+   * an instruction: told to the agent, "the safe direction" reads as leave to
+   * skip an id exactly where a long review is likeliest to.
+   */
+  it("asks for a ruling on each, open or resolved with a reason, open where the code does not clearly show it fixed", () => {
     expect(carried()).toContain("in `followUpRulings`");
     expect(carried()).toMatch(/open: it still holds/);
     expect(carried()).toMatch(/resolved, with a `reason`/);
-    expect(carried()).toMatch(/A follow-up you say nothing about is kept/);
+    expect(carried()).toMatch(/`open` is the ruling for a follow-up the code does not clearly show fixed/);
+    expect(carried()).not.toMatch(/safe direction|say nothing about/);
   });
 
   it("names the field and both rulings in the extraction brief", () => {

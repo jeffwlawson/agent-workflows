@@ -122,8 +122,9 @@ it was raised in, under **EXISTING FEEDBACK** above.
 
 **Rule on every one of them, by identifier, in `verified`.** For each: `landed` if the current code
 resolves it, `open` if it does not, `declined` if a maintainer has replied refusing it, and one
-line saying why. Check the code in front of you rather than a claim that it was fixed; a reply
-saying a finding was addressed is an assertion, and verifying it is the whole of this job.
+line saying why. `open` is the ruling for a finding the current code does not clearly resolve.
+Check the code in front of you rather than a claim that it was fixed; a reply saying a finding was
+addressed is an assertion, and verifying it is the whole of this job.
 
 This is asked of **every** review, this round included. A finding does not need a fix round to have
 been settled: a human may have pushed the fix, or the finding may have been wrong.
@@ -136,10 +137,6 @@ are the workflow's and text is never matched, so a second write-up is a second f
 twice, given a second thread, and carried separately every round after. If there is more to say
 about it than the line beside its identifier, say it in that line.
 
-One you say nothing about **stays open**. That is deliberate, and it is the safe direction rather
-than an invitation to leave the list half-done: a finding nobody has checked is not a finding
-anybody has settled.
-
 **`declined` is the third answer, and it is not yours.** Where a maintainer has replied on the
 thread saying they will not fix it ("won't fix", "this is intended", "leave it"), rule it
 `declined`. The workflow then closes that thread as *won't fix*, quoting their reply. You are
@@ -148,8 +145,7 @@ decline a finding on your own authority.
 
 A reply you cannot read as a decline leaves the thread `open`. Somebody explaining the code,
 asking a question, or saying they will get to it has not declined anything, and reading a maybe as
-a no closes a finding nobody settled. Open is the safe direction here as everywhere else: a
-maintainer who meant to decline can say so again, and the next review will read it.
+a no closes a finding nobody settled.
 
 **Their latest reply on the thread is the only one you may rule on.** The workflow quotes that
 comment and no other when it closes, so a refusal somebody has since revisited ("won't fix", then
@@ -193,9 +189,6 @@ either:
 - **drop** it, with a `reason` the body shows: it is not real, it is already tracked, it is this
   pull request's to fix after all (then it is a finding of your own, on the usual terms), or it is
   not worth an issue.
-
-A note you say nothing about is recorded as a follow-up at `medium`. That is the safe direction:
-a note nobody ruled on must not disappear.
 
 # FOLLOW-UPS EARLIER ROUNDS RECORDED
 

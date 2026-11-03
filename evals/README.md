@@ -18,6 +18,7 @@ and touches no network.
 | `review/persisted-checkout-token` | #572 | `3586dd7` | the checkout persists a token the job can now push with; a re-run skips the install check |
 | `review/restart-order` | #577 | `edb772f` | a failed worker restart still restarts the dispatcher; the recovery advice cannot run; the halves hard-code the package's scope (#580) |
 | `review/rescue-deleted-before-open` | #570 | `4d56bbc` | publish deletes the rescue before the pull request opens; a set-aside rescue is overwritten (#578) |
+| `review/held-door-replay` | #601 | `bceed0c` | **security hygiene**: the held door, which now drops queued jobs, takes a replayed question; another release's job is refused before its version is checked |
 | `review/clean-doctor-service-guard` | #566 | `85a04f0` | **clean**: no finding to fix before merge |
 | `review/clean-domain-model-guard` | #678 | `b18b87f` | **clean**: no finding to fix before merge |
 | `review/clean-full-ref-names` | #584 | `1159e02` | **clean**: no finding to fix before merge |
@@ -37,6 +38,13 @@ and **nothing merged since has had to fix it**: no later commit on `main` change
 `setup/doctor.ts` or `docs/ADOPTING.md`. A clean case needs all of these; a later fix means a
 review that caught the defect is correct, and would be scored as a false finding. #568 was the
 clean case first and was dropped for that reason (#584 fixed what it shipped).
+
+`held-door-replay` is the second security-hygiene case, beside `persisted-checkout-token` (#719).
+Its replay finding rests on no criterion and no rule, only on a described way the change can be
+abused, which is the class #697's first wording of the basis rule suppressed, so a change to that
+rule names both as guards. The maintainer's pre-merge check on its head also found a Medium that is
+not graded: the door refused a read-only question that #602's `upgrade.sh` was to ask, which nothing
+in the brief says.
 
 One clean pull request bounds the false-finding rate and does not measure it (three clean runs with
 none failed is an upper 95% bound of 63%), so four more were added by the same recipe (#719): #678

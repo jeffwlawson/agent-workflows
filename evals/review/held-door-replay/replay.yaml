@@ -1,0 +1,30 @@
+# PR #601, as the loop's review approved it: a security-hygiene escape (#719).
+#
+# The head is bceed0c, the pull request's first commit, where Review 1
+# recommended approval (2026-11-01T03:03Z) with no finding and no follow-up.
+# The maintainer's pre-merge check on the same head (04:15Z) found a Medium
+# outside this case (the door refused a read-only question, which #602's
+# upgrade.sh needed: nothing in the brief says so) and two Lows, graded here:
+# the held door, which this change makes drop queued jobs, checks a
+# question's signature but not its age, so a captured one can be replayed to
+# empty the queue at any later time; and a job from another release's
+# dispatcher is refused for its missing instance before its version is
+# checked. d11d11a fixed all three ("refuse a stale question, check a job's
+# release first"). The replay finding rests on no criterion and no rule, only
+# on a described way the change can be abused: the class #697's first basis
+# rule suppressed, so it is a guard for a change to that rule. The base is
+# the merge-base the review's three-dot diff was taken from.
+pr: 601
+repository: https://github.com/jeffwlawson/agent-workflows.git
+base_ref: main
+base: eb394fe56b57e39ba3b120c36de305208b5d7c9a
+head: bceed0cc3a3df0e1a8886223dfe6c860bd3269ac
+# Issue #597's body as it stands, rendered with its comments through
+# review/review-context.ts and review/acceptance-criteria.ts; it has no brief comment.
+brief: inputs/LINKED_ISSUE.md
+inputs:
+  PR_NUMBER: "601"
+  BRANCH: agent/issue-597-a-dispatcher-restart-strands-the-worker-s-queued-j
+  PR_TITLE: "fix(service): drop a restarted dispatcher's old queued jobs at the held door (#597)"
+  ISSUE_NUMBER: "597"
+  ISSUE_TITLE: A dispatcher restart strands the worker's queued jobs until the next worker restart

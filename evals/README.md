@@ -149,9 +149,9 @@ changes, so an *after* run of an edit not yet committed still names what it ran.
 Some cases miss on today's prompt. That is expected, and is what the issues waiting on #617 (#612,
 #613, #614, #615) set out to change. The "before" report to compare with is [`baseline.md`](./baseline.md):
 the cases run once against the prompts as released, naming the revision it ran against. Its `fix`
-section predates the diff-based fix graders (*What a fix replay cannot exercise*) and is not
-comparable with a fix run made since; a fix-prompt change needs a new fix baseline, run on the
-current graders, as its before report.
+section was taken after the fix graders were repaired to read the working-tree diff (*What a fix
+replay cannot exercise*), so a fix run made now is comparable with it; fix reports from before that
+repair are not.
 
 ## Another model
 

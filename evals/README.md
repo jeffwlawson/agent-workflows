@@ -64,8 +64,9 @@ The replay, against what the runner does:
   own renderers when the case was written. Those inputs are pinned; only the prompt is live.
 - **The second phase does not run.** The runner resumes the session to extract structured output;
   here, the replay note appended after the prompt asks for the findings (or, for fix, the diff and
-  each thread's outcome) in the run itself, where the graders read them. Review graders read the
-  last message; fix graders read the trace, which holds the diff.
+  each thread's outcome) in the run itself, where the graders read them. Both prompts' graders
+  read the last message. A fix run's change is graded as the working-tree diff that message
+  prints, not as a commit, which a fix replay cannot make (below).
 - **The scaffold** (`evals/checkout.sh`) fetches both pinned commits from your clone, which the
   script first fetches from GitHub by SHA where they are missing, and checks out the head on the
   pull request's branch, with `origin/<branch>` at the head and `origin/main` at the base. Nothing
@@ -73,6 +74,40 @@ The replay, against what the runner does:
 
 This route is the fallback the issue allows, taken because the tool cannot render a runner's prompt
 itself; it was written against Claude Code **2.1.290**.
+
+## What a fix replay cannot exercise
+
+Found from 26 of 26 fix runs whose final message said so (`docs/audits/2026-11-02/evals.md`, 3.2),
+and from the code of `claude plugin eval` 2.1.316 (#716):
+
+- **The run cannot commit.** The tool runs each case in `<tmp>/claude-eval-*/home/cwd` and denies
+  the agent writes to `.git`, `HEAD`, `objects`, `refs` and `commondir` there, as Edit deny rules
+  the Bash sandbox turns into read-only binds: `git commit` fails with `Unable to create
+  '.git/index.lock': Read-only file system`. That is the tool's own rule, with no case or suite
+  setting that lifts it, so the scaffold cannot fix it. The replay note says so, has the run print
+  the working tree's diff against the head (untracked files included) and the commit message it
+  would have written, and the graders read those from the final message. Fix reports run before
+  this change graded "the committed change" and are not comparable with later ones; fix grader 01
+  passed 1 of 26 under that wording.
+- **The run cannot run the tests or the typecheck.** The runs report no `npm`, and no `vitest` or
+  `tsc` in `node_modules`, though the scaffold copies the clone's `node_modules` or installs it
+  from the lockfile. The cause is not found: no run could be made where this was written (no
+  credential), and the stored traces were cleared. The likeliest is the sandbox's read rules,
+  which allow the run's own home and temp directories and deny the operator's home, where a Node
+  installed by a version manager sits; Claude Code also write-protects `node_modules/.bin`. One
+  case with `--keep-temp` and a Bash call to `command -v node npm; ls -la node_modules/.bin` would
+  settle it.
+
+So these instructions in `fix/prompt.md` are not exercised, and no grader may rest on them: making
+a commit and anything only its message carries; running the verify command before committing; and
+taking a behaviour finding red on the given head, *run it and see it fail* (#700). A run that says
+it could not do one of these is telling the truth about this sandbox, not about the prompt. What a
+fix replay measures is the change it leaves and what it says about it.
+
+The graders were checked by hand against the change that shipped for the case, `ba76218` on #570:
+read as a working-tree diff, it meets 01 (the deletion moved after `state.pr = pr; record();`), 02
+(two tests that a failed open keeps the rescue) and 03 (its other files change only comments and
+docs naming publish's order). No judge model was run on it.
 
 ## Running them
 
@@ -113,7 +148,10 @@ changes, so an *after* run of an edit not yet committed still names what it ran.
 
 Some cases miss on today's prompt. That is expected, and is what the issues waiting on #617 (#612,
 #613, #614, #615) set out to change. The "before" report to compare with is [`baseline.md`](./baseline.md):
-the cases run once against the prompts as released, naming the revision it ran against.
+the cases run once against the prompts as released, naming the revision it ran against. Its `fix`
+section predates the diff-based fix graders (*What a fix replay cannot exercise*) and is not
+comparable with a fix run made since; a fix-prompt change needs a new fix baseline, run on the
+current graders, as its before report.
 
 ## Another model
 

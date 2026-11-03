@@ -18,8 +18,15 @@ import type { ReviewHistory } from "./review-round.js";
  * placed on that line.
  */
 export type PromptDiff =
-  /** The whole pull request's diff: a first review, a final review, a slice round, or a round that pushed nothing. */
-  | { readonly kind: "whole"; readonly diff: string }
+  /**
+   * The whole pull request's diff: a first review, a final review, a slice
+   * round, or a round that pushed nothing. `scopedSize` is present where this
+   * was a verification pass whose scoped form would have been no smaller than
+   * the whole diff (its size, as `scopedSize` measures it): a prompt that is
+   * no smaller gains nothing and costs the reviewer the whole context, and
+   * nothing is left out, so `howChecked` owes no note.
+   */
+  | { readonly kind: "whole"; readonly diff: string; readonly scopedSize?: number }
   /**
    * The whole diff, because this pass follows a fix round but the commits
    * since the last review could not be read. `reason` is a clause, for the
@@ -47,6 +54,10 @@ export type PromptDiff =
       readonly files: readonly string[];
       readonly diff: string;
     };
+
+/** The size of the scoped form's text the prompt carries: the stat, the commits since, and the touched files' diff. */
+export const scopedSize = (d: { readonly stat: string; readonly since: string; readonly diff: string }): number =>
+  d.stat.length + d.since.length + d.diff.length;
 
 const firstLine = (error: unknown): string =>
   (error instanceof Error ? error.message : String(error)).split("\n")[0]?.trim() ?? "";
@@ -96,14 +107,18 @@ export const readPromptDiff = (
       .sort();
     const stat = read([...diffCommandAgainstBase(baseRef), "--stat=1000"]);
     const diff = files.length === 0 ? "" : read(["--literal-pathspecs", ...diffCommandAgainstBase(baseRef), "--", ...files]);
+    const scoped = { stat: stat.trimEnd(), since: since.trimEnd(), diff };
+    // Where the round touched most of the pull request, the commits since and
+    // the whole diff of the same files overlap, and the scoped form can be
+    // larger than the whole (#698): carry the whole, which leaves nothing out.
+    const size = scopedSize(scoped);
+    if (size >= whole.length) return { kind: "whole", diff: whole, scopedSize: size };
     return {
       kind: "since",
       reviewedHead: head,
       ...(old.mergedBase === undefined ? {} : { mergedBase: old.mergedBase }),
-      stat: stat.trimEnd(),
-      since: since.trimEnd(),
+      ...scoped,
       files,
-      diff,
     };
   } catch (error) {
     return {

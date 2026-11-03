@@ -44,7 +44,7 @@ import {
   type SliceRedTests,
 } from "../shared/red-check.js";
 import { fetchPullRequestContext } from "./review-context.js";
-import { readPromptDiff, renderDiffScope } from "./review-diff.js";
+import { readPromptDiff, renderDiffScope, scopedSize } from "./review-diff.js";
 import { checkSinceBrief, renderSinceBriefForReview } from "./since-brief.js";
 import {
   findingsHandOver,
@@ -274,10 +274,12 @@ try {
   const promptDiff = readPromptDiff(history, round, BASE_REF, context.diff, context.diffLines.keys());
   console.log(
     promptDiff.kind === "since"
-      ? `Prompt diff: scoped to the commits since ${promptDiff.reviewedHead.slice(0, 7)}, ${promptDiff.stat.length + promptDiff.since.length + promptDiff.diff.length} bytes of the pull request's ${context.diff.length}.`
+      ? `Prompt diff: scoped to the commits since ${promptDiff.reviewedHead.slice(0, 7)}, ${scopedSize(promptDiff)} bytes of the pull request's ${context.diff.length}.`
       : promptDiff.kind === "unreadable"
         ? `Prompt diff: the whole pull request's, ${context.diff.length} bytes, because ${promptDiff.reason}.`
-        : `Prompt diff: the whole pull request's, ${context.diff.length} bytes.`,
+        : promptDiff.scopedSize !== undefined
+          ? `Prompt diff: the whole pull request's, ${context.diff.length} bytes, because the scoped form would be ${promptDiff.scopedSize} bytes.`
+          : `Prompt diff: the whole pull request's, ${context.diff.length} bytes.`,
   );
 
   // A review proceeds on what survived a partial answer — but says so twice:

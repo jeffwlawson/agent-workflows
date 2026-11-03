@@ -4,7 +4,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { SUBPROCESS_TIMEOUT } from "../../vitest.config.js";
-import { readPromptDiff, renderDiffScope, type PromptDiff } from "../../review/review-diff.js";
+import { readPromptDiff, renderDiffScope, scopedSize, type PromptDiff } from "../../review/review-diff.js";
 import type { ReviewHistory } from "../../review/review-round.js";
 import { keyedByChangedFiles, parseDiffLines, parseNameStatus } from "../../shared/diff-lines.js";
 import { changedFilesCommandAgainstBase, diffCommandAgainstBase } from "../../shared/pr-feedback.js";
@@ -144,6 +144,36 @@ describe("readPromptDiff on a verification pass", () => {
   );
 
   it(
+    "carries the whole diff, and says how large the scoped form would be, where the round touched most of the pull request",
+    () => {
+      write("src/a.ts", lines("a, changed", 40));
+      write("src/b.ts", lines("b, changed", 120));
+      write("docs/c.md", lines("c, changed", 80));
+      const reviewed = commitAll("feat: the change");
+      write("src/a.ts", lines("a, changed", 40).replace("a, changed line 7", "a, fixed line 7"));
+      write("src/b.ts", lines("b, changed", 120).replace("b, changed line 7", "b, fixed line 7"));
+      write("docs/c.md", lines("c, changed", 80).replace("c, changed line 7", "c, fixed line 7"));
+      commitAll("fix: the findings on a, b and c");
+      const { whole, changed } = pullRequest();
+
+      const d = readPromptDiff(afterFixRound(reviewed), undefined, "main", whole, changed);
+
+      expect(d.kind).toBe("whole");
+      if (d.kind !== "whole") return;
+      expect(d.diff).toBe(whole);
+      // The scoped form, read as readPromptDiff reads it, is no smaller.
+      const stat = g(...diffCommandAgainstBase("main"), "--stat=1000").trimEnd();
+      const since = g("-c", "core.quotePath=false", "diff", reviewed, "HEAD").trimEnd();
+      const touched = g("--literal-pathspecs", ...diffCommandAgainstBase("main"), "--", ...[...changed].sort());
+      expect(d.scopedSize).toBe(scopedSize({ stat, since, diff: touched }));
+      expect(d.scopedSize).toBeGreaterThanOrEqual(whole.length);
+      // Nothing was left out, so the brief asks howChecked for nothing.
+      expect(renderDiffScope(d, "main")).toBe("The whole pull request's diff against `main`, `git diff main...HEAD`:");
+    },
+    ceiling,
+  );
+
+  it(
     "places a finding on a line the prompt left out but the pull request changed",
     () => {
       const built = FIXTURES[0]![1]();
@@ -263,6 +293,8 @@ describe("readPromptDiff after a merge of the base branch", () => {
     "leaves out the base branch's change to a file the pull request also changes",
     () => {
       write("src/b.ts", lines("b", 120).replace("b line 100", "b, changed line 100"));
+      // A second file the round leaves alone, so the scoped form is the smaller.
+      write("docs/c.md", lines("c, changed", 80));
       const reviewed = commitAll("feat: the change");
       onMain(() => write("src/b.ts", lines("b", 120).replace("b line 5", "b, on main line 5")));
       mergeMain();
@@ -357,6 +389,10 @@ describe("the review runner and its prompt", () => {
     expect(RUNNER).toContain("DIFF_SCOPE: renderDiffScope(promptDiff, BASE_REF)");
     expect(RUNNER).toContain("PR_DIFF: promptDiff.diff");
     expect(PROMPT).toContain("# PR DIFF\n\n{{DIFF_SCOPE}}\n\n```diff\n{{PR_DIFF}}\n```");
+  });
+
+  it("logs both sizes where the scoped form was no smaller than the whole", () => {
+    expect(RUNNER).toContain("because the scoped form would be ${promptDiff.scopedSize} bytes");
   });
 
   it("places findings off the whole pull request's diff, not the prompt's", () => {

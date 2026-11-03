@@ -146,16 +146,15 @@ finding `open`.
 
 # WHAT THE MAINTAINER HAS SETTLED
 
-Findings an earlier review raised that a **human** then closed by hand. They are not open, they are
-not yours to verify, and there is nothing to report about them.
+Findings an earlier review raised that a **human** then closed by hand: settled, and out of every
+field.
 
 {{SETTLED_FINDINGS}}
 
-**Do not raise any of these again**: not in the same words, and not as a fresh finding you derived
-from the diff. A maintainer closing a thread is the decision on that point; re-posting it as though
-it were new is this loop overruling the person it works for, and the record has no way to recognise
-that it has happened. If you believe one of them is now a different problem (the code has changed
-since and broken something else), say so about *that* problem, naming what changed.
+A maintainer closing a thread is the decision on that point; re-posting it as though it were new is
+this loop overruling the person it works for, and the record has no way to recognise that it has
+happened. If one is now a different problem (the code has changed since and broken something
+else), say so about *that* problem, naming what changed.
 
 # NOTES THE FIX RUN LEFT
 

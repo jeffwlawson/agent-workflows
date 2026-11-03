@@ -3286,6 +3286,20 @@ describe("the review's finding vocabulary", () => {
     expect(declined).not.toMatch(/never overrule|untrusted author|own authority/);
   });
 
+  /**
+   * The settled findings' "do not raise it again" is the runner's, printed
+   * directly below the list (`renderSettledFindings`); the prompt keeps the
+   * reason and the exception, and says the rule once (#704, M8).
+   */
+  it("prompt.md leaves the settled findings' instruction to the list's own text", () => {
+    const settled = plain(PROMPT).match(/# WHAT THE MAINTAINER HAS SETTLED.*?(?= # )/s)?.[0] ?? "";
+
+    expect(settled).toMatch(/settled, and out of every field/);
+    expect(settled).toMatch(/no way to recognise that it has happened/);
+    expect(settled).toMatch(/say so about that problem, naming what changed/);
+    expect(settled).not.toMatch(/do not raise/i);
+  });
+
   it("names needsYou and the three cases it is for", () => {
     expect(PROMPT).toContain("needsYou");
     expect(EXTRACTION).toContain("needsYou");

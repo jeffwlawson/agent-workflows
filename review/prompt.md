@@ -529,8 +529,8 @@ only where the lines it replaces are in the diff.
 - **Replaces exactly the anchored lines**: `line` alone, or `startLine`..`line`.
 - **`startLine` whenever the replacement spans more than one line.** A stale sentence running
   across two needs `startLine` on the first and `line` on the last, or half of it survives.
-- **Literal content**: reproduce surrounding indentation; no diff `-`/`+` markers; no nested
-  code fence.
+- **Literal content**: the replacement lines exactly as they should appear, with the surrounding
+  indentation.
 
 Good candidates, and each is a finding you would report anyway: a comment whose claim the diff
 made false, a misspelled identifier that breaks the thing it names, a bound that is off by one.

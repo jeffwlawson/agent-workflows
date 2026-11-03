@@ -3646,6 +3646,12 @@ describe("the review brief sweeps the checkout for text the change made false", 
     expect(PROMPT.match(/would accept being overruled on/g)).toHaveLength(1);
   });
 
+  /** The suggestion's content as what it is, not as what it is not (#704, L12). */
+  it("asks for a suggestion's lines exactly as they should appear", () => {
+    expect(plain(PROMPT)).toMatch(/Literal content: the replacement lines exactly as they should appear, with the surrounding indentation/);
+    expect(PROMPT).not.toMatch(/no nested code fence|no diff `-`/);
+  });
+
   it("keeps clarity and edge cases last, after the item on what text can carry", () => {
     expect(plain(PROMPT)).toMatch(/ 7\. What text sent somewhere new can carry/);
     expect(plain(PROMPT)).toMatch(/ 8\. Clarity and edge cases/);

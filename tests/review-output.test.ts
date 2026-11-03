@@ -1,6 +1,7 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { describe, expect, it, vi } from "vitest";
+import { renderDiffScope } from "../review/review-diff.js";
 import { parseDiffLines } from "../shared/diff-lines.js";
 import {
   findingMarker,
@@ -4184,6 +4185,23 @@ describe("the review brief asks for howChecked once, as one ordered contract", (
     expect(mentions.length).toBeGreaterThan(0);
     for (const mention of mentions) expect(mention).toBe("(`howChecked`");
     expect(rest).not.toMatch(/(say|said) (so )?in `howChecked`/i);
+  });
+
+  /**
+   * The runner writes text into the brief as well: `renderDiffScope` fills
+   * PR DIFF's opening on a verification pass that carries the whole diff. A
+   * test reading prompt.md alone cannot see it, so it is held to the same
+   * rule here (#750's review).
+   */
+  it("is asked for nowhere in the text the runner writes into the brief either", () => {
+    const scope = plain(
+      renderDiffScope({ kind: "unreadable", reason: "the commits since the last review could not be listed", diff: "" }, "main"),
+    );
+    const mentions = [...scope.matchAll(/.?`howChecked`/g)].map((m) => m[0]);
+
+    expect(mentions.length).toBeGreaterThan(0);
+    for (const mention of mentions) expect(mention).toBe("(`howChecked`");
+    expect(scope).not.toMatch(/(say|said) (so )?in `howChecked`/i);
   });
 });
 

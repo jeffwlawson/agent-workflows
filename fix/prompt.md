@@ -7,6 +7,10 @@ You are on branch `{{BRANCH}}`, already checked out at the PR head.
 {{RESUME}}
 # REVIEW SUMMARIES
 
+The reviews a maintainer left on this pull request, by their body. This loop's own review bodies
+are not here: each finding they record that is open is a thread under *INLINE COMMENTS*, or a minor
+finding under *MINOR FINDINGS*.
+
 {{REVIEW_SUMMARIES}}
 
 # INLINE COMMENTS
@@ -39,7 +43,7 @@ reads the code and drops the ones it finds fixed.
 
 # PR DIFF
 
-The change under review: the PR's diff against its base branch, exactly what GitHub shows.
+{{DIFF_SCOPE}}
 
 ```diff
 {{PR_DIFF}}
@@ -88,8 +92,8 @@ not the defect, and repairing only the instance leaves the rest to be found one 
   **the code this pull request changes**; the same mistake in code this change does not touch is a
   separate change under *CONSTRAINTS*, so report it as an out-of-scope note (a follow-up for the
   next review to rule on), rather than fixing it here.
-- **Read the earlier rounds on this pull request**: the review summaries above, and the replies
-  already on the threads you were shown. Where findings keep landing in the same function, or on
+- **Read the earlier rounds on this pull request**: the replies already on the threads you were
+  shown, the commits on this branch since its base, and any review a maintainer left above. Where findings keep landing in the same function, or on
   the same kind of input, the shared cause is what to fix rather than the newest symptom. Fix that;
   *COMMIT* says what the commit message names for it.
 - **Where the fix is a different design, say so rather than adding another special case.** Reading a

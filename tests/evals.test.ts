@@ -35,6 +35,7 @@ import type { SinceBriefSkip } from "../shared/review-output.js";
 import { renderCarriedFindings, renderSettledFindings } from "../shared/review-verification.js";
 import { currentSummary, summaryBlock } from "../review/pr-summary.js";
 import { renderDiffScope } from "../review/review-diff.js";
+import { renderFixDiffScope } from "../fix/fix-diff.js";
 import { describeHistory } from "../review/review-round.js";
 import { renderSinceBriefForReview } from "../review/since-brief.js";
 
@@ -399,6 +400,7 @@ describe("the inputs the suites fix", () => {
       CONVERSATION: () =>
         expect(fix["CONVERSATION"]).toBe(surfaceText({ conversation: "", unreadable: [] } as unknown as PullRequestFeedback, "conversation")),
       MINOR_FINDINGS: () => expect(fix["MINOR_FINDINGS"]).toBe(renderMinorFindingsForFix([])),
+      DIFF_SCOPE: () => expect(fix["DIFF_SCOPE"]).toBe(renderFixDiffScope({ kind: "whole", diff: "" }, "main")),
     },
   };
 

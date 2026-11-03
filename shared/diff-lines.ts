@@ -312,6 +312,33 @@ export const parseNameStatus = (raw: string): string[] => {
 };
 
 /**
+ * The source path of each rename or copy a `git diff --name-status -z` names,
+ * keyed by its destination: the half `parseNameStatus` leaves out. A diff
+ * whose pathspec holds only the destination cannot see the move, and shows it
+ * as a new file with every line added (#642), so a reader that limits a diff
+ * to some files puts each one's source beside it.
+ */
+export const parseRenameSources = (raw: string): Map<string, string> => {
+  const fields = raw.split("\0");
+  const sources = new Map<string, string>();
+  let i = 0;
+  while (i < fields.length) {
+    const status = fields[i] ?? "";
+    if (/^[RC]\d*$/.test(status)) {
+      const source = fields[i + 1];
+      const destination = fields[i + 2];
+      if (source && destination) sources.set(destination, source);
+      i += 3;
+    } else if (/^[ADMTUXB]$/.test(status)) {
+      i += 2;
+    } else {
+      i += 1;
+    }
+  }
+  return sources;
+};
+
+/**
  * The map `placeFindings` reads: **one key per changed file** from
  * `parseNameStatus`, each with the lines the patch gave it, or none.
  *

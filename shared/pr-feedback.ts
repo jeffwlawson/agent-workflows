@@ -99,9 +99,18 @@ export interface PullRequestFeedback {
    * human's kept. An earlier round's body is the record of what it found, and
    * the review is already given that record as the open findings and the
    * unresolved threads; handing it the bodies too was up to fifty copies of
-   * what it already had. The fix agent reads `summaries`, unchanged.
+   * what it already had. The fix agent reads `humanSummaries`, for the same
+   * reason (#642).
    */
   readonly allForReview: string;
+  /**
+   * `summaries` without the review bodies this loop posted: a trusted human's
+   * only. What a fix run is shown as its review bodies (#642). Every finding
+   * an earlier round's body records that a fix run is asked to act on is
+   * already in front of it, as an unresolved thread or a minor finding, so
+   * the bodies were up to fifty copies of the threads it already had.
+   */
+  readonly humanSummaries: string;
   /**
    * Node ids of the unresolved threads a fix run is **asked to answer**. What
    * `filterOutcomes` keeps an outcome for, and so the whole of what can receive
@@ -115,6 +124,12 @@ export interface PullRequestFeedback {
    * already capped against, arriving through the other half.
    */
   readonly threadIds: readonly string[];
+  /**
+   * The file each unresolved thread `inline` renders hangs on, in its order,
+   * or `undefined` for one whose path did not come back. What decides which
+   * files' diff a fix run's prompt carries (`readFixDiff`, #642).
+   */
+  readonly threadPaths: readonly (string | undefined)[];
   /**
    * The top-level conversation comments a fix run is **asked to answer**, each
    * with the id an outcome on it names and the author and permalink the record
@@ -717,6 +732,16 @@ export const surfaceText = (feedback: PullRequestFeedback, surface: FeedbackSurf
     ? `${text}\n\n---\n\n(part of this section could not be read, so what it covers is unknown rather than absent: ${note})`
     : `(could not be read: ${note})`;
 };
+
+/**
+ * The review bodies as a fix run is shown them (#642): a trusted human's
+ * only, through `surfaceText`, so a refused read of the reviews is still said
+ * rather than shown as "(none)". This loop's own bodies are left out because
+ * what they ask a fix run to act on is already in its prompt, as the threads
+ * and the minor findings.
+ */
+export const humanSummariesText = (feedback: PullRequestFeedback): string =>
+  surfaceText({ ...feedback, summaries: feedback.humanSummaries }, "summaries");
 
 /**
  * The minor findings a review body's follow-ups payload records (#616), or
@@ -1552,7 +1577,9 @@ export const fetchPullRequestFeedback = (
     conversation,
     all,
     allForReview: block(humanSummaries),
+    humanSummaries,
     threadIds: answerable,
+    threadPaths: threads.map((thread) => thread.comments[0]?.path ?? undefined),
     conversationComments,
     agentThreads,
     settledFindings,
@@ -1568,10 +1595,12 @@ export const fetchPullRequestFeedback = (
     // close and this loop's own unmarked status notes are shown for their
     // evidence and ask for nothing, so a PR holding only those must still
     // refuse rather than spend a run with nothing to act on. A review summary
-    // counts as it always has.
+    // counts where a trusted human wrote it (#642): this loop's own bodies are
+    // not in a fix run's prompt, and what they ask for is counted already, as
+    // the unresolved threads and the minor findings.
     // A minor finding counts too (#616): it is work a fix run is handed, with
     // no thread and no comment to carry it.
-    hasFeedback: summaries !== "" || answerable.length > 0 || conversationComments.length > 0 || minorFindings.length > 0,
+    hasFeedback: humanSummaries !== "" || answerable.length > 0 || conversationComments.length > 0 || minorFindings.length > 0,
     status,
     unreadable,
   };

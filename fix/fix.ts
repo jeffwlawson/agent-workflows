@@ -17,11 +17,13 @@ import { filterConversationOutcomes, filterOutcomes, filterTopLevelComments, fix
 import {
   describeUnreadable,
   fetchPullRequestFeedback,
+  humanSummariesText,
   nothingToActOn,
   refusalReason,
   renderMinorFindingsForFix,
   surfaceText,
 } from "../shared/pr-feedback.js";
+import { readFixDiff, renderFixDiffScope } from "./fix-diff.js";
 import { firstLine, readPrdBranch } from "../shared/prd-round.js";
 import { fixHeader, fixScope, readRoundRecord, roundCounts } from "../shared/round-header.js";
 import { rescueRef, resumeFromRescue, resumeSection } from "../shared/rescue.js";
@@ -127,6 +129,16 @@ try {
     writeJson("rescue_ignored.json", { branch: RESCUE_BRANCH, movedPast: git(["rev-parse", rescueRef(RESCUE_BRANCH)]).trim() });
   }
 
+  // The diff of the files the open findings name, and a stat of the rest
+  // (#642): the run works in a checkout at the head, a `git diff` from the
+  // rest. The whole diff where anything owed work names no file.
+  const fixDiff = readFixDiff(feedback, INPUTS.BASE_REF);
+  console.log(
+    fixDiff.kind === "named"
+      ? `Diff in the prompt: ${fixDiff.files.length} file(s) the findings name, ${fixDiff.diff.length + fixDiff.stat.length} bytes of the whole ${feedback.diff.length}.`
+      : `Diff in the prompt: the whole pull request's, ${feedback.diff.length} bytes.`,
+  );
+
   const result = await runWithExtraction({
     name: `fix-${PR_NUMBER}`,
     agent: claudeAgent("fix", INPUTS),
@@ -140,14 +152,17 @@ try {
       // Each surface as the agent should see it: its text, or a named refusal
       // where the API would not answer — never "(none)" for both, which is the
       // same collapse one level down from the fetch.
-      REVIEW_SUMMARIES: surfaceText(feedback, "summaries"),
+      // A maintainer's review bodies only (#642): what this loop's own record
+      // asks for is in the threads and the minor findings already.
+      REVIEW_SUMMARIES: humanSummariesText(feedback),
       INLINE_COMMENTS: surfaceText(feedback, "inline"),
       CONVERSATION: surfaceText(feedback, "conversation"),
       // The minor findings the newest review records (#616): this pull
       // request's own code, below the repository's threshold, with no thread
       // to answer. Their own section, since no outcome is owed on them.
       MINOR_FINDINGS: renderMinorFindingsForFix(feedback.minorFindings),
-      PR_DIFF: feedback.diff,
+      DIFF_SCOPE: renderFixDiffScope(fixDiff, INPUTS.BASE_REF),
+      PR_DIFF: fixDiff.diff,
       RESUME: resumeSection(resume, RESCUE_BRANCH),
     },
     output: sandcastle.Output.object({ tag: "output", schema: fixOutputSchema }),

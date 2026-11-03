@@ -30,6 +30,7 @@ import { renderOutOfScopeNote } from "../shared/fix-notes.js";
 import {
   DIFF_READ_LIMIT_BYTES,
   fetchPullRequestFeedback,
+  humanSummariesText,
   nothingToActOn,
   refusalReason,
   renderMinorFindingsForFix,
@@ -1239,9 +1240,12 @@ describe("the fix runner refuses through the reason file", () => {
   });
 
   it("shows the agent each surface through surfaceText, so a refusal is not an empty one", () => {
-    for (const surface of ["summaries", "inline", "conversation"]) {
+    for (const surface of ["inline", "conversation"]) {
       expect(source).toContain(`surfaceText(feedback, "${surface}")`);
     }
+    // The review bodies a maintainer left only (#642), through the same reader.
+    expect(source).toContain("REVIEW_SUMMARIES: humanSummariesText(feedback)");
+    expect(source).not.toContain('surfaceText(feedback, "summaries")');
   });
 });
 
@@ -1788,8 +1792,10 @@ describe("the findings an earlier review left open", () => {
    * findings as the open findings and the unresolved threads, so up to fifty
    * copies of what it already had added nothing but length. A trusted human's
    * review body is still discussion, and the loop's accounts are every one on
-   * its list, not only the default. `all` is unchanged, and so is the
-   * `summaries` the fix agent reads; the record is still read off the newest loop review.
+   * its list, not only the default. `all` and `summaries` are unchanged; the
+   * record is still read off the newest loop review. The fix agent is not
+   * handed them either (#642): it reads `humanSummaries`, which the threads and
+   * the minor findings already cover the loop's half of.
    */
   it("leaves every loop account's review bodies out of the review's discussion, and keeps a human's", () => {
     const APP = { author: { login: "my-loop" }, authorAssociation: "NONE" };
@@ -1813,8 +1819,47 @@ describe("the findings an earlier review left open", () => {
       expect(feedback.allForReview).not.toContain(body);
       expect(feedback.all).toContain(body);
       expect(feedback.summaries).toContain(body);
+      expect(feedback.humanSummaries).not.toContain(body);
+      expect(humanSummariesText(feedback)).not.toContain(body);
     }
+    expect(humanSummariesText(feedback)).toContain("Please keep the old flag working.");
     expect(feedback.latestAgentReviewBody).toBe("round 3 body");
+  });
+
+  it("shows a fix run \"(none)\" for its review bodies where only the loop has reviewed, and a refusal where they could not be read", () => {
+    ghAnswers(() => response({ reviews: { nodes: [{ body: "round 1 body", state: "COMMENTED", ...AGENT }] } }));
+    const feedback = fetchPullRequestFeedback("o/r", "12", "main", ACCOUNTS);
+
+    expect(humanSummariesText(feedback)).toBe("(none)");
+    expect(
+      humanSummariesText({ ...feedback, unreadable: [{ path: "repository.pullRequest.reviews", reason: "FORBIDDEN", surfaces: ["summaries"], trustBearing: false }] }),
+    ).toMatch(/^\(could not be read: /);
+  });
+
+  it("has nothing to act on where the loop's own review body is the only feedback, and counts a maintainer's", () => {
+    // This loop's bodies are not in a fix run's prompt (#642), so they cannot
+    // be what keeps a run from stopping with its nothing-to-act-on note.
+    ghAnswers(() => response({ reviews: { nodes: [{ body: "round 1 body", state: "COMMENTED", ...AGENT }] } }));
+    const loopOnly = fetchPullRequestFeedback("o/r", "12", "main", ACCOUNTS);
+
+    expect(loopOnly.summaries).toContain("round 1 body");
+    expect(loopOnly.hasFeedback).toBe(false);
+    expect(nothingToActOn(loopOnly)).toBe(true);
+
+    ghAnswers(() =>
+      response({
+        reviews: {
+          nodes: [
+            { body: "round 1 body", state: "COMMENTED", ...AGENT },
+            { body: "Please keep the old flag working.", state: "COMMENTED", ...MAINTAINER },
+          ],
+        },
+      }),
+    );
+    const human = fetchPullRequestFeedback("o/r", "12", "main", ACCOUNTS);
+
+    expect(human.hasFeedback).toBe(true);
+    expect(nothingToActOn(human)).toBe(false);
   });
 
   it("hands the review no summaries section where only the loop has reviewed", () => {

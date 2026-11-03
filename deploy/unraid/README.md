@@ -18,7 +18,11 @@ Unraid host plus a VM, and no other.
 Each is safe to run again. Settings that differ from the scripts' defaults go in
 `agent-service.conf` beside them: copy [`agent-service.conf.example`](./agent-service.conf.example).
 
-An upgrade is one command on Unraid, with no registry token:
+No script asks for a token to install the package. An install at a version that is not installed
+downloads that release's tarball and its `.sha256` from the repository `PACKAGE_SOURCE` names,
+checks the digest and installs the tarball; a download that fails, or a digest that does not
+match, stops it with the URL named and the installed package as it was. An upgrade is one command
+on Unraid:
 
 ```bash
 bash /boot/config/agent-service/upgrade.sh <version>
@@ -28,7 +32,9 @@ It needs, in `agent-service.conf`:
 
 - **`PACKAGE_SOURCE`**, the `<owner>/<repo>` the package is released from, unless the installed
   package's `repository` field names a github.com one. The repository must be public: its
-  Release assets are what is downloaded, with no token.
+  Release assets are what is downloaded, with no token. `install-unraid.sh` and `install-box.sh`
+  need it set wherever the package is not at the version they are run at, so put a copy of the
+  conf beside `install-box.sh` on the box too.
 - **`BOX_SSH_USER`**, the box's admin account, which may `sudo`, and **`BOX_IP`**, set even where
   it is the default. `BOX_SSH_KEY` names the key where ssh's default is not it.
 
@@ -59,15 +65,12 @@ cannot tell, and goes on as it did before. One window stays open: a webhook that
 worker's empty answer and its restart queues a job the restart drops, and the dispatcher's scan
 dispatches it again.
 
-The upgrade scripts no longer use the registry route: the token prompt is gone from them. The
-install scripts still use it.
-
 What these scripts support, and what they do not yet:
 
 - **Unraid** for the dispatcher, with the User Scripts plugin and Tailscale for the Funnel.
 - **Ubuntu 24.04 on x64** for the box. The VM itself is made by hand in Unraid's VM form.
-- **A registry token** for the first install only, typed at a prompt in `install-unraid.sh` and
-  `install-box.sh`.
+- **Releases that carry their tarball**: a release published before its tarball was attached to
+  it can be neither installed nor rolled back to by these scripts.
 - **One worker.**
 
 These files are not part of the published package.

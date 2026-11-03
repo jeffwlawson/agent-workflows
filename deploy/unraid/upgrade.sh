@@ -149,11 +149,11 @@ box_ssh=$(printf '%q ' ssh "${pasted_opts[@]}" -t "$box")
 # The way back, should a step stop partway: this script at the version the
 # dispatcher had, which installs it on the box first. It downloads that
 # release's tarball, which a release published before its tarball was attached
-# to it does not carry; for one of those, the registry route is the way.
+# to it does not carry, and no script here installs a release without one.
 earlier=${previous:-<the version the dispatcher runs>}
 way_back() {
   echo "To put the box back instead: bash $here/upgrade.sh $earlier. That needs v$earlier's Release to carry its tarball and .sha256, which an older release may not." >&2
-  echo "Where it does not, use the registry route, which asks for a registry token: ${box_ssh}'sudo bash ~/install-box.sh $earlier'" >&2
+  echo "A release published before its tarball was attached to it cannot be rolled back to by script." >&2
 }
 
 echo "Moving both machines to $version, from $url"

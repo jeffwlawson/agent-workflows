@@ -19,9 +19,11 @@
 # reserves the address for whatever card the VM has.
 #
 # Needs, before it starts: the GitHub App's private key saved as app.pem in
-# the dispatcher's appdata folder. Asks, at prompts that do not show what is
-# typed, for the App's webhook secret and a classic GitHub token with only
-# read:packages (delete it on GitHub afterwards); the App ID is shown as typed.
+# the dispatcher's appdata folder, and, where the package is not at <version>,
+# PACKAGE_SOURCE in agent-service.conf: the package is installed from that
+# repository's release tarball, downloaded over https and checked against its
+# .sha256, with no token. Asks, at a prompt that does not show what is typed,
+# for the App's webhook secret; the App ID is shown as typed.
 #
 # Run as root on Unraid:  bash /boot/config/agent-service/install-unraid.sh 0.8.5
 set -euo pipefail
@@ -42,7 +44,12 @@ if [ ! -f "$shared" ]; then
 fi
 # shellcheck source=dispatcher-container.sh
 . "$shared"
-PKG_JSON=${PKG_JSON:-$APPDATA/pkg/node_modules/@jeffwlawson/agent-workflows/package.json}
+package=@jeffwlawson/agent-workflows
+PKG_JSON=${PKG_JSON:-$APPDATA/pkg/node_modules/$package/package.json}
+# The repository the release's tarball is downloaded from, as <owner>/<repo>,
+# and where it is put meanwhile (/root is in memory on Unraid).
+PACKAGE_SOURCE=${PACKAGE_SOURCE:-}
+STAGE_DIR=${STAGE_DIR:-/root}
 PROTOTYPE_CONTAINER=${PROTOTYPE_CONTAINER:-agent-dispatcher-prototype}
 CHAIN=${CHAIN:-AGENT-EGRESS}
 WAIT_SECONDS=${WAIT_SECONDS:-60}
@@ -81,10 +88,13 @@ value() {
   grep -m1 "^$1=" "$ENV_FILE" 2>/dev/null | cut -d= -f2- | sed -e 's/^"\(.*\)"$/\1/' -e "s/^'\(.*\)'$/\1/" || true
 }
 installed() { grep -m1 '"version"' "$PKG_JSON" 2>/dev/null | sed 's/.*"version": *"\([^"]*\)".*/\1/' || true; }
-# Only what is missing is asked for: the App's ID and webhook secret, and the
-# registry token where the package is not at $version. A run that asks nothing
-# needs no terminal.
-if [ -z "$(value GITHUB_APP_ID)" ] || [ -z "$(value GITHUB_WEBHOOK_SECRET)" ] || [ "$(installed)" != "$version" ]; then
+if [ "$(installed)" != "$version" ] && ! [[ $PACKAGE_SOURCE =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]]; then
+  echo "The package is not at $version, and its release is downloaded from the repository PACKAGE_SOURCE names: set PACKAGE_SOURCE=<owner>/<repo> in $conf. Nothing was changed." >&2
+  exit 2
+fi
+# Only what is missing is asked for: the App's ID and webhook secret. A run
+# that asks nothing needs no terminal.
+if [ -z "$(value GITHUB_APP_ID)" ] || [ -z "$(value GITHUB_WEBHOOK_SECRET)" ]; then
   if ! : </dev/tty 2>/dev/null; then
     echo "This asks for secrets at a prompt, so it needs a terminal (over ssh, use ssh -t). Nothing was changed." >&2
     exit 2
@@ -292,23 +302,38 @@ chmod 600 "$ENV_FILE".bak.* 2>/dev/null || true
 echo "== The package"
 package_changed=
 if [ "$(installed)" = "$version" ]; then
-  echo "  unchanged  @jeffwlawson/agent-workflows $version in $APPDATA/pkg"
+  echo "  unchanged  $package $version in $APPDATA/pkg"
 else
-  npmrc=$(umask 077 && mktemp /root/agent-workflows-npmrc.XXXXXX)
-  trap 'rm -f "$npmrc"' EXIT
-  token=$(ask_secret 'GitHub token (read:packages; not shown)')
-  printf '@jeffwlawson:registry=https://npm.pkg.github.com\n//npm.pkg.github.com/:_authToken=%s\n' "$token" >"$npmrc"
-  unset token
-  docker run --rm -v "$APPDATA/pkg:/pkg" -v "$npmrc:/tmp/pkg.npmrc:ro" "$IMAGE" \
-    npm install --prefix /pkg --userconfig /tmp/pkg.npmrc --no-fund --no-audit --no-update-notifier \
-    "@jeffwlawson/agent-workflows@$version"
-  rm -f "$npmrc"
+  # The release's tarball, as upgrade.sh downloads it: the package name with
+  # its @ dropped and / made -, over https only, redirects too, and checked
+  # against its .sha256 before the installed package is touched.
+  tarball=${package#@}
+  tarball="${tarball//\//-}-$version.tgz"
+  url="https://github.com/$PACKAGE_SOURCE/releases/download/v$version/$tarball"
+  stage=$(mktemp -d "$STAGE_DIR/agent-workflows-install.XXXXXX")
+  trap 'rm -rf "$stage"' EXIT
+  for suffix in "" .sha256; do
+    if ! curl -fsSL --proto '=https' --proto-redir '=https' -o "$stage/$tarball$suffix" "$url$suffix"; then
+      echo "Could not download $url$suffix: is v$version released, with its tarball attached? The package was not changed." >&2
+      exit 1
+    fi
+  done
+  # The digest must name this tarball: sha256sum -c checks whatever file it names.
+  read -r _ named <"$stage/$tarball.sha256" || true
+  if [ "${named#\*}" != "$tarball" ] || ! (cd "$stage" && sha256sum -c --quiet "$tarball.sha256"); then
+    echo "The tarball downloaded from $url does not match its .sha256. The package was not changed." >&2
+    exit 1
+  fi
+  echo "  downloaded $url; it matches its .sha256"
+  docker run --rm -v "$APPDATA/pkg:/pkg" -v "$stage:/release:ro" "$IMAGE" \
+    npm install --prefix /pkg --no-fund --no-audit --no-update-notifier "/release/$tarball"
+  rm -rf "$stage"
   if [ "$(installed)" != "$version" ]; then
     echo "The install finished but $PKG_JSON says $(installed), not $version." >&2
     exit 1
   fi
   package_changed=1
-  echo "  installed  @jeffwlawson/agent-workflows $version in $APPDATA/pkg"
+  echo "  installed  $package $version in $APPDATA/pkg"
 fi
 
 echo "== The dispatcher's container"
@@ -367,8 +392,8 @@ echo "             is https://$(tailscale status --json 2>/dev/null | sed -n 's/
 echo
 bash "$check_script" || status=${status:-$?}
 echo
-echo "Next: delete the GitHub token on GitHub if you made one. If the box is not set up yet, set it"
-echo "up with install-box.sh, which asks for WORKER_SECRET. Print it here, once, to copy it across:"
+echo "Next: if the box is not set up yet, set it up with install-box.sh, which asks for"
+echo "WORKER_SECRET. Print it here, once, to copy it across:"
 echo "  grep '^WORKER_SECRET=' $ENV_FILE | cut -d= -f2"
 echo "Before the VM exists, the checks on it fail: that it runs, its Autostart, its card on $NET, and"
 echo "its job door. Once it exists the first three pass; the job door passes once install-box.sh has run."

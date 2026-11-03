@@ -47,9 +47,11 @@
 
 # --- Upgrades, run from Unraid -----------------------------------------------
 
-# Where upgrade.sh downloads each release from: the repository the package is
-# released from, as <owner>/<repo>. Unset, it reads the installed package's
-# repository field, and refuses where that names no github.com repository.
+# Where upgrade.sh and the install scripts download each release from: the
+# repository the package is released from, as <owner>/<repo>. Unset, upgrade.sh
+# reads the installed package's repository field, and refuses where that names
+# no github.com repository; install-unraid.sh and install-box.sh refuse wherever
+# the package is not already at the version they are run at.
 #PACKAGE_SOURCE=<owner>/<repo>
 
 # The package's name, which names the release's tarball. Unset, upgrade.sh takes

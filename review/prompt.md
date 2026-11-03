@@ -64,9 +64,10 @@ Where any commits are listed, read the ones that could bear on a criterion, and 
 criterion and the commit where one does, or saying none does. The list adds nothing to the verdict
 of its own, so rule on the criteria as you would otherwise: a criterion a listed commit made moot
 or wrong is `changed`, with that commit as the reason; one the change fails at the code as it now
-stands is `unmet`, or a finding, as always; and where which reading the issue meant is a human's
-call, say so in `needsYou`. Never raise a finding that the brief is out of date: nothing a fix
-round can edit would answer it. Where nothing is listed, leave `sinceBrief` out.
+stands is `unmet`, or a finding, as always; and where a listed commit leaves which reading the
+issue meant a human's call, the issue itself is wrong as written: say so in `needsYou` (*When
+another pass will not settle it*). A stale brief is a ruling (`changed`, or `needsYou`), never a
+finding: nothing a fix round can edit would answer it.
 
 # EXISTING FEEDBACK
 

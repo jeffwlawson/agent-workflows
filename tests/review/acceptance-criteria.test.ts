@@ -511,4 +511,19 @@ describe("the review brief's commits since the brief", () => {
   ])("%s asks for the ruling in `sinceBrief`", (_half, text) => {
     expect(text).toContain("`sinceBrief`");
   });
+  /**
+   * A reading only a human can choose goes through `needsYou`'s own case,
+   * the issue wrong as written, rather than as a fourth case the section that
+   * defines the field does not list (#704, M6). And a stale brief is a
+   * ruling, said positively; the "leave it out" rule is the runner's
+   * placeholder text, printed on exactly the runs it applies to (L3).
+   */
+  it("routes an ambiguous reading through needsYou's issue-wrong case, and leaves the empty case to the runner", () => {
+    const plain = PROMPT.replace(/[*_]/g, "").replace(/\s+/g, " ");
+
+    expect(plain).toMatch(/the issue itself is wrong as written: say so in `needsYou` \(When another pass will not settle it\)/);
+    expect(plain).toMatch(/A stale brief is a ruling \(`changed`, or `needsYou`\), never a finding/);
+    expect(PROMPT).not.toMatch(/Never raise a finding that the brief|leave `sinceBrief` out/);
+    expect(fs.readFileSync("review/since-brief.ts", "utf8")).toContain("leave `sinceBrief` out.");
+  });
 });

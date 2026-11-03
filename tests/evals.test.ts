@@ -21,6 +21,8 @@ import {
   runRecords,
   sandboxOf,
   sections,
+  stageControls,
+  CONTROL_FILE,
   type EvalResult,
   type RunRecord,
   type StageMeta,
@@ -237,31 +239,88 @@ describe("a grader's grading", () => {
 });
 
 describe("a run of the controls", () => {
+  const MERGE_CHECK = "Medium: the checkout persists a token.\n\nLow: the install check can be skipped.";
+  const APPROVED = "### Approval recommended\n\nNothing is unresolved.";
   const meta: StageMeta = {
     prompt: "review",
     revision: { file: "review/prompt.md", head: "a".repeat(40), lastChange: "b".repeat(40), blob: "c".repeat(40), uncommitted: false },
     cases: [],
     controls: [
-      { name: "escape--merge-check", case: "escape", control: "merge-check", expect: { "01": true, "02": true } },
-      { name: "escape--approved", case: "escape", control: "approved", expect: { "01": false, "02": false } },
+      { name: "escape--merge-check", case: "escape", control: "merge-check", expect: { "01": true, "02": true }, text: MERGE_CHECK },
+      { name: "escape--approved", case: "escape", control: "approved", expect: { "01": false, "02": false }, text: APPROVED },
     ],
   };
-  const run = (passed: Record<string, boolean>) => ({ error: null, graders: Object.entries(passed).map(([name, ok]) => ({ name, passed: ok })) });
-  const result: EvalResult = {
+  const run = (passed: Record<string, boolean>, evidence: string | undefined) => ({
+    error: null,
+    graders: Object.entries(passed).map(([name, ok]) => ({
+      name,
+      passed: ok,
+      explanation: ok ? "It says so." : "It does not say so.",
+      ...(evidence === undefined ? {} : { evidence }),
+    })),
+  });
+  const result = (merge: string | undefined, approved: string | undefined): EvalResult => ({
     cases: [
-      { name: "escape--merge-check", graders: [], arms: { with: [run({ "01": true, "02": false })] } },
-      { name: "escape--approved", graders: [], arms: { with: [run({ "01": true, "02": false })] } },
+      { name: "escape--merge-check", graders: [], arms: { with: [run({ "01": true, "02": false }, merge)] } },
+      { name: "escape--approved", graders: [], arms: { with: [run({ "01": true, "02": false }, approved)] } },
     ],
-  };
+  });
 
-  it("says which grader fails its positive control and which passes its negative one", () => {
-    expect(controlRows(meta, result).map((row) => `${row.control}/${row.grader}: ${row.check}`)).toEqual([
+  it("says which grader fails its positive control and which passes its negative one, on the control's own text", () => {
+    // The judge's evidence may frame the text and wrap it differently.
+    const rows = controlRows(meta, result(`File control.md:\n${MERGE_CHECK.replaceAll("\n\n", "\n")}\n`, APPROVED));
+
+    expect(rows.map((row) => `${row.control}/${row.grader}: ${row.check}`)).toEqual([
       "merge-check/01: as expected",
       "merge-check/02: **broken**: fails its positive control",
       "approved/01: **too loose**: passes its negative control",
       "approved/02: as expected",
     ]);
-    expect(report(meta, result)).toContain("**2 of 4** grader rulings as the controls expect.");
+    expect(rows.find((row) => row.control === "merge-check" && row.grader === "02")?.explanations).toEqual(["It does not say so."]);
+    const text = report(meta, result(MERGE_CHECK, APPROVED));
+    expect(text).toContain("**2 of 4** grader rulings as the controls expect; **2** differ; **0** void");
+    expect(text).toContain("- escape merge-check 02: It does not say so.");
+  });
+
+  // The maintainer's run on a00633d: the model asked to echo the text did not
+  // always, and the graders judged what it wrote. A ruling on other text says
+  // nothing about the grader.
+  it("voids a ruling whose judge was not shown the control's text, rather than calling the grader broken", () => {
+    const rows = controlRows(meta, result(MERGE_CHECK.slice(0, 20), undefined));
+
+    expect(rows.map((row) => `${row.control}/${row.grader}: ${row.status}`)).toEqual([
+      "merge-check/01: void",
+      "merge-check/02: void",
+      "approved/01: void",
+      "approved/02: void",
+    ]);
+    expect(report(meta, result(MERGE_CHECK.slice(0, 20), undefined))).toContain("**0 of 4** grader rulings as the controls expect; **0** differ; **4** void");
+  });
+
+  it("stages each control's text as a file its graders read, with each grader's criteria as they are", () => {
+    const out = fs.mkdtempSync(path.join(os.tmpdir(), "controls-"));
+    try {
+      const staged = stageControls(ROOT, "review", out, (name) => name === "restart-order");
+      const c = readCase(caseDirs(ROOT, "review").find((dir) => path.basename(dir) === "restart-order") ?? "");
+      const control = c.controls.find((x) => x.name === "changes-after-fix");
+      const dir = path.join(out, "evals", "restart-order--changes-after-fix");
+
+      expect(staged.controls?.find((x) => x.control === "changes-after-fix")?.text).toBe(control?.text);
+      expect(fs.readFileSync(path.join(dir, CONTROL_FILE), "utf8")).toBe(`${control?.text}\n`);
+      expect(parse(fs.readFileSync(path.join(dir, "case.yaml"), "utf8"))).toMatchObject({ context: { scaffold_script: "place-files.sh" } });
+      expect(fs.readFileSync(path.join(dir, "place-files.sh"), "utf8")).toContain(`cp '${path.join(dir, CONTROL_FILE)}' '${CONTROL_FILE}'`);
+      for (const grader of Object.keys(control?.expect ?? {})) {
+        const original = frontmatter(fs.readFileSync(path.join(c.dir, "graders", `${grader}.md`), "utf8"));
+        const copy = frontmatter(fs.readFileSync(path.join(dir, "graders", `${grader}.md`), "utf8"));
+
+        expect(copy["body"]).toBe(original["body"]);
+        expect(copy["focus"]).toEqual({ source: "file", path: CONTROL_FILE });
+        expect(copy["type"]).toBe(original["type"]);
+      }
+      expect(fs.readFileSync(path.join(dir, "prompt.md"), "utf8")).not.toContain(control?.text.slice(0, 40));
+    } finally {
+      fs.rmSync(out, { recursive: true, force: true });
+    }
   });
 });
 
@@ -376,27 +435,29 @@ describe("a prompt change's comparison", () => {
     ].join("\n");
 
   it("is owed nothing where no prompt changed", () => {
-    expect(comparisonProblems([], [])).toEqual([]);
+    expect(comparisonProblems([], "", [])).toEqual([]);
   });
 
   it("is found in the body or a comment, with both blobs in order", () => {
-    expect(comparisonProblems([change], ["Summary.", comparison(change.before, change.after)])).toEqual([]);
-    expect(comparisonProblems([change], [`Body.\n\n${comparison(change.before, change.after)}\n\n### Another heading\n\nblob \`${"9".repeat(12)}\``])).toEqual([]);
+    expect(comparisonProblems([change], "Summary.", [comparison(change.before, change.after)])).toEqual([]);
+    expect(comparisonProblems([change], `Body.\n\n${comparison(change.before, change.after)}\n\n### Another heading\n\nblob \`${"9".repeat(12)}\``, [])).toEqual([]);
   });
 
   it("does not count a comparison of other blobs, of the other prompt, or the wrong way round", () => {
-    const [stale] = comparisonProblems([change], [comparison(change.before, "3".repeat(40))]);
+    const [stale] = comparisonProblems([change], "", [comparison(change.before, "3".repeat(40))]);
 
     expect(stale).toMatch(/review\/prompt\.md changed .*111111111111.*222222222222/);
     expect(stale).toContain(`111111111111 against 333333333333`);
-    expect(comparisonProblems([change], [comparison(change.after, change.before)])).toHaveLength(1);
-    expect(comparisonProblems([change], [comparison(change.before, change.after, "fix")])).toHaveLength(1);
-    expect(comparisonProblems([change], ["No comparison here."])[0]).toMatch(/none is in its body or comments/);
+    expect(comparisonProblems([change], comparison(change.after, change.before), [])).toHaveLength(1);
+    expect(comparisonProblems([change], "", [comparison(change.before, change.after, "fix")])).toHaveLength(1);
+    expect(comparisonProblems([change], "No comparison here.", [])[0]).toMatch(/none is in its body or comments/);
   });
 
-  it("is waived by an Eval-Waiver line with a reason, and only with one", () => {
-    expect(comparisonProblems([change], ["Body.\n\nEval-Waiver: a typo in a heading no case reads."])).toEqual([]);
-    expect(comparisonProblems([change], ["Eval-Waiver:"])).toHaveLength(1);
+  it("is waived by an Eval-Waiver line with a reason in the body, and only there", () => {
+    expect(comparisonProblems([change], "Body.\n\nEval-Waiver: a typo in a heading no case reads.", [])).toEqual([]);
+    expect(comparisonProblems([change], "Eval-Waiver:", [])).toHaveLength(1);
+    // Anyone who can comment could post one: a comment's waiver waives nothing.
+    expect(comparisonProblems([change], "Body.", ["Eval-Waiver: a typo in a heading no case reads."])).toHaveLength(1);
   });
 
   it("is checked on every pull request, the head's own blobs, again when the body is edited", () => {
@@ -418,7 +479,7 @@ describe("a prompt change's comparison", () => {
   it("asks for each changed prompt's own", () => {
     const fixChange = { prompt: "fix" as const, before: "4".repeat(40), after: "5".repeat(40) };
 
-    expect(comparisonProblems([change, fixChange], [comparison(change.before, change.after)])).toEqual([expect.stringMatching(/^fix\/prompt\.md/)]);
+    expect(comparisonProblems([change, fixChange], "", [comparison(change.before, change.after)])).toEqual([expect.stringMatching(/^fix\/prompt\.md/)]);
   });
 });
 

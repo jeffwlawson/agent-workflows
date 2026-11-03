@@ -99,7 +99,9 @@ brief is right not to raise it. `restart-order` 05 is the finding 13 of 15 store
 no grader credited: the halves default `PKG_JSON` to a path under the package's own scope while
 `upgrade.sh` honours `PACKAGE_NAME`. It is a real defect against the brief ("No owner or repo name
 is written in any script"); the loop's own reviews of the head recorded it, and it is filed as #580.
-Grader numbers are not reused, so a stored run's 04 is still this 04.
+Grader numbers are not reused. The verdicts, `restart-order` 04 and `rescue-deleted-before-open` 03,
+were reworded after the first run of the controls (below) to say what counts as asking for a change,
+so a stored run's 04 was graded by the earlier file, and `compare` refuses to pool the two.
 
 ## Controls
 
@@ -118,12 +120,29 @@ is edited.
 node scripts/eval-prompts.ts controls review --model claude-haiku-5-5 --max-cost-usd 2
 ```
 
-stages each control as a case of its own, whose prompt has the model repeat the control's text as its
-final message, graded by the graders it names, as they are; no checkout, one run each. The report
-lists each ruling against what the control expects, and the command exits 1 where one differs. It
-costs the judge and an echo of the text. **No run of the controls had been made** when they were
-added: there was no credential where they were written. Run them, and fix a grader that fails one,
-before the next comparison that declares it.
+stages each control as a case of its own, whose scaffold puts the control's text in the run's
+sandbox as `control.md`. Its graders are the case's graders it names, criteria as they are, each
+with its `focus` moved from the final message to that file (`focus: { source: file, path:
+control.md }`), so the judge reads the text itself; the model is asked for one word, which nothing
+reads. One run each, no checkout. The cost is the judge's.
+
+The report lists each ruling against what the control expects, with the judge's reason where it
+differs. A ruling counts only where the judge was shown the control's text (the tool's `evidence`
+for that grader, which holds what the judge read): any other ruling is **void**, counted on its own
+line and never called broken or too loose. The command exits 1 only on a ruling that differs from
+`expect` on the control's own text.
+
+**The first run** (on `a00633d`, before this staging) had the model echo the text as its final
+message, so the judge graded the echo: 25 of 27 review rulings and 4 of 6 fix rulings held with a
+`claude-haiku-5-5` echo, and 23 of 27 and 6 of 6 with `claude-opus-5-5`. Most of the broken
+rulings were the echo: the two runs broke different controls. One broke under both,
+`restart-order/changes-after-fix` grader 04. That control is right: Review 3 at `58a8c32` of #577
+asked for changes, with a High (an acceptance criterion ruled unmet) and two Lows. The grader was
+the problem. It asked whether the review "asks for at least one change before merge", and this
+review's findings are ones the author may skip by replying, and its High one the pull request may
+depart from by saying why. So 04, and `rescue-deleted-before-open` 03, which had the same words,
+now say what counts. No run has yet graded the text directly. Run them, and fix a grader that
+fails one, before the next comparison that declares it.
 
 ## What a case reaches
 
@@ -299,7 +318,8 @@ reported does not depend on what was seen.
    (`### \`<prompt>\` comparison`) whose two sides ran the prompt's blob at the merge-base and at
    the head, in that order. A comparison of an earlier revision of the change does not count: edit
    the prompt again and the comparison is owed again. A change no eval can measure (a typo in a
-   heading no case reads) says so with a line `Eval-Waiver: <the reason>` in the body. The job
+   heading no case reads) says so with a line `Eval-Waiver: <the reason>` in the body; one in a
+   comment waives nothing, since anyone who can comment could post it. The job
    runs again when the body is edited; after posting the comparison as a comment, re-run it.
 
 **The words to use.** At p < 0.029 on a primary or guard: the grader *rose* or *fell*, with both

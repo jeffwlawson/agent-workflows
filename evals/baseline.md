@@ -16,7 +16,7 @@ and is the only fix record taken on the graders as they now stand.
 
 **The graders have changed since** (#718, `README.md`, *What a grader is counted as*): the clean
 case's 02 and `restart-order` 03 are removed, `restart-order` 05 is added, 03 of
-`rescue-deleted-before-open` and 04 of `restart-order` are now verdicts, and 02 of
+`rescue-deleted-before-open` and 04 of `restart-order` are now verdicts (and reworded), and 02 of
 `persisted-checkout-token` is counted given 01. The tables below are as they were taken.
 
 Misses are part of the baseline: several graders pass in none of their runs. The tables are the

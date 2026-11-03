@@ -1,0 +1,25 @@
+# PR #692, a clean case (#719): a change that must not draw a false finding.
+#
+# The head is 9d5c407, the pull request's one commit, where its first and only
+# review recommended approval (2026-11-02T23:11Z) with no finding and no
+# follow-up. No maintainer review or comment is on it, and the squash, c3d8c7d,
+# holds 9d5c407's tree exactly. Nothing on main since has changed any of its
+# four files (deploy/unraid/upgrade.sh, its README, its test and
+# docs/deploying-the-service.md), so a finding raised here is a false one. Its
+# diff is a shell script and its tests. The base is the merge-base the
+# review's three-dot diff was taken from.
+pr: 692
+repository: https://github.com/jeffwlawson/agent-workflows.git
+base_ref: main
+base: 957ae7b5c308a31161a71505f48f7838a41894af
+head: 9d5c407e67c1ae0f924e6db0783b9110cd3e1ec3
+clean: true
+# Issue #690's body as it stands, rendered with its comments through
+# review/review-context.ts and review/acceptance-criteria.ts; it has no brief comment.
+brief: inputs/LINKED_ISSUE.md
+inputs:
+  PR_NUMBER: "692"
+  BRANCH: agent/issue-690-upgrade-sh-asks-for-the-box-s-ssh-password-once-an
+  PR_TITLE: "feat(deploy): upgrade.sh shares one ssh connection and asks for the box's sudo password once"
+  ISSUE_NUMBER: "690"
+  ISSUE_TITLE: "upgrade.sh asks for the box's ssh password once and its sudo password once"

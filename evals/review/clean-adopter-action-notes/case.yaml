@@ -1,0 +1,6 @@
+schema_version: "1.1"
+name: clean-adopter-action-notes
+context:
+  scaffold_script: place-files.sh
+expected_outcome: |
+  Raises no finding to fix before merge: the change has publish write an Adopter action section into each Release body, collected from the Adopter-Action trailers of the commits since the last release, with tests and docs, and nothing in it needs changing.

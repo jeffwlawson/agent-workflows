@@ -1,0 +1,27 @@
+# PR #678, a clean case (#719): a change that must not draw a false finding.
+#
+# The head is b18b87f, where Review 3 recommended approval (2026-11-02T17:20Z)
+# with no finding open and no follow-up. Reviews 1 and 2 each raised one
+# Medium finding, which the two commits after 7994896 fixed; replayed as
+# a first review, the diff holds all three. No maintainer review or comment is
+# on it, and the squash, ba0c0d6, holds b18b87f's tree exactly. Since it
+# merged, main has changed none of setup/doctor.ts, tests/agent-cli.test.ts,
+# setup/SETUP.md or docs/agents/changing-the-install-path.md, and its other
+# two files only by additions of their own (1c86471 to docs/agents/domain.md,
+# a20daa2 to docs/ADOPTING.md), so a finding raised here is a false one. The
+# base is the merge-base the review's three-dot diff was taken from.
+pr: 678
+repository: https://github.com/jeffwlawson/agent-workflows.git
+base_ref: main
+base: a993404c72f572c20f1b5548b24e8e8875fd9a88
+head: b18b87f9e47eb0f488a419924c8f83a770115873
+clean: true
+# Issue #611's body as it stands, rendered with its comments through
+# review/review-context.ts and review/acceptance-criteria.ts; it has no brief comment.
+brief: inputs/LINKED_ISSUE.md
+inputs:
+  PR_NUMBER: "678"
+  BRANCH: agent/issue-611-guard-the-domain-model-s-name-context-md-against-u
+  PR_TITLE: "feat(doctor): fail a checkout whose domain model was renamed from CONTEXT.md to GLOSSARY.md (#611)"
+  ISSUE_NUMBER: "611"
+  ISSUE_TITLE: "Guard the domain model's name (CONTEXT.md) against upstream's GLOSSARY.md rename, in the docs and in doctor"

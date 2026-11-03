@@ -1,0 +1,6 @@
+schema_version: "1.1"
+name: clean-explained-difference
+context:
+  scaffold_script: place-files.sh
+expected_outcome: |
+  Raises no finding to fix before merge, and does not rule the golden-PR eval criterion unmet: the pull request departs from it on the maintainer's direction in its conversation, which is a difference to name in the summary, not a finding. The rest does what the issue asks.

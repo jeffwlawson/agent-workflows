@@ -1,0 +1,34 @@
+# PR #698 at its merged head: the scope-creep mirror (#614, #719), a
+# deliberate, explained difference from the issue that must not be a finding.
+#
+# The head is 5528a12, where Review 3 recommended approval (2026-11-03T02:50Z)
+# with no finding open and no follow-up, ruling C5 (the golden-PR eval and the
+# usage-ledger prompt sizes) changed: the maintainer had directed, in the pull
+# request's conversation (IC_kwDOTzVKqM8AAAABiQnOCw, 02:43Z), that it not try
+# to meet it, since every eval case replays a first review and none reaches
+# the path it changes. Reviews 1 and 2 ruled C5 unmet before that comment. It
+# was merged as c53531d with this tree, and nothing on main since has changed
+# review/review-diff.ts, review/review-round.ts or review/review.ts, so a
+# finding raised here is a false one, and C5 ruled unmet is one.
+#
+# Replayed as a first review, like every case, with one difference from the
+# others: DISCUSSION holds the pull request's conversation as the review then
+# read it, the maintainer's comment alone (the loop's own reviews, threads
+# and outcome comment are left out, as a first review has none). Rendered
+# through review/review-context.ts over issue #641 and that comment. The base
+# is the merge-base the review's three-dot diff was taken from.
+pr: 698
+repository: https://github.com/jeffwlawson/agent-workflows.git
+base_ref: main
+base: f3b054a9d8705e8c0bf184afb4032f368c67e71a
+head: 5528a1222938c095dbeeeb4c165ae55300851036
+clean: true
+# The maintainer's direction is the brief for the difference; issue #641's
+# body, as it stands, is in LINKED_ISSUE.md.
+brief: inputs/DISCUSSION.md
+inputs:
+  PR_NUMBER: "698"
+  BRANCH: agent/issue-641-a-review-after-a-fix-round-reads-only-what-the-fix
+  PR_TITLE: "feat(review): a verification pass carries only the diff since the last review"
+  ISSUE_NUMBER: "641"
+  ISSUE_TITLE: A review after a fix round reads only what the fix round changed

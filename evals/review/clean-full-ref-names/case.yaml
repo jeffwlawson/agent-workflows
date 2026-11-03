@@ -1,0 +1,6 @@
+schema_version: "1.1"
+name: clean-full-ref-names
+context:
+  scaffold_script: place-files.sh
+expected_outcome: |
+  Raises no finding to fix before merge: the change names every ref in full at the service's fetch, its checkout and update-branch's merge, so a tag named like a branch cannot shadow it, keeps the merge commit's subject, with a test at each site, and nothing in it needs changing.

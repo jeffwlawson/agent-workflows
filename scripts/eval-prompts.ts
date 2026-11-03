@@ -534,6 +534,12 @@ export const stage = (
   return meta;
 };
 
+/** A grader file's `type`: `llm` for a judge's, `regex` for a deterministic one. */
+const graderType = (file: string): unknown => {
+  const match = /^---\n([\s\S]*?)\n---\n/.exec(fs.readFileSync(file, "utf8"));
+  return ((parse(match?.[1] ?? "") ?? {}) as Record<string, unknown>)["type"];
+};
+
 /** Where a staged control's text is put in its run's sandbox, which its graders read. */
 export const CONTROL_FILE = "control.md";
 
@@ -568,6 +574,10 @@ export const stageControls = (root: string, prompt: PromptName, out: string, onl
   for (const c of cases) {
     const hashes = Object.fromEntries(c.graders.map((file) => [graderName(file), blobHash(path.join(c.dir, "graders", file))]));
     for (const control of c.controls) {
+      // A judge rules only on an `llm` grader. A `regex` one is deterministic
+      // and free, and `tests/evals.test.ts` holds it on its controls.
+      const graders = Object.keys(control.expect).filter((grader) => graderType(path.join(c.dir, "graders", `${grader}.md`)) === "llm");
+      if (graders.length === 0) continue;
       const name = `${c.name}--${control.name}`;
       const dir = path.join(out, "evals", name);
       fs.mkdirSync(path.join(dir, "graders"), { recursive: true });
@@ -587,12 +597,11 @@ export const stageControls = (root: string, prompt: PromptName, out: string, onl
           expected_outcome: `The graders rule on ${CONTROL_FILE}, ${control.name} of ${c.name}, as its expect says.\n`,
         }),
       );
-      const graders = Object.keys(control.expect);
       for (const grader of graders) {
         fs.writeFileSync(path.join(dir, "graders", `${grader}.md`), controlGrader(fs.readFileSync(path.join(c.dir, "graders", `${grader}.md`), "utf8")));
       }
       staged.push({ name, pr: c.pr, head: c.head, clean: false, case: c.name, graders: Object.fromEntries(graders.map((g) => [g, hashes[g] ?? ""])) });
-      controls.push({ name, case: c.name, control: control.name, expect: control.expect, text: control.text });
+      controls.push({ name, case: c.name, control: control.name, expect: Object.fromEntries(graders.map((g) => [g, control.expect[g] === true])), text: control.text });
     }
   }
   if (controls.length === 0) throw new Error(`No ${prompt} case matched has a control.`);
@@ -770,6 +779,10 @@ export const report = (meta: StageMeta, result: EvalResult, dir?: string): strin
     "| --- | --- | --- | --- | --- | --- |",
   ];
   const clean: string[] = [];
+  const pooled = { raised: 0, completed: 0, cases: 0 };
+  // A fix case is clean where the right change is none (#719): a run that
+  // fails it changed something, or answered a thread as though it had.
+  const what = meta.prompt === "fix" ? "made a change or an outcome the case needs none of" : "raised a false finding";
   for (const c of result.cases) {
     const known = meta.cases.find((m) => m.name === c.name);
     const runs = c.arms.with ?? [];
@@ -787,10 +800,20 @@ export const report = (meta: StageMeta, result: EvalResult, dir?: string): strin
     }
     if (known?.clean === true) {
       const raised = completed.filter((run) => c.graders.some((g) => !run.graders.some((rg) => rg.name === g.name && rg.passed))).length;
-      clean.push(`- **${c.name}:** ${raised} of ${completed.length} completed runs raised a false finding (${percent(raised, completed.length)}).`);
+      clean.push(`- **${c.name}:** ${raised} of ${completed.length} completed runs ${what} (${percent(raised, completed.length)}).`);
+      pooled.raised += raised;
+      pooled.completed += completed.length;
+      pooled.cases += 1;
     }
   }
-  if (clean.length > 0) lines.push("", "**False-finding rate** (clean cases):", "", ...clean);
+  // Several clean pull requests are what make it a rate rather than one
+  // pull request's anecdote (#719). Pooled runs of different pull requests
+  // are not independent draws of one rate, so this is read beside the lines
+  // above, not instead of them.
+  if (pooled.cases > 1) {
+    clean.push(`- **all clean cases (${pooled.cases}):** ${pooled.raised} of ${pooled.completed} completed runs ${what} (${percent(pooled.raised, pooled.completed)}).`);
+  }
+  if (clean.length > 0) lines.push("", meta.prompt === "fix" ? "**False-change rate** (clean cases, where the right change is none):" : "**False-finding rate** (clean cases):", "", ...clean);
   if (meta.cases.some((c) => Object.keys(c.grading ?? {}).length > 0)) {
     lines.push(
       "",

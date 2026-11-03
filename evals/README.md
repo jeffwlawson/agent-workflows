@@ -18,19 +18,73 @@ and touches no network.
 | `review/persisted-checkout-token` | #572 | `3586dd7` | the checkout persists a token the job can now push with; a re-run skips the install check |
 | `review/restart-order` | #577 | `edb772f` | a failed worker restart still restarts the dispatcher; the recovery advice cannot run; the halves hard-code the package's scope (#580) |
 | `review/rescue-deleted-before-open` | #570 | `4d56bbc` | publish deletes the rescue before the pull request opens; a set-aside rescue is overwritten (#578) |
+| `review/held-door-replay` | #601 | `bceed0c` | **security hygiene**: the held door, which now drops queued jobs, takes a replayed question; another release's job is refused before its version is checked |
 | `review/clean-doctor-service-guard` | #566 | `85a04f0` | **clean**: no finding to fix before merge |
+| `review/clean-explained-difference` | #698 | `5528a12` | **clean**, the scope-creep mirror: a departure from a criterion the maintainer directed is not a finding |
+| `review/clean-domain-model-guard` | #678 | `b18b87f` | **clean**: no finding to fix before merge |
+| `review/clean-full-ref-names` | #584 | `1159e02` | **clean**: no finding to fix before merge |
+| `review/clean-upgrade-one-password` | #692 | `9d5c407` | **clean**: no finding to fix before merge |
+| `review/clean-adopter-action-notes` | #681 | `c237a40` | **clean**: no finding to fix before merge |
 | `fix/rescue-deleted-before-open` | #570 | `b41cecd` | the fix moves the deletion, adds or updates a test, and changes nothing else |
+| `fix/declined-unrunnable-eval` | #698 | `e0bd934` | **clean**: no change (a deterministic grader), and both threads declined because no change answers them |
+| `fix/maintainer-direction-size-guard` | #698 | `e0bd934` | a maintainer's conversation comment is made and reported addressed; both threads declined on that direction |
+| `fix/minor-finding-and-direction` | #732 | `a00633d` | a minor finding is fixed beside a maintainer's comment: the waiver read from the body only, controls graded on their own text |
 
 Each head is found from the `agent-review` status history: the commit where the verdict turned
 success, before the merge-check (or a later round) found what it missed. **Not the merged head**,
 which already holds the fix. Each case's `replay.yaml` says how its head was chosen.
 
-The clean case is #566 because its approved head left no finding open and recorded no follow-up,
+The first clean case is #566 because its approved head left no finding open and recorded no follow-up,
 no maintainer review or merge-check finding is on it, its diff is code and tests, not only docs,
 and **nothing merged since has had to fix it**: no later commit on `main` changes
 `setup/doctor.ts` or `docs/ADOPTING.md`. A clean case needs all of these; a later fix means a
 review that caught the defect is correct, and would be scored as a false finding. #568 was the
 clean case first and was dropped for that reason (#584 fixed what it shipped).
+
+`held-door-replay` is the second security-hygiene case, beside `persisted-checkout-token` (#719).
+Its replay finding rests on no criterion and no rule, only on a described way the change can be
+abused, which is the class #697's first wording of the basis rule suppressed, so a change to that
+rule names both as guards. The maintainer's pre-merge check on its head also found a Medium that is
+not graded: the door refused a read-only question that #602's `upgrade.sh` was to ask, which nothing
+in the brief says.
+
+One clean pull request bounds the false-finding rate and does not measure it (three clean runs with
+none failed is an upper 95% bound of 63%), so four more were added by the same recipe (#719): #678
+(doctor, the domain model's name), #584 (the service names every ref in full), #692
+(`upgrade.sh`, a shell script) and #681 (publish's Adopter action section). Each was approved by
+the loop with no finding open and no follow-up, has no maintainer review or comment, was squashed
+with its approved head's tree, and has code and tests in its diff; what `main` has changed in its
+files since is named in its `replay.yaml`, and none of it fixes the change. #692 and #681 were
+approved at their first review, so their negative control is another pull request's review. The
+report gives each clean case's rate, and with more than one, the rate over all of them, which pools
+runs of different pull requests and is read beside the per-case lines.
+
+`clean-explained-difference` is the mirror #614 asks for beside a scope-creep case: #698 at its
+merged head departs from its criterion C5 (a golden-PR eval) because the maintainer said so in the
+pull request's conversation, and the review that approved it ruled C5 changed. Its DISCUSSION holds
+that comment, which no other case's does, since every other case's conversation is a first review's,
+empty. **The scope-creep case itself is not yet built**: no real one was found. The loop's review
+has asked the question only since #697 (2026-11-03); the maintainer's pre-merge checks read for
+this (#572, #577, #601) raise no unrequested behaviour; and a search of the pull requests for "scope
+creep" finds only #697, whose own evals say no case contains it. A synthetic
+commit on a clean head, the audit's cheaper route, would have no real review text that raises it, so
+no positive control (*Controls*, below), and is not a commit `checkout.sh` could fetch.
+
+The inputs of these cases, and of the fix cases on #698, were rendered with the runners' own
+renderers (`fetchPullRequestContext`, `fetchPullRequestFeedback` and `surfaceText` over the pull
+request's GitHub records, through a stand-in `gh`); for #566 that reproduces its inputs byte for
+byte.
+
+The fix cases on #698 are its second and third fix rounds, both on `e0bd934` (the second made no
+commit). In the second, both open threads were on the one criterion no code could meet (a golden-PR
+eval, which is a paid run by hand), and the round rightly changed nothing: the maintainer then
+directed the pull request not to try. So `declined-unrunnable-eval` is **the clean case for fix**: a
+run that changes anything has failed it. In the third, a maintainer's conversation comment asked for
+a code change and set the same two threads aside, which `maintainer-direction-size-guard` grades:
+the precedence and conversation-outcome paths of `fix/prompt.md`. `minor-finding-and-direction` is
+#732's first fix round, handed a minor finding (#616) and a maintainer's comment, and no thread: the
+one case that reaches *MINOR FINDINGS*. No fix round here has been handed a thread, a conversation
+comment and a minor finding at once, so the three kinds are held by two cases, not one.
 
 ## What a case is
 
@@ -103,6 +157,19 @@ Grader numbers are not reused. The verdicts, `restart-order` 04 and `rescue-dele
 were reworded after the first run of the controls (below) to say what counts as asking for a change,
 so a stored run's 04 was graded by the earlier file, and `compare` refuses to pool the two.
 
+## A deterministic grader
+
+A grader may be `type: regex` instead of `llm`: a pattern `claude plugin eval` matches against the
+final message (`target: last_message`, with `match: contains`, `not_contains` or `count:N`), with no
+judge, no cost and no variance. Its body says in words what it holds; the tool reads only the
+frontmatter. `declined-unrunnable-eval` 01 is one: the final message holds no `diff --git` line, so
+the run printed no change. It reads what the run printed, so a run that changed a file and did not
+print it would pass; its `llm` grader, which reads the replies, is the other half. Its controls are
+ruled on in `tests/evals.test.ts`, by the tool's own rule, rather than in a run of the controls.
+
+A fix case is **clean** (`clean: true`) where the right change is none. The report gives its
+false-change rate: the share of completed runs that failed any of its graders.
+
 ## Controls
 
 A grader that fails a text it should pass is broken, and one that passes a text it should fail is
@@ -120,7 +187,8 @@ is edited.
 node scripts/eval-prompts.ts controls review --model claude-haiku-5-5 --max-cost-usd 2
 ```
 
-stages each control as a case of its own, whose scaffold puts the control's text in the run's
+stages each control as a case of its own, with the `llm` graders it names (a `regex` grader is held
+by the layout test instead, above), whose scaffold puts the control's text in the run's
 sandbox as `control.md`. Its graders are the case's graders it names, criteria as they are, each
 with its `focus` moved from the final message to that file (`focus: { source: file, path:
 control.md }`), so the judge reads the text itself; the model is asked for one word, which nothing
@@ -261,8 +329,8 @@ and not `/tmp`, which is cleared. It holds:
 
 The report states, per case, the runs and each grader's pass rate (the catch rate) **of the runs
 that completed**: an errored run measured nothing, so it is counted beside the runs and is in no
-denominator. Then the false-finding rate on the clean case (the share of completed runs that failed
-any of its graders); the model; the Claude Code version; the cost; the run directory; and the
+denominator. Then the false-finding rate on each clean case (the share of completed runs that failed
+any of its graders), and over all of them where there are several (for fix, the false-change rate); the model; the Claude Code version; the cost; the run directory; and the
 prompt's git revision, per arm: the last commit that changed the file, the commit it was run from,
 the file's blob, and whether it had uncommitted changes, so an *after* run of an edit not yet
 committed still names what it ran. An `ab` or `noise` run's report ends with its comparison.
@@ -291,7 +359,7 @@ This is the rule a prompt change is measured by. It is fixed before any run, so 
 reported does not depend on what was seen.
 
 1. **Declare, in the pull request and before running**, one **primary** grader (the outcome the
-   change sets out to move) and the **guards** (the outcomes it must not break: at least the clean
+   change sets out to move) and the **guards** (the outcomes it must not break: at least one clean
    case's grader). Every other row is descriptive, however it moves. With a dozen live graders in a
    report, one of them moving by chance is the expected case; naming one in advance is what makes
    its p-value mean what it says.

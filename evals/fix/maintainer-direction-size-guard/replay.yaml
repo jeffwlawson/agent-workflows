@@ -1,0 +1,29 @@
+# PR #698's third fix round: a maintainer's conversation comment beside two
+# review threads, where the maintainer's direction outranks the review (#719).
+#
+# The head is e0bd934, as in declined-unrunnable-eval: the second round made
+# no commit. At 02:43Z the maintainer commented (IC_kwDOTzVKqM8AAAABiQnOCw)
+# with prompt sizes measured on merged pull requests, a code change for this
+# round (readPromptDiff returns the whole diff where the scoped form is no
+# smaller, with a test and a log line), and a direction not to try to meet
+# the golden-PR eval criterion that both open threads are on. The round that
+# answered it (02:46Z) pushed 5528a12, which made that change, reported the
+# comment addressed and declined both threads on that direction; Review 3
+# verified it and approved.
+#
+# The inputs are as the fix runner rendered them at 02:46Z, through
+# shared/pr-feedback.ts (fetchPullRequestFeedback, surfaceText) over the
+# reviews, threads and comments as they then stood. The newest review records
+# no minor finding, so MINOR_FINDINGS is the suite's "(none)": no fix round in
+# this repository has yet been handed a thread, a conversation comment and a
+# minor finding at once.
+pr: 698
+repository: https://github.com/jeffwlawson/agent-workflows.git
+base_ref: main
+base: f3b054a9d8705e8c0bf184afb4032f368c67e71a
+head: e0bd9340191ee3e2c6d54400c9092a354b1555f0
+# The maintainer's comment, which says what the change is.
+brief: inputs/CONVERSATION.md
+inputs:
+  PR_NUMBER: "698"
+  BRANCH: agent/issue-641-a-review-after-a-fix-round-reads-only-what-the-fix

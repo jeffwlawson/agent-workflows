@@ -1,0 +1,27 @@
+# PR #584, a clean case (#719): a change that must not draw a false finding.
+#
+# The head is 1159e02, where Review 2 recommended approval (2026-11-01T01:25Z)
+# with no finding open and no follow-up. Review 1, on bbb7761, raised two Low
+# findings on comments the change left wrong, which 1159e02 fixed; replayed as
+# a first review, the diff holds both commits. No maintainer review or comment
+# is on it, and the squash, ecd2c42, holds 1159e02's tree exactly. Since it
+# merged, main has changed engine/git.ts not at all, and its other files only
+# by additions of their own (5786d3c, the worker's start announcement, and
+# ec1b392, agent:merge's tests), so a finding raised here is a false one. Its
+# diff is code and tests. The base is the merge-base the review's three-dot
+# diff was taken from.
+pr: 584
+repository: https://github.com/jeffwlawson/agent-workflows.git
+base_ref: main
+base: b87ba46b2ffa466f9cc7c5385794280842bf9476
+head: 1159e02ad2622817e2da42abf18e7b1f5ebd4b9c
+clean: true
+# Issue #569's body as it stands, rendered with its comments through
+# review/review-context.ts and review/acceptance-criteria.ts; its criteria are in the maintainer's brief comment.
+brief: inputs/LINKED_ISSUE.md
+inputs:
+  PR_NUMBER: "584"
+  BRANCH: agent/issue-569-a-tag-named-like-a-branch-is-read-as-that-branch-b
+  PR_TITLE: "fix(service): name every ref in full so a tag cannot shadow a branch (#569)"
+  ISSUE_NUMBER: "569"
+  ISSUE_TITLE: "A tag named like a branch is read as that branch by the service's checkout and update-branch's merge"

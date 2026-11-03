@@ -1,0 +1,6 @@
+schema_version: "1.1"
+name: held-door-replay
+context:
+  scaffold_script: place-files.sh
+expected_outcome: |
+  Raises that the held door's question, which now drops the worker's queued jobs, can be replayed (its signature is checked but not its age), and that a job from another release's dispatcher is refused for its missing instance before its version is checked.

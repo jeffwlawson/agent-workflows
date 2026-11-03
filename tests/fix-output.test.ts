@@ -366,6 +366,61 @@ describe("the fix brief on a finding that is one of a class", () => {
 });
 
 /**
+ * **A behaviour finding is taken red first, on the head the round was given** (#613).
+ *
+ * The red check compares against the merge-base, so for behaviour this pull
+ * request adds, a fix-round test that would also pass on the unfixed head still
+ * looks red there, and the next review has to work out for itself whether the
+ * fix landed. A test seen failing on the given head, on the symptom the finding
+ * names, is the evidence it needs. Where no seam reaches the path, the fix is
+ * still made and the gap is said, since a round that stops there fixed nothing.
+ * Mechanical, because the paragraph reads as redundant with the class rule
+ * beside it to anyone tightening this brief.
+ */
+describe("the fix brief on a finding about behaviour", () => {
+  const PROMPT = fs.readFileSync("fix/prompt.md", "utf8");
+  const plain = (text: string): string => text.replace(/[*_]/g, "").replace(/\s+/g, " ");
+  const rule = (): string => plain(PROMPT).match(/a finding about behaviour is taken red first\. In this order.{0,2000}/i)?.[0] ?? "";
+  const commit = (): string => plain(PROMPT).match(/# COMMIT.{0,1400}/)?.[0] ?? "";
+
+  it("takes the finding red on the head the round was given, on the symptom it names", () => {
+    expect(rule()).toMatch(/take the finding red/i);
+    expect(rule()).toMatch(/run it on the head you were given, and see it fail there on the symptom the finding names/i);
+  });
+
+  /** One block, in order: red, fix, green, the class, then the fixture's source. */
+  it("gathers the test rules in order: red, green, the class, real program output", () => {
+    const steps = [/take the finding red/i, /see the test go green/i, /each other member of the class red and green/i, /reads the output of another program/i];
+    const at = steps.map((step) => rule().search(step));
+
+    expect(at.every((i) => i >= 0)).toBe(true);
+    expect([...at].sort((a, b) => a - b)).toEqual(at);
+  });
+
+  it("says a test that cannot be got red is not evidence, in the reply for that finding", () => {
+    expect(rule()).toMatch(/a test you cannot get red is not evidence/i);
+    expect(rule()).toMatch(/the thread reply, the conversation outcome, or for a minor finding the commit message/i);
+  });
+
+  /** The bound the 6-run evals on #700 showed was taken early: it is checkable now. */
+  it("concludes no seam reaches the path only after naming the seams it tried", () => {
+    expect(rule()).toMatch(/try the seams the code already has/i);
+    expect(rule()).toMatch(/say in the reply which you tried/i);
+    expect(rule()).toMatch(/if none reaches it, fix the code, say so and why/i);
+    expect(rule()).toMatch(/missing seam .{0,80}out-of-scope note/i);
+  });
+
+  it("asks the commit message, once, to name the cause fixed, not only the symptom", () => {
+    expect(commit()).toMatch(/names the cause you fixed, not only the symptom/i);
+    expect(plain(PROMPT).match(/name[s]? the cause you fixed/gi)).toHaveLength(1);
+  });
+
+  it("states the exemption as what has no behaviour", () => {
+    expect(rule()).toMatch(/text, a rename or a comment has no behaviour, so it has no test to take red/i);
+  });
+});
+
+/**
  * **A maintainer's comment is the direction** (PRD #101, decision 5).
  *
  * The review half has carried "treat maintainer steering as authoritative"

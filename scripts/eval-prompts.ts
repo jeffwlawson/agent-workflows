@@ -1,4 +1,5 @@
 import { execFileSync, spawnSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
@@ -236,11 +237,57 @@ const promptRevision = (root: string, prompt: PromptName): PromptRevision => {
   };
 };
 
+/**
+ * The revision at a git ref, for the `before` arm of `ab`: what `git show`
+ * hands the stage, so it is never uncommitted.
+ */
+const revisionAt = (root: string, prompt: PromptName, ref: string): PromptRevision => {
+  const file = `${prompt}/prompt.md`;
+  const head = git(root, ["rev-parse", "--verify", `${ref}^{commit}`]).trim();
+  return {
+    file,
+    head,
+    lastChange: git(root, ["log", "-1", "--format=%H", head, "--", file]).trim(),
+    blob: git(root, ["rev-parse", `${head}:${file}`]).trim(),
+    uncommitted: false,
+  };
+};
+
+/** A file's git blob hash, as `git hash-object` gives it, with no git. */
+const blobHash = (file: string): string => {
+  const body = fs.readFileSync(file);
+  return createHash("sha1").update(`blob ${body.length}\0`).update(body).digest("hex");
+};
+
+/** One case as staged: its name in the staged suite, and what it was staged from. */
+export interface StagedCase {
+  readonly name: string;
+  readonly pr: number;
+  readonly head: string;
+  readonly clean: boolean;
+  /** The case under `evals/` it was staged from, where the staged name adds its arm. */
+  readonly case?: string;
+  /** The arm it belongs to in a two-arm run (`ab`, `noise`). */
+  readonly arm?: string;
+  /** Each grader's blob hash, by the grader's name: two runs compare only under the same graders. */
+  readonly graders?: Readonly<Record<string, string>>;
+}
+
 /** What a staged run records beside the tool's result, for its report. */
 export interface StageMeta {
   readonly prompt: PromptName;
+  /** The working tree's prompt revision; in a one-arm run, the one that ran. */
   readonly revision: PromptRevision;
-  readonly cases: readonly { readonly name: string; readonly pr: number; readonly head: string; readonly clean: boolean }[];
+  /** In a two-arm run, each arm's revision, by its name. */
+  readonly arms?: Readonly<Record<string, PromptRevision>>;
+  readonly cases: readonly StagedCase[];
+}
+
+/** One prompt staged under a name; a run with more than one stages every case once per arm. */
+export interface Arm {
+  readonly name: string;
+  readonly template: string;
+  readonly revision: PromptRevision;
 }
 
 const quote = (value: string): string => `'${value.replaceAll("'", "'\\''")}'`;
@@ -249,35 +296,59 @@ const quote = (value: string): string => `'${value.replaceAll("'", "'\\''")}'`;
  * The suite as `claude plugin eval` reads it, under `stage/evals/`: per case
  * its `case.yaml` and graders as they are, a `prompt.md` rendered from the
  * prompt file, and a `place-files.sh` that runs `evals/checkout.sh` on its pins.
+ *
+ * With `arms`, every case is staged once per arm as `<case>.<arm>`, each
+ * rendered from its arm's prompt, so both arms run in one session of the tool.
+ * Without, the one arm is the working tree's prompt, under the case's own name.
  */
-export const stage = (root: string, prompt: PromptName, out: string, only?: (name: string) => boolean): StageMeta => {
+export const stage = (
+  root: string,
+  prompt: PromptName,
+  out: string,
+  only?: (name: string) => boolean,
+  arms?: readonly Arm[],
+): StageMeta => {
   const suite = readSuite(root, prompt);
-  const template = fs.readFileSync(path.join(root, prompt, "prompt.md"), "utf8");
+  const revision = promptRevision(root, prompt);
+  const armList = arms ?? [{ name: "", template: fs.readFileSync(path.join(root, prompt, "prompt.md"), "utf8"), revision }];
   const cases = caseDirs(root, prompt)
     .map(readCase)
     .filter((c) => only === undefined || only(c.name));
   if (cases.length === 0) throw new Error(`No ${prompt} case matched.`);
   const frontmatter = stringify({ tags: [prompt], ...suite.execution }).trimEnd();
+  const staged: StagedCase[] = [];
   for (const c of cases) {
     ensureCommits(root, c);
     const inputs = { ...caseInputs(suite, c), PR_DIFF: git(root, ["diff", `${c.base}...${c.head}`]) };
-    const unused = Object.keys(c.inputs).filter((key) => !placeholders(template).includes(key) && !placeholders(suite.note).includes(key));
-    for (const key of unused) console.log(`::warning::${c.name}: input ${key} is not in ${prompt}/prompt.md any more.`);
-    const body = render(template, inputs, `${prompt}/prompt.md`);
-    const note = render(suite.note, inputs, `evals/${prompt}/suite.yaml's note`);
-    const dir = path.join(out, "evals", c.name);
-    fs.mkdirSync(dir, { recursive: true });
-    fs.writeFileSync(path.join(dir, "prompt.md"), `---\n${frontmatter}\n---\n\n${body.trimEnd()}\n\n${note.trimEnd()}\n`);
-    fs.copyFileSync(path.join(c.dir, "case.yaml"), path.join(dir, "case.yaml"));
-    fs.cpSync(path.join(c.dir, "graders"), path.join(dir, "graders"), { recursive: true });
-    const checkout = path.join(root, "evals", "checkout.sh");
-    const args = [root, c.base, c.head, String(c.inputs["BRANCH"] ?? `eval/${c.name}`), c.baseRef].map(quote).join(" ");
-    fs.writeFileSync(path.join(dir, "place-files.sh"), `#!/usr/bin/env bash\nexec bash ${quote(checkout)} ${args}\n`, { mode: 0o755 });
+    const graders = Object.fromEntries(c.graders.map((file) => [file.slice(0, -".md".length), blobHash(path.join(c.dir, "graders", file))]));
+    for (const arm of armList) {
+      const what = arm.name === "" ? `${prompt}/prompt.md` : `${prompt}/prompt.md (${arm.name})`;
+      const unused = Object.keys(c.inputs).filter((key) => !placeholders(arm.template).includes(key) && !placeholders(suite.note).includes(key));
+      for (const key of unused) console.log(`::warning::${c.name}: input ${key} is not in ${what} any more.`);
+      const body = render(arm.template, inputs, what);
+      const note = render(suite.note, inputs, `evals/${prompt}/suite.yaml's note`);
+      const name = arm.name === "" ? c.name : `${c.name}.${arm.name}`;
+      const dir = path.join(out, "evals", name);
+      fs.mkdirSync(dir, { recursive: true });
+      fs.writeFileSync(path.join(dir, "prompt.md"), `---\n${frontmatter}\n---\n\n${body.trimEnd()}\n\n${note.trimEnd()}\n`);
+      if (arm.name === "") {
+        fs.copyFileSync(path.join(c.dir, "case.yaml"), path.join(dir, "case.yaml"));
+      } else {
+        // The tool reports a case by the name its case.yaml gives.
+        fs.writeFileSync(path.join(dir, "case.yaml"), stringify({ ...readYaml(path.join(c.dir, "case.yaml")), name }));
+      }
+      fs.cpSync(path.join(c.dir, "graders"), path.join(dir, "graders"), { recursive: true });
+      const checkout = path.join(root, "evals", "checkout.sh");
+      const args = [root, c.base, c.head, String(c.inputs["BRANCH"] ?? `eval/${c.name}`), c.baseRef].map(quote).join(" ");
+      fs.writeFileSync(path.join(dir, "place-files.sh"), `#!/usr/bin/env bash\nexec bash ${quote(checkout)} ${args}\n`, { mode: 0o755 });
+      staged.push({ name, pr: c.pr, head: c.head, clean: c.clean, case: c.name, ...(arm.name === "" ? {} : { arm: arm.name }), graders });
+    }
   }
   const meta: StageMeta = {
     prompt,
-    revision: promptRevision(root, prompt),
-    cases: cases.map((c) => ({ name: c.name, pr: c.pr, head: c.head, clean: c.clean })),
+    revision,
+    ...(arms === undefined ? {} : { arms: Object.fromEntries(arms.map((arm) => [arm.name, arm.revision])) }),
+    cases: staged,
   };
   fs.writeFileSync(path.join(out, "stage.json"), `${JSON.stringify(meta, null, 2)}\n`);
   return meta;
@@ -288,7 +359,7 @@ export interface EvalResult {
   readonly claudeVersion?: string;
   readonly costUsd?: number;
   readonly partial?: boolean;
-  readonly suite?: { readonly modelOverride?: string };
+  readonly suite?: { readonly modelOverride?: string; readonly judgeModel?: string };
   readonly cases: readonly {
     readonly name: string;
     readonly graders: readonly { readonly name: string; readonly graderMarkdown?: string }[];
@@ -297,7 +368,11 @@ export interface EvalResult {
         /** `null` on a run that finished: the tool writes the field on every run. */
         readonly error: string | null;
         readonly costUsd?: number;
-        readonly graders: readonly { readonly name: string; readonly passed: boolean }[];
+        readonly judgeCostUsd?: number;
+        readonly turns?: number;
+        /** In the run's sandbox, which the tool deletes after the run unless given `--keep-temp`. */
+        readonly tracePath?: string;
+        readonly graders: readonly { readonly name: string; readonly passed: boolean; readonly judgeVotes?: readonly boolean[] }[];
       }[];
     };
   }[];
@@ -320,15 +395,21 @@ const oneLine = (text: string | undefined, max = 90): string => {
  * A clean case's graders all hold false findings, so a finished run that fails
  * any of them is a run that raised one.
  */
-export const report = (meta: StageMeta, result: EvalResult): string => {
-  const r = meta.revision;
+export const report = (meta: StageMeta, result: EvalResult, dir?: string): string => {
+  const revisionLine = (r: PromptRevision): string =>
+    `\`${r.file}\` last changed in \`${r.lastChange.slice(0, 12)}\`, run from \`${r.head.slice(0, 12)}\`, blob \`${r.blob.slice(0, 12)}\`${r.uncommitted ? " (**uncommitted changes**)" : ""}`;
+  const prompts =
+    meta.arms === undefined
+      ? [`- **Prompt:** ${revisionLine(meta.revision)}`]
+      : Object.entries(meta.arms).map(([arm, r]) => `- **Prompt, arm \`${arm}\`:** ${revisionLine(r)}`);
   const lines = [
     `### \`${meta.prompt}\` evals`,
     "",
     `- **Model:** ${result.suite?.modelOverride ?? "(not recorded)"}`,
-    `- **Prompt:** \`${r.file}\` last changed in \`${r.lastChange.slice(0, 12)}\`, run from \`${r.head.slice(0, 12)}\`, blob \`${r.blob.slice(0, 12)}\`${r.uncommitted ? " (**uncommitted changes**)" : ""}`,
+    ...prompts,
     `- **Claude Code:** ${result.claudeVersion ?? "(not recorded)"}`,
     `- **Cost:** $${(result.costUsd ?? 0).toFixed(2)}${result.partial === true ? " (**partial**: the cost ceiling stopped the run)" : ""}`,
+    ...(dir === undefined ? [] : [`- **Run directory:** \`${dir}\``]),
     "",
     "| Case | PR | Runs | Grader | Passed | Rate |",
     "| --- | --- | --- | --- | --- | --- |",
@@ -339,15 +420,16 @@ export const report = (meta: StageMeta, result: EvalResult): string => {
     const runs = c.arms.with ?? [];
     const errored = runs.filter(erroredRun).length;
     const runsCell = `${runs.length}${errored > 0 ? ` (${errored} errored)` : ""}`;
+    // Of the runs that finished: one that errored measured nothing, so it is
+    // neither a pass nor a fail, and is out of every denominator.
+    const completed = runs.filter((run) => !erroredRun(run));
     for (const grader of c.graders) {
-      const passed = runs.filter((run) => run.graders.some((g) => g.name === grader.name && g.passed)).length;
+      const passed = completed.filter((run) => run.graders.some((g) => g.name === grader.name && g.passed)).length;
       lines.push(
-        `| ${c.name} | ${known === undefined ? "" : `#${known.pr}`} | ${runsCell} | ${grader.name}: ${oneLine(grader.graderMarkdown)} | ${passed}/${runs.length} | ${percent(passed, runs.length)} |`,
+        `| ${c.name} | ${known === undefined ? "" : `#${known.pr}`} | ${runsCell} | ${grader.name}: ${oneLine(grader.graderMarkdown)} | ${passed}/${completed.length} | ${percent(passed, completed.length)} |`,
       );
     }
     if (known?.clean === true) {
-      // Of the runs that finished: one that errored raised nothing, false or not.
-      const completed = runs.filter((run) => !erroredRun(run));
       const raised = completed.filter((run) => c.graders.some((g) => !run.graders.some((rg) => rg.name === g.name && rg.passed))).length;
       clean.push(`- **${c.name}:** ${raised} of ${completed.length} completed runs raised a false finding (${percent(raised, completed.length)}).`);
     }
@@ -356,10 +438,237 @@ export const report = (meta: StageMeta, result: EvalResult): string => {
   return `${lines.join("\n")}\n`;
 };
 
+/**
+ * One run as a run directory keeps it in `runs.json`: what it ran (case, arm,
+ * prompt blob, model, judge, Claude Code, grader hashes), what it cost, its
+ * trace, and each grader's result with the judge's votes. A comparison reads
+ * these, from one run directory or several.
+ */
+export interface RunRecord {
+  /** The run directory's name: one session of `claude plugin eval`. */
+  readonly session: string;
+  readonly prompt: PromptName;
+  /** The case under `evals/`, without its arm. */
+  readonly case: string;
+  /** `""` in a one-arm run. */
+  readonly arm: string;
+  readonly blob: string;
+  readonly model: string;
+  readonly judgeModel: string;
+  readonly claudeVersion: string;
+  /** 1-based, within the case. */
+  readonly run: number;
+  readonly error: string | null;
+  readonly costUsd: number;
+  readonly judgeCostUsd: number;
+  readonly turns: number;
+  /** The trace copied into the run directory, relative to it; `null` where none survived. */
+  readonly trace: string | null;
+  readonly graders: readonly { readonly name: string; readonly hash: string | null; readonly passed: boolean; readonly judgeVotes: readonly boolean[] }[];
+}
+
+const NOT_RECORDED = "(not recorded)";
+
+/** Every run of a result as records, `trace` naming the copy kept of each run's trace. */
+export const runRecords = (
+  meta: StageMeta,
+  result: EvalResult,
+  session: string,
+  trace: (stagedCase: string, run: number) => string | null = () => null,
+): RunRecord[] =>
+  result.cases.flatMap((c) => {
+    const known = meta.cases.find((m) => m.name === c.name);
+    const arm = known?.arm ?? "";
+    const revision = meta.arms?.[arm] ?? meta.revision;
+    return (c.arms.with ?? []).map((run, i) => ({
+      session,
+      prompt: meta.prompt,
+      case: known?.case ?? c.name,
+      arm,
+      blob: revision.blob,
+      model: result.suite?.modelOverride ?? NOT_RECORDED,
+      judgeModel: result.suite?.judgeModel ?? NOT_RECORDED,
+      claudeVersion: result.claudeVersion ?? NOT_RECORDED,
+      run: i + 1,
+      error: erroredRun(run) ? run.error : null,
+      costUsd: run.costUsd ?? 0,
+      judgeCostUsd: run.judgeCostUsd ?? 0,
+      turns: run.turns ?? 0,
+      trace: trace(c.name, i + 1),
+      graders: run.graders.map((g) => ({ name: g.name, hash: known?.graders?.[g.name] ?? null, passed: g.passed, judgeVotes: g.judgeVotes ?? [] })),
+    }));
+  });
+
+const logChoose = (n: number, k: number): number => {
+  let sum = 0;
+  for (let i = 1; i <= k; i++) sum += Math.log(n - k + i) - Math.log(i);
+  return sum;
+};
+
+/**
+ * The exact two-sided Fisher p for `a` of `n1` against `c` of `n2`: the
+ * probability, with the margins fixed, of a table no more likely than the one
+ * seen. `undefined` when a side has no runs.
+ */
+export const fisher = (a: number, n1: number, c: number, n2: number): number | undefined => {
+  if (n1 === 0 || n2 === 0) return undefined;
+  const k = a + c;
+  const total = logChoose(n1 + n2, k);
+  const p = (x: number): number => Math.exp(logChoose(n1, x) + logChoose(n2, k - x) - total);
+  const seen = p(a);
+  let sum = 0;
+  for (let x = Math.max(0, k - n2); x <= Math.min(k, n1); x++) {
+    const px = p(x);
+    if (px <= seen * (1 + 1e-7)) sum += px;
+  }
+  return Math.min(1, sum);
+};
+
+/** The Wilson 95% interval for `k` of `n`, as whole percents. */
+const wilson = (k: number, n: number): string => {
+  if (n === 0) return "n/a";
+  const z = 1.96;
+  const p = k / n;
+  const centre = (p + (z * z) / (2 * n)) / (1 + (z * z) / n);
+  const half = (z * Math.sqrt((p * (1 - p)) / n + (z * z) / (4 * n * n))) / (1 + (z * z) / n);
+  return `${Math.round(100 * Math.max(0, centre - half))}-${Math.round(100 * Math.min(1, centre + half))}%`;
+};
+
+/** The protocol's boundary (`evals/README.md`, *The protocol*): a Pocock boundary for two looks. */
+export const EFFECT_P = 0.029;
+
+/** Two or more errored runs on a case void that side of it (`evals/README.md`, *The protocol*). */
+const VOID_ERRORS = 2;
+
+export interface CompareOptions {
+  /** The declared primary graders, each `<case>/<grader>`. */
+  readonly primary?: readonly string[];
+  readonly guards?: readonly string[];
+  readonly labels?: { readonly before: string; readonly after: string };
+}
+
+const single = (values: readonly string[], what: string, side: string): string => {
+  const set = [...new Set(values)];
+  if (set.length !== 1) throw new Error(`The ${side} runs are of more than one ${what} (${set.join(", ")}): pool only runs of one.`);
+  return set[0] ?? "";
+};
+
+/**
+ * Before and after side by side per case and grader: completed runs passed,
+ * the Wilson interval, and the exact two-sided Fisher p. Errored runs are out
+ * of each denominator and counted beside it. A side holding runs of more than
+ * one session is labelled pooled, and may hold only one prompt blob.
+ *
+ * Refused, by throwing: sides of different prompts, models, judges or Claude
+ * Code versions, or a grader whose file differs between them; and a declared
+ * primary or guard that names no compared grader.
+ *
+ * Only a declared primary or guard gets a verdict: `rose` or `fell` at
+ * p < EFFECT_P, `not shown` otherwise, `void` where a side has two or more
+ * errored runs of its case. Every other row is descriptive.
+ */
+export const compare = (before: readonly RunRecord[], after: readonly RunRecord[], options: CompareOptions = {}): string => {
+  const labels = options.labels ?? { before: "Before", after: "After" };
+  if (before.length === 0 || after.length === 0) throw new Error(`The ${before.length === 0 ? labels.before : labels.after} side has no runs.`);
+  const both = [...before, ...after];
+  single(both.map((r) => r.prompt), "prompt", "compared");
+  const sides = [
+    { label: labels.before, runs: before },
+    { label: labels.after, runs: after },
+  ];
+  for (const [field, what] of [
+    ["model", "model"],
+    ["judgeModel", "judge model"],
+    ["claudeVersion", "Claude Code version"],
+  ] as const) {
+    const values = sides.map((side) => single(side.runs.map((r) => r[field]), what, side.label.toLowerCase()));
+    if (values[0] !== values[1]) throw new Error(`The sides ran a different ${what} (${values.join(" against ")}): compare only runs of the same one.`);
+  }
+  const blobs = sides.map((side) => single(side.runs.map((r) => r.blob), "prompt blob", side.label.toLowerCase()));
+
+  const keys: { case: string; grader: string }[] = [];
+  for (const r of both) {
+    for (const g of r.graders) {
+      if (!keys.some((k) => k.case === r.case && k.grader === g.name)) keys.push({ case: r.case, grader: g.name });
+    }
+  }
+  const unhashed = new Set<string>();
+  for (const k of keys) {
+    const hashes = sides.map(
+      (side) => new Set(side.runs.filter((r) => r.case === k.case).flatMap((r) => r.graders.filter((g) => g.name === k.grader).map((g) => g.hash))),
+    );
+    const known = hashes.flatMap((set) => [...set]).filter((h): h is string => h !== null);
+    if (new Set(known).size > 1) throw new Error(`Grader ${k.case}/${k.grader} differs between the runs: compare only runs graded by the same file.`);
+    if (hashes.some((set) => set.has(null))) unhashed.add(`${k.case}/${k.grader}`);
+  }
+  const role = new Map<string, "primary" | "guard">();
+  for (const [ids, name] of [
+    [options.primary ?? [], "primary"],
+    [options.guards ?? [], "guard"],
+  ] as const) {
+    for (const id of ids) {
+      if (!keys.some((k) => `${k.case}/${k.grader}` === id)) throw new Error(`No compared grader is ${id}: name a ${name} as <case>/<grader>.`);
+      role.set(id, name);
+    }
+  }
+
+  const describe = (side: { label: string; runs: readonly RunRecord[] }, blob: string): string => {
+    const sessions = [...new Set(side.runs.map((r) => r.session))];
+    const from = sessions.length > 1 ? `pooled from ${sessions.length} sessions (${sessions.join(", ")})` : `session ${sessions[0] ?? ""}`;
+    const cost = side.runs.reduce((sum, r) => sum + r.costUsd, 0);
+    return `- **${side.label}:** ${from}, blob \`${blob.slice(0, 12)}\`, $${cost.toFixed(2)}`;
+  };
+  const first = before[0] as RunRecord;
+  const lines = [
+    `### \`${first.prompt}\` comparison`,
+    "",
+    `- **Model:** ${first.model}; **judge:** ${first.judgeModel}; **Claude Code:** ${first.claudeVersion}`,
+    describe(sides[0] as (typeof sides)[number], blobs[0] ?? ""),
+    describe(sides[1] as (typeof sides)[number], blobs[1] ?? ""),
+    ...(blobs[0] === blobs[1] ? ["- **The same prompt blob on both sides:** every difference below is noise."] : []),
+    ...(unhashed.size > 0 ? [`- **Grader files not recorded** for ${[...unhashed].join(", ")} (a run staged before #717), so they could not be checked equal.`] : []),
+    "",
+    `Passed of completed runs, with the Wilson 95% interval; errored runs are out of the denominator. An effect is called only on a declared primary or guard, at two-sided Fisher p < ${EFFECT_P}.`,
+    "",
+    `| Case | Grader | ${labels.before} | ${labels.after} | Fisher p | Verdict |`,
+    "| --- | --- | --- | --- | --- | --- |",
+  ];
+  for (const k of keys) {
+    const id = `${k.case}/${k.grader}`;
+    const counts = sides.map((side) => {
+      const runs = side.runs.filter((r) => r.case === k.case);
+      const completed = runs.filter((r) => r.error === null);
+      const passed = completed.filter((r) => r.graders.some((g) => g.name === k.grader && g.passed)).length;
+      const errored = runs.length - completed.length;
+      return { passed, n: completed.length, errored };
+    });
+    const [b, a] = counts as [(typeof counts)[number], (typeof counts)[number]];
+    const cell = (c: typeof b): string => `${c.passed}/${c.n} (${percent(c.passed, c.n)}; ${wilson(c.passed, c.n)})${c.errored > 0 ? `, ${c.errored} errored` : ""}`;
+    const p = fisher(b.passed, b.n, a.passed, a.n);
+    const r = role.get(id);
+    const verdict =
+      r === undefined
+        ? "descriptive"
+        : counts.some((c) => c.errored >= VOID_ERRORS)
+          ? "void"
+          : p !== undefined && p < EFFECT_P
+            ? a.passed / a.n > b.passed / b.n
+              ? "rose"
+              : "fell"
+            : "not shown";
+    lines.push(`| ${k.case} | ${k.grader}${r === undefined ? "" : ` (${r})`} | ${cell(b)} | ${cell(a)} | ${p === undefined ? "n/a" : p.toFixed(3)} | ${verdict} |`);
+  }
+  return `${lines.join("\n")}\n`;
+};
+
 const USAGE = [
   "Usage:",
-  "  node scripts/eval-prompts.ts <review|fix> --model <model> --max-cost-usd <usd> [--runs <n>] [--case <glob>] [--stage-only]",
-  "  node scripts/eval-prompts.ts report <stage-dir>",
+  "  node scripts/eval-prompts.ts <review|fix> --model <model> --max-cost-usd <usd> [--runs <n>] [--case <glob>] [-j <n>] [--stage-only]",
+  "  node scripts/eval-prompts.ts ab <review|fix> <ref> --model <model> --max-cost-usd <usd> [same options]",
+  "  node scripts/eval-prompts.ts noise <review|fix> --model <model> --max-cost-usd <usd> [same options]",
+  "  node scripts/eval-prompts.ts report <run-dir>",
+  "  node scripts/eval-prompts.ts compare <ab-or-noise-run-dir> [--primary <case>/<grader>]... [--guard <case>/<grader>]...",
+  "  node scripts/eval-prompts.ts compare --before <run-dir>[#<arm>]... --after <run-dir>[#<arm>]... [--primary ...]... [--guard ...]...",
 ].join("\n");
 
 const refuse = (why: string): never => {
@@ -367,39 +676,161 @@ const refuse = (why: string): never => {
   process.exit(1);
 };
 
-/** A `--case` glob, `*` and `?` only, matched against the whole case name. */
-const globMatcher = (glob: string): ((name: string) => boolean) => {
-  const pattern = new RegExp(`^${glob.replace(/[.+^${}()|[\]\\]/g, "\\$&").replaceAll("*", ".*").replaceAll("?", ".")}$`);
-  return (name) => pattern.test(name);
+/**
+ * A `--case` glob, `*` and `?` only, matched against the whole case name; or
+ * several, comma-separated, so one `ab` session holds a primary's case and its
+ * guards'.
+ */
+const globMatcher = (globs: string): ((name: string) => boolean) => {
+  const patterns = globs
+    .split(",")
+    .map((glob) => new RegExp(`^${glob.trim().replace(/[.+^${}()|[\]\\]/g, "\\$&").replaceAll("*", ".*").replaceAll("?", ".")}$`));
+  return (name) => patterns.some((pattern) => pattern.test(name));
+};
+
+/**
+ * Where run directories are kept: `EVAL_RUNS_DIR`, else the user's cache. Not
+ * the checkout, whose `evals/` the layout test reads, and not `/tmp`, which
+ * is cleared.
+ */
+const runsRoot = (): string =>
+  process.env["EVAL_RUNS_DIR"] ?? path.join(process.env["XDG_CACHE_HOME"] ?? path.join(os.homedir(), ".cache"), "agent-workflows", "evals");
+
+const readJson = <T>(file: string): T => JSON.parse(fs.readFileSync(file, "utf8")) as T;
+
+/**
+ * Keeps what the tool would delete: each run's trace, copied from its sandbox
+ * (kept by `--keep-temp`) into `traces/<case>/<run>.jsonl`, after which the
+ * sandbox is removed; then every run as a record in `runs.json`.
+ */
+const persistRuns = (dir: string): void => {
+  const meta = readJson<StageMeta>(path.join(dir, "stage.json"));
+  const result = readJson<EvalResult>(path.join(dir, "result.json"));
+  const sandboxes = new Set<string>();
+  const copied = new Map<string, string>();
+  for (const c of result.cases) {
+    (c.arms.with ?? []).forEach((run, i) => {
+      const from = run.tracePath;
+      if (from === undefined || from === "" || !fs.existsSync(from)) return;
+      const rel = path.join("traces", c.name, `${i + 1}.jsonl`);
+      fs.mkdirSync(path.join(dir, path.dirname(rel)), { recursive: true });
+      fs.copyFileSync(from, path.join(dir, rel));
+      copied.set(`${c.name}\n${i + 1}`, rel);
+      // The sandbox the tool kept: the `claude-eval-*` directory under the temp dir holding the trace.
+      for (let up = path.dirname(from); up !== path.dirname(up); up = path.dirname(up)) {
+        if (path.basename(up).startsWith("claude-eval-") && path.dirname(up) === os.tmpdir()) sandboxes.add(up);
+      }
+    });
+  }
+  for (const sandbox of sandboxes) fs.rmSync(sandbox, { recursive: true, force: true });
+  const records = runRecords(meta, result, path.basename(dir), (name, run) => copied.get(`${name}\n${run}`) ?? null);
+  fs.writeFileSync(path.join(dir, "runs.json"), `${JSON.stringify(records, null, 2)}\n`);
+  const runs = result.cases.reduce((n, c) => n + (c.arms.with?.length ?? 0), 0);
+  console.log(`Kept ${runs} run(s) in ${path.join(dir, "runs.json")}, ${copied.size} with its trace.`);
+};
+
+/** A run directory's records: its `runs.json`, or, for one made before it was written, read off its result. */
+const loadRecords = (dir: string): RunRecord[] => {
+  const file = path.join(dir, "runs.json");
+  if (fs.existsSync(file)) return readJson<RunRecord[]>(file);
+  return runRecords(readJson<StageMeta>(path.join(dir, "stage.json")), readJson<EvalResult>(path.join(dir, "result.json")), path.basename(dir));
+};
+
+/** One side's records, from `<dir>` or `<dir>#<arm>`; a run of two arms needs its arm named. */
+const sideRecords = (spec: string): RunRecord[] => {
+  const hash = spec.lastIndexOf("#");
+  const [dir, arm] = hash === -1 ? [spec, undefined] : [spec.slice(0, hash), spec.slice(hash + 1)];
+  const records = loadRecords(dir);
+  const arms = [...new Set(records.map((r) => r.arm))];
+  if (arm === undefined) {
+    if (arms.length > 1) throw new Error(`${dir} has arms ${arms.join(" and ")}: name one, as ${dir}#${arms[0] ?? ""}.`);
+    return records;
+  }
+  if (!arms.includes(arm)) throw new Error(`${dir} has no arm ${arm}${arms.length > 0 ? ` (it has ${arms.join(", ")})` : ""}.`);
+  return records.filter((r) => r.arm === arm);
+};
+
+/** A two-arm run's own comparison: `before` against `after`, or `a` against `b`. */
+const armsComparison = (dir: string, options: CompareOptions): string => {
+  const meta = readJson<StageMeta>(path.join(dir, "stage.json"));
+  const arms = Object.keys(meta.arms ?? {});
+  if (arms.length !== 2) throw new Error(`${dir} is a run of one arm: compare it with another, as --before ${dir} --after <run-dir>.`);
+  const [first, second] = arms as [string, string];
+  const records = loadRecords(dir);
+  return compare(
+    records.filter((r) => r.arm === first),
+    records.filter((r) => r.arm === second),
+    { ...options, labels: { before: first, after: second } },
+  );
 };
 
 const printReport = (dir: string): void => {
-  const meta = JSON.parse(fs.readFileSync(path.join(dir, "stage.json"), "utf8")) as StageMeta;
-  const result = JSON.parse(fs.readFileSync(path.join(dir, "result.json"), "utf8")) as EvalResult;
-  const text = report(meta, result);
+  const meta = readJson<StageMeta>(path.join(dir, "stage.json"));
+  const result = readJson<EvalResult>(path.join(dir, "result.json"));
+  let text = report(meta, result, dir);
+  if (Object.keys(meta.arms ?? {}).length === 2) {
+    try {
+      text += `\n${armsComparison(dir, {})}`;
+    } catch (error) {
+      text += `\n**No comparison:** ${error instanceof Error ? error.message : String(error)}\n`;
+    }
+  }
   fs.writeFileSync(path.join(dir, "report.md"), text);
   console.log(`\n${text}\nWritten to ${path.join(dir, "report.md")}.`);
 };
 
-if (process.argv[1] && fs.realpathSync(process.argv[1]) === fileURLToPath(import.meta.url)) {
-  const root = path.resolve(import.meta.dirname, "..");
-  const [first, ...rest] = process.argv.slice(2);
-  if (first === "report") {
-    if (rest.length !== 1 || rest[0] === undefined) refuse("`report` takes the stage directory a run printed.");
-    printReport(rest[0] as string);
-    process.exit(0);
+/** `compare`'s arguments: one two-arm run directory, or `--before` and `--after` sides; and the declared graders. */
+const runCompare = (args: readonly string[]): void => {
+  const before: string[] = [];
+  const after: string[] = [];
+  const primary: string[] = [];
+  const guards: string[] = [];
+  const positional: string[] = [];
+  const lists: Record<string, string[]> = { "--before": before, "--after": after, "--primary": primary, "--guard": guards };
+  for (let i = 0; i < args.length; i++) {
+    const arg = args[i] ?? "";
+    const list = lists[arg];
+    if (list !== undefined && args[i + 1] !== undefined) list.push(args[++i] ?? "");
+    else if (!arg.startsWith("-")) positional.push(arg);
+    else refuse(`Refusing \`${arg}\`.`);
   }
-  if (!PROMPTS.includes(first as PromptName)) refuse(`Name a prompt: ${PROMPTS.join(" or ")}.`);
-  const prompt = first as PromptName;
+  const options: CompareOptions = { primary, guards };
+  let text: string;
+  try {
+    if (positional.length === 1 && before.length === 0 && after.length === 0) {
+      text = armsComparison(positional[0] ?? "", options);
+    } else if (positional.length === 0 && before.length > 0 && after.length > 0) {
+      // A directory named twice is one session, not two to pool.
+      text = compare([...new Set(before)].flatMap(sideRecords), [...new Set(after)].flatMap(sideRecords), options);
+    } else {
+      return refuse("`compare` takes one run directory of two arms, or `--before` and `--after` run directories.");
+    }
+  } catch (error) {
+    return refuse(error instanceof Error ? error.message : String(error));
+  }
+  console.log(text);
+};
 
+/** The options every command that runs cases takes. */
+interface RunOptions {
+  readonly model: string;
+  readonly ceiling: string;
+  readonly runs?: string;
+  readonly glob?: string;
+  readonly concurrency?: string;
+  readonly stageOnly: boolean;
+}
+
+const parseRunOptions = (args: readonly string[]): RunOptions => {
   const options = new Map<string, string>();
   let stageOnly = false;
-  for (let i = 0; i < rest.length; i++) {
-    const arg = rest[i] ?? "";
+  for (let i = 0; i < args.length; i++) {
+    const arg = args[i] ?? "";
+    const key = arg === "-j" ? "--concurrency" : arg;
     if (arg === "--stage-only") {
       stageOnly = true;
-    } else if (["--model", "--max-cost-usd", "--runs", "--case"].includes(arg) && rest[i + 1] !== undefined) {
-      options.set(arg, rest[++i] ?? "");
+    } else if (["--model", "--max-cost-usd", "--runs", "--case", "--concurrency"].includes(key) && args[i + 1] !== undefined) {
+      options.set(key, args[++i] ?? "");
     } else {
       refuse(`Refusing \`${arg}\`.`);
     }
@@ -409,16 +840,33 @@ if (process.argv[1] && fs.realpathSync(process.argv[1]) === fileURLToPath(import
   // bound of its own beyond its turns.
   const model = options.get("--model") ?? refuse("Name the model: `--model`, the same for a before run and an after run.");
   const ceiling = options.get("--max-cost-usd") ?? refuse("Set a cost ceiling: `--max-cost-usd`.");
+  const runs = options.get("--runs");
   const glob = options.get("--case");
+  const concurrency = options.get("--concurrency");
+  return {
+    model,
+    ceiling,
+    stageOnly,
+    ...(runs === undefined ? {} : { runs }),
+    ...(glob === undefined ? {} : { glob }),
+    ...(concurrency === undefined ? {} : { concurrency }),
+  };
+};
 
-  const out = fs.mkdtempSync(path.join(os.tmpdir(), `prompt-evals-${prompt}-`));
+/** Stages the arms, runs them in one session of the tool, keeps every run, and prints the report. */
+const runCases = (root: string, prompt: PromptName, mode: string, opts: RunOptions, arms?: readonly Arm[]): never => {
+  // A stage alone is not a run: it goes to the temp dir, and nothing is kept.
+  const stamp = new Date().toISOString().replace(/[:.]/g, "-");
+  const parent = opts.stageOnly ? os.tmpdir() : runsRoot();
+  fs.mkdirSync(parent, { recursive: true });
+  const out = fs.mkdtempSync(path.join(parent, opts.stageOnly ? `prompt-evals-${prompt}-` : `${stamp}-${mode}-${prompt}-`));
   try {
-    const meta = stage(root, prompt, out, glob === undefined ? undefined : globMatcher(glob));
+    const meta = stage(root, prompt, out, opts.glob === undefined ? undefined : globMatcher(opts.glob), arms);
     console.log(`Staged ${meta.cases.length} ${prompt} case(s) in ${out}.`);
   } catch (error) {
     refuse(error instanceof Error ? error.message : String(error));
   }
-  if (stageOnly) process.exit(0);
+  if (opts.stageOnly) process.exit(0);
 
   const tools = readSuite(root, prompt).execution.allowed_tools.filter((tool) => GATED_TOOLS.has(tool));
   const args = [
@@ -431,19 +879,70 @@ if (process.argv[1] && fs.realpathSync(process.argv[1]) === fileURLToPath(import
     "--ablation", "none", "--no-publish",
     // A case below full marks is the finding, not a failure of the command.
     "--threshold", "0",
-    "--model", model,
-    "--max-cost-usd", ceiling,
+    "--model", opts.model,
+    "--max-cost-usd", opts.ceiling,
     "--json", path.join(out, "result.json"),
+    // The tool's own results beside ours, in the run directory.
+    "--output-dir", path.join(out, "tool"),
+    // Without it the tool deletes each run's sandbox, and its trace.jsonl with
+    // it; persistRuns copies the trace out and removes the sandbox.
+    "--keep-temp",
     ...(tools.length === 0 ? [] : ["--allow-tools", ...tools]),
-    ...(options.has("--runs") ? ["--runs", options.get("--runs") ?? ""] : []),
+    ...(opts.runs === undefined ? [] : ["--runs", opts.runs]),
+    ...(opts.concurrency === undefined ? [] : ["--concurrency", opts.concurrency]),
   ];
   console.log(`claude ${args.join(" ")}`);
   const run = spawnSync("claude", args, { cwd: out, stdio: "inherit" });
   if (!fs.existsSync(path.join(out, "result.json"))) {
-    console.error(`claude plugin eval wrote no result (exit ${run.status ?? run.signal}).`);
+    console.error(`claude plugin eval wrote no result (exit ${run.status ?? run.signal}). The stage is kept in ${out}.`);
     process.exit(1);
   }
+  persistRuns(out);
   printReport(out);
   // 2 is the cost ceiling, whose partial report is printed above.
   process.exit(run.status === 2 ? 2 : 0);
+};
+
+const promptArg = (value: string | undefined): PromptName =>
+  PROMPTS.includes(value as PromptName) ? (value as PromptName) : refuse(`Name a prompt: ${PROMPTS.join(" or ")}.`);
+
+if (process.argv[1] && fs.realpathSync(process.argv[1]) === fileURLToPath(import.meta.url)) {
+  const root = path.resolve(import.meta.dirname, "..");
+  const [first, ...rest] = process.argv.slice(2);
+  if (first === "report") {
+    if (rest.length !== 1 || rest[0] === undefined) refuse("`report` takes the run directory a run printed.");
+    printReport(rest[0] as string);
+    process.exit(0);
+  }
+  if (first === "compare") {
+    runCompare(rest);
+    process.exit(0);
+  }
+  if (first === "ab") {
+    const prompt = promptArg(rest[0]);
+    const ref = rest[1];
+    if (ref === undefined || ref.startsWith("-")) refuse("`ab` takes the git ref of the prompt to compare against: the before arm.");
+    let arms: Arm[] = [];
+    try {
+      const before = revisionAt(root, prompt, ref as string);
+      arms = [
+        { name: "before", template: git(root, ["show", `${before.head}:${before.file}`]), revision: before },
+        { name: "after", template: fs.readFileSync(path.join(root, prompt, "prompt.md"), "utf8"), revision: promptRevision(root, prompt) },
+      ];
+    } catch (error) {
+      refuse(`Cannot read ${prompt}/prompt.md at ${ref}: ${error instanceof Error ? error.message : String(error)}`);
+    }
+    if (arms[0]?.revision.blob === arms[1]?.revision.blob) console.log(`::warning::${prompt}/prompt.md is the same at ${ref} and in the working tree: this is a noise run.`);
+    runCases(root, prompt, "ab", parseRunOptions(rest.slice(2)), arms);
+  }
+  if (first === "noise") {
+    const prompt = promptArg(rest[0]);
+    const template = fs.readFileSync(path.join(root, prompt, "prompt.md"), "utf8");
+    const revision = promptRevision(root, prompt);
+    runCases(root, prompt, "noise", parseRunOptions(rest.slice(1)), [
+      { name: "a", template, revision },
+      { name: "b", template, revision },
+    ]);
+  }
+  runCases(root, promptArg(first), "run", parseRunOptions(rest));
 }

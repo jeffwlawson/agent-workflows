@@ -13,9 +13,11 @@
 #
 # Asks, at prompts that do not show what is typed, for what it cannot make:
 #   - the shared secret, WORKER_SECRET, from Unraid's service.env (install-unraid.sh makes it);
-#   - the agent's model token, from `claude setup-token`;
-#   - a classic GitHub token with only read:packages, to download the package.
-# Delete the GitHub token on GitHub afterwards.
+#   - the agent's model token, from `claude setup-token`.
+# Where the package is not at <version>, it needs PACKAGE_SOURCE in
+# agent-service.conf beside it: the package is installed from that repository's
+# release tarball, downloaded over https and checked against its .sha256, with
+# no token.
 #
 # Run on the box, as root:  sudo bash ~/install-box.sh 0.8.5
 set -euo pipefail
@@ -31,6 +33,8 @@ CLAUDE_CODE_VERSION=${CLAUDE_CODE_VERSION:-2.1.316}
 WORKER_USER=${WORKER_USER:-worker}
 PREFIX=${PREFIX:-/opt/agent-workflows}
 PKG_JSON=$PREFIX/node_modules/@jeffwlawson/agent-workflows/package.json
+# The repository the release's tarball is downloaded from, as <owner>/<repo>.
+PACKAGE_SOURCE=${PACKAGE_SOURCE:-}
 ENV_FILE=${ENV_FILE:-/etc/agent-worker/worker.env}
 WORK_DIR=${WORK_DIR:-/var/lib/agent-worker}
 HOST_IP=${HOST_IP:-192.168.250.1}
@@ -55,6 +59,11 @@ fi
 check_script="$(dirname "$0")/check-box.sh"
 if [ ! -f "$check_script" ]; then
   echo "check-box.sh is not beside this script ($check_script): copy it here first. Nothing was changed." >&2
+  exit 2
+fi
+installed() { grep -m1 '"version"' "$PKG_JSON" 2>/dev/null | sed 's/.*"version": *"\([^"]*\)".*/\1/' || true; }
+if [ "$(installed)" != "$version" ] && ! [[ $PACKAGE_SOURCE =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]]; then
+  echo "The package is not at $version, and its release is downloaded from the repository PACKAGE_SOURCE names: set PACKAGE_SOURCE=<owner>/<repo> in $conf. Nothing was changed." >&2
   exit 2
 fi
 if ! : </dev/tty 2>/dev/null; then
@@ -228,24 +237,39 @@ systemctl enable -q tinyproxy
 if [ -n "$proxy_changed" ]; then systemctl restart tinyproxy; else systemctl start tinyproxy; fi
 
 echo "== The package"
-installed() { grep -m1 '"version"' "$PKG_JSON" 2>/dev/null | sed 's/.*"version": *"\([^"]*\)".*/\1/'; }
+package=@jeffwlawson/agent-workflows
 if [ "$(installed)" = "$version" ]; then
-  echo "  unchanged  @jeffwlawson/agent-workflows $version in $PREFIX"
+  echo "  unchanged  $package $version in $PREFIX"
 else
-  npmrc=$(umask 077 && mktemp /root/agent-workflows-npmrc.XXXXXX)
-  trap 'rm -f "$npmrc"' EXIT
-  token=$(ask_secret 'GitHub token (read:packages; not shown)')
-  printf '@jeffwlawson:registry=https://npm.pkg.github.com\n//npm.pkg.github.com/:_authToken=%s\n' "$token" >"$npmrc"
-  unset token
+  # The release's tarball, as upgrade.sh downloads it: the package name with
+  # its @ dropped and / made -, over https only, redirects too, and checked
+  # against its .sha256 before the installed package is touched.
+  tarball=${package#@}
+  tarball="${tarball//\//-}-$version.tgz"
+  url="https://github.com/$PACKAGE_SOURCE/releases/download/v$version/$tarball"
+  stage=$(mktemp -d)
+  trap 'rm -rf "$stage"' EXIT
+  for suffix in "" .sha256; do
+    if ! curl -fsSL --proto '=https' --proto-redir '=https' -o "$stage/$tarball$suffix" "$url$suffix"; then
+      echo "Could not download $url$suffix: is v$version released, with its tarball attached? The package was not changed." >&2
+      exit 1
+    fi
+  done
+  # The digest must name this tarball: sha256sum -c checks whatever file it names.
+  read -r _ named <"$stage/$tarball.sha256" || true
+  if [ "${named#\*}" != "$tarball" ] || ! (cd "$stage" && sha256sum -c --quiet "$tarball.sha256"); then
+    echo "The tarball downloaded from $url does not match its .sha256. The package was not changed." >&2
+    exit 1
+  fi
+  echo "  downloaded $url; it matches its .sha256"
   mkdir -p "$PREFIX"
-  npm install --prefix "$PREFIX" --userconfig "$npmrc" --no-fund --no-audit --no-update-notifier \
-    "@jeffwlawson/agent-workflows@$version"
-  rm -f "$npmrc"
+  npm install --prefix "$PREFIX" --no-fund --no-audit --no-update-notifier "$stage/$tarball"
+  rm -rf "$stage"
   if [ "$(installed)" != "$version" ]; then
     echo "The install finished but $PKG_JSON says $(installed), not $version." >&2
     exit 1
   fi
-  echo "  installed  @jeffwlawson/agent-workflows $version in $PREFIX"
+  echo "  installed  $package $version in $PREFIX"
 fi
 
 echo "== The worker's settings"
@@ -343,6 +367,6 @@ fi
 echo
 bash "$check_script" || status=${status:-$?}
 echo
-echo "Delete the GitHub token on GitHub if you made one. The dispatcher's checks are on Unraid:"
+echo "The dispatcher's checks are on Unraid:"
 echo "bash /boot/config/agent-service/check-unraid.sh"
 exit "${status:-0}"

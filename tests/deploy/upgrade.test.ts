@@ -440,8 +440,9 @@ describe("upgrade.sh", () => {
     expect(calls.filter((call) => /^(systemctl|docker) restart/.test(call))).toEqual([]);
     expect(installed(root, "opt")).toBe("1.2.3");
     expect(output).toContain(`To put the box back instead: bash ${root}/unraid/upgrade.sh 1.2.2.`);
-    // An earlier release may carry no tarball, so the registry route is named too.
-    expect(output).toMatch(/older release may not\.\nWhere it does not, use the registry route, .*-t admin@box\.example 'sudo bash ~\/install-box\.sh 1\.2\.2'/);
+    // An earlier release may carry no tarball, and no script installs one of those.
+    expect(output).toContain("older release may not.\nA release published before its tarball was attached to it cannot be rolled back to by script.");
+    expect(output).not.toContain("install-box.sh");
   });
 
   it("names the same way back when the install on the box fails", () => {
@@ -453,7 +454,8 @@ describe("upgrade.sh", () => {
     expect(status).toBe(1);
     expect(calls.filter((call) => call.startsWith("docker"))).toEqual([]);
     expect(output).toContain(`To put the box back instead: bash ${root}/unraid/upgrade.sh 1.2.2.`);
-    expect(output).toContain("'sudo bash ~/install-box.sh 1.2.2'");
+    expect(output).toContain("cannot be rolled back to by script.");
+    expect(output).not.toContain("install-box.sh");
   });
 
   it("says which files may already be on the box when the copy fails partway", () => {
@@ -1053,15 +1055,193 @@ describe("the dispatcher's container on an upgrade (#691)", () => {
   });
 });
 
+describe("the install scripts' package, from the release's tarball (#576)", () => {
+  const RELEASE_URL = `https://github.com/owner/repo/releases/download/v1.2.3/${TARBALL}`;
+  const downloads = (calls: readonly string[]): string[] =>
+    calls.filter((call) => call.startsWith("curl ")).map((call) => call.split(" ").at(-1) ?? "");
+
+  describe("install-unraid.sh", () => {
+    const install = (root: string, version = "1.2.3") => runScript(root, "install-unraid.sh", [version]);
+
+    it("installs a version that is not installed from the downloaded tarball, its digest checked, asking for no token and reading no terminal", () => {
+      const root = setUp();
+      const { status, output, calls } = install(root);
+
+      expect(output).not.toContain("needs a terminal");
+      expect(output).not.toMatch(/GitHub token|read:packages/);
+      expect(status).toBe(0);
+      expect(downloads(calls)).toEqual([RELEASE_URL, `${RELEASE_URL}.sha256`]);
+      for (const call of calls.filter((c) => c.startsWith("curl "))) expect(call).toContain("--proto =https --proto-redir =https");
+      const npm = calls.filter((call) => call.startsWith("docker run --rm"));
+      expect(npm).toHaveLength(1);
+      expect(npm[0]).toMatch(new RegExp(`npm install --prefix /pkg .*/release/${TARBALL.replaceAll(".", "\\.")}$`));
+      expect(npm[0]).not.toContain("npmrc");
+      expect(installed(root, "appdata/pkg")).toBe("1.2.3");
+      expect(output).toContain(`installed  ${NAME} 1.2.3`);
+      // The downloaded tarball is removed once installed.
+      expect(fs.readdirSync(path.join(root, "stage"))).toEqual([]);
+    });
+
+    it("installs onto a server with no package yet", () => {
+      const root = setUp({ fresh: true });
+      const { status, output } = install(root);
+
+      expect(output).not.toMatch(/GitHub token|no such file/i);
+      expect(status).toBe(0);
+      expect(installed(root, "appdata/pkg")).toBe("1.2.3");
+    });
+
+    it.each([
+      ["the tarball", TARBALL, RELEASE_URL],
+      ["its .sha256", `${TARBALL}.sha256`, `${RELEASE_URL}.sha256`],
+    ])("stops, naming the URL and leaving the package as it was, when %s cannot be downloaded", (_what, file, url) => {
+      const root = setUp();
+      fs.rmSync(path.join(root, "release", file));
+      const { status, output, calls } = install(root);
+
+      expect(status).toBe(1);
+      expect(output).toContain(`Could not download ${url}`);
+      expect(calls.filter((call) => call.startsWith("docker run"))).toEqual([]);
+      expect(installed(root, "appdata/pkg")).toBe("1.2.2");
+      expect(fs.readdirSync(path.join(root, "stage"))).toEqual([]);
+    });
+
+    it("stops, naming the URL and leaving the package as it was, when the tarball does not match its .sha256", () => {
+      const root = setUp({ digest: "0".repeat(64) });
+      const { status, output, calls } = install(root);
+
+      expect(status).toBe(1);
+      expect(output).toContain(`${RELEASE_URL} does not match its .sha256`);
+      expect(calls.filter((call) => call.startsWith("docker run"))).toEqual([]);
+      expect(installed(root, "appdata/pkg")).toBe("1.2.2");
+    });
+
+    it("refuses before changing anything, naming PACKAGE_SOURCE, where it is not set and the package is not at the version", () => {
+      const root = setUp({ conf: "" });
+      const { status, output, calls } = install(root);
+
+      expect(status).toBe(2);
+      expect(output).toContain("set PACKAGE_SOURCE=<owner>/<repo>");
+      expect(output).toContain("Nothing was changed.");
+      expect(calls.filter((call) => !call.startsWith("id "))).toEqual([]);
+    });
+
+    it("leaves the package at the version already installed alone, downloading nothing and needing no PACKAGE_SOURCE or terminal", () => {
+      const root = setUp({ conf: "" });
+      const { status, output, calls } = install(root, "1.2.2");
+
+      expect(output).not.toContain("needs a terminal");
+      expect(status).toBe(0);
+      expect(output).toContain(`unchanged  ${NAME} 1.2.2`);
+      expect(downloads(calls)).toEqual([]);
+      expect(calls.filter((call) => call.startsWith("docker run --rm"))).toEqual([]);
+    });
+  });
+
+  describe("install-box.sh", () => {
+    // The script writes under /etc and /usr/local, so it cannot run whole here:
+    // its "The package" section is run as it stands in the script, with the
+    // settings and installed() it is reached with.
+    const runSection = (root: string, version: string, env: Record<string, string> = {}) => {
+      const text = fs.readFileSync(path.join(DEPLOY, "install-box.sh"), "utf8");
+      const start = text.indexOf('echo "== The package"');
+      const end = text.indexOf(`echo "== The worker's settings"`);
+      expect(start).toBeGreaterThan(-1);
+      expect(end).toBeGreaterThan(start);
+      const definesInstalled = /^installed\(\) .*$/m.exec(text)?.[0];
+      expect(definesInstalled).toBeDefined();
+      fs.writeFileSync(
+        path.join(root, "unraid", "box-package.sh"),
+        [
+          "set -euo pipefail",
+          `. "$(dirname "$0")/agent-service.conf"`,
+          `version=${version}`,
+          `PKG_JSON=$PREFIX/${INSTALLED_PATH}`,
+          definesInstalled,
+          text.slice(start, end),
+        ].join("\n"),
+      );
+      return runScript(root, "box-package.sh", [], { TMPDIR: path.join(root, "stage"), ...env });
+    };
+
+    it("installs a version that is not installed from the downloaded tarball, its digest checked, asking for no token", () => {
+      const root = setUp();
+      const { status, output, calls } = runSection(root, "1.2.3");
+
+      expect(output).not.toMatch(/GitHub token|read:packages/);
+      expect(status).toBe(0);
+      expect(downloads(calls)).toEqual([RELEASE_URL, `${RELEASE_URL}.sha256`]);
+      for (const call of calls.filter((c) => c.startsWith("curl "))) expect(call).toContain("--proto =https --proto-redir =https");
+      const npm = calls.filter((call) => call.startsWith("npm "));
+      expect(npm).toHaveLength(1);
+      expect(npm[0]).toMatch(new RegExp(`^npm install --prefix ${root}/opt .*/${TARBALL.replaceAll(".", "\\.")}$`));
+      expect(npm[0]).not.toContain("userconfig");
+      expect(installed(root, "opt")).toBe("1.2.3");
+      expect(fs.readdirSync(path.join(root, "stage"))).toEqual([]);
+    });
+
+    it.each([
+      ["the tarball", TARBALL, RELEASE_URL],
+      ["its .sha256", `${TARBALL}.sha256`, `${RELEASE_URL}.sha256`],
+    ])("stops, naming the URL and leaving the package as it was, when %s cannot be downloaded", (_what, file, url) => {
+      const root = setUp();
+      fs.rmSync(path.join(root, "release", file));
+      const { status, output, calls } = runSection(root, "1.2.3");
+
+      expect(status).toBe(1);
+      expect(output).toContain(`Could not download ${url}`);
+      expect(calls.filter((call) => call.startsWith("npm"))).toEqual([]);
+      expect(installed(root, "opt")).toBe("1.2.2");
+      expect(fs.readdirSync(path.join(root, "stage"))).toEqual([]);
+    });
+
+    it("stops, naming the URL and leaving the package as it was, when the tarball does not match its .sha256", () => {
+      const root = setUp({ digest: "0".repeat(64) });
+      const { status, output, calls } = runSection(root, "1.2.3");
+
+      expect(status).toBe(1);
+      expect(output).toContain(`${RELEASE_URL} does not match its .sha256`);
+      expect(calls.filter((call) => call.startsWith("npm"))).toEqual([]);
+      expect(installed(root, "opt")).toBe("1.2.2");
+    });
+
+    it("leaves the package at the version already installed alone, downloading nothing", () => {
+      const root = setUp();
+      const { status, output, calls } = runSection(root, "1.2.2");
+
+      expect(status).toBe(0);
+      expect(output).toContain(`unchanged  ${NAME} 1.2.2`);
+      expect(calls).toEqual([]);
+    });
+
+    it("refuses before changing anything, naming PACKAGE_SOURCE, where it is not set and the package is not at the version", () => {
+      const root = setUp({ conf: "" });
+      fs.copyFileSync(path.join(DEPLOY, "install-box.sh"), path.join(root, "unraid", "install-box.sh"));
+      const { status, output, calls } = runScript(root, "install-box.sh", ["1.2.3"]);
+
+      expect(status).toBe(2);
+      expect(output).toContain("set PACKAGE_SOURCE=<owner>/<repo>");
+      expect(output).toContain("Nothing was changed.");
+      expect(calls.filter((call) => !call.startsWith("id "))).toEqual([]);
+    });
+  });
+});
+
 describe("the deploy scripts", () => {
   const scripts = fs.readdirSync(DEPLOY).filter((file) => file.endsWith(".sh"));
 
-  it("use no registry token outside the install scripts", () => {
-    const upgrades = scripts.filter((file) => !file.startsWith("install-"));
-    expect(upgrades).toContain("upgrade.sh");
-    for (const file of upgrades) {
-      const text = fs.readFileSync(path.join(DEPLOY, file), "utf8");
-      for (const word of ["read:packages", "_authToken", "npm.pkg.github.com"]) {
+  it("use no registry token, and no doc of the deployment tells an operator to make one", () => {
+    expect(scripts).toContain("install-unraid.sh");
+    expect(scripts).toContain("install-box.sh");
+    const doc = fs.readFileSync(path.join(DEPLOY, "..", "..", "docs", "deploying-the-service.md"), "utf8");
+    const workedExample = doc.slice(doc.indexOf("## A worked example: the maintainer's Unraid server"));
+    expect(workedExample).not.toBe(doc);
+    const texts: [string, string][] = [
+      ...fs.readdirSync(DEPLOY).map((file): [string, string] => [file, fs.readFileSync(path.join(DEPLOY, file), "utf8")]),
+      ["the deployment doc's worked example", workedExample],
+    ];
+    for (const [file, text] of texts) {
+      for (const word of ["read:packages", "_authToken", "npm.pkg.github.com", "GitHub token", "registry route"]) {
         expect(text, `${file} names ${word}`).not.toContain(word);
       }
     }

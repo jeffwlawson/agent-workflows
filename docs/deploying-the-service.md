@@ -77,7 +77,7 @@ works only where the repository is public: a private repository's Release assets
 **The registry route** is the other one: `npm install --prefix /opt/agent-workflows
 @<scope>/agent-workflows@<version>`, or `npm exec` of the same spec. GitHub Packages' npm registry
 needs a token with `read:packages` for it, even for a public package, set up in an `.npmrc` the
-install reads.
+install reads. The scripts in the worked example below do not use it.
 
 The two processes may share a machine. Keeping the App's key off the machine that runs agents is
 the point of the split, so put the worker on a machine, or a VM, of its own where you can.
@@ -863,10 +863,12 @@ Inside it:
   says. The repository's setup has the same network (#537), so for setup too it is defence in
   depth. What it still limits on its own is the worker's own traffic;
 - the package installed, as root, into `/opt/agent-workflows`, so the worker never fetches it
-  itself. The first install still takes the registry route (*Installing the package*, above):
-  `install-box.sh` asks for a token, uses it and deletes it. An upgrade takes the tokenless
-  install, from a tarball Unraid downloads and copies here (*Upgrading both*, below), and no
-  longer uses the registry;
+  itself. Both take the tokenless install (*Installing the package*, above), with no token: the
+  first install, by `install-box.sh`, downloads the release's tarball and its `.sha256` from the
+  repository `PACKAGE_SOURCE` names in the `agent-service.conf` beside it, checks the digest and
+  installs the tarball, stopping with the URL named and the package untouched where a download
+  fails or the digest does not match; an upgrade installs a tarball Unraid downloads and copies
+  here (*Upgrading both*, below);
 - the worker as a systemd unit running that install (`node
   /opt/agent-workflows/node_modules/@jeffwlawson/agent-workflows/dist/cli.js worker`) as the
   worker's user, after tinyproxy, its settings in an `EnvironmentFile` only root can read,
@@ -903,9 +905,10 @@ mints only for a request signed with `WORKER_SECRET`, a file the sandbox cannot 
 too, stays a control of its own.
 
 **The dispatcher** lives in `/mnt/user/appdata/agent-dispatcher/`: the App's key, `app.pem`, its
-settings, `service.env`, and the package, installed once into `pkg/` by a throwaway container
-(`docker run --rm … node:24-alpine npm install --prefix /pkg …`), so the server keeps no registry
-token either. `service.env` is root's alone; `app.pem` belongs to the user the container runs as,
+settings, `service.env`, and the package, installed into `pkg/` by a throwaway container
+(`docker run --rm … node:24-alpine npm install --prefix /pkg /release/<tarball>`) from the
+release's tarball, which `install-unraid.sh` downloads and checks as `install-box.sh` does, so the
+server never holds a token for the package either. `service.env` is root's alone; `app.pem` belongs to the user the container runs as,
 uid 99, mode 600:
 
 ```text
@@ -959,7 +962,7 @@ The App's webhook URL is then the server's Funnel name, `https://<node>.<tailnet
 Leave *Settings → Tailscale → Allow Tailscale Funnel* at **Yes**, or the plugin's watcher removes
 the Funnel.
 
-**Upgrading both** is one command, run as root on Unraid, and needs no registry token:
+**Upgrading both** is one command, run as root on Unraid, and needs no token:
 
 ```bash
 bash /boot/config/agent-service/upgrade.sh [--now] <version>
@@ -1006,7 +1009,8 @@ stops before restarting the dispatcher, and where any step stops it prints the c
 finish the job, or the way back: `upgrade.sh` at the earlier version, which installs it on the box
 first. Its halves, `upgrade-unraid.sh` and
 `upgrade-box.sh`, each install a tarball they are handed and can still be run alone, to recover or
-roll back one machine. None of the three uses the registry route any more.
+roll back one machine. A release published before its tarball was attached to it cannot be rolled
+back to by script: none of these scripts installs a release without its tarball.
 
 **After a reboot the chain comes back on its own**, as #374 showed with the prototype, the same
 chain of units and scripts: the array

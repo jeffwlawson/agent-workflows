@@ -1,0 +1,31 @@
+# PR #698's second fix round: the clean case for fix, where the right change
+# is none (#719).
+#
+# The head is e0bd934, where Review 2 (2026-11-03T02:29Z) left two threads
+# open, both on the one acceptance criterion the pull request could not meet
+# in code: a golden-PR eval and prompt sizes from the usage ledger, which are
+# runs by hand on the maintainer's credential at real cost (evals/README.md).
+# The fix round that answered it (02:30Z) made no commit and replied on both
+# threads that the run cannot make the measurement. The maintainer then
+# directed (IC_kwDOTzVKqM8AAAABiQnOCw, 02:43Z) that the pull request not try
+# to meet it, and Review 3 ruled the criterion changed on that basis. So no
+# change answers these threads, and a run that makes one is wrong.
+#
+# The inputs are as the fix runner rendered them at 02:30Z, through
+# shared/pr-feedback.ts (fetchPullRequestFeedback, surfaceText) over the
+# pull request's reviews, threads and comments as they then stood: the thread
+# on review/review-diff.ts was resolved by the review, so it is not shown; the
+# conversation held no comment and the newest review records no minor
+# finding, so CONVERSATION and MINOR_FINDINGS are the suite's "(none)". The
+# thread ids are the real ones, which the third round's commit names.
+pr: 698
+repository: https://github.com/jeffwlawson/agent-workflows.git
+base_ref: main
+base: f3b054a9d8705e8c0bf184afb4032f368c67e71a
+head: e0bd9340191ee3e2c6d54400c9092a354b1555f0
+clean: true
+# The findings the run is graded against, as the threads carried them.
+brief: inputs/INLINE_COMMENTS.md
+inputs:
+  PR_NUMBER: "698"
+  BRANCH: agent/issue-641-a-review-after-a-fix-round-reads-only-what-the-fix

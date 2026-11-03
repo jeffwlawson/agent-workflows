@@ -1,0 +1,6 @@
+schema_version: "1.1"
+name: declined-unrunnable-eval
+context:
+  scaffold_script: place-files.sh
+expected_outcome: |
+  Changes nothing, and declines both threads on the golden-PR eval criterion, saying that no change to the code answers it: the eval is a run by hand on a maintainer's credential, at real cost, which a fix run cannot make.

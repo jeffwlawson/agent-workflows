@@ -20,6 +20,8 @@ and touches no network.
 | `review/rescue-deleted-before-open` | #570 | `4d56bbc` | publish deletes the rescue before the pull request opens; a set-aside rescue is overwritten (#578) |
 | `review/clean-doctor-service-guard` | #566 | `85a04f0` | **clean**: no finding to fix before merge |
 | `fix/rescue-deleted-before-open` | #570 | `b41cecd` | the fix moves the deletion, adds or updates a test, and changes nothing else |
+| `fix/declined-unrunnable-eval` | #698 | `e0bd934` | **clean**: no change (a deterministic grader), and both threads declined because no change answers them |
+| `fix/maintainer-direction-size-guard` | #698 | `e0bd934` | a maintainer's conversation comment is made and reported addressed; both threads declined on that direction |
 
 Each head is found from the `agent-review` status history: the commit where the verdict turned
 success, before the merge-check (or a later round) found what it missed. **Not the merged head**,
@@ -31,6 +33,15 @@ and **nothing merged since has had to fix it**: no later commit on `main` change
 `setup/doctor.ts` or `docs/ADOPTING.md`. A clean case needs all of these; a later fix means a
 review that caught the defect is correct, and would be scored as a false finding. #568 was the
 clean case first and was dropped for that reason (#584 fixed what it shipped).
+
+The fix cases on #698 are its second and third fix rounds, both on `e0bd934` (the second made no
+commit). In the second, both open threads were on the one criterion no code could meet (a golden-PR
+eval, which is a paid run by hand), and the round rightly changed nothing: the maintainer then
+directed the pull request not to try. So `declined-unrunnable-eval` is **the clean case for fix**: a
+run that changes anything has failed it. In the third, a maintainer's conversation comment asked for
+a code change and set the same two threads aside, which `maintainer-direction-size-guard` grades:
+the precedence and conversation-outcome paths of `fix/prompt.md`. No fix round here has been handed
+a thread, a conversation comment and a minor finding at once, so no case holds all three.
 
 ## What a case is
 
@@ -103,6 +114,19 @@ Grader numbers are not reused. The verdicts, `restart-order` 04 and `rescue-dele
 were reworded after the first run of the controls (below) to say what counts as asking for a change,
 so a stored run's 04 was graded by the earlier file, and `compare` refuses to pool the two.
 
+## A deterministic grader
+
+A grader may be `type: regex` instead of `llm`: a pattern `claude plugin eval` matches against the
+final message (`target: last_message`, with `match: contains`, `not_contains` or `count:N`), with no
+judge, no cost and no variance. Its body says in words what it holds; the tool reads only the
+frontmatter. `declined-unrunnable-eval` 01 is one: the final message holds no `diff --git` line, so
+the run printed no change. It reads what the run printed, so a run that changed a file and did not
+print it would pass; its `llm` grader, which reads the replies, is the other half. Its controls are
+ruled on in `tests/evals.test.ts`, by the tool's own rule, rather than in a run of the controls.
+
+A fix case is **clean** (`clean: true`) where the right change is none. The report gives its
+false-change rate: the share of completed runs that failed any of its graders.
+
 ## Controls
 
 A grader that fails a text it should pass is broken, and one that passes a text it should fail is
@@ -120,7 +144,8 @@ is edited.
 node scripts/eval-prompts.ts controls review --model claude-haiku-5-5 --max-cost-usd 2
 ```
 
-stages each control as a case of its own, whose scaffold puts the control's text in the run's
+stages each control as a case of its own, with the `llm` graders it names (a `regex` grader is held
+by the layout test instead, above), whose scaffold puts the control's text in the run's
 sandbox as `control.md`. Its graders are the case's graders it names, criteria as they are, each
 with its `focus` moved from the final message to that file (`focus: { source: file, path:
 control.md }`), so the judge reads the text itself; the model is asked for one word, which nothing

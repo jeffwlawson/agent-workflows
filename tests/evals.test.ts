@@ -59,6 +59,17 @@ const filesUnder = (dir: string): string[] =>
     return entry.isDirectory() ? filesUnder(full).map((rel) => path.join(entry.name, rel)) : [entry.name];
   });
 
+/** A `regex` grader's ruling on a text, as `claude plugin eval` 2.1.316 makes it. */
+const regexRuling = (grader: Record<string, unknown>, text: string): boolean => {
+  const flags = String(grader["flags"] ?? "");
+  const match = String(grader["match"] ?? "contains");
+  const pattern = String(grader["pattern"]);
+  if (match === "contains") return new RegExp(pattern, flags).test(text);
+  if (match === "not_contains") return !new RegExp(pattern, flags).test(text);
+  const count = text.match(new RegExp(pattern, flags.includes("g") ? flags : `${flags}g`))?.length ?? 0;
+  return count === Number(match.slice("count:".length));
+};
+
 const frontmatter = (text: string): Record<string, unknown> => {
   const match = /^---\n([\s\S]*?)\n---\n([\s\S]*)$/.exec(text);
   expect(match, "a grader opens with YAML frontmatter").not.toBeNull();
@@ -94,14 +105,37 @@ describe.each(PROMPTS)("the %s evals", (prompt) => {
       expect(fs.readFileSync(path.join(dir, c.brief), "utf8").trim()).not.toBe("");
     });
 
-    it("has at least one grader, each an LLM grader with something to observe", () => {
+    it("has at least one grader, each an LLM grader with something to observe, or a regex over the final message", () => {
       expect(c.graders.length).toBeGreaterThan(0);
       for (const grader of c.graders) {
         const parsed = frontmatter(fs.readFileSync(path.join(dir, "graders", grader), "utf8"));
 
-        expect(parsed["type"], grader).toBe("llm");
-        expect(["last_message", "trace"], grader).toContain(parsed["focus"]);
+        expect(["llm", "regex"], grader).toContain(parsed["type"]);
+        if (parsed["type"] === "llm") {
+          expect(["last_message", "trace"], grader).toContain(parsed["focus"]);
+        } else {
+          // Deterministic, and free: held on its controls below with no model.
+          expect(parsed["target"], grader).toBe("last_message");
+          expect(() => new RegExp(String(parsed["pattern"]), String(parsed["flags"] ?? "")), grader).not.toThrow();
+          expect(String(parsed["match"]), grader).toMatch(/^(contains|not_contains|count:\d+)$/);
+        }
+        // What it holds, in words: a regex's body is read by no tool, so by people.
         expect(parsed["body"], grader).not.toBe("");
+      }
+    });
+
+    // A regex grader is free and needs no judge, so its controls are ruled on
+    // here rather than in a run of the controls, by the rule `claude plugin
+    // eval` 2.1.316 applies (its `regex` grader: `contains`, `not_contains`,
+    // `count:N` over the target's text).
+    it("has every regex grader rule on its controls as they expect", () => {
+      for (const grader of c.graders) {
+        const parsed = frontmatter(fs.readFileSync(path.join(dir, "graders", grader), "utf8"));
+        if (parsed["type"] !== "regex") continue;
+        const name = grader.slice(0, -".md".length);
+        for (const control of c.controls.filter((x) => x.expect[name] !== undefined)) {
+          expect(regexRuling(parsed, control.text), `${name} on ${control.name}`).toBe(control.expect[name]);
+        }
       }
     });
 
@@ -501,11 +535,59 @@ describe("the fix evals' grading", () => {
     expect(suite.note).not.toContain("..HEAD");
   });
 
+  // #719: the clean case for fix is one where the right change is none, held
+  // by a grader no judge rules on: the printed diff is empty.
+  it("include a clean case, graded on an empty change with no judge", () => {
+    const clean = cases.filter((c) => c.clean);
+
+    expect(clean.length).toBeGreaterThanOrEqual(1);
+    for (const c of clean) {
+      const deterministic = c.graders.map((grader) => frontmatter(fs.readFileSync(path.join(c.dir, "graders", grader), "utf8"))).filter((g) => g["type"] === "regex");
+      expect(deterministic.map((g) => [g["pattern"], g["match"]]), c.name).toContainEqual(["^diff --git ", "not_contains"]);
+    }
+  });
+
+  it("stage a control for the judge with only the graders a judge rules on", () => {
+    const out = fs.mkdtempSync(path.join(os.tmpdir(), "controls-"));
+    try {
+      const staged = stageControls(ROOT, "fix", out, (name) => name === "declined-unrunnable-eval");
+      const control = staged.controls?.find((x) => x.control === "no-change-round");
+      const dir = path.join(out, "evals", "declined-unrunnable-eval--no-change-round");
+
+      expect(control?.expect).toEqual({ "02": true });
+      expect(fs.readdirSync(path.join(dir, "graders"))).toEqual(["02.md"]);
+    } finally {
+      fs.rmSync(out, { recursive: true, force: true });
+    }
+  });
+
+  it("report a clean case's failures as changes where none was needed", () => {
+    const meta: StageMeta = {
+      prompt: "fix",
+      revision: { file: "fix/prompt.md", head: "a".repeat(40), lastChange: "b".repeat(40), blob: "c".repeat(40), uncommitted: false },
+      cases: [{ name: "no-change", pr: 1, head: "d".repeat(40), clean: true }],
+    };
+    const result: EvalResult = {
+      cases: [
+        {
+          name: "no-change",
+          graders: [{ name: "01" }],
+          arms: { with: [{ error: null, graders: [{ name: "01", passed: true }] }, { error: null, graders: [{ name: "01", passed: false }] }] },
+        },
+      ],
+    };
+    const text = report(meta, result);
+
+    expect(text).toContain("**False-change rate** (clean cases, where the right change is none):");
+    expect(text).toContain("- **no-change:** 1 of 2 completed runs made a change or an outcome the case needs none of (50%).");
+    expect(text).not.toContain("false finding");
+  });
+
   describe.each(cases.map((c) => [c.name, c] as const))("case %s", (_name, c) => {
     it.each(c.graders)("grader %s reads the final message and asks for no commit", (grader) => {
       const parsed = frontmatter(fs.readFileSync(path.join(c.dir, "graders", grader), "utf8"));
 
-      expect(parsed["focus"]).toBe("last_message");
+      expect(parsed["type"] === "regex" ? parsed["target"] : parsed["focus"]).toBe("last_message");
       expect(parsed["body"]).not.toMatch(/commit/i);
     });
   });

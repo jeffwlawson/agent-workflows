@@ -2,7 +2,9 @@
 # override any of these.
 #
 # The inputs below are a fix run with nothing to resume, no conversation
-# comment owed an answer and no minor finding, as fix/fix.ts renders them.
+# comment owed an answer and no minor finding, as fix/fix.ts renders them. A
+# case that was handed a conversation comment sets CONVERSATION in its own
+# inputs/.
 
 execution:
   max_turns: 200
@@ -37,5 +39,7 @@ note: |
      lists, so a new file is in it too. Paste the output whole, not a summary of it.
   2. The commit message you would have written.
   3. Each thread's outcome (addressed or declined) and the reply you would post on it.
+  4. Each conversation comment's outcome (addressed or declined), by its id, and the reason you
+     would give; none where *CONVERSATION* holds no comment with an id.
 
   Then `<promise>COMPLETE</promise>`.

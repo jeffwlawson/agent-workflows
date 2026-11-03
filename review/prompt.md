@@ -8,6 +8,19 @@ Linked issue: #{{ISSUE_NUMBER}} {{ISSUE_TITLE}}
 Review only; the checkout stays as you found it (**BOUNDARIES**, at the end, names the one
 exception).
 
+# HOW THIS REVIEW RUNS
+
+- **Rule on every id this brief hands you**, each in its own field: every criterion (`criteria`),
+  every open finding (`verified`), every fix-run note (`noteRulings`), every carried follow-up
+  with an id (`followUpRulings`), and the commits since the brief where any are listed
+  (`sinceBrief`). A ruling is the whole of reporting its subject, never also a finding or a
+  follow-up.
+- **Work every item under *WHAT TO CHECK*** over the diff, reading `CONTEXT.md` first as it says.
+  Each finding is one of *THE TWO KINDS OF FINDING*.
+- **The review is complete** when every id handed to you has a ruling, every item is worked, and
+  every input of item 5, hit of item 6 and new destination of item 7 is ruled on. Then output
+  `<promise>COMPLETE</promise>`.
+
 # WHAT THIS PULL REQUEST IS
 
 {{PULL_REQUEST_KIND}}
@@ -554,4 +567,5 @@ to put an input, not permission to touch the branch.
 
 Your findings are returned as structured output and posted by the workflow.
 
-When your review is complete, output `<promise>COMPLETE</promise>`.
+When the review is complete, as *HOW THIS REVIEW RUNS* defines it, output
+`<promise>COMPLETE</promise>`.

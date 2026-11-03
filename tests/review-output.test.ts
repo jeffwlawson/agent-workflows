@@ -3390,6 +3390,25 @@ describe("the review's finding vocabulary", () => {
     }
   });
 
+  /**
+   * The steps and a checkable bar, at the top (#704, H1): every id handed
+   * over, by the field that rules on it, then the items, then what complete
+   * means, which the ending points back at. Its list is bullets, not numbers,
+   * so the item slices above cannot start inside it.
+   */
+  it("prompt.md opens with how the review runs, and ends on that bar", () => {
+    const runs = plain(PROMPT).match(/# HOW THIS REVIEW RUNS.*?(?= # )/s)?.[0] ?? "";
+
+    expect(PROMPT.indexOf("# HOW THIS REVIEW RUNS")).toBeLessThan(PROMPT.indexOf("# ACCEPTANCE CRITERIA"));
+    for (const field of ["criteria", "verified", "noteRulings", "followUpRulings", "sinceBrief"]) {
+      expect(runs, field).toContain(`(\`${field}\`)`);
+    }
+    expect(runs).toMatch(/A ruling is the whole of reporting its subject/);
+    expect(runs).toMatch(/The review is complete when every id handed to you has a ruling, every item is worked/);
+    expect(runs).not.toMatch(/ \d\. /);
+    expect(plain(PROMPT).trimEnd()).toMatch(/When the review is complete, as HOW THIS REVIEW RUNS defines it, output `<promise>COMPLETE<\/promise>`\.$/);
+  });
+
   it("names needsYou and the three cases it is for", () => {
     expect(PROMPT).toContain("needsYou");
     expect(EXTRACTION).toContain("needsYou");

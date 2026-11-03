@@ -14,6 +14,8 @@ You are on branch `{{BRANCH}}`, already created from `{{BASE_REF}}`.
 Read `CONTEXT.md` before changing code: the domain model (the concepts this project is built
 from, the distinctions it holds between them, and where the seams are). Reason from it, not from
 what the code appears to do.
+In `CONTEXT.md`, read the `## Glossary` at the top first, then only the sections below it that
+the change touches; where it has no glossary, read it whole.
 
 `CLAUDE.md` is already in your context; do not read it again. It is the rules to follow: the
 commands, the conventions, and the contract anything you add here has to satisfy, including any

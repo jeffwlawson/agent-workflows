@@ -277,7 +277,11 @@ In `CONTEXT.md`, read the `## Glossary` at the top first, then only the sections
 the change touches; where it has no glossary, read it whole.
 
 1. **Correctness against the issue**: does the change do what the linked issue asked? Its
-   acceptance criteria are ruled on one by one, under *ACCEPTANCE CRITERIA* above.
+   acceptance criteria are ruled on one by one, under *ACCEPTANCE CRITERIA* above. Then the other
+   direction: does the diff add behaviour that neither the issue nor one of its criteria asks for?
+   Real scope creep is a finding. A deliberate difference the pull request explains is not: it
+   goes in the summary's **Differs from the issue** line. On a PRD slice round the criteria are the
+   slice's, so behaviour that belongs to another slice is behaviour nobody asked of this one.
 2. **Conventions**: the contract `CLAUDE.md` states for a change of this kind. Flag any
    deviation.
 3. **Domain correctness**: does it hold the distinctions `CONTEXT.md` draws, or has it
@@ -387,8 +391,10 @@ computed from your findings, from `needsYou` below and from the check results, t
 where GitHub shows it. So do not state a verdict of your own: what decides it is what you
 record, not what your prose calls it.
 
-Quote the code or check result each finding rests on; a reader should be able to check you
-without re-deriving your reasoning.
+Quote the code or check result each finding rests on, and name in the finding's own text what it
+rests on: a criterion id, a rule in `CLAUDE.md` or `CONTEXT.md`, a check result, or a concrete input
+that fails. A reader should be able to check you without re-deriving your reasoning. A finding that
+can name none of these is a preference, and is not posted.
 
 # HOW BAD EACH ONE IS
 

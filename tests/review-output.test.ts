@@ -3610,6 +3610,49 @@ describe("the review brief asks what text sent somewhere new can carry", () => {
 });
 
 /**
+ * The other direction of the spec, and the basis of each finding (#614). Item
+ * 1 asked only whether the change does what the issue asked; nothing asked
+ * what the diff adds that nobody asked for, which the maintainer's pre-merge
+ * check does. And a finding quoted its code but not the rule or criterion it
+ * rests on, so a fix round re-derived it.
+ *
+ * Only `prompt.md` is held to these: neither is a field, so the extraction
+ * brief does not change.
+ */
+describe("the review brief checks what nothing asked for, and each finding's basis", () => {
+  const PROMPT = fs.readFileSync(path.join("review", "prompt.md"), "utf8");
+  const plain = (text: string): string => text.replace(/[*_]/g, "").replace(/\s+/g, " ");
+  const item1 = (): string => plain(PROMPT).match(/ 1\. Correctness against the issue.*?(?= 2\. )/s)?.[0] ?? "";
+
+  it("asks item 1 the other direction: behaviour neither the issue nor a criterion asks for", () => {
+    expect(item1()).toMatch(/the other direction/i);
+    expect(item1()).toMatch(/add behaviour that neither the issue nor one of its criteria asks for/i);
+    expect(item1()).toMatch(/scope creep is a finding/i);
+  });
+
+  it("sends an explained difference to the summary's Differs from the issue line", () => {
+    expect(item1()).toMatch(/explains is not/i);
+    expect(item1()).toMatch(/Differs from the issue/);
+  });
+
+  it("counts another slice's behaviour as not asked of this slice", () => {
+    expect(item1()).toMatch(/PRD slice round the criteria are the slice.s/i);
+    expect(item1()).toMatch(/belongs to another slice is behaviour nobody asked of this one/i);
+  });
+
+  it("asks each finding to name its basis, of four kinds, and drops one that can name none", () => {
+    const quoting = plain(PROMPT).match(/Quote the code or check result each finding rests on.*?is not posted\./s)?.[0] ?? "";
+
+    expect(quoting).toMatch(/in the finding.s own text/i);
+    expect(quoting).toMatch(/a criterion id/i);
+    expect(quoting).toMatch(/a rule in `CLAUDE\.md` or `CONTEXT\.md`/);
+    expect(quoting).toMatch(/a check result/i);
+    expect(quoting).toMatch(/a concrete input that fails/i);
+    expect(quoting).toMatch(/can name none of these is a preference/i);
+  });
+});
+
+/**
  * GitHub's ceiling on a review body (#140). Over it the post is a 422 that
  * loses the threads along with the body, so the body is measured and shed in a
  * stated order — and refused by name where shedding is not enough.

@@ -3356,6 +3356,19 @@ describe("the review's finding vocabulary", () => {
     expect(PROMPT).not.toMatch(/bar stated|list's bar/);
   });
 
+  /**
+   * A ruling is the whole of reporting its subject, said as the positive
+   * (#704, M2). The mechanics of a second write-up (counted twice, a second
+   * thread, carried every round after) are the extraction's, where the
+   * fields are emitted; the work pass keeps only the rule.
+   */
+  it("prompt.md says a ruling is the whole of reporting it, and leaves the double-count mechanics to the extraction", () => {
+    expect(plain(PROMPT)).toMatch(/Ruling it `unmet` is the whole of reporting it\./);
+    expect(plain(PROMPT)).toMatch(/promoting it is the whole of reporting it/);
+    expect(PROMPT).not.toMatch(/counted twice|carried separately every round after/);
+    expect(plain(EXTRACTION)).toMatch(/counted twice/);
+  });
+
   it("names needsYou and the three cases it is for", () => {
     expect(PROMPT).toContain("needsYou");
     expect(EXTRACTION).toContain("needsYou");

@@ -37,9 +37,8 @@ the summary you write counts as part of the body.
 - **`unmet`**: the change does not do it, and nothing says why. That is a finding to fix before
   merge, and the workflow raises it for you: give a one-line `reason` saying what is missing, a
   `severity`, and a `path` and `line` anchored by the usual rule (at the change nearest to it; a
-  line outside the diff in a changed file is posted on the file). Do **not** also write it into
-  `findings`: ruling it `unmet` is the whole of reporting it, and a second write-up is counted
-  twice.
+  line outside the diff in a changed file is posted on the file). Ruling it `unmet` is the whole
+  of reporting it.
 
 A criterion you say nothing about is listed as *not checked* on the review, where a reader sees the
 gap, so rule on all of them.
@@ -121,10 +120,8 @@ been settled: a human may have pushed the fix, or the finding may have been wron
 What follows from your answer is not yours to do and not yours to state. A finding you rule
 `landed` has its thread closed by the workflow, with your line as the reason. One you rule `open`
 counts against this pull request exactly as a finding of your own would, so **ruling it `open` is
-the whole of reporting it**: do not write it up again as one of your own `findings`. Identifiers
-are the workflow's and text is never matched, so a second write-up is a second finding: counted
-twice, given a second thread, and carried separately every round after. If there is more to say
-about it than the line beside its identifier, say it in that line.
+the whole of reporting it**: do not write it up again as one of your own `findings`. If there is
+more to say about it than the line beside its identifier, say it in that line.
 
 **`declined` is a maintainer's decision, and you only report it.** Rule a finding `declined` only
 on the maintainer's latest reply on its thread when that reply refuses it in words ("won't fix",
@@ -159,8 +156,8 @@ either:
 - **promote** it: it is real, it is not this pull request's to fix, and it is worth an issue. Give
   it a `severity`, and a `location` where you can name a better one than the note did. The workflow
   records it as a follow-up, filed when this pull request merges like any other. A promoted note
-  takes one of the three follow-up places, ahead of your own, so do not also write it into
-  `followUps`.
+  takes one of the three follow-up places, ahead of your own, and promoting it is the whole of
+  reporting it.
 - **drop** it, with a `reason` the body shows: it is not real, it is already tracked, it is this
   pull request's to fix after all (then it is a finding of your own, on the usual terms), or it is
   not worth an issue.

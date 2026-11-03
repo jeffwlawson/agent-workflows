@@ -368,9 +368,14 @@ to where it was raised, so a second telling is the same problem read twice.
   that has to be fixed first."*
   Name the subjects, not the number; the count is on its own line below it, and the assessment is
   what the count cannot say. Where nothing is unresolved, one sentence on why the change holds up.
-- **`howChecked`**: under 100 words on what you actually verified: the checks you ran or read,
-  the behaviour you traced, the files you opened past the diff. It is how a reader weighs this
-  review. Every review carries one.
+- **`howChecked`**: what you actually verified, under 100 words and cut from the end past that.
+  Every review carries one. Write it in this order, each part a clause:
+  - first, what you ran or read past the diff, and the behaviour you traced (item 4);
+  - second, the phrases you searched for and how many hits you read (item 6);
+  - third, the new destinations you found, or that there were none (item 7);
+  - then, only where it applies: that this was a verification pass and what you checked the
+     earlier findings against, or that it read the whole diff; that a feedback surface or the red
+     evidence could not be read; which changes you treated as owing no red test.
 - **`title`** and **`summary`**: the pull request's title, and the summary in its body. The
   section below says what goes in each.
 

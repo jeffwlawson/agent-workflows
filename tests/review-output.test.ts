@@ -3369,6 +3369,27 @@ describe("the review's finding vocabulary", () => {
     expect(plain(EXTRACTION)).toMatch(/counted twice/);
   });
 
+  /**
+   * `howChecked` as one ordered contract (#704, H3): the parts the items owe
+   * first, then each conditional part, because the field is cut from the end
+   * past its limit and eight requests scattered over the file had no order to
+   * be cut in.
+   */
+  it("prompt.md gives howChecked one ordered contract, the items' parts first", () => {
+    const contract = plain(PROMPT).match(/- `howChecked`: .*?(?= - `title` )/s)?.[0] ?? "";
+    const at = (part: RegExp): number => contract.search(part);
+
+    expect(contract).toMatch(/under 100 words and cut from the end past that/);
+    expect(contract).toMatch(/Write it in this order/);
+    expect(at(/what you ran or read past the diff.*\(item 4\)/)).toBeGreaterThan(-1);
+    expect(at(/phrases you searched for.*\(item 6\)/)).toBeGreaterThan(at(/\(item 4\)/));
+    expect(at(/new destinations you found.*\(item 7\)/)).toBeGreaterThan(at(/\(item 6\)/));
+    expect(at(/only where it applies: that this was a verification pass/)).toBeGreaterThan(at(/\(item 7\)/));
+    for (const part of [/read the whole diff/, /feedback surface or the red evidence could not be read/, /owing no red test/]) {
+      expect(contract).toMatch(part);
+    }
+  });
+
   it("names needsYou and the three cases it is for", () => {
     expect(PROMPT).toContain("needsYou");
     expect(EXTRACTION).toContain("needsYou");

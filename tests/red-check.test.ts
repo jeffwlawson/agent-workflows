@@ -37,9 +37,8 @@ import { renderDecided } from "./review/decided.js";
  * the step does with the command, only running it can show: a step that
  * matched every string assertion has shipped unable to run (#28).
  *
- * The step's test is skipped where `bash` or `jq` is not on PATH: authored on
- * Windows and gated on Linux CI, where both are present and the coverage is
- * real.
+ * The step's test is skipped where `bash` or `jq` is not on PATH. CI's runner
+ * has both, so there the coverage is real.
  */
 
 const REVIEW = path.join(".github", "workflows", "review.yml");

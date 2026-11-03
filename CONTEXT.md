@@ -1,8 +1,20 @@
 # CONTEXT.md
 
-The domain model. Read this before changing anything; [CLAUDE.md](./CLAUDE.md) has the commands and
-the conventions, [README.md](./README.md) is for people installing the package, and
-[docs/ADOPTING.md](./docs/ADOPTING.md) is for people installing the loop.
+The domain model. Start at the [Glossary](#glossary), then read only the sections a change touches;
+[CLAUDE.md](./CLAUDE.md) has the commands and conventions, [README.md](./README.md) is for people
+installing the package, [docs/ADOPTING.md](./docs/ADOPTING.md) for people installing the loop.
+
+Read elsewhere for: **the platform contract** (what a runner reads and returns, for any orchestrator),
+[docs/platform-spec.md](./docs/platform-spec.md); **the service**,
+[docs/deploying-the-service.md](./docs/deploying-the-service.md); **adopter-facing behaviour and its
+silent failures**, [docs/ADOPTING.md](./docs/ADOPTING.md) (§1); **decisions**, [docs/adr/](./docs/adr/);
+**why something was decided**, [docs/parity.md](./docs/parity.md) §10 and
+[docs/friction.md](./docs/friction.md); **comparing this loop with others**,
+[docs/landscape.md](./docs/landscape.md); **profiling a workflow**,
+[docs/profiling.md](./docs/profiling.md); **publishing a batch of tickets**,
+[docs/agents/ticket-shape.md](./docs/agents/ticket-shape.md); **the triage labels and `wayfinder:*`**,
+[docs/agents/triage-labels.md](./docs/agents/triage-labels.md); **what `init` leaves an adopter to
+judge**, [setup/SETUP.md](./setup/SETUP.md).
 
 ## Glossary
 
@@ -59,7 +71,6 @@ meaning, the words not to use for it, and the section that holds it in full.
 | Pin | The version in the YAML that takes the reusable and the package from one release. | | [The version pin](#the-version-pin-keeps-two-halves-in-step) |
 | `self-check`, rescue branch | Two invariants nothing fails on: the job id the CI wait excludes, and the branch a stopped run's commits are kept on. | | [Invariants with no runtime symptom](#invariants-with-no-runtime-symptom) |
 | Domain model | This file, which every runner prompt reads by name; the prompts themselves name no domain. | `GLOSSARY.md` | [The prompts name no domain](#the-prompts-name-no-domain) |
-| Narrative log | `docs/friction.md`: appended, never rewritten to match today. | a changelog | [Where the rest is written down](#where-the-rest-is-written-down) |
 
 ## What this is
 
@@ -141,18 +152,14 @@ the final review where its header says so, and a fix round is an `agent:fix` lab
 to the scope whose first review came last before it. So a hand-requested review counts, and so does
 a fix round added by hand past the budget.
 
-A chain an older release started is migrated rather than stranded (#248), by rules marked
-*Pre-upgrade compatibility* and removable under #224: a closed sub-issue with no slice range landed
-before the upgrade and is not built again, and a pull request from the older release's per-slice
-`agent/slice-` branches still open into the PRD branch refuses the run by name until a human merges
-or closes it by hand.
+Rules marked *Pre-upgrade compatibility* in the code serve a chain an older release started
+(#248).
 
 **A trigger label is on while its run works** (#236). The run leaves it on as it starts and takes
-it off in its last step, however it ends: success, failure, refusal, timeout or cancel, except a
-run the plan's usage limit stopped on the service, which leaves it on (#635). So the
-label on an issue or a pull request is the run working on it now, or the one queued behind it, or,
-on the service, the one waiting for the plan's usage limit to reset, which resumes by itself
-(#635), and `agent:in-progress`, which said the same thing in a second write, is retired. On a PRD parent that
+it off in its last step, however it ends: success, failure, refusal, timeout or cancel. So the
+label on an issue or a pull request is the run working on it now, or the one queued behind it. The
+one exception is on the service (#635): a run the plan's usage limit stopped leaves its label on,
+posts its comment, adds nothing, and resumes by itself after the reset. On a PRD parent that
 makes `agent:implement` on only during each build run; the advance puts it back. Two rules
 follow from GitHub firing no event for a label already there. The loop adds a trigger label by
 **removing it first**, so a stale one cannot swallow the request. And a request made **while a run
@@ -163,9 +170,7 @@ run would answer the threads it answered. There is no lifetime "in progress" lab
 an open issue with a linked pull request, a draft, and `agent:blocked` already give that view.
 
 Every run ends in **one order**: post every result, take its own label off, then add the label
-naming the next step. The one run that keeps its label is one the plan's usage limit stopped on
-the service (#635): it posts its comment and ends there, label on and nothing added, since the
-service resumes it after the reset. A hand-off removes its trigger label just before it adds `agent:review`; a
+naming the next step; the usage-limit stop above is the one run that ends with its label on. A hand-off removes its trigger label just before it adds `agent:review`; a
 failure comments, then removes it, then adds `agent:blocked`; a refusal does the same where the
 maintainer has to act, and one that leaves nothing to act on (a closed issue or pull request, a
 finished PRD, a deleted branch, a fix with nothing to do) comments and removes it, and adds nothing
@@ -248,14 +253,12 @@ PR, and the **early stop**
 (#202) ends it sooner: after a fix round that closed none of the findings it was given, matched by
 the ids the workflow wrote into them, no further automatic round starts, whatever budget is left.
 New findings the re-review raised neither count as progress nor reset anything. The verdict then
-says why the loop stopped, and gives the same three ways on as a spent budget: add `agent:fix`,
-decline a finding in a reply, or push a commit. The **round rule** it replaced, which barred a
-second-round review from recommending another round, is retired (PRD #200 decision 6). The step
+says why the loop stopped, and gives the same **three ways on** as a spent budget: `agent:fix` for
+another round; decline a finding by replying to it, then `agent:review`; or push a commit, then
+`agent:review`. The step
 is in the posting job, which checks nothing out and runs no model, which is what keeps
-`AGENT_PAT` away from the job that reads the pull request. The `auto-fix` input it replaced was
-a deprecated alias from v0.7.5 and has been removed (#366). Waiting has no label
-either: `agent:queued` is retired with the marker (#204), because a native "blocked by" link says an
-issue waits, and `implement` refuses while one is open. A pull request whose
+`AGENT_PAT` away from the job that reads the pull request. Waiting has no label either (#204): a
+native "blocked by" link says an issue waits, and `implement` refuses while one is open. A pull request whose
 automatic fix is about to start also stays a **draft**: draft means the loop is still
 working, and what marks it ready is whichever end the round comes to — the re-review, where the fix
 pushed or left a note, and the fix run itself where it did neither and so asked for none.
@@ -269,8 +272,7 @@ the final review ends any other way, the same job **parks** the chain: it commen
 naming the slice (or "final review"), why the round stopped (the slice's or the final review's
 fix-round budget spent, no
 progress, a review that needs a closer look, a run that did not finish), the open findings with
-links, and the three ways on: `agent:fix` for another round; decline a finding by replying to it,
-then `agent:review`; or push a commit, then `agent:review`. A verdict that started a fix round is
+links, and the three ways on. A verdict that started a fix round is
 neither, and the job does nothing on it. At every ending it first writes the progress list.
 `fix` has no copy of it: only a review posts an approval, and every fix run on a PRD PR ends in
 one. It cannot cycle: it never labels a pull request, the run it starts builds one slice and asks
@@ -301,7 +303,7 @@ button, a force-push) leaves it unarmed, and the next gate **disarms**: it takes
 and asks the human who armed it, by name, for a fresh merge-check. The label is a standing
 authorisation rather than a run's label, armed until merged or disarmed.
 
-**The reviewer closes a finding; the fixer never does** (#109, decision 1). A `fix` run replies in
+**The reviewer closes a finding; the fixer never does** (#109). A `fix` run replies in
 every thread it is asked about — every open one bar a thread whose close failed, which already
 carries the reply that settles it and is shown for its evidence only (#133) — and resolves none of
 them, and every review, after a fix round or not, takes the findings an earlier review left open, rules
@@ -310,7 +312,7 @@ the next review is handed, so while the fixer closed its own threads the one pas
 it land?* could not see what it was checking. A review after no fix round does it too, because a human may have pushed
 the fix and the question has the same answer whoever wrote the commit.
 
-**And a maintainer's decision outranks both** (#109, decision 10). A thread a *human* resolved is
+**A maintainer's decision outranks the reviewer's and the fixer's** (#109). A thread a *human* resolved is
 handed to every later review as settled, with the instruction not to raise it again in any wording;
 a thread where a maintainer **replied** declining the finding is closed by the reviewer as
 `WONT_FIX`, quoting them, and stops counting. The review never overrules a maintainer and never
@@ -320,7 +322,7 @@ decision. What makes the decline usable is the author gate rather than the readi
 `isTrustedAuthor` passed reaches the agent at all, and only one it passed can close a thread, so a
 decline typed by anyone at all is a finding that stays open.
 
-**And in the fix half it is a direction rather than a ruling** (PRD #101, decision 5). The gate is
+**In the fix half a maintainer's comment is a direction rather than a ruling** (PRD #101). The gate is
 the same one — only a comment `isTrustedAuthor` passed reaches either agent — so what the fix brief
 adds is weight, not trust: a maintainer's comment is what that run follows, above a reviewer's
 finding where the two disagree, and a maintainer asking for something no review raised is asking
@@ -329,7 +331,7 @@ inside this change's scope, because the bound on expanding a pull request is a b
 terms it may decline any comment, and says why. What it may not do is weigh a maintainer's ask as
 one more finding.
 
-**And an outcome is owed on a comment that has no thread** (#104; decision 6, superseding #3). A
+**An outcome is owed on a comment that has no thread** (#104). A
 `fix` run reported one outcome per review thread and nothing for a top-level **conversation**
 comment — it read them, acted on them, and never said so, which made a *declined* one invisible:
 nothing on the pull request, nothing to push back on. With steering arriving as exactly such a
@@ -346,7 +348,7 @@ because a status note asks for nothing (#159). The record carries a
 marker of its own rather than the top-level one, because the top-level one is what dedupes that
 channel across runs, and a record is correct to repeat.
 
-**And a fix run's out-of-scope note ends as an issue or as a decision not to file one** (#213). The
+**A fix run's out-of-scope note ends as an issue or as a decision not to file one** (#213). The
 fix agent often reads furthest past the diff, and what it noticed there used to be a top-level
 comment that nothing read: `follow-ups` files only from the newest review body, and the fetch keeps
 marked comments out of what the next review sees. So such a note is now structured (a title, a body,
@@ -359,7 +361,7 @@ in its own follow-ups (ahead of its own, inside the same cap) and filed on merge
 direction that cannot lose one. The fix agent never writes the follow-ups record itself: two
 writers of it would break "the newest record wins".
 
-**And the review body is where the rounds are kept** (#109, decisions 8 and 9). It is a findings
+**The review body is where the rounds are kept** (#109). It is a findings
 record, not a rendering of the latest pass: the round header, `## Agent review`, the assessment, one sentence the
 review wrote naming what is unresolved, the step, a count, then *Open*, *Minor findings* (#616), *Previously missed*,
 *Still open* (closures GitHub refused, #257), *Resolved since last review*, *Acceptance criteria*,
@@ -582,27 +584,10 @@ release, so a fix in the package reaches them the same way.
 anything, is package code, run in the same job its shell would have run in. That includes the
 guards written as steps, such as the preflight refusals and the bundle check, and the choice of
 which token each write uses. [ADR 0003](./docs/adr/0003-reusable-keeps-what-only-actions-can-do.md)
-records the rule and why it replaced "every guard and every step" in the reusable. `review` has
-moved (PRD #409): every one of its steps that reads or changes the record or decides is a command.
-So has `fix` (PRD #466): its gate job's work is `fix:gate`, the rescue lookup in its agent's job
-`fix:prepare`, its bundling `fix:bundle`, its publish job's success arm `fix:publish` and the
-ending after it `fix:conclude`, and `fix.yml` runs no inline shell that decides. So has
-`update-branch` (PRD #480): its gate job's work is `update-branch:gate` and `update-branch:merge`,
-the repeated merge in its agent's job `update-branch:prepare`, its bundling
-`update-branch:bundle`, its publish job's success arm `update-branch:publish` and the ending after
-it `update-branch:conclude`, and `update-branch.yml` runs no inline shell that decides. So has
-`implement` (PRD #489): its gate job's work is `implement:gate`, the branch's creation in its
-agent's job `implement:prepare`, its bundling `implement:bundle`, its publish job's success path
-`implement:publish` and the ending after it `implement:conclude`, and `implement.yml` runs no
-inline shell that decides. So has `implement-prd` (PRD #496, PRD #497): its gate job's work is
-`implement-prd:gate`, its catch-up job's `implement-prd:catch-up`, the PRD branch's preparation in
-its agent's job `implement-prd:prepare`, its bundling `implement-prd:bundle`, its publish job's
-success path `implement-prd:publish` and the ending after it `implement-prd:conclude`, and
-`implement-prd.yml` runs no inline shell that decides. And so has `follow-ups` (PRD #508), the
-last: its filing is `follow-ups:file`, reading and writing through the engine, and the ending after
-it `follow-ups:conclude`, and `follow-ups.yml` runs no inline shell that decides. **Every reusable
-has moved**: what shell is left records facts only Actions has (a clock, a job's status), and a fix
-to a step goes in its command.
+records the rule and why it replaced "every guard and every step" in the reusable. Every reusable
+workflow's deciding steps are commands, named `<workflow>:<step>` (`shared/contract.ts`, `COMMANDS`,
+is the list). What shell is left in a reusable records facts only Actions has (a clock, a job's
+status); a fix to a step goes in its command.
 
 **A runner** is the part of the package that does an agent's work: TypeScript plus a prompt, invoked
 as one subcommand of one published binary. It takes its whole input from the environment; passing
@@ -613,14 +598,7 @@ an argument is refused rather than ignored. Its boundary with whatever invokes i
 that reads or changes the PR or issue, or decides anything, and starts no agent. It is invoked the
 way a runner is, as one subcommand with no arguments and its whole input in the environment, and
 fails the way a runner does. It is named `<workflow>:<step>`, such as `review:publish`, so a bare
-name is always a runner. `fix:gate`, `fix:prepare`, `fix:bundle`, `fix:publish`, `fix:conclude`, `follow-ups:file`, `follow-ups:conclude`,
-`implement:gate`, `implement:prepare`, `implement:bundle`, `implement:publish`, `implement:conclude`, `implement-prd:gate`, `implement-prd:catch-up`,
-`implement-prd:prepare`, `implement-prd:bundle`, `implement-prd:publish`, `implement-prd:conclude`, `review:gate`,
-`review:budget`, `review:collect-checks`, `review:red-check-place`, `review:red-check-classify`,
-`review:publish`, `review:conclude`, `review:advance`, `update-branch:gate`, `update-branch:merge`,
-`update-branch:prepare`, `update-branch:bundle`, `update-branch:publish` and
-`update-branch:conclude` are the commands today, and no step that decides still runs as YAML
-shell. A command that
+name is always a runner. A command that
 only decides or reads, as `review:gate` does before the review job's checkout (#420),
 `review:budget` does for the fix-round budget after it (#331) and `review:collect-checks` does
 for the CI wait (#421), is handed the GitHub reader and no writer, and what it settles leaves it
@@ -671,24 +649,16 @@ runner, a command, or the install path below. *Command* alone means the kind abo
 umbrella, and never the adopter's own commands (`inputs.setup`, the red check's test command),
 which are always named as the adopter's.
 
-**Part, not layer.** These were *the three layers* until stacked pull requests arrived: GitHub calls
-one pull request in a stack a **layer**, and that is the only meaning the word has here now. The
-PRD chain uses no stacks: its slices are ranges of commits on one branch, not layers. Older
-entries in `docs/friction.md` keep the old usage, because that log is never rewritten.
+**Part, not layer.** A **layer** is one pull request in a GitHub stack, and the PRD chain uses no
+stacks: its slices are ranges of commits on one branch. Older entries in `docs/friction.md` say
+*layer* for a part.
 
 ### Orchestrator, the record and the agent
 
-Three terms from the contract between the runner and what invokes it, worded as
-[`docs/platform-spec.md`](./docs/platform-spec.md) §1 words them. The spec is their home; these
-are here so the glossary and the contract use one vocabulary.
-
-- **Orchestrator.** Whatever invokes a runner and acts on its result. The **Actions orchestrator**
-  is a caller plus its reusable workflow, and the three parts above describe its internals. A
-  second one, a service outside Actions, was prototyped on #364.
-- **The record.** What the loop leaves on GitHub that a later run reads back: posts by the loop's
-  accounts, markers in their text, status contexts, commit trailers and branch names.
-- **The agent.** The model CLI a runner drives inside its sandbox: Claude Code. It is not the
-  runner, which starts it, and no command starts one.
+Defined in [docs/platform-spec.md](./docs/platform-spec.md) §1: **orchestrator**, **record**,
+**agent**. The Actions orchestrator is the one the three parts above describe; a second one,
+[the service](#and-the-service-orchestrator-which-is-an-orchestrator-not-a-part), runs outside
+Actions.
 
 ### And the install path, which is none of the three
 
@@ -852,9 +822,7 @@ repo: it runs with repo secrets and write access. Three things close it, and non
    refuses a fork head under `pull_request_target` on its own too, so the guard holds twice — but
    only where the step passes an explicit `ref:`, which makes the second half a property of *this
    step* as much as of the version: the action skips its check on a default self-checkout, GitHub
-   having resolved that ref itself. A test asserts the `ref:` alongside the `if:`. Not something the
-   `@v7` bump bought, either — the refusal was backported into `v6.1.0`, `v5.1.0` and `v4.4.0`, and
-   `@v4` floats to the last of those. What matters here is the opt-out:
+   having resolved that ref itself. A test asserts the `ref:` alongside the `if:`. What matters here is the opt-out:
    `allow-unsafe-pr-checkout: true` turns the action's half off outright, and that input lives in
    the reusable half where no caller can see it. A test asserts no checkout step sets it.
 2. **The author gate** — `isTrustedAuthor` in `shared/`. Every PR feedback surface is
@@ -931,7 +899,7 @@ read the PR's *base* branch instead; the move made the protection stronger, sinc
 a branch somebody else controls no longer picks that branch's copy of the caller.
 
 And on a **public** repository it runs only where an Actions event policy lets it (#219). GitHub's
-workflow execution protections block `pull_request_target` there by default from 2026-11-02, so
+workflow execution protections block `pull_request_target` there by default, so
 `init` creates a policy allowing it for the loop's callers, targeted by workflow path so every other
 workflow stays blocked, and `doctor` fails a public repository without one. A blocked run is
 GitHub's refusal rather than a failed step, which is why it is looked for rather than reported.
@@ -1002,23 +970,3 @@ The ones worth knowing because nothing fails when they break:
 The runners and prompts must stay free of any consuming repo's vocabulary — a test walks the runner
 surface and fails on it. The gate command is not named either: prompts say *"the verify command
 `CLAUDE.md` names"*, so an adopter writes their gate down once, in their own `CLAUDE.md`.
-
-This is why the loop can run anywhere. It is also why **this** repo needs its own `CLAUDE.md` and
-`CONTEXT.md` — it is an adopter of itself.
-
-## Where the rest is written down
-
-| File | What |
-|---|---|
-| [`docs/ADOPTING.md`](./docs/ADOPTING.md) | installing the loop elsewhere; §1 is the silent failures |
-| [`docs/platform-spec.md`](./docs/platform-spec.md) | the runner ⇄ orchestrator contract: what a runner needs, returns and reads back, for anything driving the runners other than Actions |
-| [`docs/friction.md`](./docs/friction.md) | a dated log of every time a human reached into the loop, and why |
-| [`docs/parity.md`](./docs/parity.md) | how this compares to the upstream loops it was modelled on; §10 holds invariants |
-| [`docs/landscape.md`](./docs/landscape.md) | every other agent loop and reviewer on GitHub, dated; whether this one earns its place, and what to call it |
-| [`docs/profiling.md`](./docs/profiling.md) | how to profile a workflow from its jobs and its session transcript, and the shape of a finding |
-| [`docs/agents/ticket-shape.md`](./docs/agents/ticket-shape.md) | how a batch of tickets is published, and in what order |
-| [`docs/agents/triage-labels.md`](./docs/agents/triage-labels.md) | the triage vocabulary beside `agent:*`, and the only definition of the `wayfinder:*` labels two workflows refuse |
-| [`setup/SETUP.md`](./setup/SETUP.md) | the prompt `init` leaves in an adopter's tree for the judgement work it cannot do |
-
-`friction.md` is a **narrative log**, not a changelog: the commits are its timestamps, and entries
-describe what was true when written. Do not edit history into it.

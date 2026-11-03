@@ -63,6 +63,15 @@ export interface ReviewHistory {
    * loud rather than reporting a history it did not establish.
    */
   readonly unreadable?: string;
+  /**
+   * The commit the latest verdict was posted on, the head the review before
+   * this one read (#641). Present only where this review follows a fix round
+   * **and** commits have landed since it, which is the one case the prompt's
+   * diff is scoped to those commits (`review/review-diff.ts`): a round that
+   * pushed nothing has no commits to scope to, and a history that could not be
+   * read names no head.
+   */
+  readonly reviewedHead?: string;
 }
 
 const readJson = (text: string): unknown => {
@@ -205,9 +214,11 @@ export const readReviewHistory = (
     if (verdict === null) continue;
 
     const since = commits.length - 1 - i;
+    const afterFixRound = (since > 0 || noted) && verdict.fixRound;
     return {
-      afterFixRound: (since > 0 || noted) && verdict.fixRound,
+      afterFixRound,
       unreviewedCommits: since > 0,
+      ...(afterFixRound && since > 0 ? { reviewedHead: sha } : {}),
     };
   }
 

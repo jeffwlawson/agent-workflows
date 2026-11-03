@@ -44,6 +44,7 @@ import {
   type SliceRedTests,
 } from "../shared/red-check.js";
 import { fetchPullRequestContext } from "./review-context.js";
+import { readPromptDiff, renderDiffScope, scopedSize } from "./review-diff.js";
 import { checkSinceBrief, renderSinceBriefForReview } from "./since-brief.js";
 import {
   findingsHandOver,
@@ -265,6 +266,20 @@ try {
   const history = readReviewHistory(INPUTS.GH_REPO, PR_NUMBER, LOOP_ACCOUNTS, context.fixNotes.length > 0);
   console.log(
     `Follows a fix round: ${history.afterFixRound ? "yes" : "no"}${history.unreadable === undefined ? "" : `, assumed because ${history.unreadable}`}.`,
+  );
+
+  // The diff the prompt carries (#641): on a verification pass, what changed
+  // since the last review, with the rest of the diff on disk. Placement below
+  // still reads the whole pull request's `diffLines`.
+  const promptDiff = readPromptDiff(history, round, BASE_REF, context.diff, context.diffLines.keys());
+  console.log(
+    promptDiff.kind === "since"
+      ? `Prompt diff: scoped to the commits since ${promptDiff.reviewedHead.slice(0, 7)}, ${scopedSize(promptDiff)} bytes of the pull request's ${context.diff.length}.`
+      : promptDiff.kind === "unreadable"
+        ? `Prompt diff: the whole pull request's, ${context.diff.length} bytes, because ${promptDiff.reason}.`
+        : promptDiff.scopedSize !== undefined
+          ? `Prompt diff: the whole pull request's, ${context.diff.length} bytes, because the scoped form would be ${promptDiff.scopedSize} bytes.`
+          : `Prompt diff: the whole pull request's, ${context.diff.length} bytes.`,
   );
 
   // A review proceeds on what survived a partial answer — but says so twice:
@@ -522,7 +537,8 @@ try {
       OPEN_FINDINGS: renderCarriedFindings(carriedFindings),
       SETTLED_FINDINGS: renderSettledFindings(context.settledFindings),
       FIX_NOTES: renderNotesForReview(context.fixNotes),
-      PR_DIFF: context.diff,
+      DIFF_SCOPE: renderDiffScope(promptDiff, BASE_REF),
+      PR_DIFF: promptDiff.diff,
       CURRENT_SUMMARY: currentSummary(context.prBody),
       SUMMARY_RULE: sliceOfMany
         ? "**This review leaves them as they are.** This is a slice round, and the final review writes the pull request's title and summary for the whole PRD, so the workflow writes neither; omit both fields."

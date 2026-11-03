@@ -19,3 +19,9 @@ inputs:
   PR_TITLE: "feat(publish): attach the packed tarball and its SHA-256 to each GitHub Release"
   ISSUE_NUMBER: "561"
   ISSUE_TITLE: Attach the packed tarball and its SHA-256 to each GitHub Release
+# How the report reads a grader beyond its pass rate (evals/README.md, *What a
+# grader is counted as*). 02 never passed in a stored run where 01 failed
+# (docs/audits/2026-11-02/evals.md, 3.1): it is whether the finding, once
+# raised, is blocking, so it is counted over the runs that passed 01.
+grading:
+  "02": { given: "01" }

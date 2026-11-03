@@ -6764,7 +6764,9 @@ describe("every workflow invokes the runners at a pinned version", () => {
    *
    * `docs/friction.md` is exempt because it is a dated narrative log — its
    * `0.1.1` lines are records of what was true that day, and CLAUDE.md forbids
-   * editing history into it.
+   * editing history into it. So is an eval case's `controls/` (#718): each is
+   * real text a grader is checked against, a diff that shipped among them, kept
+   * as it was written.
    *
    * Walked rather than listed, for the reason `copy-assets.ts` walks: a doc
    * added next release is the one file nobody adds to a list.
@@ -6778,7 +6780,8 @@ describe("every workflow invokes the runners at a pinned version", () => {
       fs.readdirSync(dir, { withFileTypes: true }).flatMap((entry) => {
         const rel = dir === "." ? entry.name : `${dir}/${entry.name}`;
         if (entry.isDirectory()) return SKIPPED.has(entry.name) ? [] : docsUnder(rel);
-        return entry.name.endsWith(".md") && !EXEMPT.has(rel) ? [rel] : [];
+        const control = rel.startsWith("evals/") && rel.split("/").includes("controls");
+        return entry.name.endsWith(".md") && !EXEMPT.has(rel) && !control ? [rel] : [];
       });
 
     const offenders = docsUnder(".").flatMap((doc) =>

@@ -14,6 +14,11 @@ and is the only fix record taken on the graders as they now stand.
 - **`review` model:** claude-opus-5-5. **Claude Code:** 2.1.307. **Cost:** $9.76. **Prompt:** `review/prompt.md` blob `cdeb260a5a2a`.
 - **`fix` run:** 2026-11-03, from `15beba09ffac` (the pull request head of #722, whose merge is `038257c`), with `fix/prompt.md` blob `388e1cf8ee9b`, the prompt on `main` after #700. `node scripts/eval-prompts.ts fix --model claude-opus-5-5 --max-cost-usd 25 --runs 6`. claude-opus-5-5, Claude Code 2.1.307, **cost $11.46**, no run errored.
 
+**The graders have changed since** (#718, `README.md`, *What a grader is counted as*): the clean
+case's 02 and `restart-order` 03 are removed, `restart-order` 05 is added, 03 of
+`rescue-deleted-before-open` and 04 of `restart-order` are now verdicts (and reworded), and 02 of
+`persisted-checkout-token` is counted given 01. The tables below are as they were taken.
+
 Misses are part of the baseline: several graders pass in none of their runs. The tables are the
 runner's own reports, unedited; it cuts each grader's text at 80 characters, and the full text is in
 the grader's file under `review/` or `fix/`.

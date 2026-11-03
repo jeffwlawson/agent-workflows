@@ -1,0 +1,52 @@
+name: Prompt evals
+
+# A pull request that changes `review/prompt.md` or `fix/prompt.md` carries the
+# comparison the protocol asks for (#718, `evals/README.md`, *The protocol*,
+# step 7): one whose two sides ran the prompt's blob at the merge-base and at
+# the head. The evals themselves cost real money and are run by hand; this
+# checks only that the result of one is posted, and is of this change.
+#
+# Its own workflow, not a job in ci.yml, because it reads the pull request's
+# body: `edited` runs it again when the body changes, and the verify job has no
+# reason to. A comparison posted as a comment needs the job re-run.
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, edited]
+
+permissions:
+  contents: read
+  pull-requests: read
+
+concurrency:
+  group: prompt-evals-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  comparison:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      # The head itself, not the merge commit GitHub checks out by default:
+      # the comparison is of the blob the pull request holds. With history, for
+      # the merge-base.
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+
+      - run: npm ci
+
+      - name: A changed prompt carries its comparison
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: node scripts/eval-prompts.ts check-comparison

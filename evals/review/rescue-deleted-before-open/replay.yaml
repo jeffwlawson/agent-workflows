@@ -22,3 +22,8 @@ inputs:
   PR_TITLE: "feat(implement): rescue a stopped run's commits to agent/rescue/issue-<n> and resume from them"
   ISSUE_NUMBER: "270"
   ISSUE_TITLE: An implement run that hits its time limit can lose finished, committed work
+# How the report reads a grader beyond its pass rate (evals/README.md, *What a
+# grader is counted as*). 03 passes on any blocking finding, not on this case's:
+# a verdict, which is reported and never declared.
+grading:
+  "03": verdict

@@ -12,7 +12,7 @@ The loop has reviewed this PR. Your review is the one it cannot give: on a real 
 1. **Repo rules.** `<owner>/<repo>` from `git remote -v`. Read the repo's `CLAUDE.md` (or its README or CI config, where it has none) for the verify command, the standards and how to ask the maintainer, and the loop's `CONTEXT.md` at the release the repo's callers pin (the `@v<tag>` on their `uses: jeffwlawson/agent-workflows/…` lines) for what a handed-over PR looks like. Read [references/environment.md](references/environment.md) before the first GitHub call.
 2. **Handed over?** Read the PR's draft state, head SHA, latest agent review, labels and runs. A draft with a loop run in progress is not handed over yet: say so and stop, since a push or a label now collides with the run. Done when the PR is ready (or parked) and you have written down its head SHA.
 3. **Briefs.** A PRD PR is graded against each sub-issue's latest *Agent Brief* and against the parent's body; a plain PR against its issue's latest brief. Collect every brief's *After merge, by a human* items.
-4. **Verify** on that head, yourself, as environment.md's *Local verify* says (`scripts/verify.sh`). Done when its printed head equals the SHA from step 2 and it exited 0, or you have its failures.
+4. **Verify** on that head, yourself, as environment.md's *Local verify* says (this skill's `scripts/verify.sh`). Done when its printed head equals the SHA from step 2 and it exited 0, or you have its failures.
 5. **Review** by [references/review.md](references/review.md): spec, standards with the stale-text sweep, and the real-environment probes. Done when every criterion of every brief has a verdict, the sweep's every hit is still true or a finding, and each probe has run or is named as one you could not run, with why.
 6. **Report**, then stop.
 
@@ -24,9 +24,9 @@ The loop has reviewed this PR. Your review is the one it cannot give: on a real 
 - each criterion's verdict, per brief;
 - each finding, with its file and line, what is wrong, and a remedy: a comment plus `agent:fix` while the PR has fix rounds left, a small fix pushed to the branch, or a question for the maintainer;
 - the *After merge, by a human* items, and whether the merge makes a release worth cutting;
-- on **Merge-ready**, the two ways on, both at `<sha>`: the maintainer's own merge, the squash with the `sha` guard set to it, or `agent:merge` added while the PR's head is still `<sha>`, which arms the loop to merge that head once it is current and green, refreshing it from the base on the way and dropping the arm if anything else lands on it (environment.md).
+- on **Merge-ready**, the two ways on, both at `<sha>`: the maintainer's own squash with the `sha` guard, or `agent:merge` added while the head is still `<sha>` (environment.md).
 
-Write nothing to the PR, add no label, and merge nothing, until the maintainer says which remedy, says merge, or says arm. On their merge: the squash with the `sha` guard set to the head you checked. On their arm: re-read the head first, and add `agent:merge` only while it is still the head you checked, since the label arms whatever head it lands on (environment.md).
+Write nothing to the PR, add no label, and merge nothing until the maintainer says which remedy, says merge, or says arm; then act as environment.md says.
 
 ## Stop and ask the maintainer
 

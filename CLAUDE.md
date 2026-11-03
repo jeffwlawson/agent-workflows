@@ -16,8 +16,8 @@ grader and guards declared first, both arms in one `ab` session, its comparison 
 
 ## Domain
 
-See [CONTEXT.md](./CONTEXT.md). Read it before changing a workflow — especially the *three parts*
-section, which decides where a change belongs.
+See [CONTEXT.md](./CONTEXT.md): read its Glossary, then the *three parts* section before changing a
+workflow; that section decides where a change belongs.
 
 ## Read before a change of this kind
 

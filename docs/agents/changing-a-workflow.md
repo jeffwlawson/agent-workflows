@@ -3,8 +3,7 @@
 1. Decide the part first (CONTEXT.md). A guard belongs in a **command** of the package, run from
    the reusable: the reusable keeps only what Actions can do (ADR 0003), an adopter references
    both through the one pin and gets fixes for free, and anything in the caller has to be copied
-   by hand. Only in a workflow whose steps have not moved yet, which CONTEXT.md's *three parts*
-   names, does a guard still go in the reusable's YAML.
+   by hand.
 2. Put Actions-only changes (the job graph, permissions, artifacts, which step gets which token) in
    `.github/workflows/<name>.yml`, and everything else in the workflow's folder
    ([*Changing a runner or a command*](./changing-a-runner-or-a-command.md)). Never add a step to a caller.

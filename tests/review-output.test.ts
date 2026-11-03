@@ -3633,6 +3633,19 @@ describe("the review brief sweeps the checkout for text the change made false", 
     expect(PROMPT).not.toMatch(/high-signal|prefer a few/i);
   });
 
+  /**
+   * One bar, one name (#704, M3): a nit is a finding that can name no basis,
+   * defined once where the bar lives and named, not re-listed, beside `low`.
+   * "Saying the change is clean is a finding" is gone: obeyed literally it
+   * adds a counted entry to `findings` on a clean change.
+   */
+  it("defines a nit once by its basis, and never calls a clean change a finding", () => {
+    expect(plain(PROMPT)).toMatch(/Nits are not posted, at any severity\. A nit is a finding that can name no basis/);
+    expect(plain(PROMPT)).toMatch(/`low` is a real defect, never a nit/);
+    expect(PROMPT).not.toMatch(/clean is a finding|has not moved|not a place to put a preference/);
+    expect(PROMPT.match(/would accept being overruled on/g)).toHaveLength(1);
+  });
+
   it("keeps clarity and edge cases last, after the item on what text can carry", () => {
     expect(plain(PROMPT)).toMatch(/ 7\. What text sent somewhere new can carry/);
     expect(plain(PROMPT)).toMatch(/ 8\. Clarity and edge cases/);

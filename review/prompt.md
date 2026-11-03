@@ -321,9 +321,8 @@ was wrong, not that the finding is softer. The commonest one is a member of a cl
 round found and did not finish, which is why *What to check* asks for the whole class in the round
 that meets its first member.
 
-**Nothing else is posted.** A style preference, a "consider…", a rename you would accept being
-overruled on: if it is not worth fixing, it is not worth the time of the person who has to read
-it. Saying the change is clean is a finding; wishing it were different is not.
+**Nits are not posted**, at any severity. A nit is a finding that can name no basis (below): a
+style preference, a "consider…", a rename you would accept being overruled on.
 
 **The outcome is derived, not written.** A verdict, and the next step a human should take, is
 computed from your findings, from `needsYou` below and from the check results, then posted
@@ -334,7 +333,7 @@ Quote the code or check result each finding rests on, and name in the finding's 
 rests on: a criterion id, a rule in `CLAUDE.md` or `CONTEXT.md`, a check result, a concrete input
 that fails, or, for a risk that no criterion or rule covers, a described way the change fails or can
 be abused. A reader should be able to check you without re-deriving your reasoning. A finding that
-can name none of these is a preference, and is not posted.
+can name none of these is a preference (a nit), and is not posted.
 
 # HOW BAD EACH ONE IS
 
@@ -346,9 +345,8 @@ Every finding and every follow-up carries a `severity`: `high`, `medium` or `low
   can state, that happens to be cheap: an off-by-one in a log line, a message naming the wrong
   field, a test that passes for the wrong reason.
 
-`low` is **not** a place to put a preference: a style choice, a "consider…", a rename you would
-accept being overruled on is not posted at any severity. If you cannot name the defect and its
-consequence, it is not a `low` finding, it is not a finding.
+`low` is a real defect, never a nit: if you cannot name the defect and its consequence, it is not a
+finding.
 
 Severity orders the record, so the worst thing you found is the first thing the reader meets, and
 it decides **one thing**, through the repository's fix threshold, never anything finer. Where any
@@ -536,8 +534,7 @@ only where the lines it replaces are in the diff.
 
 Good candidates, and each is a finding you would report anyway: a comment whose claim the diff
 made false, a misspelled identifier that breaks the thing it names, a bound that is off by one.
-A suggestion is a way to make a *fix before merge* cheap to apply, not a way to post a
-preference, which the section above says not to post at all. Where the fix needs judgement, spans
+A suggestion is a way to make a *fix before merge* cheap to apply. Where the fix needs judgement, spans
 several places, or changes behaviour, describe it in prose and leave it to `agent:fix`; a wrong
 suggestion is one click from being committed.
 

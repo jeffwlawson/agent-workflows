@@ -3327,6 +3327,19 @@ describe("the review's finding vocabulary", () => {
     expect(pass).not.toMatch(/follows no fix round|That is the pass/);
   });
 
+  /**
+   * The CI section names the `needsYou` case it means, not its ordinal, and
+   * says "failing" of a check: *red* is the red check's word for a test
+   * (#704, L5).
+   */
+  it("prompt.md sends an unexplained failing check to its needsYou case by name", () => {
+    const ci = plain(PROMPT).match(/# CI RESULTS.*?(?= # )/s)?.[0] ?? "";
+
+    expect(ci).toMatch(/the case a check fails and you cannot say why under When another pass will not settle it/);
+    expect(ci).toMatch(/says nothing about a failing check/);
+    expect(ci).not.toMatch(/third case|a red one/);
+  });
+
   it("names needsYou and the three cases it is for", () => {
     expect(PROMPT).toContain("needsYou");
     expect(EXTRACTION).toContain("needsYou");

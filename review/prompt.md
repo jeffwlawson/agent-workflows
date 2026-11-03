@@ -177,10 +177,11 @@ A check that validates the code against known-good real-world data, rather than 
 this team wrote, is the **oracle**. Your reasoning consults the diff; the oracle consults the
 world. Where they disagree, the oracle wins.
 
-A failing check is the most valuable thing in this review: diagnose *why*. A failure you can
-explain is a finding to fix before merge; one you cannot is the third case under *When another
-pass will not settle it* below. The check results are read again after you, so a review that
-says nothing about a red one leaves the reader with a verdict and no diagnosis.
+A failing check is the most valuable evidence in this review: diagnose *why*. A failure you can
+explain is a finding to fix before merge; one you cannot is the case *a check fails and you cannot
+say why* under *When another pass will not settle it* below. The check results are read again
+after you, so a review that says nothing about a failing check leaves the reader with a verdict and
+no diagnosis.
 
 {{CI_STATUS}}
 

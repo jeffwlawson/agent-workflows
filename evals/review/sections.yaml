@@ -1,0 +1,38 @@
+# Which sections of review/prompt.md a case reaches (#718). Every heading of
+# the prompt is in one list or the other; tests/evals.test.ts fails on one
+# left out, so a new section is classified when it is added.
+#
+# A gated section is written for a state of the input it names: it reaches a
+# case only where the case sets that input to something other than the
+# "nothing here" value suite.yaml fixes it to. With every case on the suite's
+# values, as now, none of them reaches a gated section: the verification pass,
+# the open, settled and noted findings, the carried follow-ups, a failing CI
+# check and a configured red check are never read by any case.
+# `node scripts/eval-prompts.ts review --stage-only ...` prints each case's
+# share.
+
+always:
+  - TASK
+  - WHAT THIS PULL REQUEST IS
+  - LINKED ISSUE
+  - ACCEPTANCE CRITERIA
+  - EXISTING FEEDBACK
+  - PR DIFF
+  - WHAT TO CHECK
+  - THE TWO KINDS OF FINDING
+  - HOW BAD EACH ONE IS
+  - WHAT YOU WRITE BESIDE THE FINDINGS
+  - THE TITLE AND THE SUMMARY
+  - WHEN ANOTHER PASS WILL NOT SETTLE IT
+  - WHERE A FINDING IS POSTED
+  - SUGGESTED CHANGES
+  - BOUNDARIES
+
+gated:
+  WHAT THIS REVIEW FOLLOWS: HISTORY
+  FINDINGS AN EARLIER REVIEW LEFT OPEN: OPEN_FINDINGS
+  WHAT THE MAINTAINER HAS SETTLED: SETTLED_FINDINGS
+  NOTES THE FIX RUN LEFT: FIX_NOTES
+  FOLLOW-UPS EARLIER ROUNDS RECORDED: CARRIED_FOLLOW_UPS
+  CI RESULTS: CI_STATUS
+  RED CHECK: RED_CHECK

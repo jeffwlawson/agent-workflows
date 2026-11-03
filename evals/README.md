@@ -16,9 +16,9 @@ and touches no network.
 | Case | Replays | Head (the one the loop's review approved) | Graded on |
 | --- | --- | --- | --- |
 | `review/persisted-checkout-token` | #572 | `3586dd7` | the checkout persists a token the job can now push with; a re-run skips the install check |
-| `review/restart-order` | #577 | `edb772f` | a failed worker restart still restarts the dispatcher; the recovery advice cannot run; `curl -L` can drop to http |
+| `review/restart-order` | #577 | `edb772f` | a failed worker restart still restarts the dispatcher; the recovery advice cannot run; the halves hard-code the package's scope (#580) |
 | `review/rescue-deleted-before-open` | #570 | `4d56bbc` | publish deletes the rescue before the pull request opens; a set-aside rescue is overwritten (#578) |
-| `review/clean-doctor-service-guard` | #566 | `85a04f0` | **clean**: no finding to fix before merge, and approval |
+| `review/clean-doctor-service-guard` | #566 | `85a04f0` | **clean**: no finding to fix before merge |
 | `fix/rescue-deleted-before-open` | #570 | `b41cecd` | the fix moves the deletion, adds or updates a test, and changes nothing else |
 
 Each head is found from the `agent-review` status history: the commit where the verdict turned
@@ -44,6 +44,8 @@ evals/
       replay.yaml          the pull request, its pinned base and head (full SHAs), the brief, the inputs
       inputs/<KEY>.md      one input each, named for the prompt's {{KEY}}
       graders/NN.md        one per expected outcome, each something observable in the output
+      controls/<name>.md   real text with what each grader must rule on it (below)
+    sections.yaml          which sections of the prompt a case reaches (below)
 ```
 
 A case holds **no prompt**. `claude plugin eval` takes a case's `prompt.md` as written, and a
@@ -74,6 +76,70 @@ The replay, against what the runner does:
 
 This route is the fallback the issue allows, taken because the tool cannot render a runner's prompt
 itself; it was written against Claude Code **2.1.290**.
+
+## What a grader is counted as
+
+Most graders are counted by their pass rate. `grading` in a case's `replay.yaml` counts one
+otherwise (#718), and the report and `compare` both say so beside its name:
+
+- **`verdict`**: it passes on any blocking finding, not on the case's own ("the review does not
+  recommend approval"). `rescue-deleted-before-open` 03 and `restart-order` 04 are verdicts: in 5
+  of 15 stored `restart-order` runs 04 passed while 01 to 03 all failed. It is reported, and
+  `compare` refuses it as a declared primary or guard, since a rise in it says nothing about the
+  finding.
+- **`{ given: <grader> }`**: it is only ever true where that grader is, so it is counted over the
+  completed runs that passed that one, as P(this | that). `persisted-checkout-token` 02 (the
+  finding is blocking) is given 01 (the finding is raised): it never passed in a stored run where
+  01 failed.
+
+Removed in #718, against the stored runs (`docs/audits/2026-11-02/evals.md`, 3.1): the clean case's
+"recommends approval" (15 of 15 on every prompt, and implied by its 01), and `restart-order`'s
+`curl -L` grader, since the issue it replays prescribes `curl -fsSL`, so a review that follows the
+brief is right not to raise it. `restart-order` 05 is the finding 13 of 15 stored runs raised and
+no grader credited: the halves default `PKG_JSON` to a path under the package's own scope while
+`upgrade.sh` honours `PACKAGE_NAME`. It is a real defect against the brief ("No owner or repo name
+is written in any script"); the loop's own reviews of the head recorded it, and it is filed as #580.
+Grader numbers are not reused, so a stored run's 04 is still this 04.
+
+## Controls
+
+A grader that fails a text it should pass is broken, and one that passes a text it should fail is
+too loose; neither shows in a pass rate. So every grader has a **positive** and a **negative
+control** (#718, held by the layout test): `controls/<name>.md` in its case, real text with a
+`source` naming where it was read and an `expect` saying, per grader, `pass` or `fail`. They are
+the loop's own review at the case's head (which missed what the case grades, so a negative for those
+graders), the merge-check or later review that caught it (a positive), and for `fix` the change that
+shipped (`ba76218`) against another fix round on the same pull request. Every real review of #570
+records the set-aside rescue (`rescue-deleted-before-open` 02) as a follow-up, so its negative is
+another pull request's review. Badges are written as text and HTML comments taken out; nothing else
+is edited.
+
+```bash
+node scripts/eval-prompts.ts controls review --model claude-haiku-5-5 --max-cost-usd 2
+```
+
+stages each control as a case of its own, whose prompt has the model repeat the control's text as its
+final message, graded by the graders it names, as they are; no checkout, one run each. The report
+lists each ruling against what the control expects, and the command exits 1 where one differs. It
+costs the judge and an echo of the text. **No run of the controls had been made** when they were
+added: there was no credential where they were written. Run them, and fix a grader that fails one,
+before the next comparison that declares it.
+
+## What a case reaches
+
+`sections.yaml` names every `#` section of the prompt as one every case reaches (`always`) or one
+written for a state of one input (`gated`), and the layout test fails on a section it leaves out. A
+case reaches a gated section only where it sets that input to something other than the "nothing
+here" value `suite.yaml` fixes it to; `--stage-only` (and every run) prints each case's sections
+and share of the prompt. As the cases stand, every one is a first review with nothing carried, so
+none reaches the verification pass, the open, settled or noted findings, the carried follow-ups, a
+failing CI check or a configured red check: about a quarter of the review prompt. A case that sets
+one of those inputs is what would reach it.
+
+The values `suite.yaml` fixes are the strings the runners' own renderers return for that state, and
+`tests/evals.test.ts` holds them there (`review/review.ts`'s inline strings are read in its source),
+so a renderer that changes its words fails the layout test rather than drifting from the replay.
+Every input the suite fixes needs its renderer named in that test.
 
 ## What a fix replay cannot exercise
 
@@ -138,6 +204,8 @@ node scripts/eval-prompts.ts report <run-dir>
   The review suite takes about 25 minutes at `-j 1`.
 - `--stage-only` renders and stages the cases and prints where, without running anything: what to
   read to see exactly what an agent is handed. A stage alone goes to the temp dir and is not kept.
+- `controls <prompt>` runs the grader controls instead of the cases (*Controls*, above), one run
+  each unless `--runs` says otherwise.
 
 `ab <prompt> <ref>` runs **both arms in one session**: every case is staged twice, as
 `<case>.before` with the prompt file as it is at `<ref>` (`git show`) and as `<case>.after` with the
@@ -225,7 +293,14 @@ reported does not depend on what was seen.
    `compare` enforces), is labelled pooled, and is decided before the result it would change is
    seen. The #700 pooled 7/9 against 2/9 reached p = 0.057 only by adding a 3-run set; the 6-run set
    alone was 4/6 against 1/6, p = 0.24.
-7. **Paste the comparison into the pull request**, with the primary and guards it declared.
+7. **Paste the comparison into the pull request**, with the primary and guards it declared. CI
+   holds this (`.github/workflows/prompt-evals.yml`, #718): a pull request that changes
+   `review/prompt.md` or `fix/prompt.md` fails it until its body or a comment carries a comparison
+   (`### \`<prompt>\` comparison`) whose two sides ran the prompt's blob at the merge-base and at
+   the head, in that order. A comparison of an earlier revision of the change does not count: edit
+   the prompt again and the comparison is owed again. A change no eval can measure (a typo in a
+   heading no case reads) says so with a line `Eval-Waiver: <the reason>` in the body. The job
+   runs again when the body is edited; after posting the comparison as a comment, re-run it.
 
 **The words to use.** At p < 0.029 on a primary or guard: the grader *rose* or *fell*, with both
 counts and p. Otherwise it is **not shown**: write "not shown (4/6 against 1/6, p = 0.24)", never
@@ -298,8 +373,9 @@ runs are same-blob runs that a later `compare` can pool under the protocol's rul
 
 Make a folder beside the others with a `case.yaml`, a `replay.yaml` (the pull request, `base_ref`,
 the full `base` and `head` SHAs, `brief`, and its short `inputs`), its long inputs under `inputs/`,
-and one grader per outcome. Choose the head from the verdict status history, as above, and write
-each grader as something a reader could check in the output, "however it is worded". A clean case
+one grader per outcome, and a positive and a negative control for each grader. Choose the head from
+the verdict status history, as above, and write each grader as something a reader could check in
+the output, "however it is worded". A clean case
 says `clean: true`, is a pull request nothing merged later had to fix (search `main`'s log for
 its number and its files), and its graders all hold false findings. Run it with `--stage-only`
 first and read the staged prompt.

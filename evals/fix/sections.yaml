@@ -1,0 +1,27 @@
+# Which sections of fix/prompt.md a case reaches (#718). Every heading of the
+# prompt is in one list or the other; tests/evals.test.ts fails on one left
+# out, so a new section is classified when it is added.
+#
+# A gated section is written for a state of the input it names: it reaches a
+# case only where the case sets that input to something other than the
+# "nothing here" value suite.yaml fixes it to. `RESUME` adds a section of its
+# own when a run resumes, so it gates nothing in the file. COMMIT is read by
+# every case but cannot be acted on in a replay (evals/README.md, *What a fix
+# replay cannot exercise*).
+
+always:
+  - TASK
+  - REVIEW SUMMARIES
+  - INLINE COMMENTS
+  - PR DIFF
+  - HOW TO RESPOND TO FEEDBACK
+  - CONSTRAINTS
+  - COMMIT
+  - REPLYING TO THREADS
+  - TOP-LEVEL COMMENTS
+  - OUT-OF-SCOPE NOTES
+
+gated:
+  CONVERSATION: CONVERSATION
+  REPORTING ON THE CONVERSATION COMMENTS: CONVERSATION
+  MINOR FINDINGS: MINOR_FINDINGS

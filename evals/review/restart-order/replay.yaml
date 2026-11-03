@@ -6,6 +6,16 @@
 # for a failed Unraid install could not be run from that state (fixed in
 # 58a8c32 and 83d3f62). The merged head, e87b79c, already holds both fixes.
 # The base is the merge-base the review's three-dot diff was taken from.
+#
+# The merge-check also raised that `curl -L` can follow a redirect to http.
+# That grader (03) is dropped (#718): the issue prescribes `curl -fsSL`
+# (inputs/LINKED_ISSUE.md), so a review that follows the brief is right not
+# to raise it. 05 is the finding most stored runs raised and no grader
+# credited: the halves default PKG_JSON to a path under
+# `@jeffwlawson/agent-workflows` while upgrade.sh honours PACKAGE_NAME. It is
+# real against the brief ("No owner or repo name is written in any script"),
+# the loop's own reviews of this head recorded it as a follow-up, filed as
+# #580, and it is still on main.
 pr: 577
 repository: https://github.com/jeffwlawson/agent-workflows.git
 base_ref: main
@@ -19,3 +29,9 @@ inputs:
   PR_TITLE: "feat(deploy): one command upgrades both Unraid machines from the release tarball, with no token"
   ISSUE_NUMBER: "575"
   ISSUE_TITLE: One command upgrades both machines of the Unraid deployment, with no registry token
+# How the report reads a grader beyond its pass rate (evals/README.md, *What a
+# grader is counted as*). 04 passes on any blocking finding, not on this case's
+# (in 5 of 15 stored runs it passed while 01 to 03 all failed): a verdict,
+# which is reported and never declared.
+grading:
+  "04": verdict

@@ -8,18 +8,33 @@ import {
   caseDirs,
   caseInputs,
   compare,
+  comparisonProblems,
+  controlRows,
   fisher,
   placeholders,
+  reach,
   readCase,
+  readSections,
   readSuite,
   removeSandbox,
   report,
   runRecords,
   sandboxOf,
+  sections,
   type EvalResult,
   type RunRecord,
   type StageMeta,
 } from "../scripts/eval-prompts.js";
+import { renderMinorFindingsForFix, surfaceText, type PullRequestFeedback } from "../shared/pr-feedback.js";
+import { renderNotesForReview } from "../shared/fix-notes.js";
+import { renderRedCheck } from "../shared/red-check.js";
+import { resumeSection } from "../shared/rescue.js";
+import type { SinceBriefSkip } from "../shared/review-output.js";
+import { renderCarriedFindings, renderSettledFindings } from "../shared/review-verification.js";
+import { currentSummary, summaryBlock } from "../review/pr-summary.js";
+import { renderDiffScope } from "../review/review-diff.js";
+import { describeHistory } from "../review/review-round.js";
+import { renderSinceBriefForReview } from "../review/since-brief.js";
 
 /**
  * The golden-PR evals' layout (#617), held with no model and no network.
@@ -97,6 +112,15 @@ describe.each(PROMPTS)("the %s evals", (prompt) => {
       expect(missing).toEqual([]);
     });
 
+    it("has a control its judge must pass and one it must fail, for every grader (#718)", () => {
+      for (const grader of c.graders.map((file) => file.slice(0, -".md".length))) {
+        const expected = c.controls.flatMap((control) => (control.expect[grader] === undefined ? [] : [control.expect[grader]]));
+
+        expect(expected, `grader ${grader}: a positive control`).toContain(true);
+        expect(expected, `grader ${grader}: a negative control`).toContain(false);
+      }
+    });
+
     it("holds no copy of a prompt", () => {
       const files = filesUnder(dir);
 
@@ -116,10 +140,285 @@ describe.each(PROMPTS)("the %s evals", (prompt) => {
 
 describe("the review evals' cases", () => {
   const cases = caseDirs(ROOT, "review").map(readCase);
+  const body = (c: (typeof cases)[number], grader: string): string =>
+    frontmatter(fs.readFileSync(path.join(c.dir, "graders", grader), "utf8"))["body"] as string;
 
   it("include three escapes at least and a clean case", () => {
     expect(cases.filter((c) => !c.clean).length).toBeGreaterThanOrEqual(3);
     expect(cases.filter((c) => c.clean).length).toBeGreaterThanOrEqual(1);
+  });
+
+  // #718: a grader that passes on any blocking finding, not the case's own,
+  // is a verdict, which the report marks and a comparison refuses to declare.
+  it("count a grader that asks only for no approval as a verdict", () => {
+    for (const c of cases) {
+      for (const grader of c.graders.filter((file) => /^The review does not recommend approval\b/.test(body(c, file)))) {
+        expect(c.grading[grader.slice(0, -".md".length)], `${c.name}/${grader}`).toEqual({ kind: "verdict" });
+      }
+    }
+  });
+
+  // #718: 15 of 15 on every prompt, and implied by the case's other grader.
+  it("grade a clean case on its false findings, not on its approval", () => {
+    for (const c of cases.filter((c) => c.clean)) {
+      for (const grader of c.graders) expect(body(c, grader), `${c.name}/${grader}`).not.toMatch(/^The review recommends approval\.?$/);
+    }
+  });
+
+  // #718: restart-order's brief prescribes `curl -fsSL`, so a review that
+  // follows it is right not to raise a hardening finding against it.
+  it("rest no grader on a finding the case's brief contradicts", () => {
+    const restart = cases.find((c) => c.name === "restart-order");
+
+    expect(restart?.graders.map((grader) => body(restart, grader)).filter((text) => text.includes("curl -L"))).toEqual([]);
+  });
+});
+
+/**
+ * A grader is counted other than by its pass rate where `replay.yaml` says
+ * (#718): a verdict is marked and refused as a declared grader, and one given
+ * another is counted over the runs that passed the other.
+ */
+describe("a grader's grading", () => {
+  const meta: StageMeta = {
+    prompt: "review",
+    revision: { file: "review/prompt.md", head: "a".repeat(40), lastChange: "b".repeat(40), blob: "c".repeat(40), uncommitted: false },
+    cases: [{ name: "escape", pr: 1, head: "d".repeat(40), clean: false, case: "escape", graders: { "01": "h1", "02": "h2", "03": "h3" }, grading: { "02": { kind: "given", grader: "01" }, "03": { kind: "verdict" } } }],
+  };
+  const run = (passed: Record<string, boolean>) => ({ error: null, graders: Object.entries(passed).map(([name, ok]) => ({ name, passed: ok })) });
+  const result: EvalResult = {
+    suite: { modelOverride: "opus", judgeModel: "haiku" },
+    claudeVersion: "2.1.316",
+    cases: [
+      {
+        name: "escape",
+        graders: [{ name: "01", graderMarkdown: "Raises it." }, { name: "02", graderMarkdown: "As blocking." }, { name: "03", graderMarkdown: "No approval." }],
+        arms: {
+          with: [
+            run({ "01": true, "02": true, "03": true }),
+            run({ "01": true, "02": false, "03": true }),
+            run({ "01": false, "02": false, "03": true }),
+            run({ "01": false, "02": false, "03": false }),
+          ],
+        },
+      },
+    ],
+  };
+
+  it("reports a conditional grader over the runs that passed the one it is given, and marks a verdict", () => {
+    const text = report(meta, result);
+
+    expect(text).toContain("| escape | #1 | 4 | 01: Raises it. | 2/4 | 50% |");
+    expect(text).toContain("| escape | #1 | 4 | 02 given 01: As blocking. | 1/2 | 50% |");
+    expect(text).toContain("| escape | #1 | 4 | 03 (verdict): No approval. | 3/4 | 75% |");
+  });
+
+  it("is kept in each run's record, and compared the same way", () => {
+    const records = runRecords(meta, result, "s1");
+
+    expect(records[0]?.graders.find((g) => g.name === "02")?.rule).toEqual({ kind: "given", grader: "01" });
+    const text = compare(records, records.map((r) => ({ ...r, session: "s2" })), { primary: ["escape/02"] });
+    expect(text).toMatch(/\| escape \| 02 given 01 \(primary\) \| 1\/2 /);
+  });
+
+  it("refuses a verdict as a declared primary or guard", () => {
+    const records = runRecords(meta, result, "s1");
+
+    expect(() => compare(records, records, { primary: ["escape/03"] })).toThrow(/verdict/);
+    expect(() => compare(records, records, { guards: ["escape/03"] })).toThrow(/verdict/);
+  });
+
+  it("refuses to compare a grader counted one way against one counted another", () => {
+    const records = runRecords(meta, result, "s1");
+    const plain = records.map((r) => ({ ...r, graders: r.graders.map(({ rule: _rule, ...g }) => g) }));
+
+    expect(() => compare(records, plain)).toThrow(/counted differently/);
+  });
+});
+
+describe("a run of the controls", () => {
+  const meta: StageMeta = {
+    prompt: "review",
+    revision: { file: "review/prompt.md", head: "a".repeat(40), lastChange: "b".repeat(40), blob: "c".repeat(40), uncommitted: false },
+    cases: [],
+    controls: [
+      { name: "escape--merge-check", case: "escape", control: "merge-check", expect: { "01": true, "02": true } },
+      { name: "escape--approved", case: "escape", control: "approved", expect: { "01": false, "02": false } },
+    ],
+  };
+  const run = (passed: Record<string, boolean>) => ({ error: null, graders: Object.entries(passed).map(([name, ok]) => ({ name, passed: ok })) });
+  const result: EvalResult = {
+    cases: [
+      { name: "escape--merge-check", graders: [], arms: { with: [run({ "01": true, "02": false })] } },
+      { name: "escape--approved", graders: [], arms: { with: [run({ "01": true, "02": false })] } },
+    ],
+  };
+
+  it("says which grader fails its positive control and which passes its negative one", () => {
+    expect(controlRows(meta, result).map((row) => `${row.control}/${row.grader}: ${row.check}`)).toEqual([
+      "merge-check/01: as expected",
+      "merge-check/02: **broken**: fails its positive control",
+      "approved/01: **too loose**: passes its negative control",
+      "approved/02: as expected",
+    ]);
+    expect(report(meta, result)).toContain("**2 of 4** grader rulings as the controls expect.");
+  });
+});
+
+/**
+ * The inputs `suite.yaml` fixes are the strings the runners' own renderers
+ * return for that state (#718). They were read off the built modules when the
+ * cases were written; this holds them there, so a renderer that changes its
+ * words changes the replay with it, or fails here.
+ *
+ * Where review/review.ts writes the string inline, and runs on import, the
+ * string is read in its source.
+ */
+describe("the inputs the suites fix", () => {
+  const reviewSource = fs.readFileSync(path.join("review", "review.ts"), "utf8");
+  const inSource = (literal: string) => () => expect(reviewSource.includes(literal), `review/review.ts holds ${literal}`).toBe(true);
+  const review = readSuite(ROOT, "review").inputs;
+  const fix = readSuite(ROOT, "fix").inputs;
+  const EVAL_REPLAY = "this is an eval replay, which does not read the base branch's history since the brief";
+
+  const renderers: Record<"review" | "fix", Record<string, () => void>> = {
+    review: {
+      PULL_REQUEST_KIND: inSource(`\`${(review["PULL_REQUEST_KIND"] ?? "").replace("`main`", "\\`${BASE_REF}\\`")}\``),
+      CI_STATUS: inSource(`return ${JSON.stringify(review["CI_STATUS"])};`),
+      RED_CHECK: () => expect(review["RED_CHECK"]).toBe(renderRedCheck({ kind: "not-configured" }, "a".repeat(40))),
+      HISTORY: () => expect(review["HISTORY"]).toBe(describeHistory({ afterFixRound: false, unreviewedCommits: true })),
+      OPEN_FINDINGS: () => expect(review["OPEN_FINDINGS"]).toBe(renderCarriedFindings([])),
+      SETTLED_FINDINGS: () => expect(review["SETTLED_FINDINGS"]).toBe(renderSettledFindings([])),
+      FIX_NOTES: () => expect(review["FIX_NOTES"]).toBe(renderNotesForReview([])),
+      // The one input the replay words itself, in the renderer's form.
+      SINCE_BRIEF: () => expect(review["SINCE_BRIEF"]).toBe(renderSinceBriefForReview({ kind: "not run", reason: EVAL_REPLAY as SinceBriefSkip })),
+      DIFF_SCOPE: () => expect(review["DIFF_SCOPE"]).toBe(renderDiffScope({ kind: "whole", diff: "" }, "main")),
+      CURRENT_SUMMARY: () => expect(review["CURRENT_SUMMARY"]).toBe(currentSummary(summaryBlock("", "a".repeat(40), false))),
+      SUMMARY_RULE: inSource(JSON.stringify(review["SUMMARY_RULE"])),
+      FINAL_SUMMARY: () => {
+        expect(review["FINAL_SUMMARY"]).toBe("");
+        inSource('FINAL_SUMMARY: final ? FINAL_SUMMARY_SHAPE : "",')();
+      },
+      CARRIED_FOLLOW_UPS: inSource(`const NOT_CARRIED =\n  ${JSON.stringify(review["CARRIED_FOLLOW_UPS"])};`),
+    },
+    fix: {
+      RESUME: () => expect(fix["RESUME"]).toBe(resumeSection({ kind: "none" }, "agent/issue-1")),
+      CONVERSATION: () =>
+        expect(fix["CONVERSATION"]).toBe(surfaceText({ conversation: "", unreadable: [] } as unknown as PullRequestFeedback, "conversation")),
+      MINOR_FINDINGS: () => expect(fix["MINOR_FINDINGS"]).toBe(renderMinorFindingsForFix([])),
+    },
+  };
+
+  it.each(PROMPTS)("%s: every input has the renderer it is held to", (prompt) => {
+    expect(Object.keys(readSuite(ROOT, prompt).inputs).sort()).toEqual(Object.keys(renderers[prompt]).sort());
+  });
+
+  it.each(PROMPTS.flatMap((prompt) => Object.entries(renderers[prompt]).map(([key, check]) => [`${prompt} ${key}`, check] as const)))(
+    "%s is what its renderer returns",
+    (_name, check) => {
+      check();
+    },
+  );
+});
+
+/**
+ * Which sections of each prompt a case reaches (#718): `sections.yaml` names
+ * every heading as reached by every case or gated by one input, and a case
+ * reaches a gated one only where it sets that input other than as the suite does.
+ */
+describe.each(PROMPTS)("the %s prompt's section map", (prompt) => {
+  const template = fs.readFileSync(path.join(prompt, "prompt.md"), "utf8");
+  const map = readSections(ROOT, prompt);
+  const suite = readSuite(ROOT, prompt);
+
+  it("names every section of the prompt once, and nothing else", () => {
+    const listed = [...map.always, ...Object.keys(map.gated)];
+
+    expect([...listed].sort()).toEqual(sections(template).map((s) => s.heading).sort());
+    expect(new Set(listed).size).toBe(listed.length);
+  });
+
+  it("gates a section only on an input the prompt names and the suite fixes", () => {
+    for (const input of Object.values(map.gated)) {
+      expect(placeholders(template)).toContain(input);
+      expect(suite.inputs[input]).toBeDefined();
+    }
+  });
+
+  it("gives each case the gated sections it reaches, by its inputs", () => {
+    const c = readCase(caseDirs(ROOT, prompt)[0] ?? "");
+    const inputs = caseInputs(suite, c);
+    const none = reach(template, map, suite, inputs);
+    const gate = Object.entries(map.gated)[0] as [string, string];
+    const set = reach(template, map, suite, { ...inputs, [gate[1]]: "(something there)" });
+
+    expect(none.unreached.map((u) => u.section)).toContain(gate[0]);
+    expect(set.unreached.map((u) => u.section)).not.toContain(gate[0]);
+    expect(set.share).toBeGreaterThan(none.share);
+    expect(none.share).toBeGreaterThan(0);
+  });
+});
+
+/**
+ * The CI check (#718, `prompt-evals.yml`): a pull request that changes a
+ * prompt carries a comparison of the prompt's blob at its merge-base against
+ * the one at its head, as `compare` prints it, or a waiver with its reason.
+ */
+describe("a prompt change's comparison", () => {
+  const change = { prompt: "review" as const, before: "1".repeat(40), after: "2".repeat(40) };
+  const comparison = (before: string, after: string, prompt = "review"): string =>
+    [
+      `### \`${prompt}\` comparison`,
+      "",
+      "- **Model:** opus; **judge:** haiku; **Claude Code:** 2.1.316",
+      `- **before:** session s, blob \`${before.slice(0, 12)}\`, $1.00`,
+      `- **after:** session s, blob \`${after.slice(0, 12)}\`, $1.00`,
+    ].join("\n");
+
+  it("is owed nothing where no prompt changed", () => {
+    expect(comparisonProblems([], [])).toEqual([]);
+  });
+
+  it("is found in the body or a comment, with both blobs in order", () => {
+    expect(comparisonProblems([change], ["Summary.", comparison(change.before, change.after)])).toEqual([]);
+    expect(comparisonProblems([change], [`Body.\n\n${comparison(change.before, change.after)}\n\n### Another heading\n\nblob \`${"9".repeat(12)}\``])).toEqual([]);
+  });
+
+  it("does not count a comparison of other blobs, of the other prompt, or the wrong way round", () => {
+    const [stale] = comparisonProblems([change], [comparison(change.before, "3".repeat(40))]);
+
+    expect(stale).toMatch(/review\/prompt\.md changed .*111111111111.*222222222222/);
+    expect(stale).toContain(`111111111111 against 333333333333`);
+    expect(comparisonProblems([change], [comparison(change.after, change.before)])).toHaveLength(1);
+    expect(comparisonProblems([change], [comparison(change.before, change.after, "fix")])).toHaveLength(1);
+    expect(comparisonProblems([change], ["No comparison here."])[0]).toMatch(/none is in its body or comments/);
+  });
+
+  it("is waived by an Eval-Waiver line with a reason, and only with one", () => {
+    expect(comparisonProblems([change], ["Body.\n\nEval-Waiver: a typo in a heading no case reads."])).toEqual([]);
+    expect(comparisonProblems([change], ["Eval-Waiver:"])).toHaveLength(1);
+  });
+
+  it("is checked on every pull request, the head's own blobs, again when the body is edited", () => {
+    const workflow = parse(fs.readFileSync(path.join(".github", "workflows", "prompt-evals.yml"), "utf8")) as {
+      on: { pull_request: { types: string[] } };
+      jobs: Record<string, { steps: { uses?: string; with?: Record<string, unknown>; run?: string; env?: Record<string, string> }[] }>;
+    };
+    const steps = Object.values(workflow.jobs).flatMap((job) => job.steps);
+
+    expect(workflow.on.pull_request.types).toEqual(expect.arrayContaining(["opened", "synchronize", "reopened", "edited"]));
+    expect(steps.find((step) => step.uses?.startsWith("actions/checkout@"))?.with).toMatchObject({
+      ref: "${{ github.event.pull_request.head.sha }}",
+      "fetch-depth": 0,
+    });
+    const check = steps.find((step) => step.run === "node scripts/eval-prompts.ts check-comparison");
+    expect(Object.keys(check?.env ?? {}).sort()).toEqual(["BASE_SHA", "GH_REPO", "GH_TOKEN", "HEAD_SHA", "PR_NUMBER"]);
+  });
+
+  it("asks for each changed prompt's own", () => {
+    const fixChange = { prompt: "fix" as const, before: "4".repeat(40), after: "5".repeat(40) };
+
+    expect(comparisonProblems([change, fixChange], [comparison(change.before, change.after)])).toEqual([expect.stringMatching(/^fix\/prompt\.md/)]);
   });
 });
 

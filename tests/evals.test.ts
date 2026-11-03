@@ -651,6 +651,19 @@ describe("an eval run's report", () => {
   it("gives the false-finding rate on a clean case", () => {
     expect(text).toContain("- **clean:** 1 of 2 completed runs raised a false finding (50%).");
     expect(text).not.toContain("- **escape:**");
+    // One clean case is one pull request: the pooled line is for several.
+    expect(text).not.toContain("all clean cases");
+  });
+
+  // #719: several clean pull requests make the false-finding rate a rate.
+  it("pools the false-finding rate over the clean cases, where there are several", () => {
+    const two: StageMeta = { ...meta, cases: [...meta.cases, { name: "clean2", pr: 3, head: "f".repeat(40), clean: true }] };
+    const more: EvalResult = {
+      ...result,
+      cases: [...result.cases, { name: "clean2", graders: [{ name: "01" }], arms: { with: [run({ "01": true }), run({ "01": true })] } }],
+    };
+
+    expect(report(two, more)).toContain("- **all clean cases (2):** 1 of 4 completed runs raised a false finding (25%).");
   });
 
   it("names the model, the prompt's revision and the cost", () => {

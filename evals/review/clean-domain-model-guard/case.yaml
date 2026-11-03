@@ -1,0 +1,6 @@
+schema_version: "1.1"
+name: clean-domain-model-guard
+context:
+  scaffold_script: place-files.sh
+expected_outcome: |
+  Raises no finding to fix before merge: the change makes doctor fail a checkout whose domain model was renamed from CONTEXT.md to GLOSSARY.md, and says so in the docs, with tests, and nothing in it needs changing.

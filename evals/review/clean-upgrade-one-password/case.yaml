@@ -1,0 +1,6 @@
+schema_version: "1.1"
+name: clean-upgrade-one-password
+context:
+  scaffold_script: place-files.sh
+expected_outcome: |
+  Raises no finding to fix before merge: the change has upgrade.sh share one ssh connection to the box and ask for its sudo password once, with tests and docs, and nothing in it needs changing.

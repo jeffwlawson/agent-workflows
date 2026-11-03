@@ -779,6 +779,10 @@ export const report = (meta: StageMeta, result: EvalResult, dir?: string): strin
     "| --- | --- | --- | --- | --- | --- |",
   ];
   const clean: string[] = [];
+  const pooled = { raised: 0, completed: 0, cases: 0 };
+  // A fix case is clean where the right change is none (#719): a run that
+  // fails it changed something, or answered a thread as though it had.
+  const what = meta.prompt === "fix" ? "made a change or an outcome the case needs none of" : "raised a false finding";
   for (const c of result.cases) {
     const known = meta.cases.find((m) => m.name === c.name);
     const runs = c.arms.with ?? [];
@@ -796,11 +800,18 @@ export const report = (meta: StageMeta, result: EvalResult, dir?: string): strin
     }
     if (known?.clean === true) {
       const raised = completed.filter((run) => c.graders.some((g) => !run.graders.some((rg) => rg.name === g.name && rg.passed))).length;
-      // A fix case is clean where the right change is none (#719): a run that
-      // fails it changed something, or answered a thread as though it had.
-      const what = meta.prompt === "fix" ? "made a change or an outcome the case needs none of" : "raised a false finding";
       clean.push(`- **${c.name}:** ${raised} of ${completed.length} completed runs ${what} (${percent(raised, completed.length)}).`);
+      pooled.raised += raised;
+      pooled.completed += completed.length;
+      pooled.cases += 1;
     }
+  }
+  // Several clean pull requests are what make it a rate rather than one
+  // pull request's anecdote (#719). Pooled runs of different pull requests
+  // are not independent draws of one rate, so this is read beside the lines
+  // above, not instead of them.
+  if (pooled.cases > 1) {
+    clean.push(`- **all clean cases (${pooled.cases}):** ${pooled.raised} of ${pooled.completed} completed runs ${what} (${percent(pooled.raised, pooled.completed)}).`);
   }
   if (clean.length > 0) lines.push("", meta.prompt === "fix" ? "**False-change rate** (clean cases, where the right change is none):" : "**False-finding rate** (clean cases):", "", ...clean);
   if (meta.cases.some((c) => Object.keys(c.grading ?? {}).length > 0)) {

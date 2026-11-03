@@ -1,0 +1,28 @@
+# PR #681, a clean case (#719): a change that must not draw a false finding.
+#
+# The head is c237a40, the pull request's one commit, where its first and only
+# review recommended approval (2026-11-02T17:39Z) with no finding and no
+# follow-up. No maintainer review or comment is on it, and the squash, a20daa2,
+# holds c237a40's tree exactly. Since it merged, main has changed none of
+# .github/workflows/publish.yml, scripts/release-notes.ts or its test, and its
+# other files only by changes of their own (CLAUDE.md and
+# docs/agents/changing-a-workflow.md by the writing-for-agents prunes, #727
+# and #729, and CLAUDE.md's eval paragraph by #726 and #732;
+# tests/workflows.test.ts by #732, exempting eval controls from a docs check),
+# so a finding raised here is a false one. Its diff is code and tests. The base is the merge-base the review's
+# three-dot diff was taken from.
+pr: 681
+repository: https://github.com/jeffwlawson/agent-workflows.git
+base_ref: main
+base: 626b155bbc70dae3f95a54d86489687e3d89a892
+head: c237a409e4b30f3ccba3459eacf3dc0fc9c21a2f
+clean: true
+# Issue #621's body as it stands, rendered with its comments through
+# review/review-context.ts and review/acceptance-criteria.ts; it has no brief comment.
+brief: inputs/LINKED_ISSUE.md
+inputs:
+  PR_NUMBER: "681"
+  BRANCH: agent/issue-621-release-notes-carry-an-adopter-action-section-coll
+  PR_TITLE: "feat(publish): the Release body carries an Adopter action section, collected from Adopter-Action tr…"
+  ISSUE_NUMBER: "621"
+  ISSUE_TITLE: "Release notes carry an Adopter action section, collected from an Adopter-Action trailer in the release's commits"

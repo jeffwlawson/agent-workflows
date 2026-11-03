@@ -13,8 +13,8 @@ npm run build       # tsc + copy prompts into dist/
 that `verify` cannot cover; see [*Releasing*](./docs/agents/releasing.md).
 
 A change to the review or fix prompt is measured by hand with the golden-PR evals in `evals/`
-(`node scripts/eval-prompts.ts`, #617): a before run and an after run, same cases, runs and model,
-both reports in the pull request. They cost real money and are in neither `verify` nor CI; see
+(`node scripts/eval-prompts.ts`, #617), under the protocol in `evals/README.md` (#717): a primary
+grader and guards declared first, both arms in one `ab` session, its comparison in the pull request. They cost real money and are in neither `verify` nor CI; see
 [`evals/README.md`](./evals/README.md). `verify` holds only their layout.
 
 ## Domain

@@ -1,12 +1,12 @@
 # Baseline
 
 The golden-PR evals for the `review` and `fix` prompts, run by hand against the prompts as they
-stand at the revisions named below (#634). A change to a prompt is measured against its section here:
-the same cases, the same `--runs` and the same `--model`, both reports in the pull request
-(`README.md`, *Comparing a before and an after*). The `review` section was taken on 2026-11-02 with 3
-runs per case; the `fix` section was taken on 2026-11-03 with 6 runs, after the fix graders were
-repaired to read the working-tree diff (#716), and is the only fix baseline that later fix runs are
-comparable with.
+stand at the revisions named below (#634). It records where each grader sat in one session; it is
+not the before a prompt change is measured against, since the protocol runs its before and its
+after in the same session (`README.md`, *Comparing a before and an after: the protocol*). The
+`review` section was taken on 2026-11-02 with 3 runs per case; the `fix` section was taken on
+2026-11-03 with 6 runs, after the fix graders were repaired to read the working-tree diff (#716),
+and is the only fix record taken on the graders as they now stand.
 
 - **`review` run:** 2026-11-02, from `0226bf92e98a`, the `main` commit that last changed either prompt (#610).
   `07e016a`, the v0.9.10 release commit, holds the same two prompt files.

@@ -1,4 +1,5 @@
 import * as fs from "node:fs";
+import * as os from "node:os";
 import * as path from "node:path";
 import { describe, expect, it } from "vitest";
 import { parse } from "yaml";
@@ -6,11 +7,17 @@ import {
   PROMPTS,
   caseDirs,
   caseInputs,
+  compare,
+  fisher,
   placeholders,
   readCase,
   readSuite,
+  removeSandbox,
   report,
+  runRecords,
+  sandboxOf,
   type EvalResult,
+  type RunRecord,
   type StageMeta,
 } from "../scripts/eval-prompts.js";
 
@@ -195,7 +202,8 @@ describe("an eval run's report", () => {
   it("gives each grader's pass rate per case, with the runs", () => {
     expect(text).toContain("| escape | #1 | 3 | 01: Raises the finding. | 2/3 | 67% |");
     expect(text).toContain("| escape | #1 | 3 | 02: Asks for changes. | 2/3 | 67% |");
-    expect(text).toContain("| clean | #2 | 3 (1 errored) | 01: No fix-before-merge finding. | 1/3 | 33% |");
+    // An errored run is out of the denominator: it measured nothing.
+    expect(text).toContain("| clean | #2 | 3 (1 errored) | 01: No fix-before-merge finding. | 1/2 | 50% |");
   });
 
   it("gives the false-finding rate on a clean case", () => {
@@ -207,5 +215,198 @@ describe("an eval run's report", () => {
     expect(text).toContain("**Model:** opus");
     expect(text).toContain(`last changed in \`${"b".repeat(12)}\`, run from \`${"a".repeat(12)}\`, blob \`${"c".repeat(12)}\` (**uncommitted changes**)`);
     expect(text).toContain("**Cost:** $12.35");
+  });
+
+  it("names the run directory it is kept in", () => {
+    expect(report(meta, result, "/runs/2026-11-03-review")).toContain("**Run directory:** `/runs/2026-11-03-review`");
+  });
+});
+
+describe("a two-sided Fisher exact test", () => {
+  it("gives the figures the protocol rests on", () => {
+    // evals/README.md, *The protocol*: the best case at 3 per arm is p = 0.10.
+    expect(fisher(3, 3, 0, 3)).toBeCloseTo(0.1, 6);
+    expect(fisher(2, 3, 0, 3)).toBeCloseTo(0.4, 6);
+    expect(fisher(4, 6, 1, 6)).toBeCloseTo(0.2424, 4);
+    expect(fisher(7, 9, 2, 9)).toBeCloseTo(0.0567, 4);
+    expect(fisher(1, 3, 1, 3)).toBeCloseTo(1, 6);
+    expect(fisher(0, 0, 1, 3)).toBeUndefined();
+  });
+});
+
+describe("a run's records", () => {
+  const meta: StageMeta = {
+    prompt: "fix",
+    revision: { file: "fix/prompt.md", head: "a".repeat(40), lastChange: "b".repeat(40), blob: "c".repeat(40), uncommitted: false },
+    arms: {
+      before: { file: "fix/prompt.md", head: "1".repeat(40), lastChange: "2".repeat(40), blob: "3".repeat(40), uncommitted: false },
+      after: { file: "fix/prompt.md", head: "a".repeat(40), lastChange: "b".repeat(40), blob: "c".repeat(40), uncommitted: false },
+    },
+    cases: [
+      { name: "rescue.before", case: "rescue", arm: "before", pr: 1, head: "d".repeat(40), clean: false, graders: { "01": "h1" } },
+      { name: "rescue.after", case: "rescue", arm: "after", pr: 1, head: "d".repeat(40), clean: false, graders: { "01": "h1" } },
+    ],
+  };
+  const result: EvalResult = {
+    claudeVersion: "2.1.316",
+    suite: { modelOverride: "opus", judgeModel: "haiku" },
+    cases: ["rescue.before", "rescue.after"].map((name) => ({
+      name,
+      graders: [{ name: "01" }],
+      arms: {
+        with: [
+          { error: null, costUsd: 1.5, judgeCostUsd: 0.03, turns: 40, tracePath: "/tmp/x/trace.jsonl", graders: [{ name: "01", passed: true, judgeVotes: [true, true, false] }] },
+        ],
+      },
+    })),
+  };
+
+  it("carry each run's case, arm, prompt blob, result, judge votes, cost and grader hashes", () => {
+    const records = runRecords(meta, result, "session-1", () => "traces/rescue.before/1.jsonl");
+
+    expect(records).toHaveLength(2);
+    expect(records[0]).toEqual({
+      session: "session-1",
+      prompt: "fix",
+      case: "rescue",
+      arm: "before",
+      blob: "3".repeat(40),
+      model: "opus",
+      judgeModel: "haiku",
+      claudeVersion: "2.1.316",
+      run: 1,
+      error: null,
+      costUsd: 1.5,
+      judgeCostUsd: 0.03,
+      turns: 40,
+      trace: "traces/rescue.before/1.jsonl",
+      graders: [{ name: "01", hash: "h1", passed: true, judgeVotes: [true, true, false] }],
+    });
+    expect(records[1]?.blob).toBe("c".repeat(40));
+  });
+});
+
+describe("a comparison", () => {
+  const record = (over: Partial<RunRecord> & { passed: Record<string, boolean> }): RunRecord => {
+    const { passed, ...rest } = over;
+    return {
+      session: "s1",
+      prompt: "review",
+      case: "escape",
+      arm: "",
+      blob: "c".repeat(40),
+      model: "opus",
+      judgeModel: "haiku",
+      claudeVersion: "2.1.316",
+      run: 1,
+      error: null,
+      costUsd: 1,
+      judgeCostUsd: 0,
+      turns: 1,
+      trace: null,
+      graders: Object.entries(passed).map(([name, ok]) => ({ name, hash: `h${name}`, passed: ok, judgeVotes: [] })),
+      ...rest,
+    };
+  };
+  const times = (n: number, make: () => RunRecord): RunRecord[] => Array.from({ length: n }, make);
+  const before = [...times(6, () => record({ passed: { "01": true, "02": true } }))];
+  const after = [
+    ...times(6, () => record({ blob: "f".repeat(40), passed: { "01": false, "02": true } })),
+    record({ blob: "f".repeat(40), error: "timed out", passed: {} }),
+  ];
+
+  it("sets each grader side by side, with the exact two-sided Fisher p", () => {
+    const text = compare(before, after);
+
+    expect(text).toMatch(/\| escape \| 01 \| 6\/6 \(100%; [^)]*\) \| 0\/6 \(0%; [^)]*\), 1 errored \| 0\.002 \|/);
+    expect(text).toMatch(/\| escape \| 02 \| 6\/6 [^|]*\| 6\/6 [^|]*\| 1\.000 \|/);
+  });
+
+  it("keeps errored runs out of the denominator, and says how many there were", () => {
+    const text = compare(before, after);
+
+    expect(text).toContain("0/6 (0%");
+    expect(text).toMatch(/1 errored/);
+  });
+
+  it("calls an effect only on a declared primary or guard, at p < 0.029, and 'not shown' otherwise", () => {
+    const text = compare(before, after, { primary: ["escape/01"], guards: ["escape/02"] });
+
+    expect(text).toMatch(/\| escape \| 01 \(primary\) \|.*\| fell \|/);
+    expect(text).toMatch(/\| escape \| 02 \(guard\) \|.*\| not shown \|/);
+    expect(compare(before, after)).toMatch(/\| escape \| 01 \|.*\| descriptive \|/);
+    expect(() => compare(before, after, { primary: ["escape/09"] })).toThrow(/escape\/09/);
+  });
+
+  it("voids a declared grader a side has no completed run of, rather than ruling on 0/0", () => {
+    const onlyErrored = [record({ blob: "f".repeat(40), error: "timed out", passed: {} })];
+    const otherCase = [...after, record({ blob: "f".repeat(40), case: "clean", passed: { "01": true } })];
+
+    // A side whose only run of the case errored.
+    expect(compare(before, onlyErrored, { primary: ["escape/01"] })).toMatch(/\| escape \| 01 \(primary\) \|.*\| n\/a \| void \|/);
+    // A case only one side's session ran (different `--case` sets).
+    expect(compare(otherCase, after, { guards: ["clean/01"] })).toMatch(/\| clean \| 01 \(guard\) \|.*\| n\/a \| void \|/);
+    expect(compare(before.concat(record({ case: "clean", passed: { "01": true } })), after, { guards: ["clean/01"] })).toMatch(/\| clean \| 01 \(guard\) \|.*\| n\/a \| void \|/);
+  });
+
+  it("voids a side with two or more errored runs on the case", () => {
+    const errored = [...after, record({ blob: "f".repeat(40), error: "plan limit", passed: {} })];
+
+    expect(compare(before, errored, { primary: ["escape/01"] })).toMatch(/\| escape \| 01 \(primary\) \|.*\| void \|/);
+  });
+
+  it("labels same-blob runs from more than one session as pooled", () => {
+    const pooled = [...before, ...times(3, () => record({ session: "s0", passed: { "01": true, "02": true } }))];
+    const text = compare(pooled, after);
+
+    expect(text).toMatch(/\*\*Before:\*\* pooled from 2 sessions/);
+    expect(text).toContain("9/9");
+  });
+
+  it("refuses to pool runs of different prompt blobs on one side", () => {
+    expect(() => compare([...before, record({ blob: "9".repeat(40), passed: { "01": true } })], after)).toThrow(/blob/);
+  });
+
+  it("refuses a model, Claude Code, judge or grader that differs between the sides", () => {
+    const changed = (over: Partial<RunRecord>): RunRecord[] => after.map((r) => ({ ...r, ...over }));
+
+    expect(() => compare(before, changed({ model: "sonnet" }))).toThrow(/model/);
+    expect(() => compare(before, changed({ claudeVersion: "2.1.400" }))).toThrow(/Claude Code/);
+    expect(() => compare(before, changed({ judgeModel: "sonnet" }))).toThrow(/judge/);
+    const regraded = after.map((r) => ({ ...r, graders: r.graders.map((g) => ({ ...g, hash: "other" })) }));
+    expect(() => compare(before, regraded)).toThrow(/grader/i);
+  });
+
+  it("says when both sides ran one blob, so every difference is noise", () => {
+    expect(compare(before, before.map((r) => ({ ...r, session: "s2" })))).toMatch(/same prompt blob/i);
+  });
+});
+
+describe("a kept sandbox", () => {
+  // As Claude Code 2.1.316 names it: `mkdtemp` of `claude-eval-` in the temp
+  // dir, or of `/tmp/e-` on macOS, by its real path; the trace in `out/`.
+  it("is found from a run's trace on Linux and on macOS", () => {
+    expect(sandboxOf("/tmp/claude-eval-Ab12/out/trace.jsonl", "linux", "/tmp")).toBe("/tmp/claude-eval-Ab12");
+    expect(sandboxOf("/tmp/e-Ab12/out/trace.jsonl", "darwin")).toBe("/tmp/e-Ab12");
+    expect(sandboxOf("/private/tmp/e-Ab12/out/trace.jsonl", "darwin")).toBe(fs.existsSync("/private/tmp") ? "/private/tmp/e-Ab12" : undefined);
+    expect(sandboxOf("/tmp/e-Ab12/out/trace.jsonl", "linux", "/tmp")).toBeUndefined();
+    expect(sandboxOf("/elsewhere/claude-eval-Ab12/out/trace.jsonl", "linux", "/tmp")).toBeUndefined();
+  });
+
+  it("is removed when the tool has sealed it, and a removal that fails is a warning", () => {
+    // The seal `--keep-temp` leaves: home/ and tmp/ moved into sealed/ at mode
+    // 000, and the root at 0500.
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "claude-eval-test-"));
+    fs.mkdirSync(path.join(root, "out"));
+    fs.writeFileSync(path.join(root, "out", "trace.jsonl"), "{}\n");
+    fs.mkdirSync(path.join(root, "sealed", "home", "cwd"), { recursive: true });
+    fs.mkdirSync(path.join(root, "sealed", "tmp"));
+    fs.writeFileSync(path.join(root, "sealed", "home", "cwd", "file"), "x");
+    fs.chmodSync(path.join(root, "sealed"), 0o000);
+    fs.chmodSync(root, 0o500);
+
+    expect(removeSandbox(root)).toBe(true);
+    expect(fs.existsSync(root)).toBe(false);
+    expect(removeSandbox(path.join(root, "missing"))).toBe(false);
   });
 });

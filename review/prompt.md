@@ -392,8 +392,9 @@ where GitHub shows it. So do not state a verdict of your own: what decides it is
 record, not what your prose calls it.
 
 Quote the code or check result each finding rests on, and name in the finding's own text what it
-rests on: a criterion id, a rule in `CLAUDE.md` or `CONTEXT.md`, a check result, or a concrete input
-that fails. A reader should be able to check you without re-deriving your reasoning. A finding that
+rests on: a criterion id, a rule in `CLAUDE.md` or `CONTEXT.md`, a check result, a concrete input
+that fails, or, for a risk that no criterion or rule covers, a described way the change fails or can
+be abused. A reader should be able to check you without re-deriving your reasoning. A finding that
 can name none of these is a preference, and is not posted.
 
 # HOW BAD EACH ONE IS

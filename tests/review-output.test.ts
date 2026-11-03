@@ -3640,7 +3640,7 @@ describe("the review brief checks what nothing asked for, and each finding's bas
     expect(item1()).toMatch(/belongs to another slice is behaviour nobody asked of this one/i);
   });
 
-  it("asks each finding to name its basis, of four kinds, and drops one that can name none", () => {
+  it("asks each finding to name its basis, of five kinds, and drops one that can name none", () => {
     const quoting = plain(PROMPT).match(/Quote the code or check result each finding rests on.*?is not posted\./s)?.[0] ?? "";
 
     expect(quoting).toMatch(/in the finding.s own text/i);
@@ -3648,6 +3648,7 @@ describe("the review brief checks what nothing asked for, and each finding's bas
     expect(quoting).toMatch(/a rule in `CLAUDE\.md` or `CONTEXT\.md`/);
     expect(quoting).toMatch(/a check result/i);
     expect(quoting).toMatch(/a concrete input that fails/i);
+    expect(quoting).toMatch(/for a risk that no criterion or rule covers, a described way the change fails or can be abused/i);
     expect(quoting).toMatch(/can name none of these is a preference/i);
   });
 });

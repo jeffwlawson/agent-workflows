@@ -939,13 +939,15 @@ docker run -d --name agent-dispatcher --restart unless-stopped --network host \
 ```
 
 `install-unraid.sh` makes `state/`, sets `STATE_FILE` in `service.env` and creates the container
-with the mount, replacing one created before it without. An upgrade restarts the container it
-finds, so `upgrade-unraid.sh` says where that container has no `/state` mount, and running
-`install-unraid.sh` once at the new version recreates it with one.
+with the mount, replacing one created before it without.
 
 Docker reads `--env-file` when it creates a container, not when it restarts one, so a change to
 `service.env` means a new container. An upgrade is an install at the new version into `pkg/` and a
-`docker restart`, with the worker moved to the same version alongside, since a worker refuses jobs
+`docker restart`, or, where the container differs from what `install-unraid.sh` would make, a new
+container made as the install makes it: both use the one drift check and create step in
+`dispatcher-container.sh` (#691). So an upgrade gives a container made before the state file its
+`/state` mount by itself, adding the install's `STATE_FILE` line to a `service.env` without one
+and making `state/`; it changes no other line and asks for nothing. The worker is moved to the same version alongside, since a worker refuses jobs
 from a dispatcher of another release (*Upgrading both*, below). **Tailscale Funnel** publishes the webhook door, on port 10000 (the server's `serve` already
 holds 8443):
 

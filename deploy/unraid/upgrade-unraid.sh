@@ -2,8 +2,12 @@
 # upgrade-unraid.sh [--install | --restart] <version> [<tarball>]: move the
 # agent-workflows dispatcher on Unraid to <version>, from a release's tarball.
 # Installs the tarball into the dispatcher's appdata with a throwaway container
-# and restarts the container; its settings, key and firewall are left as they
-# are. Also moves it back: name the earlier version and its tarball.
+# and restarts the container, or recreates it where it differs from what
+# install-unraid.sh would make (#691), with the same drift check and create step
+# (dispatcher-container.sh). Its key, firewall and settings are left as they
+# are, except that a service.env with no STATE_FILE gains the one line the
+# install writes. It asks for no secret. Also moves it back: name the earlier
+# version and its tarball.
 #
 # The half of upgrade.sh that runs on Unraid, which calls its two phases apart
 # so both machines restart back to back. Run alone it does both, then runs
@@ -26,10 +30,16 @@ conf="$(dirname "$0")/agent-service.conf"
 # shellcheck source=/dev/null
 if [ -f "$conf" ]; then . "$conf"; fi
 
-APPDATA=${APPDATA:-/mnt/user/appdata/agent-dispatcher}
+# The container's settings, its drift check and its create step, shared with
+# install-unraid.sh.
+shared="$(dirname "$0")/dispatcher-container.sh"
+if [ ! -f "$shared" ]; then
+  echo "dispatcher-container.sh is not beside this script ($shared): copy it here first. Nothing was changed." >&2
+  exit 2
+fi
+# shellcheck source=dispatcher-container.sh
+. "$shared"
 PKG_JSON=${PKG_JSON:-$APPDATA/pkg/node_modules/@jeffwlawson/agent-workflows/package.json}
-CONTAINER=${CONTAINER:-agent-dispatcher}
-IMAGE=${IMAGE:-node:24-alpine}
 WAIT_SECONDS=${WAIT_SECONDS:-60}
 
 phase=all
@@ -95,15 +105,29 @@ if [ "$phase" = install ]; then
   exit 0
 fi
 
-# A restart keeps the container's mounts. One created before the state file
-# (#618) has no writable /state, and its dispatcher keeps its jobs and the
-# scan's counts in memory only: install-unraid.sh recreates it with one.
-if ! docker inspect -f '{{range .Mounts}}{{println .Destination .RW}}{{end}}' "$CONTAINER" 2>/dev/null | grep -qx "/state true"; then
-  echo "Note: $CONTAINER has no writable /state mount, so STATE_FILE cannot keep the dispatcher's jobs and scan counts"
-  echo "across this restart. Run install-unraid.sh $version once to recreate the container with it."
+# Docker reads --env-file when it creates a container, and a restart keeps its
+# mounts: so a container that differs from what install-unraid.sh would make,
+# such as one made before the state file (#618) with no writable /state, is
+# recreated, and one that does not is restarted.
+if [ ! -f "$ENV_FILE" ]; then
+  echo "No settings at $ENV_FILE: run install-unraid.sh $version, which makes them. Stopping before the restart." >&2
+  exit 1
 fi
-echo "Restarting $CONTAINER ..."
-docker restart "$CONTAINER" >/dev/null
+if ! grep -q '^STATE_FILE=' "$ENV_FILE"; then
+  # A last line with no newline would otherwise run into the added one.
+  if [ -n "$(tail -c1 "$ENV_FILE")" ]; then echo >>"$ENV_FILE"; fi
+  printf '%s\n' "$DISPATCHER_STATE_LINE" >>"$ENV_FILE"
+  echo "  added      $DISPATCHER_STATE_LINE to $ENV_FILE, so the dispatcher keeps its jobs and scan counts across a restart"
+fi
+dispatcher_state_dir
+wrong=$(dispatcher_drift | paste -sd, -)
+if [ -z "$wrong" ]; then
+  echo "Restarting $CONTAINER ..."
+  docker restart "$CONTAINER" >/dev/null
+else
+  echo "Recreating $CONTAINER, as install-unraid.sh makes it ..."
+  dispatcher_create "$wrong"
+fi
 # Read whole, then searched: grep -q on a pipe can end it early, and under
 # pipefail that reads as no match. -F: the version's dots are not wildcards.
 ready=

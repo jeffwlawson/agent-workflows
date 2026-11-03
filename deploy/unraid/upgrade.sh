@@ -84,7 +84,7 @@ for arg in "$@"; do
 done
 if ! [[ $version =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then usage; fi
 if [ "$(id -u)" -ne 0 ]; then refuse "Run this as root on Unraid."; fi
-for script in upgrade-unraid.sh upgrade-box.sh check-unraid.sh check-box.sh; do
+for script in upgrade-unraid.sh dispatcher-container.sh upgrade-box.sh check-unraid.sh check-box.sh; do
   if [ ! -f "$here/$script" ]; then refuse "$script is not beside this script, in $here: copy it there first."; fi
 done
 if [ -z "$BOX_SSH_USER" ]; then refuse "Set BOX_SSH_USER in $conf: the box's admin account, which ssh logs in as and which may sudo."; fi

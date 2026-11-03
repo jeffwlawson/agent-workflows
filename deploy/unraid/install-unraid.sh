@@ -32,23 +32,18 @@ conf="$(dirname "$0")/agent-service.conf"
 # shellcheck source=/dev/null
 if [ -f "$conf" ]; then . "$conf"; fi
 
-APPDATA=${APPDATA:-/mnt/user/appdata/agent-dispatcher}
-ENV_FILE=${ENV_FILE:-$APPDATA/service.env}
+# The container's settings (APPDATA, ENV_FILE, CONTAINER, IMAGE, CONTAINER_USER,
+# STATE_DIR, TZ_NAME), its drift check and its create step, shared with
+# upgrade-unraid.sh.
+shared="$(dirname "$0")/dispatcher-container.sh"
+if [ ! -f "$shared" ]; then
+  echo "dispatcher-container.sh is not beside this script ($shared): copy it here first. Nothing was changed." >&2
+  exit 2
+fi
+# shellcheck source=dispatcher-container.sh
+. "$shared"
 PKG_JSON=${PKG_JSON:-$APPDATA/pkg/node_modules/@jeffwlawson/agent-workflows/package.json}
-CONTAINER=${CONTAINER:-agent-dispatcher}
 PROTOTYPE_CONTAINER=${PROTOTYPE_CONTAINER:-agent-dispatcher-prototype}
-IMAGE=${IMAGE:-node:24-alpine}
-# Unraid's container conventions: nobody:users (99:100), and the server's time zone. The
-# dispatcher is the piece the internet reaches, through the Funnel, and it holds
-# the App's key: not root. The key is given to this user, readable by it alone.
-# uid 99 has no home in the image, and /app is read-only, so it starts in /tmp
-# with HOME there: anything written relative to either lands somewhere writable.
-CONTAINER_USER=${CONTAINER_USER:-99:100}
-# The one place the dispatcher writes to (#618): its state file, which keeps its
-# dispatched jobs and the scan's counts across a restart. Owned by
-# CONTAINER_USER, and mounted read-write at /state.
-STATE_DIR=${STATE_DIR:-$APPDATA/state}
-TZ_NAME=${TZ_NAME:-UTC}
 CHAIN=${CHAIN:-AGENT-EGRESS}
 WAIT_SECONDS=${WAIT_SECONDS:-60}
 NET=${NET:-agentnet}
@@ -81,9 +76,19 @@ if [ ! -f "$check_script" ]; then
   echo "check-unraid.sh is not beside this script ($check_script): copy it here first. Nothing was changed." >&2
   exit 2
 fi
-if ! : </dev/tty 2>/dev/null; then
-  echo "This asks for secrets at a prompt, so it needs a terminal (over ssh, use ssh -t). Nothing was changed." >&2
-  exit 2
+# A setting's value, without quotes around it: Docker would keep them as part of it.
+value() {
+  grep -m1 "^$1=" "$ENV_FILE" 2>/dev/null | cut -d= -f2- | sed -e 's/^"\(.*\)"$/\1/' -e "s/^'\(.*\)'$/\1/" || true
+}
+installed() { grep -m1 '"version"' "$PKG_JSON" 2>/dev/null | sed 's/.*"version": *"\([^"]*\)".*/\1/' || true; }
+# Only what is missing is asked for: the App's ID and webhook secret, and the
+# registry token where the package is not at $version. A run that asks nothing
+# needs no terminal.
+if [ -z "$(value GITHUB_APP_ID)" ] || [ -z "$(value GITHUB_WEBHOOK_SECRET)" ] || [ "$(installed)" != "$version" ]; then
+  if ! : </dev/tty 2>/dev/null; then
+    echo "This asks for secrets at a prompt, so it needs a terminal (over ssh, use ssh -t). Nothing was changed." >&2
+    exit 2
+  fi
 fi
 for tool in virsh docker iptables tailscale openssl; do
   command -v "$tool" >/dev/null || { echo "$tool is missing: is the VM service, Docker or the Tailscale plugin off? Nothing was changed." >&2; exit 2; }
@@ -244,13 +249,7 @@ echo "== The dispatcher's settings"
 mkdir -p "$APPDATA"
 chown "$CONTAINER_USER" "$APPDATA/app.pem"
 chmod 600 "$APPDATA/app.pem"
-mkdir -p "$STATE_DIR"
-chown "$CONTAINER_USER" "$STATE_DIR"
-chmod 700 "$STATE_DIR"
-# A setting's value, without quotes around it: Docker would keep them as part of it.
-value() {
-  grep -m1 "^$1=" "$ENV_FILE" 2>/dev/null | cut -d= -f2- | sed -e 's/^"\(.*\)"$/\1/' -e "s/^'\(.*\)'$/\1/" || true
-}
+dispatcher_state_dir
 app_id=$(value GITHUB_APP_ID)
 webhook=$(value GITHUB_WEBHOOK_SECRET)
 secret=$(value WORKER_SECRET)
@@ -284,14 +283,13 @@ WEBHOOK_PORT=$WEBHOOK_PORT
 TOKEN_HOST=$HOST_IP
 TOKEN_PORT=$TOKEN_PORT
 WORKER_SECRET=$secret
-STATE_FILE=/state/dispatcher.json
+$DISPATCHER_STATE_LINE
 EOF
 )" || true
 unset webhook secret
 chmod 600 "$ENV_FILE".bak.* 2>/dev/null || true
 
 echo "== The package"
-installed() { grep -m1 '"version"' "$PKG_JSON" 2>/dev/null | sed 's/.*"version": *"\([^"]*\)".*/\1/'; }
 package_changed=
 if [ "$(installed)" = "$version" ]; then
   echo "  unchanged  @jeffwlawson/agent-workflows $version in $APPDATA/pkg"
@@ -325,27 +323,7 @@ if docker inspect "$PROTOTYPE_CONTAINER" >/dev/null 2>&1; then
     echo "  ensured    $PROTOTYPE_CONTAINER does not restart at boot"
   fi
 fi
-cmd="node /app/pkg/node_modules/@jeffwlawson/agent-workflows/dist/cli.js dispatcher"
-# What is wrong with the existing container, if anything. Docker reads
-# --env-file when it creates a container, not when it restarts one, so any of
-# these means a new container.
-drift() {
-  docker inspect "$CONTAINER" >/dev/null 2>&1 || { echo "missing"; return; }
-  [ "$(docker inspect -f '{{.Config.Image}}' "$CONTAINER")" = "$IMAGE" ] || echo "image"
-  [ "$(docker inspect -f '{{.HostConfig.NetworkMode}}' "$CONTAINER")" = "host" ] || echo "network"
-  [ "$(docker inspect -f '{{.HostConfig.RestartPolicy.Name}}' "$CONTAINER")" = "unless-stopped" ] || echo "restart policy"
-  [ "$(docker inspect -f '{{join .Config.Cmd " "}}' "$CONTAINER")" = "$cmd" ] || echo "command"
-  [ "$(docker inspect -f '{{.Config.User}}' "$CONTAINER")" = "$CONTAINER_USER" ] || echo "user"
-  [ "$(docker inspect -f '{{.Config.WorkingDir}}' "$CONTAINER")" = "/tmp" ] || echo "working directory"
-  mounts=$(docker inspect -f '{{range .Mounts}}{{println .Source .Destination .RW}}{{end}}' "$CONTAINER")
-  grep -qx "$APPDATA /app false" <<<"$mounts" || echo "mount"
-  grep -qx "$STATE_DIR /state true" <<<"$mounts" || echo "state mount"
-  env=$(docker inspect -f '{{range .Config.Env}}{{println .}}{{end}}' "$CONTAINER")
-  grep -qx "TZ=$TZ_NAME" <<<"$env" || echo "time zone"
-  grep -qx "HOME=/tmp" <<<"$env" || echo "home"
-  [ -z "$(grep -Ev '^[[:space:]]*(#|$)' "$ENV_FILE" | grep -Fxv -f <(printf '%s\n' "$env"))" ] || echo "settings"
-}
-wrong=$(drift | paste -sd, -)
+wrong=$(dispatcher_drift | paste -sd, -)
 # The version the container last said it was listening at.
 running_version() {
   local started
@@ -361,14 +339,7 @@ if [ -z "$wrong" ]; then
     echo "  unchanged  $CONTAINER"
   fi
 else
-  if [ "$wrong" != "missing" ]; then
-    docker rm -f "$CONTAINER" >/dev/null
-    echo "  removed    $CONTAINER, whose $wrong differed"
-  fi
-  docker run -d --name "$CONTAINER" --restart unless-stopped --network host \
-    --user "$CONTAINER_USER" -w /tmp -e HOME=/tmp -e "TZ=$TZ_NAME" \
-    --env-file "$ENV_FILE" -v "$APPDATA:/app:ro" -v "$STATE_DIR:/state" "$IMAGE" $cmd >/dev/null
-  echo "  created    $CONTAINER"
+  dispatcher_create "$wrong"
 fi
 ready=
 for _ in $(seq 1 "$WAIT_SECONDS"); do

@@ -58,9 +58,9 @@ For each piece of feedback, decide honestly:
   Explain why in your commit message.
 - **Partially address it**: take the correct part, explain the rest.
 
-Do not make a change you believe is wrong just because a comment asked for it. A reviewer can be
-mistaken; your job is the correct end state, not compliance. Equally, do not dismiss a comment
-because addressing it is inconvenient.
+Make the change you judge correct, whoever asked for it: a reviewer can be mistaken, and your job
+is the correct end state, not compliance. Weigh a comment that is inconvenient to address as
+seriously as one that is convenient.
 
 **A maintainer's comment is your direction for this run.** Every piece of feedback above is from
 someone this repository already trusts (that is the gate, not a judgement about whose word is
@@ -70,8 +70,8 @@ person steering this change. Where a maintainer and a reviewer **disagree**, the
 you set aside and whose direction you followed instead.
 
 - **A maintainer may ask for something no review raised**, or something the linked issue does not
-  say in as many words. That request is **in scope for this run**. *Stay within the scope* under
-  **CONSTRAINTS** bounds what a reviewer's finding may pull into this change; it does not bound what
+  say in as many words. That request is **in scope for this run**. The scope rule under
+  *CONSTRAINTS* bounds what a reviewer's finding may pull into this change; it does not bound what
   a maintainer asks of it.
 - **You may still decline a direction you believe is wrong**, on the same terms as anything else
   here, and then say why, as plainly as you would to the person who wrote it. Precedence settles
@@ -83,35 +83,42 @@ you set aside and whose direction you followed instead.
 mishandling a kind of input (one spelling of it, one shape, one edge of a range), the instance is
 not the defect, and repairing only the instance leaves the rest to be found one per round:
 
-- **Name the class, list its other members, and cover them in the same commit**, with a test for
-  each. The class is the other inputs to **the code this pull request changes**; the same mistake in
-  code this change does not touch is a separate change under *Constraints*, so report it as an
-  out-of-scope note (a follow-up for the next review to rule on), rather than fixing it here.
+- **Name the class, list its other members, and cover them in the same commit**, each with its
+  test (see *A finding about behaviour is taken red first* below). The class is the other inputs to
+  **the code this pull request changes**; the same mistake in code this change does not touch is a
+  separate change under *CONSTRAINTS*, so report it as an out-of-scope note (a follow-up for the
+  next review to rule on), rather than fixing it here.
 - **Read the earlier rounds on this pull request**: the review summaries above, and the replies
   already on the threads you were shown. Where findings keep landing in the same function, or on
-  the same kind of input, the shared cause is what to fix rather than the newest symptom. Fix that,
-  and say so in the commit message, naming the rounds that pointed at it.
+  the same kind of input, the shared cause is what to fix rather than the newest symptom. Fix that;
+  *COMMIT* says what the commit message names for it.
 - **Where the fix is a different design, say so rather than adding another special case.** Reading a
   machine-readable form of an input instead of parsing a human-readable one, or taking a value from
   whatever owns it instead of deriving it, can remove a whole class where a special case removes one
   member. Where it is within this pull request's scope, make it; where it is larger than this
   change, report it as an out-of-scope note saying what it would replace. A special case that works is
   what keeps the redesign from being proposed, round after round.
-- **Where the code reads the output of another program** (a command line tool, a service's
-  response, a file format), the tests you add use **output that program produced**: run it on the
-  inputs the class covers, and use what it emits. A sample written by hand, or worked out by reading
-  the code that parses it, agrees with the belief that produced the defect. Build those inputs in a
-  scratch directory outside the working tree, so the only thing the run leaves behind is the fixture
-  you commit.
 
-**A finding about behaviour gets its test first.** For a finding about what the code does, write
-its test first and run it on the head you were given, before you change the code. It must fail
-there, on the symptom the finding names; then make the fix and see it pass. A test you could not
-make fail is not evidence the fix works: say so in the thread reply. Where no seam reaches the code
-path as the finding describes it, fix it anyway, and say in the thread reply that no test could be
-written, and why; where the missing seam is itself worth fixing, report it as an out-of-scope note.
-In the commit message, name the cause you fixed, not only the symptom. A finding about text, a
-rename or a comment (no behaviour) is exempt: "about behaviour" is the bound.
+**A finding about behaviour is taken red first.** In this order:
+
+1. **Take the finding red.** Write its test, run it on the head you were given, and see it fail
+   there on the symptom the finding names.
+2. **Make the fix, and see the test go green.**
+3. **Take each other member of the class red and green the same way**, in the same commit.
+4. **Where the code reads the output of another program** (a command line tool, a service's
+   response, a file format), the tests you add use **output that program produced**: run it on the
+   inputs the class covers, and use what it emits. A sample written by hand, or worked out by
+   reading the code that parses it, agrees with the belief that produced the defect. Build those
+   inputs in a scratch directory outside the working tree, so the only thing the run leaves behind
+   is the fixture you commit.
+
+A test you cannot get red is not evidence that the fix works; say so in the reply for that finding
+(the thread reply, the conversation outcome, or for a minor finding the commit message). Before you
+conclude that no test can reach the code path, try the seams the code already has (an existing test
+file, the public entry point, the command line) and say in the reply which you tried; if none
+reaches it, fix the code, say so and why, and where the missing seam is itself worth fixing, report
+it as an out-of-scope note. A finding about text, a rename or a comment has no behaviour, so it has
+no test to take red.
 
 **Suggested changes.** A comment may contain a ` ```suggestion ` block: the reviewer's exact
 proposed replacement for the lines the comment is anchored to. Treat it as a strong signal of
@@ -122,10 +129,9 @@ from a false premise produces a tidy patch that is still wrong.
 
 **A section that says it could not be read.** One of the three sections above may say so, in
 place of comments, or as a note beneath the ones it did hold. That is not "there was none" and not
-"and that was all": the API refused that part of the request, and what it covers is unknown. Do
-not treat it as agreement or as a complete list: work from what you were shown, and say in a reply
-or a top-level comment that a surface was unreadable if it changes what you would otherwise
-conclude.
+"and that was all": the API refused that part of the request. Treat what it covers as unknown:
+work from what you were shown, and say in a reply or a top-level comment that a surface was
+unreadable if it changes what you would otherwise conclude.
 
 **Outdated anchors.** A comment marked *outdated* was written against code that has since
 changed. Its line numbers point at the old state, so re-read the current code before deciding
@@ -138,7 +144,7 @@ is a request to check and report in your commit message, not necessarily to chan
 
 Stay within the scope of this PR and its linked issue. If a **reviewer's** comment asks for
 something that belongs in a separate change, say so rather than expanding the PR. A **maintainer's
-comment is the exception**; see *A maintainer's comment is your direction for this run* above.
+comment is the exception**: see *A maintainer's comment is your direction for this run*.
 
 `CLAUDE.md` holds the conventions any change here must follow. Follow them there rather than
 from memory.
@@ -162,8 +168,10 @@ the reason.
 Commit as soon as the work first passes the verify command `CLAUDE.md` names, and make later changes
 as further commits. A run can be stopped at its time limit, and only committed work survives that.
 
-A commit that fixed a class rather than the instance a comment named says which class and which
-members it covers. Without that, a reader comparing the commit against the comment cannot tell
+The commit message names the cause you fixed, not only the symptom. Where earlier rounds pointed
+at a shared cause, say so in the commit message, naming the rounds that pointed at it. A commit
+that fixed a class rather than the instance a comment named says which class and which members it
+covers. Without that, a reader comparing the commit against the comment cannot tell
 more-than-was-asked-for from something-other-than-was-asked-for.
 
 If nothing genuinely needs changing, make no commit and say so.
@@ -206,7 +214,7 @@ and that is what you report it under.
 
 A conversation comment has no thread to reply into, so your outcomes are posted together as **one
 comment on the same conversation**, where the person who wrote it is already looking. An outcome is
-**not a top-level comment** (the section below) because it is what you did with something somebody
+**not a top-level comment** (*TOP-LEVEL COMMENTS*) because it is what you did with something somebody
 said, rather than something of your own that belongs to no thread. Do not report the same thing both
 ways.
 
@@ -215,9 +223,8 @@ something?". A comment an earlier commit already satisfied is **addressed**.
 
 **The declined ones are why this exists.** A comment you addressed shows up in the code and the next
 review reads it there. A comment you **declined** leaves no trace anywhere else, so say which
-comment, and say why, plainly, to the person who asked. A maintainer's direction you are not
-following is the case that matters most; see *A maintainer's comment is your direction for this run*
-above.
+comment, and say why, plainly, to the person who asked. That holds most of all for a maintainer's
+direction you are not following.
 
 Report nothing for a comment you were not shown, and nothing for one shown **without** an id:
 that is how a comment nobody is waiting on an answer from is marked. The loop's own status notes
@@ -232,7 +239,7 @@ than into any thread.
 
 A top-level comment is for something that belongs to **no thread**: a refusal or partial completion
 that spans threads rather than belonging to one; a cross-cutting observation that answers no
-specific comment. **Not something out of scope**: that is an out-of-scope note (the section below),
+specific comment. **Not something out of scope**: that is an out-of-scope note (*OUT-OF-SCOPE NOTES*),
 which is the only one of the two anything acts on.
 
 Not a summary of what changed: the commit message carries that, and a bot posting "here is what I
@@ -240,7 +247,7 @@ did" on every run is the noise that trains a reader to skim. Not anything a thre
 covers.
 
 **Silence is the default.** Most runs have nothing that belongs outside a thread; report an empty
-list and nothing is posted. A channel that fires every time is one nobody reads.
+list and nothing is posted.
 
 At most **two** are posted per run and the rest are dropped, so if you have more than two, report
 the two that matter. This is a ceiling, not a target: one, or none, is the usual answer.
@@ -252,8 +259,8 @@ string" is as locatable as an inline comment and does not need the diff-line mac
 
 You may also report zero or more **out-of-scope notes**: something real you noticed while fixing
 that is **not this pull request's to fix**. A defect in code this change only calls or never
-touches; a follow-up this change makes worth doing; the larger redesign *How to respond to
-feedback* asks you to name rather than make. This is the only place such a thing goes: not a
+touches; a follow-up this change makes worth doing; the larger redesign *HOW TO RESPOND TO
+FEEDBACK* asks you to name rather than make. This is the only place such a thing goes: not a
 top-level comment, not a thread reply, and not a fix in this change.
 
 Each note has a short `title`, a `body` saying what it is, the evidence it is real and why this
@@ -267,7 +274,8 @@ write the note for that reviewer, who has to check it: quote what it rests on.
 **Silence is the default here too.** At most **two** are posted per run. A note is not a place for
 a preference, a "consider…", or anything this pull request should simply fix.
 
-Do not push. Do not edit labels. Do not create GitHub comments or reviews yourself.
+You commit and report; the workflow pushes, labels and posts. Do not push. Do not edit labels. Do
+not create GitHub comments or reviews yourself.
 
 When complete, output only `<promise>COMPLETE</promise>`, with no summary of what you did: the
 outcomes above are asked for after you finish, and that is the only report anything reads.

@@ -366,7 +366,7 @@ describe("the fix brief on a finding that is one of a class", () => {
 });
 
 /**
- * **A behaviour finding's test is written first, on the head the round was given** (#613).
+ * **A behaviour finding is taken red first, on the head the round was given** (#613).
  *
  * The red check compares against the merge-base, so for behaviour this pull
  * request adds, a fix-round test that would also pass on the unfixed head still
@@ -380,35 +380,43 @@ describe("the fix brief on a finding that is one of a class", () => {
 describe("the fix brief on a finding about behaviour", () => {
   const PROMPT = fs.readFileSync("fix/prompt.md", "utf8");
   const plain = (text: string): string => text.replace(/[*_]/g, "").replace(/\s+/g, " ");
-  const rule = (): string => plain(PROMPT).match(/a finding about behaviour gets its test first.{0,1600}/i)?.[0] ?? "";
+  const rule = (): string => plain(PROMPT).match(/a finding about behaviour is taken red first\. In this order.{0,2000}/i)?.[0] ?? "";
+  const commit = (): string => plain(PROMPT).match(/# COMMIT.{0,1400}/)?.[0] ?? "";
 
-  it("writes the test first and runs it on the head the round was given", () => {
-    expect(rule()).toMatch(/write its test first/i);
-    expect(rule()).toMatch(/on the head you were given/i);
+  it("takes the finding red on the head the round was given, on the symptom it names", () => {
+    expect(rule()).toMatch(/take the finding red/i);
+    expect(rule()).toMatch(/run it on the head you were given, and see it fail there on the symptom the finding names/i);
   });
 
-  it("asks that the test fails there, on the symptom the finding names", () => {
-    expect(rule()).toMatch(/it must fail there, on the symptom the finding names/i);
+  /** One block, in order: red, fix, green, the class, then the fixture's source. */
+  it("gathers the test rules in order: red, green, the class, real program output", () => {
+    const steps = [/take the finding red/i, /see the test go green/i, /each other member of the class red and green/i, /reads the output of another program/i];
+    const at = steps.map((step) => rule().search(step));
+
+    expect(at.every((i) => i >= 0)).toBe(true);
+    expect([...at].sort((a, b) => a - b)).toEqual(at);
   });
 
-  it("says a test that could not be made to fail is not evidence, in the thread reply", () => {
-    expect(rule()).toMatch(/could not make fail is not evidence/i);
-    expect(rule()).toMatch(/thread reply/i);
+  it("says a test that cannot be got red is not evidence, in the reply for that finding", () => {
+    expect(rule()).toMatch(/a test you cannot get red is not evidence/i);
+    expect(rule()).toMatch(/the thread reply, the conversation outcome, or for a minor finding the commit message/i);
   });
 
-  it("fixes it anyway where no seam reaches the path, and says so and why", () => {
-    expect(rule()).toMatch(/no seam reaches/i);
-    expect(rule()).toMatch(/fix it anyway/i);
-    expect(rule()).toMatch(/no test could be written, and why/i);
+  /** The bound the 6-run evals on #700 showed was taken early: it is checkable now. */
+  it("concludes no seam reaches the path only after naming the seams it tried", () => {
+    expect(rule()).toMatch(/try the seams the code already has/i);
+    expect(rule()).toMatch(/say in the reply which you tried/i);
+    expect(rule()).toMatch(/if none reaches it, fix the code, say so and why/i);
     expect(rule()).toMatch(/missing seam .{0,80}out-of-scope note/i);
   });
 
-  it("asks the commit message to name the cause fixed, not only the symptom", () => {
-    expect(rule()).toMatch(/commit message, name the cause you fixed/i);
+  it("asks the commit message, once, to name the cause fixed, not only the symptom", () => {
+    expect(commit()).toMatch(/names the cause you fixed, not only the symptom/i);
+    expect(plain(PROMPT).match(/name[s]? the cause you fixed/gi)).toHaveLength(1);
   });
 
-  it("exempts a finding that is not about behaviour", () => {
-    expect(rule()).toMatch(/text, a rename or a comment .{0,60}is exempt/i);
+  it("states the exemption as what has no behaviour", () => {
+    expect(rule()).toMatch(/text, a rename or a comment has no behaviour, so it has no test to take red/i);
   });
 });
 

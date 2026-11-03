@@ -77,9 +77,9 @@ found the finding fixed, or by a human, so one that is gone is one that is settl
 **human** closed are listed under *WHAT THE MAINTAINER HAS SETTLED* below, because those carry an
 instruction rather than only an absence.
 
-**Raise only what is new.** A point already made below and since addressed gets one line
-acknowledging it; one still outstanding may be reinforced. Treat maintainer steering as
-authoritative, and keep your own judgement about the code.
+**Raise only what is new.** A point already made below is not a finding of yours: an earlier
+review's finding is ruled in `verified`, and a human's comment is theirs. Treat maintainer steering
+as authoritative, and keep your own judgement about the code.
 
 A note headed *Feedback that could not be read* below says what the API refused and what that
 leaves unknown; where it changes a conclusion, say so in `howChecked`.

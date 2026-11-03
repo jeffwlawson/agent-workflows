@@ -3300,6 +3300,17 @@ describe("the review's finding vocabulary", () => {
     expect(settled).not.toMatch(/do not raise/i);
   });
 
+  /**
+   * A point already made has no field to be acknowledged or reinforced in
+   * (#704, M10): it is ruled in `verified`, or it is a human's, and a second
+   * write-up is a second finding.
+   */
+  it("prompt.md raises only what is new, and offers no acknowledgement or reinforcement", () => {
+    expect(plain(PROMPT)).toMatch(/Raise only what is new\. A point already made below is not a finding of yours/);
+    expect(plain(PROMPT)).toMatch(/an earlier review's finding is ruled in `verified`/);
+    expect(PROMPT).not.toMatch(/acknowledging it|may be reinforced/);
+  });
+
   it("names needsYou and the three cases it is for", () => {
     expect(PROMPT).toContain("needsYou");
     expect(EXTRACTION).toContain("needsYou");

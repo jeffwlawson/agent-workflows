@@ -225,7 +225,7 @@ fi
 if docker inspect -f '{{range .Mounts}}{{println .Destination .RW}}{{end}}' "$CONTAINER" 2>/dev/null | grep -qx "/state true"; then
   pass "the container has a writable /state, for STATE_FILE"
 else
-  warn "the container has no writable /state: the dispatcher keeps its jobs and scan counts in memory only (install-unraid.sh recreates it with one)"
+  warn "the container has no writable /state: the dispatcher keeps its jobs and scan counts in memory only (the next upgrade, or install-unraid.sh, recreates it with one)"
 fi
 
 section "Its doors and the Funnel"

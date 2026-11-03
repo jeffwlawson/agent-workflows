@@ -104,8 +104,31 @@ name=$(sed -n 's/.*"name": *"\\([^"]*\\)".*/\\1/p' "$tgz")
 mkdir -p "$prefix/node_modules/$name" && cp "$tgz" "$prefix/node_modules/$name/package.json"`,
   docker: `
 installed() { sed -n 's/.*"version": *"\\([^"]*\\)".*/\\1/p' "$FAKE/appdata/pkg/${INSTALLED_PATH}"; }
+c="$FAKE/state/container"
 case "$1" in
   run)
+    case " $* " in *" --rm "*) ;; *)
+      # The dispatcher's container: what it is created with is what inspect answers.
+      shift
+      rm -rf "$c" && mkdir -p "$c" && : >"$c/env" && : >"$c/mounts"
+      while [ $# -gt 0 ]; do
+        case "$1" in
+          -d) shift ;;
+          --name) shift 2 ;;
+          --restart) echo "$2" >"$c/restart"; shift 2 ;;
+          --network) echo "$2" >"$c/network"; shift 2 ;;
+          --user) echo "$2" >"$c/user"; shift 2 ;;
+          -w) echo "$2" >"$c/workdir"; shift 2 ;;
+          -e) echo "$2" >>"$c/env"; shift 2 ;;
+          --env-file) grep -Ev '^[[:space:]]*(#|$)' "$2" >>"$c/env"; shift 2 ;;
+          -v) dst=\${2#*:}; rw=true; case "$dst" in *:ro) rw=false; dst=\${dst%:ro} ;; esac
+              echo "\${2%%:*} $dst $rw" >>"$c/mounts"; shift 2 ;;
+          *) echo "$1" >"$c/image"; shift; echo "$*" >"$c/cmd"; break ;;
+        esac
+      done
+      installed >"$FAKE/state/dispatcher-running"
+      exit 0 ;;
+    esac
     pkg= release= tgz=
     while [ $# -gt 0 ]; do
       case "$1" in
@@ -123,7 +146,22 @@ case "$1" in
   exec)
     shift 3
     WORKER_URL=http://box.example:8787/jobs WORKER_SECRET='${SECRET}' exec "$1" --import "file://$FAKE/fetch.mjs" "\${@:2}" ;;
-  inspect) echo 2026-10-31T00:00:00Z ;;
+  rm) rm -rf "$c" ;;
+  inspect)
+    if [ "$2" != -f ]; then [ "$2" = agent-dispatcher ] && [ -d "$c" ]; exit; fi
+    [ "$4" = agent-dispatcher ] && [ -d "$c" ] || { echo "Error: No such object: $4" >&2; exit 1; }
+    case "$3" in
+      *StartedAt*) echo 2026-10-31T00:00:00Z ;;
+      *State.Running*) echo true ;;
+      *Config.Image*) cat "$c/image" ;;
+      *NetworkMode*) cat "$c/network" ;;
+      *RestartPolicy*) cat "$c/restart" ;;
+      *Config.Cmd*) cat "$c/cmd" ;;
+      *Config.User*) cat "$c/user" ;;
+      *WorkingDir*) cat "$c/workdir" ;;
+      *Mounts*) cat "$c/mounts" ;;
+      *Config.Env*) cat "$c/env" ;;
+    esac ;;
   logs) echo "dispatcher $(cat "$FAKE/state/dispatcher-running") listening" ;;
 esac`,
   systemctl: `
@@ -134,7 +172,48 @@ case "$1" in
   show) echo invocation ;;
 esac`,
   journalctl: `echo "worker $(cat "$FAKE/state/worker-running") listening"`,
+  // Logged only: the tests do not run as root, and the call is what is checked.
+  chown: ``,
+  // What install-unraid.sh reads of the rest of Unraid, all already set up:
+  // agentnet reserving the box's address for the VM's card, the firewall's
+  // chain in, and the Funnel public.
+  virsh: `
+case "$1" in
+  domiflist) printf ' Interface  Type  Source  Model  MAC\\n vnet0  bridge  agentnet  virtio  52:54:00:aa:bb:cc\\n' ;;
+  net-info) echo "Active:         yes" ;;
+  net-dumpxml) echo "    <host mac='52:54:00:aa:bb:cc' name='agent-box' ip='box.example'/>" ;;
+esac`,
+  iptables: ``,
+  openssl: `echo made-by-openssl`,
+  tailscale: `
+case "$1 $2" in
+  "funnel status") printf 'https://unraid.example:10000 (Funnel on)\\n|-- / proxy http://127.0.0.1:8790\\n' ;;
+  "status --json") echo '"DNSName": "unraid.example.",' ;;
+esac`,
 };
+
+/** The dispatcher's settings as install-unraid.sh writes them for the conf below, without its STATE_FILE line. */
+const SERVICE_ENV_BEFORE_STATE = [
+  "GITHUB_APP_ID=12345",
+  "GITHUB_WEBHOOK_SECRET=the-webhook-secret",
+  "GITHUB_APP_PRIVATE_KEY_FILE=/app/app.pem",
+  "WORKER_URL=http://box.example:8787/jobs",
+  "WEBHOOK_HOST=127.0.0.1",
+  "WEBHOOK_PORT=8790",
+  "TOKEN_HOST=192.168.250.1",
+  "TOKEN_PORT=8791",
+  `WORKER_SECRET=${SECRET}`,
+  "",
+].join("\n");
+const SERVICE_ENV = `${SERVICE_ENV_BEFORE_STATE}STATE_FILE=/state/dispatcher.json\n`;
+const DISPATCHER_CMD = "node /app/pkg/node_modules/@jeffwlawson/agent-workflows/dist/cli.js dispatcher";
+
+/**
+ * The dispatcher's container the run starts with (#691): as install-unraid.sh
+ * makes it, one made before the state file (#618), with no `/state` mount and
+ * no `STATE_FILE`, one on another image, or none.
+ */
+type Container = "clean" | "before-state" | "other-image" | "missing";
 
 const CHECK_UNRAID = `#!/usr/bin/env bash
 echo "  INFO  dispatcher version: $(cat "$FAKE/state/dispatcher-running") (the box's check prints the worker's: they must match)"
@@ -178,7 +257,31 @@ interface Setup {
   readonly fresh?: boolean;
   /** What the worker's held door answers, question by question; unset, it holds nothing. */
   readonly held?: readonly HeldAnswer[];
+  /** The dispatcher's container; unset, as install-unraid.sh makes it. */
+  readonly container?: Container;
+  /** service.env as it is; unset, as install-unraid.sh writes it, or without STATE_FILE for a container made before it. */
+  readonly serviceEnv?: string;
 }
+
+/** Writes the container the stubbed docker answers inspect from, as `docker run -d` would leave it. */
+const writeContainer = (root: string, container: Container, serviceEnv: string): void => {
+  if (container === "missing") return;
+  const dir = path.join(root, "state", "container");
+  fs.mkdirSync(dir);
+  const appdata = path.join(root, "appdata");
+  const settings = serviceEnv.split("\n").filter((line) => line !== "");
+  const answers: Record<string, string> = {
+    image: container === "other-image" ? "node:22-alpine" : "node:24-alpine",
+    network: "host",
+    restart: "unless-stopped",
+    user: "99:100",
+    workdir: "/tmp",
+    cmd: DISPATCHER_CMD,
+    env: ["HOME=/tmp", "TZ=UTC", ...settings].join("\n"),
+    mounts: [`${appdata} /app false`, ...(container === "before-state" ? [] : [`${appdata}/state /state true`])].join("\n"),
+  };
+  for (const [name, answer] of Object.entries(answers)) fs.writeFileSync(path.join(dir, name), `${answer}\n`);
+};
 
 const scratches: string[] = [];
 afterEach(() => {
@@ -191,7 +294,7 @@ const setUp = (setup: Setup = {}): string => {
   for (const dir of ["unraid", "box-home", "bin", "state", "release", "stage", "opt", "home"]) {
     fs.mkdirSync(path.join(root, dir));
   }
-  for (const script of ["upgrade.sh", "upgrade-unraid.sh", "upgrade-box.sh"]) {
+  for (const script of ["upgrade.sh", "upgrade-unraid.sh", "upgrade-box.sh", "dispatcher-container.sh", "install-unraid.sh"]) {
     fs.copyFileSync(path.join(DEPLOY, script), path.join(root, "unraid", script));
   }
   fs.writeFileSync(path.join(root, "unraid", "check-unraid.sh"), CHECK_UNRAID);
@@ -208,6 +311,7 @@ const setUp = (setup: Setup = {}): string => {
       `STAGE_DIR=${root}/stage`,
       `BOX_IP=box.example`,
       `BOX_SSH_USER=admin`,
+      `FIREWALL_DIR=${root}/firewall`,
       setup.conf ?? `PACKAGE_SOURCE=owner/repo`,
       "",
     ].join("\n"),
@@ -226,6 +330,12 @@ const setUp = (setup: Setup = {}): string => {
   if (setup.fresh !== true) {
     fs.writeFileSync(path.join(root, "appdata", "pkg", "package.json"), `{\n  "dependencies": {\n    "${NAME}": "1.2.2"\n  }\n}\n`);
   }
+  const container = setup.container ?? "clean";
+  const serviceEnv = setup.serviceEnv ?? (container === "before-state" ? SERVICE_ENV_BEFORE_STATE : SERVICE_ENV);
+  fs.mkdirSync(path.join(root, "appdata"), { recursive: true });
+  fs.writeFileSync(path.join(root, "appdata", "service.env"), serviceEnv, { mode: 0o600 });
+  fs.writeFileSync(path.join(root, "appdata", "app.pem"), "the App's key\n", { mode: 0o600 });
+  writeContainer(root, container, serviceEnv);
   fs.writeFileSync(path.join(root, "state", "dispatcher-running"), "1.2.2\n");
   fs.writeFileSync(path.join(root, "state", "worker-running"), "1.2.2\n");
   const tarball = pkgJson("1.2.3");
@@ -235,8 +345,10 @@ const setUp = (setup: Setup = {}): string => {
   return root;
 };
 
-const run = (root: string, env: Record<string, string> = {}, args: readonly string[] = ["1.2.3"]) => {
-  const result = spawnSync("bash", [path.join(root, "unraid", "upgrade.sh"), ...args], {
+const run = (root: string, env: Record<string, string> = {}, args: readonly string[] = ["1.2.3"]) => runScript(root, "upgrade.sh", args, env);
+
+const runScript = (root: string, script: string, args: readonly string[], env: Record<string, string> = {}) => {
+  const result = spawnSync("bash", [path.join(root, "unraid", script), ...args], {
     encoding: "utf8",
     input: "",
     timeout: SUBPROCESS_TIMEOUT,
@@ -805,6 +917,139 @@ describe("upgrade.sh", () => {
 
     expect(status).toBe(1);
     expect(output).toContain("FAILED: a restart or a check failed");
+  });
+});
+
+describe("the dispatcher's container on an upgrade (#691)", () => {
+  /** The container as the stubbed docker holds it, one file an answer. */
+  const container = (root: string): Record<string, string> | undefined => {
+    const dir = path.join(root, "state", "container");
+    if (!fs.existsSync(dir)) return undefined;
+    return Object.fromEntries(fs.readdirSync(dir).sort().map((name) => [name, fs.readFileSync(path.join(dir, name), "utf8")]));
+  };
+  /** The calls that remove, create or restart a container, with the scratch directory named <root>. */
+  const changes = (root: string, calls: readonly string[]): string[] =>
+    calls.filter((call) => /^docker (rm|run -d|restart)/.test(call)).map((call) => call.replaceAll(root, "<root>"));
+  const stateDir = (root: string) => path.join(root, "appdata", "state");
+  const serviceEnv = (root: string) => fs.readFileSync(path.join(root, "appdata", "service.env"), "utf8");
+
+  it("recreates a container made before the state file with the /state mount and the install's options, adding STATE_FILE", () => {
+    const root = setUp({ container: "before-state" });
+    const { status, output, calls } = runScript(root, "upgrade-unraid.sh", ["--restart", "1.2.2"]);
+
+    expect(status).toBe(0);
+    expect(changes(root, calls)).toEqual([
+      "docker rm -f agent-dispatcher",
+      `docker run -d --name agent-dispatcher --restart unless-stopped --network host --user 99:100 -w /tmp -e HOME=/tmp -e TZ=UTC --env-file <root>/appdata/service.env -v <root>/appdata:/app:ro -v <root>/appdata/state:/state node:24-alpine ${DISPATCHER_CMD}`,
+    ]);
+    expect(output).toContain("removed    agent-dispatcher, whose state mount,settings differed");
+    expect(output).toContain("The dispatcher 1.2.2 is listening.");
+    expect(output).not.toContain("Run install-unraid.sh");
+    // What it was created with is what the install's container has.
+    expect(container(root)?.["mounts"]).toBe(`${root}/appdata /app false\n${root}/appdata/state /state true\n`);
+    expect(container(root)?.["env"]).toContain("STATE_FILE=/state/dispatcher.json\n");
+  });
+
+  it("adds the one STATE_FILE line where service.env has none, and makes the state folder as the install does", () => {
+    const root = setUp({ container: "before-state" });
+    const { status, output, calls } = runScript(root, "upgrade-unraid.sh", ["--restart", "1.2.2"]);
+
+    expect(status).toBe(0);
+    expect(serviceEnv(root)).toBe(`${SERVICE_ENV_BEFORE_STATE}STATE_FILE=/state/dispatcher.json\n`);
+    expect(output).toContain(`added      STATE_FILE=/state/dispatcher.json to ${root}/appdata/service.env`);
+    expect(output).toContain(`made       ${stateDir(root)}`);
+    expect(fs.statSync(stateDir(root)).mode & 0o777).toBe(0o700);
+    expect(calls).toContain(`chown 99:100 ${stateDir(root)}`);
+  });
+
+  it("adds the line on a line of its own where service.env ends with no newline", () => {
+    const root = setUp({ container: "before-state", serviceEnv: SERVICE_ENV_BEFORE_STATE.trimEnd() });
+    const { status } = runScript(root, "upgrade-unraid.sh", ["--restart", "1.2.2"]);
+
+    expect(status).toBe(0);
+    expect(serviceEnv(root)).toBe(`${SERVICE_ENV_BEFORE_STATE}STATE_FILE=/state/dispatcher.json\n`);
+  });
+
+  it("restarts a container with no drift, removing and creating nothing, and leaves service.env byte for byte", () => {
+    const root = setUp();
+    const before = container(root);
+    const { status, output, calls } = runScript(root, "upgrade-unraid.sh", ["--restart", "1.2.2"]);
+
+    expect(status).toBe(0);
+    expect(changes(root, calls)).toEqual(["docker restart agent-dispatcher"]);
+    expect(serviceEnv(root)).toBe(SERVICE_ENV);
+    expect(output).not.toContain("added ");
+    expect(output).not.toContain("Run install-unraid.sh");
+    expect(container(root)).toEqual(before);
+    expect(fs.statSync(stateDir(root)).mode & 0o777).toBe(0o700);
+  });
+
+  it("recreates a container on another image, with service.env left as it was", () => {
+    const root = setUp({ container: "other-image" });
+    const { status, output, calls } = runScript(root, "upgrade-unraid.sh", ["--restart", "1.2.2"]);
+
+    expect(status).toBe(0);
+    expect(output).toContain("whose image differed");
+    expect(changes(root, calls).map((call) => call.split(" ").slice(0, 2).join(" "))).toEqual(["docker rm", "docker run"]);
+    expect(serviceEnv(root)).toBe(SERVICE_ENV);
+  });
+
+  it("does it all within upgrade.sh, with the dispatcher's settings asked for nowhere", () => {
+    const root = setUp({ container: "before-state" });
+    const { status, output, calls } = run(root);
+
+    expect(status).toBe(0);
+    expect(output).toContain("Both machines run 1.2.3 and share the secret.");
+    expect(changes(root, calls).map((call) => call.split(" ").slice(0, 2).join(" "))).toEqual(["docker rm", "docker run"]);
+    expect(container(root)?.["mounts"]).toContain("/state true");
+    expect(output).not.toMatch(/webhook secret|App's ID|GitHub token/i);
+  });
+
+  it("reads no terminal on Unraid's side of an upgrade", () => {
+    for (const file of ["upgrade-unraid.sh", "dispatcher-container.sh"]) {
+      const code = fs.readFileSync(path.join(DEPLOY, file), "utf8").split("\n").filter((line) => !line.trimStart().startsWith("#")).join("\n");
+      expect(code, file).not.toMatch(/\/dev\/tty|\bread -r?s?p\b/);
+    }
+  });
+
+  it("stops before the restart, naming install-unraid.sh, where there are no settings to create a container from", () => {
+    const root = setUp();
+    fs.rmSync(path.join(root, "appdata", "service.env"));
+    const { status, output, calls } = runScript(root, "upgrade-unraid.sh", ["--restart", "1.2.2"]);
+
+    expect(status).toBe(1);
+    expect(output).toContain(`No settings at ${root}/appdata/service.env: run install-unraid.sh 1.2.2`);
+    expect(changes(root, calls)).toEqual([]);
+  });
+
+  it("refuses, changing nothing, where dispatcher-container.sh is not beside it", () => {
+    const root = setUp({ container: "before-state" });
+    fs.rmSync(path.join(root, "unraid", "dispatcher-container.sh"));
+    const { status, output, calls } = runScript(root, "upgrade-unraid.sh", ["--restart", "1.2.2"]);
+
+    expect(status).toBe(2);
+    expect(output).toContain("dispatcher-container.sh is not beside this script");
+    expect(calls).toEqual([]);
+    expect(serviceEnv(root)).toBe(SERVICE_ENV_BEFORE_STATE);
+  });
+
+  // The same drift check and create step: install-unraid.sh, run with nothing
+  // to ask, changes the container as the upgrade does from the same start.
+  it.each<Container>(["before-state", "other-image", "missing"])("changes a %s container as install-unraid.sh does, reading no terminal", (start) => {
+    const upgraded = setUp({ container: start });
+    const installedRoot = setUp({ container: start });
+    const upgrade = runScript(upgraded, "upgrade-unraid.sh", ["--restart", "1.2.2"]);
+    const install = runScript(installedRoot, "install-unraid.sh", ["1.2.2"]);
+
+    expect(install.output).not.toContain("needs a terminal");
+    expect(install.status).toBe(0);
+    expect(upgrade.status).toBe(0);
+    expect(changes(installedRoot, install.calls).length).toBeGreaterThan(0);
+    expect(changes(upgraded, upgrade.calls)).toEqual(changes(installedRoot, install.calls));
+    expect(serviceEnv(upgraded)).toBe(serviceEnv(installedRoot));
+    expect(JSON.stringify(container(upgraded)).replaceAll(upgraded, "<root>")).toBe(JSON.stringify(container(installedRoot)).replaceAll(installedRoot, "<root>"));
+    expect(fs.statSync(stateDir(installedRoot)).mode & 0o777).toBe(0o700);
+    expect(install.calls).toContain(`chown 99:100 ${stateDir(installedRoot)}`);
   });
 });
 

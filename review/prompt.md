@@ -266,6 +266,8 @@ the tests in the diff yourself, and say in `howChecked` that the red evidence wa
 
 # PR DIFF
 
+{{DIFF_SCOPE}}
+
 ```diff
 {{PR_DIFF}}
 ```

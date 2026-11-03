@@ -176,7 +176,7 @@ describe("readReviewHistory", () => {
       statuses: statuses({ [MIDDLE]: started() }),
     });
 
-    expect(readReviewHistory("o/r", "12", ACCOUNTS)).toEqual({ afterFixRound: true, unreviewedCommits: true });
+    expect(readReviewHistory("o/r", "12", ACCOUNTS)).toEqual({ afterFixRound: true, unreviewedCommits: true, reviewedHead: MIDDLE });
   });
 
   /**
@@ -193,7 +193,7 @@ describe("readReviewHistory", () => {
       commits: [[commit(FIRST), commit(MIDDLE), head]],
       statuses: statuses({ [MIDDLE]: started() }),
     });
-    expect(readReviewHistory("o/r", "12", ACCOUNTS)).toEqual({ afterFixRound: true, unreviewedCommits: true });
+    expect(readReviewHistory("o/r", "12", ACCOUNTS)).toEqual({ afterFixRound: true, unreviewedCommits: true, reviewedHead: MIDDLE });
 
     ghAnswers({
       commits: [[commit(FIRST), commit(MIDDLE), head]],
@@ -278,7 +278,7 @@ describe("readReviewHistory", () => {
       statuses: statuses({ [MIDDLE]: started().map(app) }),
     });
 
-    expect(readReviewHistory("o/r", "12", loopAccounts("my-loop"))).toEqual({ afterFixRound: true, unreviewedCommits: true });
+    expect(readReviewHistory("o/r", "12", loopAccounts("my-loop"))).toEqual({ afterFixRound: true, unreviewedCommits: true, reviewedHead: MIDDLE });
     expect(readReviewHistory("o/r", "12", ACCOUNTS)).toEqual({ afterFixRound: false, unreviewedCommits: true });
   });
 
@@ -307,7 +307,7 @@ describe("readReviewHistory", () => {
       statuses: statuses({ [FIRST]: started(), [HEAD]: [verdict("the review failed", "error")] }),
     });
 
-    expect(readReviewHistory("o/r", "12", ACCOUNTS)).toEqual({ afterFixRound: true, unreviewedCommits: true });
+    expect(readReviewHistory("o/r", "12", ACCOUNTS)).toEqual({ afterFixRound: true, unreviewedCommits: true, reviewedHead: FIRST });
   });
 
   it("takes the latest verdict, not the first one it can find", () => {
@@ -378,7 +378,7 @@ describe("readReviewHistory", () => {
       statuses: statuses({ [MIDDLE]: started() }),
     });
 
-    expect(readReviewHistory("o/r", "12", ACCOUNTS)).toEqual({ afterFixRound: true, unreviewedCommits: true });
+    expect(readReviewHistory("o/r", "12", ACCOUNTS)).toEqual({ afterFixRound: true, unreviewedCommits: true, reviewedHead: MIDDLE });
   });
 
   /**
@@ -402,7 +402,7 @@ describe("readReviewHistory", () => {
       }),
     });
 
-    expect(readReviewHistory("o/r", "12", ACCOUNTS)).toEqual({ afterFixRound: true, unreviewedCommits: true });
+    expect(readReviewHistory("o/r", "12", ACCOUNTS)).toEqual({ afterFixRound: true, unreviewedCommits: true, reviewedHead: MIDDLE });
   });
 
   describe("an unreadable history follows a fix round, and says so", () => {

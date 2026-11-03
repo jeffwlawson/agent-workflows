@@ -22,6 +22,7 @@ inputs:
   SETTLED_FINDINGS: "(no finding on this pull request has been closed by a maintainer.)"
   FIX_NOTES: "(the fix run has left no out-of-scope notes since the last review.)"
   SINCE_BRIEF: "(The check could not run: this is an eval replay, which does not read the base branch's history since the brief. Nothing to rule on: leave `sinceBrief` out.)"
+  DIFF_SCOPE: "The whole pull request's diff against `main`, `git diff main...HEAD`:"
   CURRENT_SUMMARY: "(empty)"
   SUMMARY_RULE: "**This review writes them.** Something was pushed since the summary was last written, so the workflow replaces the title and the summary block with yours."
   FINAL_SUMMARY: ""

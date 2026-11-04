@@ -176,8 +176,9 @@ export interface DispatcherEdges {
   /** The release this dispatcher is, which each job carries. */
   readonly version: string;
   /**
-   * How many times the scan dispatches an item for a label that stays on
-   * across scans, before it leaves the item for a person (#596). At least `1`.
+   * How many times a scan's job for an item's label that stays on across
+   * scans may start, at its first token request (#600), before the scan
+   * leaves the item for a person (#596). At least `1`.
    */
   readonly scanLimit: number;
   /**
@@ -526,11 +527,11 @@ const times = (limit: number): string => (limit === 1 ? "once" : `${limit} times
  */
 const stoppedComment = (label: string, limit: number): string =>
   label === FOLLOW_UPS_LABEL
-    ? `**The service has stopped dispatching \`${label}\` here.** Its scan, which runs at each restart, has dispatched this merged pull request's ` +
+    ? `**The service has stopped dispatching \`${label}\` here.** Its scan, which runs at each restart, has started this merged pull request's ` +
       `follow-ups job ${times(limit)}, and each time \`${label}\` was still on at the next scan: the filing refused or failed, which leaves the label on ` +
       `by design and says why in the run's own comment where it got that far, or the job ended before its run did. The scan will not dispatch it again. ` +
       `To try once more, remove \`${label}\` and add it again by hand.`
-    : `**The service has stopped dispatching \`${label}\` here.** Its scan, which runs at each restart, has dispatched this item's job for ` +
+    : `**The service has stopped dispatching \`${label}\` here.** Its scan, which runs at each restart, has started this item's job for ` +
       `\`${label}\` ${times(limit)}, and each time the label was still on at the next scan: the job ended before its run did, ` +
       `most likely by ending the worker's process. The scan will not dispatch it again. To try once more, remove \`${label}\` and add it again by hand.`;
 
@@ -1134,8 +1135,8 @@ export const createDispatcher = (edges: DispatcherEdges) => {
 
   /**
    * Why a scan leaves `repo`'s item `number` for a person, or `undefined`
-   * where it does not (#596): a scan has dispatched it for `label` the limit's
-   * number of times, and the label is still on, so its job keeps ending before
+   * where it does not (#596): its scan's job for `label` has started the
+   * limit's number of times (#600), and the label is still on, so its job keeps ending before
    * its run does. The first time, the item is told so, with a token minted for
    * the comment alone. A comment that cannot be posted is logged, never
    * thrown, and tried again at the next scan.
@@ -1143,7 +1144,7 @@ export const createDispatcher = (edges: DispatcherEdges) => {
   const countedOut = async (repo: string, number: number, label: string, where: string): Promise<string | undefined> => {
     const asked = asks.get(askedKey(repo, number, label));
     if (asked === undefined || asked.dispatches < edges.scanLimit) return undefined;
-    const skip = `skipped on ${where}: a scan has dispatched it for \`${label}\` ${asked.dispatches} times, SCAN_DISPATCH_LIMIT's ${edges.scanLimit}, so it is left for a person to add \`${label}\` again`;
+    const skip = `skipped on ${where}: its job for \`${label}\` has started ${asked.dispatches} times, SCAN_DISPATCH_LIMIT's ${edges.scanLimit}, so it is left for a person to add \`${label}\` again`;
     if (asked.told) return skip;
     try {
       const { token } = await edges.github.mint(repo, COMMENT_PERMISSIONS);
@@ -1190,7 +1191,7 @@ export const createDispatcher = (edges: DispatcherEdges) => {
    * One item a scan lists, decided as its label's delivery would be past the
    * opt-in, which its repository passed, and built into the same job. An item
    * the system already holds a job for, of a kind its label starts, is skipped,
-   * and so is one a scan has dispatched for its label the limit's number of times,
+   * and so is one whose scan's job for its label has started the limit's number of times,
    * and one waiting on the plan's usage limit (`waitsOnReset`).
    *
    * **`agent:merge` is the exception** (#591). It is a standing authorisation,

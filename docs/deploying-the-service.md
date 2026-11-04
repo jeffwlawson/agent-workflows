@@ -313,7 +313,7 @@ Each door also answers `GET /health` with `200`.
     are answered, and they end normally. Every other record is dropped. Where the worker cannot be
     reached at that start, the records are kept, and the scan its announcement starts decides.
 - **The scan's counts.** With `STATE_FILE` unset they are held in memory, and a restarted
-  dispatcher forgets how many times its scans have dispatched each item (*The scan's limit*,
+  dispatcher forgets how many times each item's scan job has started (*The scan's limit*,
   below), so each item's count starts from zero again, and the comment saying the scan stopped may
   be posted once more. With it set they are kept: an item at the limit is not dispatched again
   after a restart, and its comment is not posted a second time. A count is still dropped for an

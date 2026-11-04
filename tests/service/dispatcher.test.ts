@@ -1686,7 +1686,7 @@ const crash = async (s: ReturnType<typeof setup>) => {
 };
 
 const STOPPED = (where: string, label: string) =>
-  `scan: skipped on ${where}: a scan has dispatched it for \`${label}\` 2 times, SCAN_DISPATCH_LIMIT's 2, so it is left for a person to add \`${label}\` again`;
+  `scan: skipped on ${where}: its job for \`${label}\` has started 2 times, SCAN_DISPATCH_LIMIT's 2, so it is left for a person to add \`${label}\` again`;
 
 /**
  * A dispatcher's restart alone (#597): the worker still holds the jobs the old

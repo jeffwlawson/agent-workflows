@@ -704,6 +704,16 @@ describe("the token door", () => {
     expect(TOKEN_PERMISSIONS.write).toEqual({ contents: "read", pull_requests: "write", issues: "write", checks: "read", statuses: "write" });
   });
 
+  // #632: `review:collect-checks` reads a failed run's log, which needs
+  // Actions: read; only its own kind asks for it, so the runner's `read`
+  // token, which the agent holds, does not.
+  it("gives a ci token exactly read's permissions, with Actions read, and no other kind Actions", () => {
+    expect(TOKEN_PERMISSIONS.ci).toEqual({ ...TOKEN_PERMISSIONS.read, actions: "read" });
+    for (const kind of TOKEN_KINDS.filter((k) => k !== "ci")) expect(TOKEN_PERMISSIONS[kind], kind).not.toHaveProperty("actions");
+    expect(READER_PERMISSIONS).not.toHaveProperty("actions");
+    expect(SCAN_PERMISSIONS).not.toHaveProperty("actions");
+  });
+
   it("gives a resolve token exactly write's permissions, with contents written and no workflows", () => {
     expect(TOKEN_PERMISSIONS.resolve).toEqual({ ...TOKEN_PERMISSIONS.write, contents: "write" });
     expect(TOKEN_PERMISSIONS.resolve).not.toHaveProperty("workflows");
@@ -1204,7 +1214,17 @@ describe("the follow-ups route", () => {
 
 describe("the App's permissions and events, checked at start (#560)", () => {
   const FULL = {
-    permissions: { metadata: "read", actions_variables: "read", contents: "write", pull_requests: "write", issues: "write", checks: "read", statuses: "write", workflows: "write" },
+    permissions: {
+      metadata: "read",
+      actions_variables: "read",
+      contents: "write",
+      pull_requests: "write",
+      issues: "write",
+      checks: "read",
+      statuses: "write",
+      actions: "read",
+      workflows: "write",
+    },
     events: ["issues", "pull_request", "check_suite", "status"],
   };
 
@@ -1241,6 +1261,15 @@ describe("the App's permissions and events, checked at start (#560)", () => {
     ]);
   });
 
+  // #632: the review's CI collection reads failed runs' logs.
+  it("names Actions as needing read, and the ci tokens it fails, where it is not granted", () => {
+    const { actions: _, ...rest } = FULL.permissions;
+
+    expect(appGaps({ ...FULL, permissions: rest })).toEqual([
+      "the App's `actions` permission needs read, not granted: `ci` tokens will be refused, 422",
+    ]);
+  });
+
   // #591: the dispatcher's own reads list a commit's pull requests, for a
   // check suite's or a status's delivery.
   it("names Pull requests among the dispatcher's reads where it is not granted", () => {
@@ -1248,7 +1277,7 @@ describe("the App's permissions and events, checked at start (#560)", () => {
 
     expect(READER_PERMISSIONS).toEqual({ metadata: "read", actions_variables: "read", pull_requests: "read" });
     expect(appGaps({ ...FULL, permissions: rest })).toEqual([
-      "the App's `pull_requests` permission needs write, not granted: the dispatcher's reads, the scan's reads, the scan's comment, `read` tokens, `write` tokens, `resolve` tokens, `push` tokens will be refused, 422",
+      "the App's `pull_requests` permission needs write, not granted: the dispatcher's reads, the scan's reads, the scan's comment, `read` tokens, `ci` tokens, `write` tokens, `resolve` tokens, `push` tokens will be refused, 422",
     ]);
   });
 

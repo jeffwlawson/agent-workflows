@@ -1,3 +1,4 @@
+import { GitHubError } from "../engine/github.js";
 import type { CheckRun, GitHubReader, LatestStatus, WorkflowRun } from "../engine/read.js";
 import type { ReadingIo } from "../shared/command-io.js";
 import type { COMMANDS } from "../shared/contract.js";
@@ -25,6 +26,20 @@ export const GRACE_SECONDS = 60;
 
 /** How long it sleeps between looks. */
 export const POLL_SECONDS = 20;
+
+/**
+ * What a read of the Actions API refused with 403 means, in the evidence
+ * (#632). On Actions the job declares `actions: read`, so its token holds it;
+ * on the service the token is the App's, and holds it only where the App asks
+ * for Actions: read and the installation has accepted it. The same words for
+ * the runs listing and for a log, so a person reads one cause for both.
+ */
+export const ACTIONS_REFUSED =
+  "GitHub refused the read, 403, so the token it was read with has no Actions: read. On the service, that is the App's Actions permission, missing from the App or not accepted on this installation: add Actions: read to the App and accept it on the installation, and read the run at its link meanwhile";
+
+/** Whether `error` is GitHub answering with `status`. */
+const answered = (error: unknown, ...statuses: number[]): boolean =>
+  error instanceof GitHubError && error.status !== undefined && statuses.includes(error.status);
 
 /** One surface's answer, before `none` is read as green. */
 type Word = "green" | "red" | "unknown" | "none";
@@ -264,9 +279,10 @@ const statusesWord = async (github: GitHubReader, sha: string, filters: Filters)
  * `startup_failure` creates no job at all. A run still going at the ceiling is
  * `unknown`, as a check run is. Unreadable is `unknown` too: green needs every
  * surface to have answered, and a run waiting for approval would be missing
- * from the other two without a word. It is not the grant: the job declares
- * `actions: read`, so a caller short of it is refused before any job starts
- * (#146).
+ * from the other two without a word. On Actions it is not the grant: the job
+ * declares `actions: read`, so a caller short of it is refused before any job
+ * starts (#146). On the service it can be (#632): a 403 is said as the App's
+ * Actions permission, missing or not accepted.
  */
 const workflowRunsWord = async (
   github: GitHubReader,
@@ -278,12 +294,19 @@ const workflowRunsWord = async (
   try {
     runs = (await github.workflowRuns(sha)).filter(filters.run).map(classify);
   } catch (error) {
+    // A 403 is the token's Actions permission (#632): on the service the
+    // App's, which an installation may not have accepted.
+    const refused = answered(error, 403);
     console.log(
-      "::warning::Could not list this commit's workflow runs, so a run waiting for approval could not be seen and the review has no failure-log output. It is not the `actions: read` grant, which a run that started holds. What GitHub said is below.",
+      refused
+        ? `::warning::Could not list this commit's workflow runs, so a run waiting for approval could not be seen and the review has no failure-log output. ${ACTIONS_REFUSED}. What GitHub said is below.`
+        : "::warning::Could not list this commit's workflow runs, so a run waiting for approval could not be seen and the review has no failure-log output. On Actions it is not the `actions: read` grant, which a run that started holds. What GitHub said is below.",
     );
     console.log(said(error));
     evidence.push(
-      "_Could not list this commit's workflow runs, so a run waiting for approval or still going could not be seen here, and failure-log output is missing rather than absent._",
+      refused
+        ? `_Could not list this commit's workflow runs: ${ACTIONS_REFUSED}. So a run waiting for approval or still going could not be seen here, and failure-log output is missing rather than absent._`
+        : "_Could not list this commit's workflow runs, so a run waiting for approval or still going could not be seen here, and failure-log output is missing rather than absent._",
     );
     return { word: "unknown", listed: [] };
   }
@@ -326,13 +349,16 @@ const TAIL_LINES = 60;
  *
  * Each log is cut after its last `##[error]` line, which is the step that
  * failed, so the steps that tidy up after it do not take the tail, and the
- * timestamp is taken off each line. A log that cannot be read (expired, still
- * uploading) is said, and the runs after it are still tailed.
+ * timestamp is taken off each line. A log that cannot be read is said, and
+ * the runs after it are still tailed: a refusal, 403, as the missing Actions
+ * permission; a log gone, 404 or 410, as expired; anything else (still
+ * uploading, GitHub unreachable) as no log available.
  */
 const tailFailures = async (github: GitHubReader, runs: readonly Run[], evidence: string[]): Promise<void> => {
   for (const run of runs) {
     if (run.conclusion !== "failure") continue;
     let lines: string[] = [];
+    let unread = `(no failure log available for run ${run.id})`;
     try {
       for (const log of await github.failedJobLogs(run.id)) {
         const own = log.split(/\r?\n/).map((line) => line.replace(/^[^Z]*Z /, ""));
@@ -340,14 +366,21 @@ const tailFailures = async (github: GitHubReader, runs: readonly Run[], evidence
         const error = own.findLastIndex((line) => line.includes("##[error]"));
         lines.push(...(error === -1 ? own : own.slice(0, error + 1)));
       }
-    } catch {
+    } catch (error) {
       lines = [];
+      // Why it could not be read, where GitHub's answer says (#632): a
+      // refusal is the token's Actions permission, a log gone is expired.
+      if (answered(error, 403)) unread = `(could not read the failure log for run ${run.id}: ${ACTIONS_REFUSED})`;
+      else if (answered(error, 404, 410)) {
+        unread = `(the failure log for run ${run.id} has expired: GitHub no longer keeps it, so read the run at its link above, or run it again)`;
+      }
+      console.log(`::warning::Could not read the failure log for run ${run.id}. ${said(error)}`);
     }
     evidence.push(
       "",
       `### Failure output: ${run.name === "" ? `run ${run.id}` : run.name}`,
       "```",
-      ...(lines.length === 0 ? [`(no failure log available for run ${run.id})`] : lines.slice(-TAIL_LINES)),
+      ...(lines.length === 0 ? [unread] : lines.slice(-TAIL_LINES)),
       "```",
     );
   }

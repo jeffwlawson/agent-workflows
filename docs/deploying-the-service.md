@@ -132,10 +132,13 @@ Repository permissions:
 | Issues | `issues` | write | comments and labels, the issue an implement job builds, and a PRD's parent; a scan reads the open items carrying a trigger label, and the merged pull requests carrying `agent:follow-ups`, and their `labeled` events, and comments on one it stops dispatching |
 | Checks | `checks` | read | CI's result, which the review's verdict reads |
 | Commit statuses | `statuses` | write | the verdict and the fix-round statuses, and `agent:merge`'s arm, `agent-merge` |
+| Actions | `actions` | read | the commit's workflow runs and a failed run's log, which `review:collect-checks` hands the review, by a `ci` token only |
 | Workflows | `workflows` | write | a push touching `.github/workflows/**` is refused without it, *after* the agent has done all its work |
 
-The worker asks for one of four kinds of token at each phase: `read`, which every phase reads
-with and the only one the runner is ever handed; `write`, which adds the pull request, issue and
+The worker asks for one of five kinds of token at each phase: `read`, which every phase reads
+with and the only one the runner is ever handed; `ci`, which adds Actions: read and nothing else
+to `read`, for `review:collect-checks` alone, so the review sees why a CI run failed while the
+agent's token reads no Actions; `write`, which adds the pull request, issue and
 status writes of the phases that post; `resolve`, which adds Contents: write and nothing else to
 `write`, for `review:publish` alone; and `push`, which adds Contents: write and Workflows: write
 to `write`, for the phases that push or merge and run no agent. GitHub lets a review thread be resolved by
@@ -156,6 +159,15 @@ this table needs, naming the access it holds and the tokens whose mint it fails,
 under *The webhook* the App is not subscribed to. A gap warns and the dispatcher starts regardless,
 since review alone needs less than the whole table; a token the gap fails is refused when a phase
 asks for it, `422`, with `the App lacks a permission it asks for` in the log.
+
+**An App registered before Actions: read was in this table** (#632) must be given it before you
+upgrade to the release that asks for it. In the App's settings, under *Permissions*, set
+*Repository permissions → Actions* to **Read-only** and save; then, on each installation (the
+account's *Settings → Applications → Installed GitHub Apps*, the App, *Configure*), accept the
+new permission. Do both before the upgrade: GitHub refuses, `422`, a token asking for a permission
+the installation has not accepted, so until then every `ci` token is refused. The review still
+runs on its `read` token then, and its evidence says the failed runs' logs were refused for want
+of Actions: read, rather than showing them.
 
 Under *Where can this GitHub App be installed?*, choose **Only on this account**. A public App
 can be installed by anyone, on their own repositories, and every one of those would otherwise be a
@@ -418,8 +430,9 @@ refused; a repository or a listing that cannot be read is logged and the scan go
 ## The worker
 
 The process that runs review, fix, update-branch, implement, implement-prd and follow-ups. It holds no key: it asks the dispatcher for a token at the
-start of each phase. For review: `read` for the gate, the checkout, the budget and the CI wait, a
-fresh `read` for the runner, so the token's hour starts as the agent does, `resolve` for
+start of each phase. For review: `read` for the gate, the checkout and the budget, `ci` for the CI
+wait, which reads failed runs' logs (the gate's `read` instead where `ci` is refused, so the
+evidence says the logs were refused), a fresh `read` for the runner, so the token's hour starts as the agent does, `resolve` for
 `review:publish`, and `write` for `review:conclude`. Where the `resolve` token is refused, publish
 asks for `write` instead and conclude reuses it: the review posts, the threads it found fixed stay
 open and are listed under *Still open*, and the worker's log says the `resolve` token was refused. For fix: `write` for `fix:gate`, which posts its refusal and

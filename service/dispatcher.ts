@@ -226,6 +226,10 @@ export interface Delivery {
  * The token permissions of each kind. `read` is what every phase reads with:
  * the code, the pull request or the issue and its conversation, checks and
  * statuses.
+ * `ci` adds Actions: read to `read` and nothing else: the failed workflow
+ * runs' logs, which `review:collect-checks` hands the review (#632). It is
+ * that phase's alone, so the runner's `read` token, which the agent holds,
+ * does not read Actions.
  * `write` adds what review's posting commands write: the review and the ready
  * mark, comments and labels, and the verdict's statuses. `resolve` adds
  * Contents: write to `write` and nothing else: GitHub lets a review thread be
@@ -239,6 +243,7 @@ export interface Delivery {
  */
 export const TOKEN_PERMISSIONS: Readonly<Record<TokenKind, Readonly<Record<string, string>>>> = {
   read: { contents: "read", pull_requests: "read", issues: "read", checks: "read", statuses: "read" },
+  ci: { contents: "read", pull_requests: "read", issues: "read", checks: "read", statuses: "read", actions: "read" },
   write: { contents: "read", pull_requests: "write", issues: "write", checks: "read", statuses: "write" },
   resolve: { contents: "write", pull_requests: "write", issues: "write", checks: "read", statuses: "write" },
   push: { contents: "write", pull_requests: "write", issues: "write", checks: "read", statuses: "write", workflows: "write" },

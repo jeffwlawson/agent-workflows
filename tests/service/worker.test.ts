@@ -287,6 +287,7 @@ describe("the worker's job, on an ordinary pull request", () => {
       "review:gate",
       "checkout",
       "review:budget",
+      "ci token",
       "review:collect-checks",
       "read token",
       "review",
@@ -361,10 +362,28 @@ describe("the worker's job, on an ordinary pull request", () => {
     const s = setup();
     await runJob(JOB, s.edges);
 
-    expect(s.env("review:collect-checks")["GH_TOKEN"]).toBe("read-token-1");
-    expect(s.env("review")).toMatchObject({ ...AGENT, GH_TOKEN: "read-token-2", AGENT_MODEL: "a-model", AGENT_LOOP_LOGINS: "loop-app[bot]" });
+    expect(s.env("review:collect-checks")["GH_TOKEN"]).toBe("ci-token-2");
+    expect(s.env("review")).toMatchObject({ ...AGENT, GH_TOKEN: "read-token-3", AGENT_MODEL: "a-model", AGENT_LOOP_LOGINS: "loop-app[bot]" });
     expect(s.env("review")).not.toHaveProperty("AGENT_MODEL_REVIEW");
     expect(s.env("review")).not.toHaveProperty("RED_CHECK_CONFIGURED");
+  });
+
+  // #632: the failed runs' logs need Actions: read, which only the `ci`
+  // token asks for; an installation that has not accepted it refuses that
+  // token, and the CI wait reads with the gate's instead.
+  it("reads CI with a ci token, which the runner never holds, and with the gate's read token where it is refused", async () => {
+    const s = setup();
+    await runJob(JOB, s.edges);
+
+    const holders = s.launched.filter(({ env }) => Object.values(env).some((value) => value.includes("ci-token"))).map(({ subcommand }) => subcommand);
+    expect(holders).toEqual(["review:collect-checks"]);
+
+    const refused = setup(ORDINARY, { refused: [2] });
+    const phases = await runJob(JOB, refused.edges);
+
+    expect(refused.env("review:collect-checks")["GH_TOKEN"]).toBe("read-token-1");
+    expect(refused.events).toContain("review");
+    expect(phases).toContainEqual({ name: "ci token", outcome: "failure: the dispatcher answered 403: the job is past its deadline" });
   });
 
   it("puts no write token in the runner's environment, or in any command's that only reads", async () => {
@@ -377,27 +396,27 @@ describe("the worker's job, on an ordinary pull request", () => {
     for (const subcommand of READ_ONLY) {
       expect(Object.values(s.env(subcommand)).filter((value) => value.includes("resolve-token")), subcommand).toEqual([]);
     }
-    expect(s.env("review:publish")).toMatchObject({ GH_TOKEN: "resolve-token-3", LOOP_TOKEN: "resolve-token-3", LOOP_TOKEN_SOURCE: "app" });
-    expect(s.env("review:conclude")).toMatchObject({ GH_TOKEN: "write-token-4", LOOP_TOKEN: "write-token-4", LOOP_TOKEN_SOURCE: "app" });
-    expect(s.asked).toEqual(["read", "read", "resolve", "write"]);
+    expect(s.env("review:publish")).toMatchObject({ GH_TOKEN: "resolve-token-4", LOOP_TOKEN: "resolve-token-4", LOOP_TOKEN_SOURCE: "app" });
+    expect(s.env("review:conclude")).toMatchObject({ GH_TOKEN: "write-token-5", LOOP_TOKEN: "write-token-5", LOOP_TOKEN_SOURCE: "app" });
+    expect(s.asked).toEqual(["read", "ci", "read", "resolve", "write"]);
   });
 
   it("hands the resolve token to review:publish alone: not conclude, not advance", async () => {
     const s = setup({ ...ORDINARY, "review:conclude": { files: { "ended.json": { moved: false } } } });
     await runJob({ ...JOB, branch: "agent/prd-453-the-service" }, s.edges);
 
-    expect(s.asked).toEqual(["read", "read", "resolve", "write", "write"]);
+    expect(s.asked).toEqual(["read", "ci", "read", "resolve", "write", "write"]);
     const holders = s.launched.filter(({ env }) => Object.values(env).some((value) => value.includes("resolve-token"))).map(({ subcommand }) => subcommand);
     expect(holders).toEqual(["review:publish"]);
   });
 
   it("publishes with a write token where the resolve token is refused, reuses it for conclude, and logs that threads stay open", async () => {
-    const s = setup(ORDINARY, { refused: [3] });
+    const s = setup(ORDINARY, { refused: [4] });
     const phases = await runJob(JOB, s.edges);
 
-    expect(s.asked).toEqual(["read", "read", "resolve", "write"]);
-    expect(s.env("review:publish")).toMatchObject({ GH_TOKEN: "write-token-4", LOOP_TOKEN: "write-token-4" });
-    expect(s.env("review:conclude")).toMatchObject({ GH_TOKEN: "write-token-4", MINT_OUTCOME: "success", PUBLISH_OUTCOME: "success" });
+    expect(s.asked).toEqual(["read", "ci", "read", "resolve", "write"]);
+    expect(s.env("review:publish")).toMatchObject({ GH_TOKEN: "write-token-5", LOOP_TOKEN: "write-token-5" });
+    expect(s.env("review:conclude")).toMatchObject({ GH_TOKEN: "write-token-5", MINT_OUTCOME: "success", PUBLISH_OUTCOME: "success" });
     expect(phases).toContainEqual({ name: "resolve token", outcome: "failure: the dispatcher answered 403: the job is past its deadline" });
     const resolution = phases.find(({ name }) => name === "thread resolution");
     expect(resolution?.outcome).toContain("`resolve` token was refused");
@@ -587,7 +606,7 @@ describe("the worker's job, where a phase fails", () => {
   });
 
   it("tells conclude the review failed where the runner's own token was not granted, and starts no runner", async () => {
-    const s = setup(ORDINARY, { refused: [2] });
+    const s = setup(ORDINARY, { refused: [3] });
     await runJob(JOB, s.edges);
 
     expect(s.events).not.toContain("review");
@@ -596,16 +615,16 @@ describe("the worker's job, where a phase fails", () => {
   });
 
   it("tells conclude the posting token's mint failed, and publishes nothing", async () => {
-    const s = setup(ORDINARY, { refused: [3, 4] });
+    const s = setup(ORDINARY, { refused: [4, 5] });
     await runJob(JOB, s.edges);
 
-    expect(s.asked).toEqual(["read", "read", "resolve", "write", "write"]);
+    expect(s.asked).toEqual(["read", "ci", "read", "resolve", "write", "write"]);
     expect(s.events).not.toContain("review:publish");
     expect(s.env("review:conclude")).toMatchObject({
       REVIEW_RESULT: "success",
       VERDICT: "approve",
       MINT_OUTCOME: "failure",
-      GH_TOKEN: "write-token-5",
+      GH_TOKEN: "write-token-6",
     });
     expect(s.env("review:conclude")).not.toHaveProperty("PUBLISH_OUTCOME");
   });
@@ -618,7 +637,7 @@ describe("the worker's job, where a phase fails", () => {
   });
 
   it("puts the reason in the worker's log where nothing can write the ending to the pull request", async () => {
-    const s = setup({ ...ORDINARY, review: { files: { "failure_reason.txt": "The agent stopped." }, exit: 1 } }, { refused: [3] });
+    const s = setup({ ...ORDINARY, review: { files: { "failure_reason.txt": "The agent stopped." }, exit: 1 } }, { refused: [4] });
     const phases = await runJob(JOB, s.edges);
 
     expect(s.events).not.toContain("review:conclude");
@@ -685,8 +704,8 @@ describe("the worker's job, on a PRD pull request", () => {
 
     expect(s.events.slice(-5)).toEqual(["review:publish", "write token", "review:conclude", "write token", "review:advance"]);
     expect(s.env("review:advance")).toMatchObject({
-      GH_TOKEN: "write-token-5",
-      LOOP_TOKEN: "write-token-5",
+      GH_TOKEN: "write-token-6",
+      LOOP_TOKEN: "write-token-6",
       LOOP_TOKEN_SOURCE: "app",
       PR_NUMBER: "7",
       BRANCH: "agent/prd-453-the-service",
@@ -757,7 +776,7 @@ describe("the worker's job, on a PRD pull request", () => {
   });
 
   it("logs that the chain was not advanced where no token to advance it with was granted", async () => {
-    const s = setup(reviewed, { refused: [5] });
+    const s = setup(reviewed, { refused: [6] });
     const phases = await runJob(PRD, s.edges);
 
     expect(s.events).not.toContain("review:advance");
@@ -1630,7 +1649,7 @@ describe("the run's directory", () => {
       "review:conclude",
       "review:advance",
     ]);
-    expect(s.asked).toHaveLength(5);
+    expect(s.asked).toHaveLength(6);
     for (const token of [...s.asked.map((kind, at) => `${kind}-token-${at + 1}`), AGENT.CLAUDE_CODE_OAUTH_TOKEN]) {
       expect(text).not.toContain(token);
     }
@@ -1638,11 +1657,11 @@ describe("the run's directory", () => {
   });
 
   it("redacts a token wherever a phase's outcome quotes it, in the summary and in what the worker logs", async () => {
-    const s = setup({ ...ORDINARY, review: { files: { "failure_reason.txt": "GH_TOKEN read-token-2 was refused." }, exit: 1 } });
+    const s = setup({ ...ORDINARY, review: { files: { "failure_reason.txt": "GH_TOKEN read-token-3 was refused." }, exit: 1 } });
     const phases = await runJob(JOB, s.edges);
 
-    expect(read(s.runDir)).not.toContain("read-token-2");
-    expect(JSON.stringify(phases)).not.toContain("read-token-2");
+    expect(read(s.runDir)).not.toContain("read-token-3");
+    expect(JSON.stringify(phases)).not.toContain("read-token-3");
     expect(phases).toContainEqual({ name: "review", outcome: `failure (exit 1): GH_TOKEN ${REDACTED} was refused.` });
   });
 

@@ -639,7 +639,9 @@ export const runJob = async (job: Job, edges: JobEdges): Promise<readonly Phase[
  * 2. The checkout of the commit the gate settled, as `BRANCH`, with the base.
  * 3. `review:budget`, with the budget the gate settled from `AGENT_MAX_FIX_ROUNDS`.
  *    The runner, in 5, is handed the threshold it settled from `AGENT_FIX_MIN_SEVERITY`.
- * 4. `review:collect-checks`, whose failure the review reads as checks unknown.
+ * 4. A `ci` token, then `review:collect-checks`, whose failure the review
+ *    reads as checks unknown. Where the `ci` token is refused, it reads with
+ *    the gate's `read` token, without the failed runs' logs.
  * 5. A fresh `read` token, then the runner, with it as `GH_TOKEN`.
  * 6. A `resolve` token, then `review:publish`, where the review finished:
  *    `write`'s permissions and Contents: write, without which a thread on a
@@ -780,10 +782,16 @@ const runReview = async (job: ReviewJob, edges: JobEdges): Promise<readonly Phas
   }
   if (proceeds && read !== undefined && review.result === "success") {
     // Its failure fails nothing: the runner reads checks it has no word for
-    // as unknown, as on Actions, where the step continues on error.
+    // as unknown, as on Actions, where the step continues on error. It reads
+    // with a `ci` token, `read` with Actions: read, for the failed runs'
+    // logs (#632), which no token the agent holds asks for. Where that is
+    // refused, an installation that has not accepted Actions: read, it reads
+    // with the gate's, and its evidence says the logs were refused.
+    const ci = await ask("ci");
+    if (ci === undefined) note("ci token fallback", "reading CI with the `read` token, without Actions: read, so failed runs' logs are refused");
     const checks = await run(
       "review:collect-checks",
-      { ...common, GH_TOKEN: read, REVIEWED_SHA: sha, SELF_CHECK: SERVICE_SELF_CHECK },
+      { ...common, GH_TOKEN: ci ?? read, REVIEWED_SHA: sha, SELF_CHECK: SERVICE_SELF_CHECK },
       checkout,
       reviewLimit.signal,
     );

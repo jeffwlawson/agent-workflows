@@ -1,7 +1,8 @@
 import type { GitFetcher } from "../engine/git.js";
 import { GitHubError } from "../engine/github.js";
 import type { GitHubReader } from "../engine/read.js";
-import { describe } from "./command-helpers.js";
+import { WriteFailed, type Writer } from "../engine/writer.js";
+import { describe, inWriteLog } from "./command-helpers.js";
 import { git } from "./common.js";
 
 /**
@@ -130,3 +131,60 @@ export const ignoredNote = (label: string, branch: string, moved: string): strin
   `**\`${label}\` started fresh:** An earlier run saved its unfinished commits on \`${branch}\`, ` +
   `but ${moved} has moved since, so this run did not build on them. ` +
   "The branch is deleted once a run succeeds.\n";
+
+/**
+ * The branch a set-aside rescue is kept on before a stopped run's own commits
+ * replace it (#578): the rescue's name, which is a valid ref, with a suffix
+ * that keeps it one, and the first 7 of the tip it keeps, so a second
+ * set-aside rescue gets a branch of its own.
+ */
+export const setAsideBranch = (rescue: string, tip: string): string => `${rescue}-set-aside-${tip.slice(0, 7)}`;
+
+/** Where the agent's job fetches a set-aside rescue to before it keeps it: a ref of its own, outside `refs/heads/`. */
+const setAsideRef = (rescue: string): string => `refs/set-aside/${rescue}`;
+
+/**
+ * What became of a set-aside rescue: kept on `branch`, or not, with `why` the
+ * clause a comment gives for it after "could not be kept on `<branch>`:".
+ */
+export type Kept = { readonly kind: "kept"; readonly branch: string } | { readonly kind: "unkept"; readonly branch: string; readonly why: string };
+
+/**
+ * **A set-aside rescue kept on a branch of its own** (#578), before a stopped
+ * run pushes its own commits over it: the runner set the rescue at `tip`
+ * aside, so the run's commits do not hold it, and overwriting it would leave
+ * its commits on no branch.
+ *
+ * The rescue is fetched from the remote first, since the push sends a commit
+ * the checkout must hold, and what is there must still be `tip`: a rescue that
+ * moved or went since it was set aside is not what this run set aside, and is
+ * not kept in its place. The side branch is pushed under `{ absent: true }`,
+ * so a rerun cannot clobber one; a rerun that finds it already at `tip` has
+ * nothing to push. With `writer`, the loop's token, since the commits may
+ * touch a workflow file. A person deletes the side branch.
+ *
+ * Only a refused push is caught: anything else is our own bug, and throws.
+ */
+export const keepSetAside = async (fetcher: GitFetcher, writer: Writer, rescue: string, tip: string): Promise<Kept> => {
+  const branch = setAsideBranch(rescue, tip);
+  let fetched: string;
+  try {
+    fetched = await fetcher.fetchRef(`refs/heads/${rescue}`, setAsideRef(rescue));
+  } catch (error) {
+    console.log(`::warning::Could not fetch ${rescue} to keep it on ${branch}: ${describe(error)}`);
+    return { kind: "unkept", branch, why: "it could not be fetched, and the workflow run's log says why." };
+  }
+  if (fetched !== tip) {
+    console.log(`::warning::${rescue} is at ${fetched}, not at ${tip}, which this run set aside, so it was not kept on ${branch}.`);
+    return { kind: "unkept", branch, why: `the branch moved since this run set it aside, to ${fetched}.` };
+  }
+  try {
+    await writer.pushRef({ ref: `refs/heads/${branch}`, commit: tip, lease: { absent: true } });
+  } catch (error) {
+    if (!(error instanceof WriteFailed)) throw error;
+    console.log(`::warning::${inWriteLog(`Could not push ${rescue}'s set-aside commits to ${branch}.`)}`);
+    return { kind: "unkept", branch, why: "GitHub refused the push, and the workflow run's log says why." };
+  }
+  console.log(`Kept the commits set aside on ${rescue}, up to ${tip}, on ${branch}.`);
+  return { kind: "kept", branch };
+};

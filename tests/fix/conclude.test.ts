@@ -3,7 +3,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { parse } from "yaml";
-import type { BundleHead, GitReader } from "../../engine/git.js";
+import type { BundleHead, GitFetcher, GitReader } from "../../engine/git.js";
 import type { GitHubReader } from "../../engine/read.js";
 import type { Limits } from "../../engine/writer.js";
 import { conclude, MINT_FAILED } from "../../fix/conclude.js";
@@ -48,6 +48,8 @@ let asked: Limits | undefined;
 let git: ReturnType<typeof fakeGit>;
 let reader: GitHubReader;
 let logged: string[];
+/** Each fetch the fetcher made, as `<ref> <into>`. */
+let fetched: string[];
 
 const dirOf = (name: "publish" | "prepare" | "fix" | "bundle"): string => path.join(root, name);
 
@@ -61,6 +63,7 @@ beforeEach(() => {
   git = holding([{ ref: `refs/heads/${BRANCH}`, commit: TIP }]);
   reader = fakeReader(github).reader;
   logged = [];
+  fetched = [];
   vi.spyOn(console, "log").mockImplementation((line: unknown) => {
     logged.push(String(line));
   });
@@ -126,7 +129,7 @@ const AGENT_FAILED = (over: Partial<Inputs> = {}): Partial<Inputs> => ({ AGENT_R
 
 /** The CLI's half: the io, the call, and the log's last line however it ended. */
 const run = async (inputs: Inputs = INPUTS()): Promise<void> => {
-  const io: CheckoutIo<(typeof COMMANDS)["fix:conclude"]["outputs"]> = {
+  const io: CheckoutIo<(typeof COMMANDS)["fix:conclude"]["outputs"]> & { readonly fetcher: GitFetcher } = {
     writers: (limits) => {
       asked = limits;
       made = fakeWriters(github, ["loop", "workflow"] as const, limits);
@@ -134,6 +137,14 @@ const run = async (inputs: Inputs = INPUTS()): Promise<void> => {
     },
     github: reader,
     git: git.git as GitReader,
+    fetcher: {
+      fetchRef: async (ref, into) => {
+        fetched.push(`${ref} ${into}`);
+        const tip = github.branches.get(ref.replace(/^refs\/heads\//, ""));
+        if (tip === undefined) throw new Error(`couldn't find remote ref ${ref}`);
+        return tip;
+      },
+    },
     outputs: { writeJson: () => {}, writeText: () => {}, writeBytes: () => {}, appendLine: () => {} },
   };
   try {
@@ -518,6 +529,8 @@ describe("fix:conclude rescues a stopped run's commits", () => {
 
     expect(made?.writes[0]?.args).toEqual([{ ref: `refs/heads/${RESCUE}`, commit: TIP, lease: { tip: EARLIER } }]);
     expect(github.branches.get(RESCUE)).toBe(TIP);
+    expect(fetched).toEqual([]);
+    expect(writes().filter((w) => w.includes("pushRef"))).toEqual([`loop pushRef refs/heads/${RESCUE}`]);
   });
 
   /** Whatever moved the rescue between the read and the push is not lost silently. */
@@ -736,12 +749,64 @@ describe("fix:conclude says a rescue was set aside where fix:publish did not", (
   });
 });
 
+/** #578: the set-aside commits are not in the run's own, so overwriting the rescue would leave them on no branch. */
+describe("fix:conclude keeps a set-aside rescue on a branch of its own before a stopped run's commits replace it", () => {
+  const SIDE = `${RESCUE}-set-aside-ccccccc`;
+  beforeEach(() => {
+    github.branches.set(RESCUE, EARLIER);
+    put("fix", "rescue_ignored.json", { branch: RESCUE, movedPast: EARLIER });
+    bundled();
+  });
+
+  it("pushes the set-aside tip to the side branch, then the run's commits over the rescue, and names both", async () => {
+    await run(INPUTS(AGENT_FAILED({ PUBLISH_OUTCOME: "skipped" })));
+
+    expect(fetched).toEqual([`refs/heads/${RESCUE} refs/set-aside/${RESCUE}`]);
+    expect(made?.writes.filter((w) => w.type === "pushRef").map((w) => [w.token, ...w.args])).toEqual([
+      ["loop", { ref: `refs/heads/${SIDE}`, commit: EARLIER, lease: { absent: true } }],
+      ["loop", { ref: `refs/heads/${RESCUE}`, commit: TIP, lease: { tip: EARLIER } }],
+    ]);
+    expect(github.branches.get(SIDE)).toBe(EARLIER);
+    expect(github.branches.get(RESCUE)).toBe(TIP);
+    expect(comment()).toMatch(STOPPED);
+    expect(comment()).toContain(
+      `· Its commits so far are saved on \`${RESCUE}\`. To resume from them, add \`agent:fix\`. ` +
+        `The earlier commits it set aside are kept on \`${SIDE}\`, which nothing resumes from; delete it once you are done with them.\n`,
+    );
+  });
+
+  it("leaves the rescue as it was, and says the run's commits went unsaved, where the side branch cannot be pushed", async () => {
+    github.branches.set(SIDE, "e".repeat(40));
+
+    await run(INPUTS(AGENT_FAILED({ PUBLISH_OUTCOME: "skipped" })));
+
+    expect(github.branches.get(RESCUE)).toBe(EARLIER);
+    expect(github.branches.get(SIDE)).toBe("e".repeat(40));
+    expect(comment()).toMatch(STOPPED);
+    expect(comment()).toContain(
+      `· To try again, add \`agent:fix\`. Its commits were not saved on \`${RESCUE}\`: the earlier commits this run set aside there could not be kept on \`${SIDE}\` first, ` +
+        "so the branch was left as it was rather than lose them. GitHub refused the push, and the workflow run's log says why.\n",
+    );
+  });
+
+  it("leaves the rescue as it was where it moved since the runner set it aside", async () => {
+    const moved = "f".repeat(40);
+    github.branches.set(RESCUE, moved);
+
+    await run(INPUTS(AGENT_FAILED({ PUBLISH_OUTCOME: "skipped" })));
+
+    expect(github.branches.get(RESCUE)).toBe(moved);
+    expect(github.branches.has(SIDE)).toBe(false);
+    expect(comment()).toContain(`The branch moved since this run set it aside, to ${moved}.\n`);
+  });
+});
+
 describe("fix:conclude writes within its limits", () => {
   /** The rescue push, the note and the failure comment, `agent:fix` off and `agent:blocked` on. */
   it("asks for the writes it can make and no more", async () => {
     await run(INPUTS(AGENT_FAILED()));
 
-    expect(asked).toEqual({ pushRef: 1, comment: 2, removeLabel: 1, addLabel: 1 });
+    expect(asked).toEqual({ pushRef: 2, comment: 2, removeLabel: 1, addLabel: 1 });
   });
 
   it("reads none of the runner's files but the two it declares", async () => {

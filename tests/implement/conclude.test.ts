@@ -6,7 +6,7 @@ import { parse } from "yaml";
 import type { Limits } from "../../engine/writer.js";
 import { GitHubError } from "../../engine/github.js";
 import { conclude, MINT_FAILED } from "../../implement/conclude.js";
-import type { BundleHead } from "../../engine/git.js";
+import type { BundleHead, GitFetcher } from "../../engine/git.js";
 import type { CheckoutIo, Token } from "../../shared/command-io.js";
 import type { COMMANDS } from "../../shared/contract.js";
 import { BLOCKED_LABEL, IMPLEMENT_LABEL } from "../../shared/record.js";
@@ -45,6 +45,8 @@ let made: ReturnType<typeof fakeWriters<Token>> | undefined;
 let asked: Limits | undefined;
 let logged: string[];
 let git: ReturnType<typeof fakeGit>;
+/** Each fetch the fetcher made, as `<ref> <into>`. */
+let fetched: string[];
 /** Set to make reading the rescue's tip fail the way GitHub does on a server error. */
 let tipFails: boolean;
 
@@ -61,6 +63,7 @@ beforeEach(() => {
   logged = [];
   git = holding();
   tipFails = false;
+  fetched = [];
   vi.spyOn(console, "log").mockImplementation((line: unknown) => {
     logged.push(String(line));
   });
@@ -146,7 +149,7 @@ const UNDECIDED = (result: "failure" | "cancelled" = "failure", over: Partial<In
 
 /** The CLI's half: the io, the call, and the log's last line however it ended. */
 const run = async (inputs: Inputs = INPUTS()): Promise<void> => {
-  const io: CheckoutIo<(typeof COMMANDS)["implement:conclude"]["outputs"]> = {
+  const io: CheckoutIo<(typeof COMMANDS)["implement:conclude"]["outputs"]> & { readonly fetcher: GitFetcher } = {
     writers: (limits) => {
       asked = limits;
       made = fakeWriters(github, ["loop", "workflow"] as const, limits);
@@ -163,6 +166,14 @@ const run = async (inputs: Inputs = INPUTS()): Promise<void> => {
         : {}),
     },
     git: git.git,
+    fetcher: {
+      fetchRef: async (ref, into) => {
+        fetched.push(`${ref} ${into}`);
+        const tip = github.branches.get(ref.replace(/^refs\/heads\//, ""));
+        if (tip === undefined) throw new Error(`couldn't find remote ref ${ref}`);
+        return tip;
+      },
+    },
     outputs: { writeJson: () => {}, writeText: () => {}, writeBytes: () => {}, appendLine: () => {} },
   };
   try {
@@ -571,7 +582,7 @@ describe("implement:conclude takes the trigger label off however a decided run e
   it("writes within its limits", async () => {
     await run(INPUTS(AGENT("failure")));
 
-    expect(asked).toEqual({ comment: 2, removeLabel: 1, addLabel: 1, pushRef: 1 });
+    expect(asked).toEqual({ comment: 2, removeLabel: 1, addLabel: 1, pushRef: 2 });
   });
 
   it("writes everything with the workflow's token", async () => {
@@ -630,6 +641,17 @@ describe("implement:conclude rescues a stopped run's commits to a side branch", 
 
     expect(made?.writes[0]?.args).toEqual([{ ref: `refs/heads/${RESCUE}`, commit: TIP, lease: { tip: earlier } }]);
     expect(github.branches.get(RESCUE)).toBe(TIP);
+  });
+
+  it("fetches nothing where the runner set nothing aside", async () => {
+    github.branches.set(RESCUE, "c".repeat(40));
+    git = holding({ [TIP]: [BASE, "c".repeat(40), TIP] });
+    bundled();
+
+    await run(INPUTS(AGENT("failure")));
+
+    expect(fetched).toEqual([]);
+    expect(made?.writes.filter((w) => w.type === "pushRef")).toHaveLength(1);
   });
 
   it("saves nothing, and says nothing of a rescue, where the run had no commits ahead of the base", async () => {
@@ -804,6 +826,59 @@ describe("implement:conclude says a rescue was set aside", () => {
 
     expect(comments()[0]).toBe(note);
     expect(writes()).toEqual([`workflow comment ${ISSUE}`, ...STOPPED_WRITES]);
+  });
+
+  /** #578: the set-aside commits are not in the run's own, so overwriting the rescue would leave them on no branch. */
+  describe("and keeps it on a branch of its own before a stopped run's commits replace it", () => {
+    const EARLIER = "c".repeat(40);
+    const SIDE = `${RESCUE}-set-aside-ccccccc`;
+    beforeEach(() => {
+      github.branches.set(RESCUE, EARLIER);
+      put("runner", "rescue_ignored.json", { branch: RESCUE, movedPast: EARLIER });
+      bundled();
+    });
+
+    it("pushes the set-aside tip to the side branch, then the run's commits over the rescue, and names both", async () => {
+      await run(INPUTS(AGENT("failure")));
+
+      expect(fetched).toEqual([`refs/heads/${RESCUE} refs/set-aside/${RESCUE}`]);
+      expect(made?.writes.filter((w) => w.type === "pushRef").map((w) => [w.token, ...w.args])).toEqual([
+        ["loop", { ref: `refs/heads/${SIDE}`, commit: EARLIER, lease: { absent: true } }],
+        ["loop", { ref: `refs/heads/${RESCUE}`, commit: TIP, lease: { tip: EARLIER } }],
+      ]);
+      expect(github.branches.get(SIDE)).toBe(EARLIER);
+      expect(github.branches.get(RESCUE)).toBe(TIP);
+      expect(comment()).toMatch(STOPPED);
+      expect(comment()).toContain(
+        `· Its commits so far are saved on \`${RESCUE}\`. To resume from them, add \`agent:implement\`. ` +
+          `The earlier commits it set aside are kept on \`${SIDE}\`, which nothing resumes from; delete it once you are done with them.\n`,
+      );
+    });
+
+    it("leaves the rescue as it was, and says the run's commits went unsaved, where the side branch cannot be pushed", async () => {
+      github.branches.set(SIDE, "e".repeat(40));
+
+      await run(INPUTS(AGENT("failure")));
+
+      expect(github.branches.get(RESCUE)).toBe(EARLIER);
+      expect(github.branches.get(SIDE)).toBe("e".repeat(40));
+      expect(comment()).toMatch(STOPPED);
+      expect(comment()).toContain(
+        `· ${RETRY} Its commits were not saved on \`${RESCUE}\`: the earlier commits this run set aside there could not be kept on \`${SIDE}\` first, ` +
+          "so the branch was left as it was rather than lose them. GitHub refused the push, and the workflow run's log says why.\n",
+      );
+    });
+
+    it("leaves the rescue as it was where it moved since the runner set it aside", async () => {
+      const moved = "f".repeat(40);
+      github.branches.set(RESCUE, moved);
+
+      await run(INPUTS(AGENT("failure")));
+
+      expect(github.branches.get(RESCUE)).toBe(moved);
+      expect(github.branches.has(SIDE)).toBe(false);
+      expect(comment()).toContain(`The branch moved since this run set it aside, to ${moved}.\n`);
+    });
   });
 
   it("skips a note naming another branch, and still gives the runner's reason", async () => {

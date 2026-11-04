@@ -1,4 +1,5 @@
 import * as path from "node:path";
+import type { GitFetcher } from "../engine/git.js";
 import { GitHubError } from "../engine/github.js";
 import { WriteFailed, type Lease, type Limits, type Writer } from "../engine/writer.js";
 import { checkBundle } from "../shared/bundle.js";
@@ -9,12 +10,14 @@ import type { InputValues } from "../shared/env.js";
 import { choice, count, json, matching, object, optional, readDirectory, text, type FileParsers, type HandOver, type Parser } from "../shared/hand-over.js";
 import { loopAccounts } from "../shared/loop-accounts.js";
 import { BLOCKED_LABEL, IMPLEMENT_LABEL, REVIEW_LABEL, USAGE_LIMIT } from "../shared/record.js";
+import { keepSetAside } from "../shared/rescue.js";
 import { limitEnding } from "../shared/usage-limit.js";
 import { present, rescueIgnored, setAsideNote } from "./hand-over.js";
 
 type Declared = (typeof COMMANDS)["implement:conclude"];
 type Inputs = InputValues<Declared["inputs"]>;
-type Io = CheckoutIo<Declared["outputs"]>;
+/** With a fetcher, which fetches a set-aside rescue before it is kept (#578). */
+type Io = CheckoutIo<Declared["outputs"]> & { readonly fetcher: GitFetcher };
 
 /**
  * `implement:conclude` (#493): how every implement run ends, success
@@ -121,7 +124,7 @@ export const conclude = async (inputs: Inputs, io: Io): Promise<void> => {
   });
   const saved =
     ending.kind === "stopped" && state?.pushed !== true
-      ? await rescueCommits(inputs, io, loop, bundled["branch.bundle"] !== undefined, bundled["failure_reason.txt"] !== undefined)
+      ? await rescueCommits(inputs, io, loop, bundled["branch.bundle"] !== undefined, bundled["failure_reason.txt"] !== undefined, setAside?.movedPast)
       : ({ kind: "none" } as const);
   // The plan's usage limit (#635), on a run that decided and left nothing on
   // the record but its rescue: a wait, which resumes by itself on the service,
@@ -242,7 +245,11 @@ const SKIPPED: Parser<undefined> = () => undefined;
  * What became of a stopped run's commits: none to save, saved, or not saved,
  * with `why` the clause the failure comment gives for it.
  */
-type Saved = { readonly kind: "none" } | { readonly kind: "rescued" } | { readonly kind: "unsaved"; readonly why: string };
+type Saved =
+  | { readonly kind: "none" }
+  /** `kept` is the side branch a set-aside rescue was kept on before the push (#578). */
+  | { readonly kind: "rescued"; readonly kept?: string }
+  | { readonly kind: "unsaved"; readonly why: string };
 
 /**
  * **A stopped run's commits, kept on a side branch** (#270), as fix and
@@ -266,11 +273,21 @@ type Saved = { readonly kind: "none" } | { readonly kind: "rescued" } | { readon
  *
  * Under a lease on the rescue as it is read here: a run that stops again
  * overwrites the earlier rescue, which it started from and so holds all of,
- * and nothing that moved it in between is lost silently. With the loop's
+ * and nothing that moved it in between is lost silently. **A rescue the
+ * runner set aside** (#578), at `setAside`, the run does not hold, so it is
+ * kept on a branch of its own first and the push is leased on it; where it
+ * cannot be kept, nothing is pushed over it, and the comment says why. With the loop's
  * token, as publish pushes, since the agent's commits may touch a workflow
  * file; a mint that failed leaves none to push with, which the comment says.
  */
-const rescueCommits = async (inputs: Inputs, io: Io, loop: Writer, bundled: boolean, bundleFailed: boolean): Promise<Saved> => {
+const rescueCommits = async (
+  inputs: Inputs,
+  io: Io,
+  loop: Writer,
+  bundled: boolean,
+  bundleFailed: boolean,
+  setAside: string | undefined,
+): Promise<Saved> => {
   const rescue = inputs.RESCUE_BRANCH;
   if (!bundled) {
     if (bundleFailed) {
@@ -311,14 +328,25 @@ const rescueCommits = async (inputs: Inputs, io: Io, loop: Writer, bundled: bool
   }
 
   let lease: Lease;
-  try {
-    lease = { tip: await io.github.branchTip(rescue) };
-  } catch (error) {
-    if (!(error instanceof GitHubError && error.status === 404)) {
-      console.log(`::warning::Could not read ${rescue}, so the agent's commits were not saved there: ${describe(error)}`);
-      return { kind: "unsaved", why: UNREAD };
+  let kept: string | undefined;
+  if (setAside === undefined) {
+    try {
+      lease = { tip: await io.github.branchTip(rescue) };
+    } catch (error) {
+      if (!(error instanceof GitHubError && error.status === 404)) {
+        console.log(`::warning::Could not read ${rescue}, so the agent's commits were not saved there: ${describe(error)}`);
+        return { kind: "unsaved", why: UNREAD };
+      }
+      lease = { absent: true };
     }
-    lease = { absent: true };
+  } else {
+    const side = await keepSetAside(io.fetcher, loop, rescue, setAside);
+    if (side.kind === "unkept") {
+      console.log(`::warning::The commits set aside on ${rescue} could not be kept on ${side.branch}, so the agent's commits were not pushed over them.`);
+      return { kind: "unsaved", why: UNKEPT(side.branch, side.why) };
+    }
+    kept = side.branch;
+    lease = { tip: setAside };
   }
   try {
     await loop.pushRef({ ref: `refs/heads/${rescue}`, commit: tip, lease });
@@ -328,7 +356,7 @@ const rescueCommits = async (inputs: Inputs, io: Io, loop: Writer, bundled: bool
     return { kind: "unsaved", why: UNPUSHED };
   }
   console.log(`Rescued the agent's commits, up to ${tip}, to ${rescue}.`);
-  return { kind: "rescued" };
+  return kept === undefined ? { kind: "rescued" } : { kind: "rescued", kept };
 };
 
 /** Why a stopped run's commits went unsaved, each as the comment says it after "were not saved on `<rescue>`:". */
@@ -339,6 +367,9 @@ const UNFETCHED = "what the agent's job handed over could not be fetched, so the
 const UNCHECKED = (base: string): string => `they could not be checked against \`${base}\` before the push, and the workflow run's log says why.`;
 const UNREAD = "GitHub would not say whether the branch already holds commits, so pushing could have overwritten them.";
 const UNPUSHED = "GitHub refused the push, and the workflow run's log says why.";
+const UNKEPT = (side: string, why: string): string =>
+  `the earlier commits this run set aside there could not be kept on \`${side}\` first, so the branch was left as it was rather than lose them. ` +
+  `${why.charAt(0).toUpperCase()}${why.slice(1)}`;
 
 /**
  * What to do next. The label comes off at the end of a decided run since
@@ -361,9 +392,13 @@ const retryOf = (undecided: boolean, pr: number | undefined, saved: Saved, rescu
         ? `To try again, remove \`${IMPLEMENT_LABEL}\` if it is still on this issue, then add it.`
         : plain;
   if (saved.kind === "rescued") {
+    const kept =
+      saved.kept === undefined
+        ? ""
+        : ` The earlier commits it set aside are kept on \`${saved.kept}\`, which nothing resumes from; delete it once you are done with them.`;
     return retry === plain
-      ? `Its commits so far are saved on \`${rescue}\`. To resume from them, add \`${IMPLEMENT_LABEL}\`.`
-      : `${retry} Its commits so far are saved on \`${rescue}\`, and adding \`${IMPLEMENT_LABEL}\` resumes from them.`;
+      ? `Its commits so far are saved on \`${rescue}\`. To resume from them, add \`${IMPLEMENT_LABEL}\`.${kept}`
+      : `${retry} Its commits so far are saved on \`${rescue}\`, and adding \`${IMPLEMENT_LABEL}\` resumes from them.${kept}`;
   }
   if (saved.kind === "unsaved") return `${retry} Its commits were not saved on \`${rescue}\`: ${saved.why}`;
   return retry;
@@ -392,9 +427,9 @@ const removeTrigger = (issue: number, workflow: Writer): Promise<boolean> =>
  * What conclude may write, and how many of each (ADR 0005): with the
  * workflow's token, the set-aside note and the failure comment,
  * `agent:implement` off and `agent:blocked` on; with the loop's, the rescue
- * push.
+ * push, and before it the push keeping a set-aside rescue (#578).
  */
-const LIMITS: Limits = { comment: 2, removeLabel: 1, addLabel: 1, pushRef: 1 };
+const LIMITS: Limits = { comment: 2, removeLabel: 1, addLabel: 1, pushRef: 2 };
 
 const FLAG = choice([true, false]);
 

@@ -2,8 +2,10 @@ import { execFileSync, spawnSync } from "node:child_process";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
-import { ignoredNote, rescueRef, resumeFromRescue, resumeSection } from "../shared/rescue.js";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import type { GitFetcher } from "../engine/git.js";
+import { ignoredNote, keepSetAside, rescueRef, resumeFromRescue, resumeSection, setAsideBranch } from "../shared/rescue.js";
+import { fakeGitHub, fakeWriters, type FakeGitHub } from "./engine/fakes.js";
 import { SUBPROCESS_TIMEOUT } from "../vitest.config.js";
 
 /**
@@ -174,5 +176,104 @@ describe.each([
   it("has a place for the resume section, which its runner fills", () => {
     expect(text).toContain("{{RESUME}}");
     expect(fs.readFileSync(runner, "utf8")).toContain("RESUME: resumeSection(resume, RESCUE_BRANCH)");
+  });
+});
+
+/**
+ * A set-aside rescue kept on a branch of its own (#578) before a stopped run
+ * pushes over it: fetched from the remote into a ref of the job's own, then
+ * pushed to the side branch under `{ absent: true }`, with the loop's token.
+ */
+describe("keepSetAside", () => {
+  const RESCUE = "agent/rescue/issue-135";
+  const TIP = "c".repeat(40);
+  const SIDE = `${RESCUE}-set-aside-ccccccc`;
+  let github: FakeGitHub;
+  let fetched: { readonly ref: string; readonly into: string }[];
+  let logged: string[];
+  beforeEach(() => {
+    github = fakeGitHub([]);
+    github.branches.set(RESCUE, TIP);
+    fetched = [];
+    logged = [];
+    vi.spyOn(console, "log").mockImplementation((line: unknown) => {
+      logged.push(String(line));
+    });
+  });
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  /** A fetcher from the fake remote, recording each fetch. */
+  const fetcher: GitFetcher = {
+    fetchRef: async (ref, into) => {
+      fetched.push({ ref, into });
+      const tip = github.branches.get(ref.replace(/^refs\/heads\//, ""));
+      if (tip === undefined) throw new Error(`couldn't find remote ref ${ref}`);
+      return tip;
+    },
+  };
+  const keep = async () => {
+    const made = fakeWriters(github, ["loop"] as const, { pushRef: 1 });
+    return { kept: await keepSetAside(fetcher, made.writers.loop, RESCUE, TIP), made };
+  };
+
+  it("names the side branch after the rescue and the first 7 of the tip", () => {
+    expect(setAsideBranch(RESCUE, TIP)).toBe(SIDE);
+    expect(SIDE).toMatch(/^[a-z0-9/-]+$/);
+  });
+
+  it("fetches the rescue into a ref of its own, then pushes it to the side branch, new", async () => {
+    const { kept, made } = await keep();
+
+    expect(kept).toEqual({ kind: "kept", branch: SIDE });
+    expect(fetched).toEqual([{ ref: `refs/heads/${RESCUE}`, into: `refs/set-aside/${RESCUE}` }]);
+    expect(made.writes.map((w) => w.args)).toEqual([[{ ref: `refs/heads/${SIDE}`, commit: TIP, lease: { absent: true } }]]);
+    expect(github.branches.get(SIDE)).toBe(TIP);
+    expect(github.branches.get(RESCUE)).toBe(TIP);
+  });
+
+  it("keeps it again on a rerun that finds the side branch already holding it", async () => {
+    github.branches.set(SIDE, TIP);
+
+    expect((await keep()).kept).toEqual({ kind: "kept", branch: SIDE });
+  });
+
+  it("does not clobber a side branch holding something else", async () => {
+    github.branches.set(SIDE, "e".repeat(40));
+
+    const { kept } = await keep();
+
+    expect(kept).toEqual({ kind: "unkept", branch: SIDE, why: "GitHub refused the push, and the workflow run's log says why." });
+    expect(github.branches.get(SIDE)).toBe("e".repeat(40));
+  });
+
+  it("says why where GitHub refuses the push", async () => {
+    github.fails = (write) => write.type === "pushRef";
+
+    const { kept } = await keep();
+
+    expect(kept).toEqual({ kind: "unkept", branch: SIDE, why: "GitHub refused the push, and the workflow run's log says why." });
+    expect(github.branches.has(SIDE)).toBe(false);
+  });
+
+  it("pushes nothing where the rescue cannot be fetched", async () => {
+    github.branches.delete(RESCUE);
+
+    const { kept, made } = await keep();
+
+    expect(kept).toEqual({ kind: "unkept", branch: SIDE, why: "it could not be fetched, and the workflow run's log says why." });
+    expect(made.writes).toEqual([]);
+    expect(logged.some((line) => line.startsWith(`::warning::Could not fetch ${RESCUE}`))).toBe(true);
+  });
+
+  it("pushes nothing where the rescue moved since it was set aside", async () => {
+    const moved = "f".repeat(40);
+    github.branches.set(RESCUE, moved);
+
+    const { kept, made } = await keep();
+
+    expect(kept).toEqual({ kind: "unkept", branch: SIDE, why: `the branch moved since this run set it aside, to ${moved}.` });
+    expect(made.writes).toEqual([]);
   });
 });

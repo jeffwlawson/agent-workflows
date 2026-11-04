@@ -31,6 +31,8 @@ export interface StoredJob {
   readonly posted: boolean;
   readonly scanned: boolean;
   readonly order: number;
+  /** The label a scan's dispatch of it is counted toward at its first token request (#600); absent where there is none, as in an older file. */
+  readonly label?: string;
 }
 
 /** One item's label the scan counts, as its `asks` map holds it. */
@@ -64,7 +66,7 @@ export const serialiseState = (state: DispatcherState): string =>
         told,
         ...(at === undefined ? {} : { at: new Date(at).toISOString() }),
       })),
-      jobs: state.jobs.map(({ id, repo, deadline, workflow, number, posted, scanned, order }) => ({
+      jobs: state.jobs.map(({ id, repo, deadline, workflow, number, posted, scanned, order, label }) => ({
         id,
         repo,
         deadline: deadline.toISOString(),
@@ -73,6 +75,7 @@ export const serialiseState = (state: DispatcherState): string =>
         posted,
         scanned,
         order,
+        ...(label === undefined ? {} : { label }),
       })),
     },
     null,
@@ -102,7 +105,7 @@ const parseAsk = (value: unknown, index: number): StoredAsk | string => {
 const parseJob = (value: unknown, index: number): StoredJob | string => {
   const where = `\`jobs\` entry ${index + 1}`;
   if (!isObject(value)) return `${where} is not an object`;
-  const { id, repo, deadline, workflow, number, posted, scanned, order } = value;
+  const { id, repo, deadline, workflow, number, posted, scanned, order, label } = value;
   if (typeof id !== "string" || id === "") return `${where}'s \`id\` is not a non-empty string`;
   if (typeof repo !== "string" || !REPO.test(repo)) return `${where}'s \`repo\` is not \`owner/name\``;
   const due = date(deadline);
@@ -112,7 +115,10 @@ const parseJob = (value: unknown, index: number): StoredJob | string => {
   if (typeof posted !== "boolean") return `${where}'s \`posted\` is not true or false`;
   if (typeof scanned !== "boolean") return `${where}'s \`scanned\` is not true or false`;
   if (!count(order, 1)) return `${where}'s \`order\` is not a positive integer`;
-  return { id, repo, deadline: due, workflow: workflow as JobKind, number, posted, scanned, order };
+  const read = { id, repo, deadline: due, workflow: workflow as JobKind, number, posted, scanned, order };
+  if (label === undefined) return read;
+  if (typeof label !== "string" || label === "") return `${where}'s \`label\` is not a non-empty string`;
+  return { ...read, label };
 };
 
 /** The state a file's text holds, or the reason it holds none. */

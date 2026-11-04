@@ -474,7 +474,7 @@ const message = (error: unknown): string => (error instanceof Error ? error.mess
 /**
  * What the dispatcher remembers of a job it dispatched: enough to mint for
  * it, to tell a scan what it is on, whether the worker has answered its
- * post yet, and whether a scan dispatched it.
+ * post yet, whether a scan dispatched it, and what its start is counted toward.
  */
 interface Dispatched {
   readonly repo: string;
@@ -485,17 +485,25 @@ interface Dispatched {
   readonly scanned: boolean;
   /** Its place among every job the dispatcher has reserved, first `1`. */
   readonly order: number;
+  /**
+   * The label a scan dispatched it for, whose count (`asks`) it adds to at
+   * its first token request, when it has started running (#600), and which
+   * it no longer carries once counted. Absent on a delivery's job, a job the
+   * scan's limit is not applied to, and one already counted.
+   */
+  readonly label?: string;
 }
 
 /**
- * Who a dispatch is for: a scan, told of each job of it the worker takes, or a
+ * Who a dispatch is for: a scan, with the label its job is counted toward
+ * once it starts, or none where the limit is not applied to it; or a
  * delivery, with the reservations made before it arrived.
  */
-type Origin = { readonly taken: () => void } | { readonly arrived: number };
+type Origin = { readonly counts: string | undefined } | { readonly arrived: number };
 
 /**
  * What the dispatcher counts of one item's label a scan lists (#596): how many
- * times a scan has dispatched it, and whether the comment saying the scan has
+ * times a scan's job for it has started, at its first token request (#600), and whether the comment saying the scan has
  * stopped was posted.
  */
 interface Asked {
@@ -685,7 +693,7 @@ export const createDispatcher = (edges: DispatcherEdges) => {
     const job = { ...fields, id: newId(), version: edges.version, instance, deadline: deadline.toISOString(), appLogin: login, variables } as Job;
 
     prune();
-    const scanned = "taken" in origin;
+    const scanned = "counts" in origin;
     const answers = (held: Dispatched): boolean => scanned || (held.scanned && (!held.posted || held.order > origin.arrived));
     const same = [...jobs.values()].find(
       (held) => held.repo === job.repo && held.number === ("issue" in job ? job.issue : job.pr) && held.workflow === job.workflow && answers(held),
@@ -694,7 +702,16 @@ export const createDispatcher = (edges: DispatcherEdges) => {
     // Known before the worker hears of it, so its first token request cannot
     // arrive ahead of the job it names.
     reservations += 1;
-    const entry = { repo: job.repo, deadline, workflow: job.workflow, number: "issue" in job ? job.issue : job.pr, scanned, order: reservations };
+    const counts = "counts" in origin ? origin.counts : undefined;
+    const entry = {
+      repo: job.repo,
+      deadline,
+      workflow: job.workflow,
+      number: "issue" in job ? job.issue : job.pr,
+      scanned,
+      order: reservations,
+      ...(counts === undefined ? {} : { label: counts }),
+    };
     jobs.set(job.id, { ...entry, posted: false });
     changed();
     const body = JSON.stringify(job);
@@ -711,8 +728,10 @@ export const createDispatcher = (edges: DispatcherEdges) => {
       changed();
       return `failed on ${where}: the worker answered ${status}`;
     }
-    if (jobs.has(job.id)) jobs.set(job.id, { ...entry, posted: true });
-    if ("taken" in origin) origin.taken();
+    // Read again rather than rebuilt from `entry`: a job the worker started
+    // at once may have asked for its first token, and been counted, already.
+    const held = jobs.get(job.id);
+    if (held !== undefined) jobs.set(job.id, { ...held, posted: true });
     changed();
     return `dispatched ${where}${at} as job ${job.id}, deadline ${job.deadline}`;
   };
@@ -988,6 +1007,30 @@ export const createDispatcher = (edges: DispatcherEdges) => {
   };
 
   /**
+   * Counts a scan's dispatch of `job` toward its item's label (#596) at the
+   * job's first token request, the dispatcher's evidence that it started
+   * running (#600): a job lost from the worker's queue before it started asks
+   * for none, and is never counted. Counted once, however many kinds the
+   * label starts: each job of the dispatch stops carrying the label.
+   */
+  const countStart = (job: Dispatched): void => {
+    const { repo, number, label } = job;
+    if (label === undefined) return;
+    for (const [id, held] of jobs) {
+      if (held.repo === repo && held.number === number && held.label === label) {
+        const { label: _, ...uncounted } = held;
+        jobs.set(id, uncounted);
+      }
+    }
+    const key = askedKey(repo, number, label);
+    const asked = asks.get(key) ?? { repo, number, label, dispatches: 0, told: false };
+    asked.dispatches += 1;
+    asked.at = now().getTime();
+    asks.set(key, asked);
+    changed();
+  };
+
+  /**
    * **The token door.** A request whose signature does not verify is refused.
    * One that does gets a token only for a job this dispatcher dispatched,
    * before that job's deadline, for that job's repository alone, with the
@@ -1008,6 +1051,7 @@ export const createDispatcher = (edges: DispatcherEdges) => {
       changed();
       return answer(403, { refusal: `job ${asked.jobId} is past its deadline, ${job.deadline.toISOString()}` });
     }
+    countStart(job);
     // A GitHub that cannot be read is refused like a repository that has
     // opted out: the dispatcher mints for nothing it cannot confirm.
     try {
@@ -1086,26 +1130,6 @@ export const createDispatcher = (edges: DispatcherEdges) => {
     if (sender === undefined) return { refusal: `skipped on ${where}: no \`labeled\` event for \`${label}\` was found, so there is no one it was asked by to check` };
     const distrust = await untrusted(repo, sender, login);
     return distrust === undefined ? { sender } : { refusal: `refused on ${where}: ${distrust}, and added \`${label}\` last` };
-  };
-
-  /**
-   * A scan's origin for `repo`'s item `number` and `label`, which counts the
-   * scan's dispatch for them once the worker takes a job of it: once, however
-   * many kinds the label starts (#596).
-   */
-  const scanFor = (repo: string, number: number, label: string): Origin => {
-    let counted = false;
-    return {
-      taken: () => {
-        if (counted) return;
-        counted = true;
-        const key = askedKey(repo, number, label);
-        const asked = asks.get(key) ?? { repo, number, label, dispatches: 0, told: false };
-        asked.dispatches += 1;
-        asked.at = now().getTime();
-        asks.set(key, asked);
-      },
-    };
   };
 
   /**
@@ -1194,7 +1218,7 @@ export const createDispatcher = (edges: DispatcherEdges) => {
       const asker = await unasked(repo, item.number, label, login, where);
       if ("refusal" in asker) return asker.refusal;
       const fields = { repo, issue: item.number, title: item.title, state: item.state, baseRef: await baseRef() };
-      return dispatchIssue(kinds, fields, login, where, scanFor(repo, item.number, label));
+      return dispatchIssue(kinds, fields, login, where, { counts: label });
     }
     const kind = kindOf(LABEL_KINDS.pull_request, label);
     if (kind === undefined || kind === "follow-ups") return `ignored on ${where}: \`${label}\` is not a label a scan answers on a pull request`;
@@ -1212,8 +1236,8 @@ export const createDispatcher = (edges: DispatcherEdges) => {
     const { number: pr, branch, headSha, baseRef: base, state, merged, draft } = item;
     const fields = { repo, pr, branch, headSha, baseRef: base, state, merged };
     // A scan's origin that counts nothing, for the label the limit is not applied to.
-    if (standing) return dispatch({ workflow: kind, ...fields, draft, action: "synchronize", sender: asker.sender }, login, where, ` at ${headSha}`, { taken: () => {} });
-    return dispatch({ workflow: kind, ...fields }, login, where, ` at ${headSha}`, scanFor(repo, pr, label));
+    if (standing) return dispatch({ workflow: kind, ...fields, draft, action: "synchronize", sender: asker.sender }, login, where, ` at ${headSha}`, { counts: undefined });
+    return dispatch({ workflow: kind, ...fields }, login, where, ` at ${headSha}`, { counts: label });
   };
 
   /**
@@ -1244,7 +1268,7 @@ export const createDispatcher = (edges: DispatcherEdges) => {
     const asker = await unasked(repo, item.number, FOLLOW_UPS_LABEL, login, where);
     if ("refusal" in asker) return asker.refusal;
     const at = ` merged at ${item.mergedAt.toISOString()}, still carrying \`${FOLLOW_UPS_LABEL}\``;
-    return dispatch({ workflow: "follow-ups", repo, pr: item.number }, login, where, at, scanFor(repo, item.number, FOLLOW_UPS_LABEL));
+    return dispatch({ workflow: "follow-ups", repo, pr: item.number }, login, where, at, { counts: FOLLOW_UPS_LABEL });
   };
 
   /**

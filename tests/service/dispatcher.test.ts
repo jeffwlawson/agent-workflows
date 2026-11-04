@@ -2161,7 +2161,7 @@ describe("the scan's merged pull requests (#603)", () => {
     expect(linesOn(s, "owner/repo#7").slice(2)).toEqual([`${STOPPED("owner/repo#7", FOLLOW_UPS_LABEL)}; commented on it`, STOPPED("owner/repo#7", FOLLOW_UPS_LABEL)]);
     expect(s.comments).toHaveLength(1);
     const body = s.comments[0]?.body ?? "";
-    expect(body).toContain("dispatched this merged pull request's follow-ups job 2 times");
+    expect(body).toContain("started this merged pull request's follow-ups job 2 times");
     expect(body).toContain("the filing refused or failed");
     expect(body).not.toContain("most likely by ending the worker's process");
     expect(body).toContain(`remove \`${FOLLOW_UPS_LABEL}\` and add it again by hand`);

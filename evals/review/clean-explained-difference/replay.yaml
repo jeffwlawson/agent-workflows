@@ -11,7 +11,7 @@
 # review/review-diff.ts, review/review-round.ts or review/review.ts, so a
 # finding raised here is a false one, and C5 ruled unmet is one.
 #
-# Replayed as a first review, like every case, with one difference from the
+# Replayed as a first review, like every case but verification-fetch-token, with one difference from the
 # others: DISCUSSION holds the pull request's conversation as the review then
 # read it, the maintainer's comment alone (the loop's own reviews, threads
 # and outcome comment are left out, as a first review has none). Rendered

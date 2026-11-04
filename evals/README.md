@@ -68,8 +68,9 @@ empty. **The scope-creep case itself is not yet built**: no real one was found. 
 has asked the question only since #697 (2026-11-03); the maintainer's pre-merge checks read for
 this (#572, #577, #601) raise no unrequested behaviour; and a search of the pull requests for "scope
 creep" finds only #697, whose own evals say no case contains it. A synthetic
-commit on a clean head, the audit's cheaper route, would have no real review text that raises it, so
-no positive control (*Controls*, below), and is not a commit `checkout.sh` could fetch.
+commit on a clean head, the audit's cheaper route, can now be built as a written fix round is, and
+a control written for the case would cover the positive (*Controls*, below); what stands in the way
+is that no real review text raises scope creep for it to be measured against.
 
 `verification-fetch-token` is **the one verification pass** (#699), the case a change to what a
 review that follows a fix round reads (#641, #748) is measured on. Every other case replays a first
@@ -112,7 +113,7 @@ evals/
       replay.yaml          the pull request, its pinned base and head (full SHAs), the brief, the inputs
       inputs/<KEY>.md      one input each, named for the prompt's {{KEY}}
       graders/NN.md        one per expected outcome, each something observable in the output
-      controls/<name>.md   real text with what each grader must rule on it (below)
+      controls/<name>.md   real text, or, for a written fix round, text written for the case, with what each grader must rule on it (below)
     sections.yaml          which sections of the prompt a case reaches (below)
 ```
 
@@ -125,7 +126,7 @@ changes the next run and nothing else needs updating; adding a `{{KEY}}` to it n
 
 The replay, against what the runner does:
 
-- **The review is replayed as a first review** of the approved head, but in a fix-round case (below): no history, nothing carried,
+- **The review is replayed as a first review** of the approved head, except in a fix-round case (below): no history, nothing carried,
   no CI results, the red check off (as it is here), and no *since the brief* check, which would read
   the base branch's history. The diff is `git diff <base>...<head>`, the three-dot diff the runner
   takes. The pull request's body is reduced to a neutral one with an empty summary, since the
@@ -198,7 +199,7 @@ false-change rate: the share of completed runs that failed any of its graders.
 
 A grader that fails a text it should pass is broken, and one that passes a text it should fail is
 too loose; neither shows in a pass rate. So every grader has a **positive** and a **negative
-control** (#718, held by the layout test): `controls/<name>.md` in its case, real text with a
+control** (#718, held by the layout test): `controls/<name>.md` in its case, real text (or, for a written fix round, text written for the case) with a
 `source` naming where it was read and an `expect` saying, per grader, `pass` or `fail`. They are
 the loop's own review at the case's head (which missed what the case grades, so a negative for those
 graders), the merge-check or later review that caught it (a positive), and for `fix` the change that

@@ -176,7 +176,7 @@ export const renderDiffScope = (promptDiff: PromptDiff, baseRef: string): string
   if (promptDiff.kind === "unreadable") {
     return [
       `This review follows a fix round, so this section would hold only what changed since the last review, but ${promptDiff.reason}. It holds the whole pull request's diff against \`${baseRef}\` instead, ${range}.`,
-      "**Say so in `howChecked`**: that this verification pass read the whole diff, and why.",
+      "(`howChecked` records that this verification pass read the whole diff, and why.)",
     ].join("\n\n");
   }
 

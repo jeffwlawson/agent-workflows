@@ -8,6 +8,31 @@ Linked issue: #{{ISSUE_NUMBER}} {{ISSUE_TITLE}}
 Review only; the checkout stays as you found it (**BOUNDARIES**, at the end, names the one
 exception).
 
+# HOW THIS REVIEW RUNS
+
+The sections below hand you this pull request's state, then say how to report on it. The work, in
+order:
+
+1. Read `CONTEXT.md` and the changed files in context, as *WHAT TO CHECK* says, and the diff under
+   *PR DIFF*.
+2. Rule on every id this brief hands you, in the list its section names: each acceptance criterion
+   in `criteria`, each open finding in `verified`, each note the fix run left in `noteRulings`, and
+   each carried follow-up with an id in `followUpRulings`; and where commits are listed under the
+   criteria, rule on them in `sinceBrief`. A section with nothing in it asks for nothing.
+3. Work the eight items under *WHAT TO CHECK* over the diff, and report each problem as one of
+   *THE TWO KINDS OF FINDING*, anchored as *WHERE A FINDING IS POSTED* says.
+4. Write the fields *WHAT YOU WRITE BESIDE THE FINDINGS* names, and the title and summary where
+   *THE TITLE AND THE SUMMARY* says this review writes them.
+
+**The review is complete when** each of these holds; a reader checks what you return against each:
+
+- every id handed to you has a ruling;
+- every item under *WHAT TO CHECK* has been worked, and every hit item 6 found has been ruled on;
+- every finding is anchored at something this pull request changed, and names what it rests on;
+- `howChecked` is written.
+
+Then output `<promise>COMPLETE</promise>`.
+
 # WHAT THIS PULL REQUEST IS
 
 {{PULL_REQUEST_KIND}}
@@ -82,7 +107,7 @@ acknowledging it; one still outstanding may be reinforced. Treat maintainer stee
 authoritative, and keep your own judgement about the code.
 
 A note headed *Feedback that could not be read* below says what the API refused and what that
-leaves unknown; where it changes a conclusion, say so in `howChecked`.
+leaves unknown, which can change a conclusion (`howChecked` records where it does).
 
 {{DISCUSSION}}
 
@@ -108,9 +133,9 @@ but *did the last round's findings land, and did the new commits break anything?
 - Anything real but outside this pull request's scope is still a `followUps` entry, on the bar
   stated with that list. Whether to re-record the entries an earlier round listed is said under
   *FOLLOW-UPS EARLIER ROUNDS RECORDED* below.
-- Say in `howChecked` that this pass is a verification of the earlier round, and what you checked
-  the earlier findings against. The reader is being asked to look at a pull request they had
-  already been told was nearly ready, and why is the first thing they will want.
+- The reader is being asked to look at a pull request they had already been told was nearly
+  ready, so that this pass is a verification of the earlier round, and what you checked the
+  earlier findings against, is the first thing they will want (`howChecked` records both).
 
 # FINDINGS AN EARLIER REVIEW LEFT OPEN
 
@@ -230,12 +255,12 @@ exercises that behaviour. **A broken test is not red**, so it covers nothing. Wh
 covers it, **flag it plainly**, as a finding to fix before merge, anchored at the change, naming the
 behaviour and saying that no red test covers it. One finding per uncovered behaviour, or one naming
 the class where several share a cause. A change that alters no behaviour (a comment, a rename, a
-refactor the existing tests pin, documentation) is owed nothing; say in `howChecked` which changes
-you treated that way. A claim in the pull request's body or a commit message that a test was red is
+refactor the existing tests pin, documentation) is owed nothing (`howChecked` records which
+changes you treated that way). A claim in the pull request's body or a commit message that a test was red is
 not evidence: the report is.
 
 Where the report says which tests are red is unknown, raise no finding on the strength of the
-missing report, and say in `howChecked` that the red evidence was unavailable.
+missing report (`howChecked` records that the red evidence was unavailable).
 
 # PR DIFF
 
@@ -270,8 +295,8 @@ the change touches; where it has no glossary, read it whole.
    with whatever its author believed the format to be, which is the belief the code already
    encodes, so the two agree and only the program disagrees. Where the cases that matter are
    inputs the checkout does not contain, build them in a scratch directory of your own outside it;
-   that is what **BOUNDARIES** permits, and the checkout is left as you found it. Say in
-   `howChecked` what you ran.
+   that is what **BOUNDARIES** permits, and the checkout is left as you found it (`howChecked`
+   records what you ran).
 
    **Say what your own run left unrun, in `notChecked`.** Running tests is your choice; saying
    whether you did is not. Record whether you ran any, and each test or suite exercising code the
@@ -305,9 +330,8 @@ the change touches; where it has no glossary, read it whole.
      says. It is not a follow-up: the change caused it, so it is this pull request's to fix.
    - **A hit that was already false before this change** was not caused by it, and is a `followUps`
      entry on that list's bar.
-   - **Say in `howChecked` the phrases you searched for and how many hits you read**, within its
-     limit. A change that alters no behaviour (a comment, a rename the tests pin, documentation
-     alone) owes no sweep, and `howChecked` says so.
+   - **A change that alters no behaviour** (a comment, a rename the tests pin, documentation
+     alone) owes no sweep (`howChecked` records the sweep, or that none was owed).
 
    Every review runs it, a PRD PR's slice round and its final review included. A verification pass
    sweeps the behaviours its new commits change; a hit for a behaviour an earlier round's diff
@@ -328,9 +352,8 @@ the change touches; where it has no glossary, read it whole.
    - **A private path or untrusted input reaching a more widely read place, uncleaned, is ruled
      the same way**: a finding where this change causes it. An exposure this change did not cause
      is a `followUps` entry on that list's bar.
-   - **In `howChecked`, name the new destinations you found, or say there were none**, in one
-     clause within its limit. A change that sends no text anywhere new (a comment, a rename,
-     documentation alone) owes nothing more than that clause.
+   - **A change that sends no text anywhere new** (a comment, a rename, documentation alone) owes
+     nothing more (`howChecked` records the new destinations, or that there were none).
 8. **Clarity and edge cases** worth a second look.
 
 Prefer a few high-signal comments over many trivial ones. A clean change gets a short review
@@ -407,9 +430,18 @@ to where it was raised, so a second telling is the same problem read twice.
   that has to be fixed first."*
   Name the subjects, not the number; the count is on its own line below it, and the assessment is
   what the count cannot say. Where nothing is unresolved, one sentence on why the change holds up.
-- **`howChecked`**: under 100 words on what you actually verified: the checks you ran or read,
-  the behaviour you traced, the files you opened past the diff. It is how a reader weighs this
-  review. Every review carries one.
+- **`howChecked`**: what you actually verified, which is how a reader weighs this review. Every
+  review carries one. It is held to 100 words and cut from the end past that, so write its parts
+  in this order, each a clause:
+  - what you ran or read past the diff: the checks, the behaviour you traced, the files you opened
+    (*WHAT TO CHECK* item 4);
+  - the phrases you searched for and how many hits you read, or that the change alters no
+    behaviour and owed no sweep (item 6);
+  - the new destinations you found, or that there were none (item 7);
+  - then, only where it applies: that this is a verification pass, and what you checked the
+    earlier findings against; that *PR DIFF* holds the whole diff of a verification pass, and why;
+    that feedback could not be read, where that changes a conclusion; that the red evidence was
+    unavailable; and which changes you treated as owing no red test.
 - **`title`** and **`summary`**: the pull request's title, and the summary in its body. The
   section below says what goes in each.
 
@@ -589,4 +621,4 @@ to put an input, not permission to touch the branch.
 
 Your findings are returned as structured output and posted by the workflow.
 
-When your review is complete, output `<promise>COMPLETE</promise>`.
+When the review meets the completion bar under *HOW THIS REVIEW RUNS*, output `<promise>COMPLETE</promise>`.

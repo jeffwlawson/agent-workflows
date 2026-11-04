@@ -207,7 +207,7 @@ describe("readPromptDiff on a verification pass", () => {
       const d = readPromptDiff(history, undefined, "main", whole, changed);
 
       expect(d).toEqual({ kind: "unreadable", reason: "this pull request's commits could not be listed", diff: whole });
-      expect(renderDiffScope(d, "main")).toMatch(/this pull request's commits could not be listed[\s\S]*Say so in `howChecked`/);
+      expect(renderDiffScope(d, "main")).toMatch(/this pull request's commits could not be listed[\s\S]*\(`howChecked` records that this verification pass read the whole diff, and why\.\)/);
     },
     ceiling,
   );
@@ -225,7 +225,8 @@ describe("readPromptDiff on a verification pass", () => {
       expect(d.diff).toBe(whole);
       const scope = renderDiffScope(d, "main");
       expect(scope).toContain("git could not read the commits since 0123456, the head the last review read");
-      expect(scope).toContain("Say so in `howChecked`");
+      expect(scope).toContain("(`howChecked` records that this verification pass read the whole diff, and why.)");
+      expect(scope).not.toMatch(/say so in `howChecked`/i);
     },
     ceiling,
   );
@@ -334,7 +335,8 @@ describe("readPromptDiff after a merge of the base branch", () => {
       expect(d.diff).toBe(whole);
       const scope = renderDiffScope(d, "main");
       expect(scope).toContain(`does not merge cleanly into ${reviewed.slice(0, 7)}`);
-      expect(scope).toContain("Say so in `howChecked`");
+      expect(scope).toContain("(`howChecked` records that this verification pass read the whole diff, and why.)");
+      expect(scope).not.toMatch(/say so in `howChecked`/i);
     },
     ceiling,
   );

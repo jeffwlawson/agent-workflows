@@ -2015,6 +2015,26 @@ describe("the scan's limit", () => {
     expect(files.held().asks).toEqual([expect.objectContaining({ number: 7, dispatches: 1 })]);
   });
 
+  it("counts an issue's scan once where its implement job asks for a token before its implement-prd job is reserved (#600)", async () => {
+    const files = fakeFiles();
+    const s = setup({ holdPosts: true, files });
+    s.repository.items = [issueItem([IMPLEMENT_LABEL])];
+    const scanned = s.dispatcher.scan();
+    while (s.heldPosts.length === 0) await new Promise((resolve) => setImmediate(resolve));
+
+    // The implement job starts before the implement-prd job of the same dispatch is reserved.
+    expect((await s.dispatcher.token(tokenRequest({ jobId: "job-1", kind: "read" }))).status).toBe(200);
+    s.heldPosts[0]?.();
+    while (s.heldPosts.length < 2) await new Promise((resolve) => setImmediate(resolve));
+    s.heldPosts[1]?.();
+    await scanned;
+    expect(jobsPosted(s).map((job) => job.workflow)).toEqual(["implement", "implement-prd"]);
+    expect((await s.dispatcher.token(tokenRequest({ jobId: "job-2", kind: "read" }))).status).toBe(200);
+
+    expect(files.held().asks).toEqual([expect.objectContaining({ number: 12, dispatches: 1 })]);
+    expect(files.held().jobs.map((job) => job.label)).toEqual([undefined, undefined]);
+  });
+
   it("counts no delivery's dispatch", async () => {
     const s = setup();
     s.repository.items = [pullItem([REVIEW_LABEL])];

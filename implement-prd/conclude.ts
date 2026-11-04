@@ -14,6 +14,7 @@ import { renderPrdStatus, renderProgressList, spliceProgressList, spliceStatus, 
 import { BLOCKED_LABEL, FIX_LABEL, IMPLEMENT_LABEL, PROGRESS_END, PROGRESS_START, REVIEW_LABEL, USAGE_LIMIT } from "../shared/record.js";
 import { roundCounts, type RoundCounts } from "../shared/round-header.js";
 import { sliceRanges } from "../shared/slice-ranges.js";
+import { keepSetAside } from "../shared/rescue.js";
 import { limitEnding, type LimitEnding } from "../shared/usage-limit.js";
 import { present, rescueIgnored, setAsideNote, SNAPSHOT } from "./hand-over.js";
 
@@ -109,7 +110,10 @@ export const conclude = async (inputs: Inputs, io: Io): Promise<void> => {
   const pushed = state?.pushed === true;
   let limited: LimitEnding | undefined;
   if (ending.kind === "undecided" || ending.kind === "stopped") {
-    const rescued = ending.kind === "stopped" && inputs.BUILD === "true" && !pushed && (await rescueCommits(inputs, io, loop, bundled));
+    const saved: Saved =
+      ending.kind === "stopped" && inputs.BUILD === "true" && !pushed
+        ? await rescueCommits(inputs, io, loop, bundled, setAside?.movedPast)
+        : { kind: "none" };
     const reason = ending.reason(reasons);
     // The plan's usage limit (#635), on a build that decided and pushed
     // nothing: a wait, which resumes by itself on the service, the parent's
@@ -128,7 +132,7 @@ export const conclude = async (inputs: Inputs, io: Io): Promise<void> => {
           });
     const comment =
       limited === undefined
-        ? failureComment(inputs, reason, retryOf(inputs, ending.kind === "undecided", pushed, state?.pr ?? prdPr(inputs), rescued))
+        ? failureComment(inputs, reason, retryOf(inputs, ending.kind === "undecided", pushed, state?.pr ?? prdPr(inputs), saved))
         : limited.kind === "resumes"
           ? USAGE_LIMIT.resumes(IMPLEMENT_LABEL, limited.until, limited.stopped)
           : USAGE_LIMIT.waits(IMPLEMENT_LABEL, limited.until, inputs.RUN_URL);
@@ -248,6 +252,14 @@ const SKIPPED: Parser<undefined> = () => undefined;
 /** The PRD PR the gate found, where it found one. */
 const prdPr = (inputs: Inputs): number | undefined => (/^[1-9][0-9]{0,9}$/.test(inputs.PRD_PR) ? Number(inputs.PRD_PR) : undefined);
 
+/** What became of a stopped run's commits. */
+type Saved =
+  | { readonly kind: "none" }
+  /** `kept` is the side branch a set-aside rescue was kept on before the push (#578). */
+  | { readonly kind: "rescued"; readonly kept?: string }
+  /** A set-aside rescue that could not be kept, so nothing was pushed over it (#578); `why` as the comment says it. */
+  | { readonly kind: "unsaved"; readonly why: string };
+
 /**
  * **A stopped run's commits, kept on a side branch** (#303): the rescue
  * branch, with a fixed name, and never the PRD branch. A commit pushed there
@@ -264,48 +276,67 @@ const prdPr = (inputs: Inputs): number | undefined => (/^[1-9][0-9]{0,9}$/.test(
  *
  * Under a lease on the rescue as it is read here: a run that stops again
  * overwrites the earlier rescue, which it started from and so holds all of,
- * and nothing that moved it in between is lost silently. With the loop's
- * token, as the PRD branch is pushed, since the agent's commits may touch a
- * workflow file. Whether it rescued them, which the comment says.
+ * and nothing that moved it in between is lost silently. **A rescue the
+ * runner set aside** (#578), at `setAside`, the run does not hold, so it is
+ * kept on a branch of its own first and the push is leased on it; where it
+ * cannot be kept, nothing is pushed over it, and the comment says why. With
+ * the loop's token, as the PRD branch is pushed, since the agent's commits may
+ * touch a workflow file. What became of them, which the comment says.
  */
-const rescueCommits = async (inputs: Inputs, io: Io, loop: Writer, bundled: boolean): Promise<boolean> => {
+const rescueCommits = async (inputs: Inputs, io: Io, loop: Writer, bundled: boolean, setAside: string | undefined): Promise<Saved> => {
   if (!bundled) {
     console.log("No commits ahead of the tip this run started from, so there is nothing to rescue.");
-    return false;
+    return { kind: "none" };
   }
   const rescue = inputs.RESCUE_BRANCH;
   if (inputs.LOOP_TOKEN === "" || inputs.MINT_OUTCOME !== "success") {
     console.log(`::warning::The loop's token was not minted, so the agent's commits were not saved on ${rescue}.`);
-    return false;
+    return { kind: "none" };
   }
   let tip: string;
   try {
     tip = await checkBundle(io.git, path.join(inputs.BUNDLE_DIR, "branch.bundle"), inputs.PRD_BRANCH, inputs.BASE_SHA, "rescued", `\`${inputs.PRD_BRANCH}\``);
   } catch (error) {
     console.log(`::warning::${describe(error)}`);
-    return false;
+    return { kind: "none" };
   }
 
   let lease: Lease;
-  try {
-    lease = { tip: await io.github.branchTip(rescue) };
-  } catch (error) {
-    if (!(error instanceof GitHubError && error.status === 404)) {
-      console.log(`::warning::Could not read ${rescue}, so the agent's commits were not saved there: ${describe(error)}`);
-      return false;
+  let kept: string | undefined;
+  if (setAside === undefined) {
+    try {
+      lease = { tip: await io.github.branchTip(rescue) };
+    } catch (error) {
+      if (!(error instanceof GitHubError && error.status === 404)) {
+        console.log(`::warning::Could not read ${rescue}, so the agent's commits were not saved there: ${describe(error)}`);
+        return { kind: "none" };
+      }
+      lease = { absent: true };
     }
-    lease = { absent: true };
+  } else {
+    const side = await keepSetAside(io.fetcher, loop, rescue, setAside);
+    if (side.kind === "unkept") {
+      console.log(`::warning::The commits set aside on ${rescue} could not be kept on ${side.branch}, so the agent's commits were not pushed over them.`);
+      return { kind: "unsaved", why: UNKEPT(side.branch, side.why) };
+    }
+    kept = side.branch;
+    lease = { tip: setAside };
   }
   try {
     await loop.pushRef({ ref: `refs/heads/${rescue}`, commit: tip, lease });
   } catch (error) {
     if (!(error instanceof WriteFailed)) throw error;
     console.log(`::warning::${inWriteLog(`Could not push the agent's commits to ${rescue}, so nothing was rescued.`)}`);
-    return false;
+    return { kind: "none" };
   }
   console.log(`Rescued the agent's commits, up to ${tip}, to ${rescue}.`);
-  return true;
+  return kept === undefined ? { kind: "rescued" } : { kind: "rescued", kept };
 };
+
+/** Why the run's commits went unsaved where a set-aside rescue could not be kept, as the comment says it after "were not saved on `<rescue>`:". */
+const UNKEPT = (side: string, why: string): string =>
+  `the earlier commits this run set aside there could not be kept on \`${side}\` first, so the branch was left as it was rather than lose them. ` +
+  `${why.charAt(0).toUpperCase()}${why.slice(1)}`;
 
 /**
  * What to do next (#105), which depends on what the run left behind. The
@@ -326,9 +357,11 @@ const rescueCommits = async (inputs: Inputs, io: Io, loop: Writer, bundled: bool
  *   one and asks for the review, and builds nothing.
  *
  * A rescue is named whatever else the retry says, and is the retry where
- * nothing else was: adding the label resumes from it.
+ * nothing else was: adding the label resumes from it. A set-aside rescue kept
+ * on a branch of its own (#578) is named after it, and one that could not be
+ * kept is why the run's commits went unsaved.
  */
-const retryOf = (inputs: Inputs, undecided: boolean, pushed: boolean, pr: number | undefined, rescued: boolean): string => {
+const retryOf = (inputs: Inputs, undecided: boolean, pushed: boolean, pr: number | undefined, saved: Saved): string => {
   const plain = `To try again, add \`${IMPLEMENT_LABEL}\`.`;
   let retry = plain;
   if (inputs.FINISHING === "true") retry = `To try again, add \`${IMPLEMENT_LABEL}\`; it resumes the handover and builds nothing.`;
@@ -343,11 +376,16 @@ const retryOf = (inputs: Inputs, undecided: boolean, pushed: boolean, pr: number
         ? `${built} To open the PRD PR and ask for its review, add \`${IMPLEMENT_LABEL}\`.`
         : `${built} Add \`${REVIEW_LABEL}\` to PRD PR #${pr} if it doesn't have it.`;
   }
-  if (!rescued) return retry;
   const rescue = inputs.RESCUE_BRANCH;
+  if (saved.kind === "unsaved") return `${retry} Its commits were not saved on \`${rescue}\`: ${saved.why}`;
+  if (saved.kind !== "rescued") return retry;
+  const kept =
+    saved.kept === undefined
+      ? ""
+      : ` The earlier commits it set aside are kept on \`${saved.kept}\`, which nothing resumes from; delete it once you are done with them.`;
   return retry === plain
-    ? `Its commits so far are saved on \`${rescue}\`. To resume from them, add \`${IMPLEMENT_LABEL}\`.`
-    : `${retry} Its commits so far are saved on \`${rescue}\`, and the next \`${IMPLEMENT_LABEL}\` run resumes from them.`;
+    ? `Its commits so far are saved on \`${rescue}\`. To resume from them, add \`${IMPLEMENT_LABEL}\`.${kept}`
+    : `${retry} Its commits so far are saved on \`${rescue}\`, and the next \`${IMPLEMENT_LABEL}\` run resumes from them.${kept}`;
 };
 
 /**
@@ -472,9 +510,10 @@ const showStopped = async (
  * What conclude may write, and how many of each (ADR 0005): with the
  * workflow's token, the set-aside note and the failure comment,
  * `agent:implement` off and `agent:blocked` on; with the loop's, the rescue
- * push and the stopped slice's row.
+ * push, and before it the push keeping a set-aside rescue (#578), and the
+ * stopped slice's row.
  */
-const LIMITS: Limits = { comment: 2, removeLabel: 1, addLabel: 1, pushRef: 1, editPullRequest: 1 };
+const LIMITS: Limits = { comment: 2, removeLabel: 1, addLabel: 1, pushRef: 2, editPullRequest: 1 };
 
 const FLAG = choice([true, false]);
 

@@ -324,7 +324,7 @@ describe("implement-prd:conclude ends a run that finished", () => {
   it("asks for exactly the writes it may make", async () => {
     await run();
 
-    expect(asked).toEqual({ comment: 2, removeLabel: 1, addLabel: 1, pushRef: 1, editPullRequest: 1 });
+    expect(asked).toEqual({ comment: 2, removeLabel: 1, addLabel: 1, pushRef: 2, editPullRequest: 1 });
   }, CEILING);
 });
 
@@ -639,6 +639,77 @@ describe("implement-prd:conclude says a rescue was set aside", () => {
     expect(comments()).toHaveLength(2);
     expect(writes().slice(0, 4)).toEqual(["workflow comment", ...STOPPED_WRITES]);
   }, CEILING);
+
+  /** #578: the set-aside commits are not in the run's own, so overwriting the rescue would leave them on no branch. */
+  describe("and keeps it on a branch of its own before a stopped run's commits replace it", () => {
+    /** A rescue saved on another head than the one this run started from, so the runner set it aside. */
+    let earlier: string;
+    let side: string;
+    let made_: string;
+    beforeEach(() => {
+      git(seed, "checkout", "--quiet", "-b", "elsewhere", base);
+      earlier = commit(seed, "feat: on a head since moved");
+      git(seed, "push", "--quiet", origin, `HEAD:refs/heads/${RESCUE}`);
+      github.branches.set(RESCUE, earlier);
+      side = `${RESCUE}-set-aside-${earlier.slice(0, 7)}`;
+      put("runner", "rescue_ignored.json", { branch: RESCUE, movedPast: earlier });
+      made_ = commit(agent, "feat: half of it");
+      bundle();
+    }, CEILING);
+
+    it("pushes the set-aside tip to the side branch, then the run's commits over the rescue, and names both", async () => {
+      await run(AGENT_FAILED({ AGENT_RESULT: "cancelled", TIMED_OUT: "true" }));
+
+      expect(made?.writes.filter((w) => w.type === "pushRef").map((w) => [w.token, ...w.args])).toEqual([
+        ["loop", { ref: `refs/heads/${side}`, commit: earlier, lease: { absent: true } }],
+        ["loop", { ref: `refs/heads/${RESCUE}`, commit: made_, lease: { tip: earlier } }],
+      ]);
+      expect(remoteTip(side)).toBe(earlier);
+      expect(remoteTip(RESCUE)).toBe(made_);
+      expect(comment()).toBe(
+        stopped(
+          `It timed out after 30 minutes. The repository variable \`AGENT_TIMEOUT_MINUTES\` raises the limit. It was building sub-issue #${SUB}.`,
+          `Its commits so far are saved on \`${RESCUE}\`. To resume from them, add \`agent:implement\`. ` +
+            `The earlier commits it set aside are kept on \`${side}\`, which nothing resumes from; delete it once you are done with them.`,
+        ),
+      );
+    }, CEILING);
+
+    it("names the side branch beside a retry that names something else", async () => {
+      await run(AGENT_FAILED({ MERGED: "0123456789abcdef0123456789abcdef01234567" }));
+
+      expect(comment()).toContain(
+        "Its commits so far are saved on `agent/rescue/prd-222`, and the next `agent:implement` run resumes from them. " +
+          `The earlier commits it set aside are kept on \`${side}\`, which nothing resumes from; delete it once you are done with them.\n`,
+      );
+    }, CEILING);
+
+    it("leaves the rescue as it was, and says the run's commits went unsaved, where the side branch cannot be pushed", async () => {
+      const other = git(seed, "rev-parse", "HEAD~1");
+      git(seed, "push", "--quiet", origin, `${other}:refs/heads/${side}`);
+
+      await run(AGENT_FAILED());
+
+      expect(remoteTip(RESCUE)).toBe(earlier);
+      expect(remoteTip(side)).toBe(other);
+      expect(made?.writes.filter((w) => w.type === "pushRef")).toHaveLength(1);
+      expect(comment()).toContain(
+        `· To try again, add \`agent:implement\`. Its commits were not saved on \`${RESCUE}\`: the earlier commits this run set aside there could not be kept on \`${side}\` first, ` +
+          "so the branch was left as it was rather than lose them. GitHub refused the push, and the workflow run's log says why.\n",
+      );
+    }, CEILING);
+
+    it("leaves the rescue as it was where it moved since the runner set it aside", async () => {
+      const moved = commit(seed, "feat: moved since");
+      git(seed, "push", "--quiet", origin, `HEAD:refs/heads/${RESCUE}`);
+
+      await run(AGENT_FAILED());
+
+      expect(remoteTip(RESCUE)).toBe(moved);
+      expect(remoteTip(side)).toBeUndefined();
+      expect(comment()).toContain(`The branch moved since this run set it aside, to ${moved}.\n`);
+    }, CEILING);
+  });
 });
 
 describe("implement-prd:conclude rescues a stopped run's commits to a side branch", () => {
@@ -665,7 +736,9 @@ describe("implement-prd:conclude rescues a stopped run's commits to a side branc
     await run(AGENT_FAILED());
 
     expect(remoteTip(RESCUE)).toBe(later);
-    expect(made?.writes.find((w) => w.type === "pushRef")?.args[0]).toMatchObject({ lease: { tip: earlier } });
+    expect(made?.writes.filter((w) => w.type === "pushRef").map((w) => w.args[0])).toEqual([
+      { ref: `refs/heads/${RESCUE}`, commit: later, lease: { tip: earlier } },
+    ]);
   }, CEILING);
 
   it("pushes nothing where the run made no commits, or pushed its slice", async () => {

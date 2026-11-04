@@ -1,0 +1,6 @@
+schema_version: "1.1"
+name: verification-fetch-token
+context:
+  scaffold_script: place-files.sh
+expected_outcome: |
+  Rules both open findings landed (the merge doc is reworded and COMMIT_ID sits above liveGit's doc comment again), and raises that the fix round's tidy of the checkout's fetch in service/worker-live.ts passes `env` instead of `withToken`, so the fetch carries no credential and a checkout of a private repository fails.

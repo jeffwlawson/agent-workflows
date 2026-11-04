@@ -25,6 +25,7 @@ and touches no network.
 | `review/clean-full-ref-names` | #584 | `1159e02` | **clean**: no finding to fix before merge |
 | `review/clean-upgrade-one-password` | #692 | `9d5c407` | **clean**: no finding to fix before merge |
 | `review/clean-adopter-action-notes` | #681 | `c237a40` | **clean**: no finding to fix before merge |
+| `review/verification-fetch-token` | #584 | `bbb7761`, then a **written** fix round, `7cfe705` | **a verification pass**: the round's tidy of the checkout's fetch drops its token; no false finding on the two findings the round fixed |
 | `fix/rescue-deleted-before-open` | #570 | `b41cecd` | the fix moves the deletion, adds or updates a test, and changes nothing else |
 | `fix/declined-unrunnable-eval` | #698 | `e0bd934` | **clean**: no change (a deterministic grader), and both threads declined because no change answers them |
 | `fix/maintainer-direction-size-guard` | #698 | `e0bd934` | a maintainer's conversation comment is made and reported addressed; both threads declined on that direction |
@@ -67,8 +68,22 @@ empty. **The scope-creep case itself is not yet built**: no real one was found. 
 has asked the question only since #697 (2026-11-03); the maintainer's pre-merge checks read for
 this (#572, #577, #601) raise no unrequested behaviour; and a search of the pull requests for "scope
 creep" finds only #697, whose own evals say no case contains it. A synthetic
-commit on a clean head, the audit's cheaper route, would have no real review text that raises it, so
-no positive control (*Controls*, below), and is not a commit `checkout.sh` could fetch.
+commit on a clean head, the audit's cheaper route, can now be built as a written fix round is, and
+a control written for the case would cover the positive (*Controls*, below); what stands in the way
+is that no real review text raises scope creep for it to be measured against.
+
+`verification-fetch-token` is **the one verification pass** (#699), the case a change to what a
+review that follows a fix round reads (#641, #748) is measured on. Every other case replays a first
+review, so none takes the path such a change narrows. Its fix round is **written, not real**: no
+real round that introduced a regression was found (#658's, #662's and #664's fixed what they were
+asked to and left only stale docs), so the round is #584's real one, 1159e02, which fixed Review
+1's two Low findings on `bbb7761`, with one regression written into it: its tidy of the checkout's
+fetch in `service/worker-live.ts` passes `env` where it passed `withToken`, so the fetch sends no
+token. Only the round's diff shows it; the tests (a local origin) and the typecheck miss it. Its
+`replay.yaml` says how it is built, and its graders are the regression raised (01) and no false
+finding on what the round got right (02). Its positive control for 01 is written for the case,
+since no real review of a written round exists; the other two are #584's real Reviews 1 and 2.
+**Its baseline catch rate is not yet run.**
 
 The inputs of these cases, and of the fix cases on #698, were rendered with the runners' own
 renderers (`fetchPullRequestContext`, `fetchPullRequestFeedback` and `surfaceText` over the pull
@@ -98,7 +113,7 @@ evals/
       replay.yaml          the pull request, its pinned base and head (full SHAs), the brief, the inputs
       inputs/<KEY>.md      one input each, named for the prompt's {{KEY}}
       graders/NN.md        one per expected outcome, each something observable in the output
-      controls/<name>.md   real text with what each grader must rule on it (below)
+      controls/<name>.md   real text, or, for a written fix round, text written for the case, with what each grader must rule on it (below)
     sections.yaml          which sections of the prompt a case reaches (below)
 ```
 
@@ -111,7 +126,7 @@ changes the next run and nothing else needs updating; adding a `{{KEY}}` to it n
 
 The replay, against what the runner does:
 
-- **The review is replayed as a first review** of the approved head: no history, nothing carried,
+- **The review is replayed as a first review** of the approved head, except in a fix-round case (below): no history, nothing carried,
   no CI results, the red check off (as it is here), and no *since the brief* check, which would read
   the base branch's history. The diff is `git diff <base>...<head>`, the three-dot diff the runner
   takes. The pull request's body is reduced to a neutral one with an empty summary, since the
@@ -127,6 +142,16 @@ The replay, against what the runner does:
   script first fetches from GitHub by SHA where they are missing, and checks out the head on the
   pull request's branch, with `origin/<branch>` at the head and `origin/main` at the base. Nothing
   depends on the current `main`.
+- **A fix round, where a case has one** (`fix_round` in its `replay.yaml`, #699), is a patch in the
+  case applied on its `head`, which is then the head the last review read, and committed in your
+  clone with a fixed identity and date, so it is the same commit at every stage (its objects are
+  written there, and no ref). The case is staged at that commit, its parent the reviewed head, so
+  the `git diff <reviewed head> HEAD` its prompt gives works in the checkout. Its prompt carries
+  what the runner gives a verification pass: the case sets `HISTORY`, `OPEN_FINDINGS` and a
+  `DIFF_SCOPE` with `{{PR_STAT}}` and `{{SINCE_DIFF}}` in it, which the stage fills in with the
+  pull request's `git diff --stat` and the round's diff, and `PR_DIFF` is the pull request's whole
+  diff of each file the round touches. A round whose scoped form is no smaller than the whole diff
+  is refused, since the runner would carry the whole one.
 
 This route is the fallback the issue allows, taken because the tool cannot render a runner's prompt
 itself; it was written against Claude Code **2.1.290**.
@@ -174,7 +199,7 @@ false-change rate: the share of completed runs that failed any of its graders.
 
 A grader that fails a text it should pass is broken, and one that passes a text it should fail is
 too loose; neither shows in a pass rate. So every grader has a **positive** and a **negative
-control** (#718, held by the layout test): `controls/<name>.md` in its case, real text with a
+control** (#718, held by the layout test): `controls/<name>.md` in its case, real text (or, for a written fix round, text written for the case) with a
 `source` naming where it was read and an `expect` saying, per grader, `pass` or `fail`. They are
 the loop's own review at the case's head (which missed what the case grades, so a negative for those
 graders), the merge-check or later review that caught it (a positive), and for `fix` the change that
@@ -218,15 +243,17 @@ fails one, before the next comparison that declares it.
 written for a state of one input (`gated`), and the layout test fails on a section it leaves out. A
 case reaches a gated section only where it sets that input to something other than the "nothing
 here" value `suite.yaml` fixes it to; `--stage-only` (and every run) prints each case's sections
-and share of the prompt. As the cases stand, every one is a first review with nothing carried, so
-none reaches the verification pass, the open, settled or noted findings, the carried follow-ups, a
-failing CI check or a configured red check: about a quarter of the review prompt. A case that sets
-one of those inputs is what would reach it.
+and share of the prompt. As the cases stand, one, `verification-fetch-token`, reaches the
+verification pass and the open findings; every other is a first review with nothing carried. No
+case reaches the settled or noted findings, the carried follow-ups, a failing CI check or a
+configured red check. A case that sets one of those inputs is what would reach it.
 
 The values `suite.yaml` fixes are the strings the runners' own renderers return for that state, and
 `tests/evals.test.ts` holds them there (`review/review.ts`'s inline strings are read in its source),
 so a renderer that changes its words fails the layout test rather than drifting from the replay.
-Every input the suite fixes needs its renderer named in that test.
+Every input the suite fixes needs its renderer named in that test. A fix-round case's `HISTORY`,
+`OPEN_FINDINGS` and `DIFF_SCOPE` are held the same way, to `describeHistory`,
+`renderCarriedFindings` and `renderDiffScope`.
 
 ## What a fix replay cannot exercise
 

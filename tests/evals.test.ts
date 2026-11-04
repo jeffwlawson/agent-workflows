@@ -1,3 +1,4 @@
+import { execFileSync } from "node:child_process";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
@@ -20,9 +21,12 @@ import {
   report,
   runRecords,
   sandboxOf,
+  patchFiles,
   sections,
+  stage,
   stageControls,
   CONTROL_FILE,
+  SCOPE_PLACEHOLDERS,
   type EvalResult,
   type RunRecord,
   type StageMeta,
@@ -38,6 +42,7 @@ import { renderDiffScope } from "../review/review-diff.js";
 import { renderFixDiffScope } from "../fix/fix-diff.js";
 import { describeHistory } from "../review/review-round.js";
 import { renderSinceBriefForReview } from "../review/since-brief.js";
+import { SUBPROCESS_TIMEOUT } from "../vitest.config.js";
 
 /**
  * The golden-PR evals' layout (#617), held with no model and no network.
@@ -414,6 +419,152 @@ describe("the inputs the suites fix", () => {
       check();
     },
   );
+});
+
+/**
+ * A case that replays a verification pass (#699): a fix round written as a
+ * patch, applied on the case's head, which is then the head the last review
+ * read. What it sets in place of the suite's first-review inputs is what the
+ * runner's renderers return for a review that follows a fix round, held here
+ * as the suite's own inputs are, so a renderer that changes its words fails
+ * here rather than leaving the case stale.
+ */
+describe("the review cases that replay a fix round", () => {
+  const suite = readSuite(ROOT, "review");
+  const cases = caseDirs(ROOT, "review").map(readCase);
+  const rounds = cases.flatMap((c) => (c.fixRound === undefined ? [] : [{ c, round: c.fixRound }]));
+  const SCOPED = ["HISTORY", "OPEN_FINDINGS", "DIFF_SCOPE"];
+
+  it("include one, and only a fix-round case sets what a verification pass is given", () => {
+    expect(rounds.length).toBeGreaterThan(0);
+    for (const c of cases.filter((x) => x.fixRound === undefined)) {
+      expect(SCOPED.filter((key) => c.inputs[key] !== undefined), c.name).toEqual([]);
+    }
+  });
+
+  describe.each(rounds.map(({ c, round }) => [c.name, c, round] as const))("case %s", (_name, c, round) => {
+    const patch = fs.readFileSync(path.join(c.dir, round.patch), "utf8");
+
+    it("follows a fix round, as describeHistory says of one", () => {
+      expect(c.inputs["HISTORY"]).toBe(describeHistory({ afterFixRound: true, unreviewedCommits: true, reviewedHead: c.head }));
+    });
+
+    it("hands over the findings the round was started on, as renderCarriedFindings renders them", () => {
+      const open = c.inputs["OPEN_FINDINGS"] ?? "";
+      const carried = open.split("\n").map((line) => {
+        const match = /^- `([^`]+)`: (.*)$/.exec(line);
+        expect(match, line).not.toBeNull();
+        return { id: match?.[1] ?? "", threadId: "", text: match?.[2] ?? "", title: "", anchor: "" };
+      });
+
+      expect(open).not.toBe(suite.inputs["OPEN_FINDINGS"]);
+      expect(open).toBe(renderCarriedFindings(carried));
+      // Each is on a thread the review is shown, as the runner shows it.
+      for (const finding of carried) expect(c.inputs["DISCUSSION"], finding.id).toContain(`agent-finding ${finding.id} `);
+    });
+
+    it("says its diff is what changed since the last review, as renderDiffScope says of a scoped one, for the files the patch touches", () => {
+      const files = patchFiles(patch);
+
+      expect(files.length).toBeGreaterThan(0);
+      expect(c.inputs["DIFF_SCOPE"]).toBe(
+        renderDiffScope({ kind: "since", reviewedHead: c.head, stat: SCOPE_PLACEHOLDERS.stat, since: SCOPE_PLACEHOLDERS.since, files, diff: "" }, c.baseRef),
+      );
+    });
+
+    it("reaches the sections a verification pass reads", () => {
+      const template = fs.readFileSync(path.join("review", "prompt.md"), "utf8");
+      const reached = reach(template, readSections(ROOT, "review"), suite, caseInputs(suite, c));
+
+      expect(reached.reached).toEqual(expect.arrayContaining(["WHAT THIS REVIEW FOLLOWS", "FINDINGS AN EARLIER REVIEW LEFT OPEN"]));
+    });
+  });
+
+  it("reads the files a patch changes off its diff --git lines", () => {
+    const patch = ["diff --git a/b.ts b/b.ts", "--- a/b.ts", "+++ b/b.ts", "diff --git a/a.ts b/a.ts", "diff --git a/old.ts b/new.ts"].join("\n");
+
+    expect(patchFiles(patch)).toEqual(["a.ts", "b.ts", "new.ts"]);
+  });
+});
+
+/**
+ * The stage of a fix-round case (#699), on a repository made here: the round
+ * is committed on the reviewed head, the prompt carries the scoped diff, and
+ * the scaffold's checkout holds the reviewed head under the round, so the
+ * `git diff <reviewed head> HEAD` the scoped text gives prints the round.
+ */
+describe("a fix-round case's stage", { timeout: 12 * SUBPROCESS_TIMEOUT }, () => {
+  const run = (cwd: string, command: string, args: readonly string[]): string =>
+    execFileSync(command, [...args], { cwd, encoding: "utf8", timeout: SUBPROCESS_TIMEOUT });
+  const git = (cwd: string, ...args: string[]): string =>
+    run(cwd, "git", ["-c", "user.name=t", "-c", "user.email=t@example.invalid", "-c", "commit.gpgSign=false", ...args]).trim();
+  const write = (file: string, text: string): void => {
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    fs.writeFileSync(file, text);
+  };
+
+  it("commits the round on the reviewed head, carries the scoped diff, and checks out both", () => {
+    const scratch = fs.mkdtempSync(path.join(os.tmpdir(), "fix-round-stage-"));
+    try {
+      const root = path.join(scratch, "repo");
+      fs.mkdirSync(root);
+      git(root, "init", "--quiet", "--initial-branch=main");
+      write(path.join(root, "package-lock.json"), "{}\n");
+      write(path.join(root, "kept.ts"), "export const kept = 1;\n");
+      write(path.join(root, "touched.ts"), "export const touched = 1;\n");
+      git(root, "add", ".");
+      git(root, "commit", "--quiet", "-m", "base");
+      const base = git(root, "rev-parse", "HEAD");
+      write(path.join(root, "kept.ts"), `export const kept = 2;\n${"// the rest of the pull request\n".repeat(40)}`);
+      write(path.join(root, "touched.ts"), "export const touched = 2;\n");
+      git(root, "commit", "--quiet", "-am", "the pull request");
+      const reviewed = git(root, "rev-parse", "HEAD");
+      write(path.join(root, "touched.ts"), "export const touched = 3;\n");
+      const patch = run(root, "git", ["diff"]);
+      git(root, "checkout", "--quiet", "--", "touched.ts");
+      fs.mkdirSync(path.join(root, "node_modules"));
+
+      fs.mkdirSync(path.join(root, "evals"));
+      fs.copyFileSync(path.join("evals", "checkout.sh"), path.join(root, "evals", "checkout.sh"));
+      write(path.join(root, "review", "prompt.md"), "# HISTORY\n\n{{HISTORY}}\n\n# PR DIFF\n\n{{DIFF_SCOPE}}\n\n```diff\n{{PR_DIFF}}\n```\n");
+      write(path.join(root, "evals", "review", "suite.yaml"), "execution: { max_turns: 1, timeout_seconds: 60, allowed_tools: [Read] }\ninputs:\n  HISTORY: none\nnote: \"At {{HEAD}}.\"\n");
+      write(path.join(root, "evals", "review", "sections.yaml"), "always: [HISTORY, PR DIFF]\n");
+      const dir = path.join(root, "evals", "review", "round");
+      write(path.join(dir, "case.yaml"), "name: round\n");
+      write(path.join(dir, "brief.md"), "The brief.\n");
+      write(path.join(dir, "graders", "01.md"), "---\ntype: llm\nfocus: last_message\n---\n\nIt says so.\n");
+      write(path.join(dir, "round.patch"), patch);
+      write(path.join(dir, "inputs", "DIFF_SCOPE.md"), `Since the last review:\n\n${SCOPE_PLACEHOLDERS.stat}\n\n${SCOPE_PLACEHOLDERS.since}\n`);
+      write(
+        path.join(dir, "replay.yaml"),
+        `pr: 1\nrepository: ${root}\nbase_ref: main\nbase: ${base}\nhead: ${reviewed}\nbrief: brief.md\nfix_round: { patch: round.patch, message: the round }\ninputs:\n  HISTORY: after a round\n  BRANCH: feature\n`,
+      );
+
+      const out = path.join(scratch, "stage");
+      const meta = stage(root, "review", out);
+      const head = meta.cases[0]?.head ?? "";
+      const prompt = fs.readFileSync(path.join(out, "evals", "round", "prompt.md"), "utf8");
+
+      expect(git(root, "rev-parse", `${head}^`)).toBe(reviewed);
+      expect(git(root, "log", "-1", "--format=%s", head)).toBe("the round");
+      // The same patch on the same head is the same commit at every stage.
+      expect(stage(root, "review", path.join(scratch, "again")).cases[0]?.head).toBe(head);
+      expect(prompt).toContain(`At ${head}.`);
+      expect(prompt).toMatch(/ kept\.ts +\| 42 /);
+      expect(prompt).toContain("+export const touched = 3;");
+      expect(prompt).not.toContain(SCOPE_PLACEHOLDERS.since);
+      // The prompt's diff is the pull request's diff of the touched file alone.
+      expect(prompt).not.toContain("the rest of the pull request");
+
+      const checkout = path.join(scratch, "checkout");
+      fs.mkdirSync(checkout);
+      run(checkout, "bash", [path.join(out, "evals", "round", "place-files.sh")]);
+      expect(git(checkout, "rev-parse", "HEAD")).toBe(head);
+      expect(run(checkout, "git", ["diff", reviewed.slice(0, 7), "HEAD"])).toContain("+export const touched = 3;");
+    } finally {
+      fs.rmSync(scratch, { recursive: true, force: true });
+    }
+  });
 });
 
 /**

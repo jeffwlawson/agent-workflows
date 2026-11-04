@@ -333,7 +333,9 @@ export interface ReviewOutput {
   /**
    * The agent's judgement that **another pass over this branch will not settle
    * it**, in one line naming which case it is: the wrong thing was built, the
-   * issue itself was wrong, or a check fails and the diff does not explain why.
+   * issue itself was wrong or unclear (doing what it asked is the defect, or the
+   * code does not settle which of its readings was meant), or a check fails and
+   * the diff does not explain why.
    *
    * Absent on nearly every review, and that is the point — it is what tells a
    * maintainer they have to read this one rather than act on it, so a review

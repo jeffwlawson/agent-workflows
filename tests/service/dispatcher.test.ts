@@ -110,7 +110,7 @@ const fakeFiles = () => {
     /** How many writes were renamed over the file: each one a whole write of it. */
     written: 0,
     /** What the file holds now, parsed. */
-    held: () => JSON.parse(disk.get(STATE_PATH) ?? "null") as { version: number; asks: { number: number; dispatches: number; told: boolean }[]; jobs: { id: string }[] },
+    held: () => JSON.parse(disk.get(STATE_PATH) ?? "null") as { version: number; asks: { number: number; dispatches: number; told: boolean }[]; jobs: { id: string; label?: string }[] },
     files: {
       read: (path) => {
         if (faults.unreadable) throw new Error("EACCES: permission denied");
@@ -1669,14 +1669,24 @@ describe("the scan after a restart", () => {
   });
 });
 
-/** A worker's process ended by its job: it holds nothing, and its restart announces its start and is scanned for. */
+/** The first token request of each job the worker holds: each has started running (#600). */
+const startHeld = async (s: ReturnType<typeof setup>) => {
+  for (const job of s.worker.holds) await s.dispatcher.token(tokenRequest({ jobId: job.id, kind: "read" }));
+};
+
+/**
+ * A worker's process ended by its job: every job it held had started, and
+ * asked for a token; it holds nothing, and its restart announces its start
+ * and is scanned for.
+ */
 const crash = async (s: ReturnType<typeof setup>) => {
+  await startHeld(s);
   s.worker.holds = [];
   await announce(s);
 };
 
 const STOPPED = (where: string, label: string) =>
-  `scan: skipped on ${where}: a scan has dispatched it for \`${label}\` 2 times, SCAN_DISPATCH_LIMIT's 2, so it is left for a person to add \`${label}\` again`;
+  `scan: skipped on ${where}: its job for \`${label}\` has started 2 times, SCAN_DISPATCH_LIMIT's 2, so it is left for a person to add \`${label}\` again`;
 
 /**
  * A dispatcher's restart alone (#597): the worker still holds the jobs the old
@@ -1971,6 +1981,60 @@ describe("the scan's limit", () => {
     expect(s.comments[0]?.body).toContain(`for \`${REVIEW_LABEL}\` once`);
   });
 
+  it("never counts out a job queued behind one that crashed the worker, which never started, however many restarts it sits through (#600)", async () => {
+    const s = setup();
+    s.repository.items = [pullItem([REVIEW_LABEL]), pullItem([REVIEW_LABEL], { number: 8 })];
+    await s.dispatcher.scan();
+
+    for (let restart = 0; restart < 4; restart += 1) {
+      // #7's job starts and ends the worker's process; #8's, queued behind it, never starts.
+      const running = s.worker.holds.find((job) => "pr" in job && job.pr === 7);
+      if (running !== undefined) await s.dispatcher.token(tokenRequest({ jobId: running.id, kind: "read" }));
+      s.worker.holds = [];
+      await announce(s);
+    }
+
+    expect(jobsPosted(s).filter((job) => "pr" in job && job.pr === 7)).toHaveLength(2);
+    expect(jobsPosted(s).filter((job) => "pr" in job && job.pr === 8)).toHaveLength(5);
+    expect(s.comments.map(({ number }) => number)).toEqual([7]);
+    expect(s.lines.some((line) => line.includes("owner/repo#8") && line.includes("SCAN_DISPATCH_LIMIT"))).toBe(false);
+  });
+
+  it("counts a scan's dispatch once where its job asks for tokens before the worker's answer to its post arrives (#600)", async () => {
+    const files = fakeFiles();
+    const s = setup({ holdPosts: true, files });
+    s.repository.items = [pullItem([REVIEW_LABEL])];
+    const scanned = s.dispatcher.scan();
+    while (s.heldPosts.length === 0) await new Promise((resolve) => setImmediate(resolve));
+
+    expect((await s.dispatcher.token(tokenRequest({ jobId: "job-1", kind: "read" }))).status).toBe(200);
+    s.heldPosts.forEach((release) => release());
+    await scanned;
+    expect((await s.dispatcher.token(tokenRequest({ jobId: "job-1", kind: "write" }))).status).toBe(200);
+
+    expect(files.held().asks).toEqual([expect.objectContaining({ number: 7, dispatches: 1 })]);
+  });
+
+  it("counts an issue's scan once where its implement job asks for a token before its implement-prd job is reserved (#600)", async () => {
+    const files = fakeFiles();
+    const s = setup({ holdPosts: true, files });
+    s.repository.items = [issueItem([IMPLEMENT_LABEL])];
+    const scanned = s.dispatcher.scan();
+    while (s.heldPosts.length === 0) await new Promise((resolve) => setImmediate(resolve));
+
+    // The implement job starts before the implement-prd job of the same dispatch is reserved.
+    expect((await s.dispatcher.token(tokenRequest({ jobId: "job-1", kind: "read" }))).status).toBe(200);
+    s.heldPosts[0]?.();
+    while (s.heldPosts.length < 2) await new Promise((resolve) => setImmediate(resolve));
+    s.heldPosts[1]?.();
+    await scanned;
+    expect(jobsPosted(s).map((job) => job.workflow)).toEqual(["implement", "implement-prd"]);
+    expect((await s.dispatcher.token(tokenRequest({ jobId: "job-2", kind: "read" }))).status).toBe(200);
+
+    expect(files.held().asks).toEqual([expect.objectContaining({ number: 12, dispatches: 1 })]);
+    expect(files.held().jobs.map((job) => job.label)).toEqual([undefined, undefined]);
+  });
+
   it("counts no delivery's dispatch", async () => {
     const s = setup();
     s.repository.items = [pullItem([REVIEW_LABEL])];
@@ -2117,7 +2181,7 @@ describe("the scan's merged pull requests (#603)", () => {
     expect(linesOn(s, "owner/repo#7").slice(2)).toEqual([`${STOPPED("owner/repo#7", FOLLOW_UPS_LABEL)}; commented on it`, STOPPED("owner/repo#7", FOLLOW_UPS_LABEL)]);
     expect(s.comments).toHaveLength(1);
     const body = s.comments[0]?.body ?? "";
-    expect(body).toContain("dispatched this merged pull request's follow-ups job 2 times");
+    expect(body).toContain("started this merged pull request's follow-ups job 2 times");
     expect(body).toContain("the filing refused or failed");
     expect(body).not.toContain("most likely by ending the worker's process");
     expect(body).toContain(`remove \`${FOLLOW_UPS_LABEL}\` and add it again by hand`);
@@ -2582,6 +2646,8 @@ describe("the dispatcher's state file", () => {
     s.restart();
     await crash(s);
     expect(s.posted).toHaveLength(4);
+    expect(files.held().asks).toEqual([]);
+    await startHeld(s);
     expect(files.held().asks).toEqual([expect.objectContaining({ number: 7, dispatches: 1, told: false })]);
 
     s.repository.items = [];
@@ -2723,8 +2789,37 @@ describe("the dispatcher's state file", () => {
 
     expect(s.posted).toHaveLength(4);
     expect(files.written - before).toBe(1);
-    expect(files.held().jobs).toHaveLength(4);
-    expect(files.held().asks).toHaveLength(4);
+    expect(files.held().jobs.map((job) => job.label)).toEqual(Array(4).fill(REVIEW_LABEL));
+    expect(files.held().asks).toEqual([]);
+  });
+
+  it("counts a scan's job dispatched before the dispatcher's restart at its first token request after it (#600)", async () => {
+    const files = fakeFiles();
+    const s = setup({ files });
+    s.repository.items = [pullItem([REVIEW_LABEL])];
+    await s.dispatcher.scan();
+    expect(files.held().asks).toEqual([]);
+
+    s.restart();
+    await s.dispatcher.scan();
+    expect(linesOn(s, "owner/repo#7").at(-1)).toBe("scan: skipped on owner/repo#7: the worker holds a job for it");
+    expect((await s.dispatcher.token(tokenRequest({ jobId: "job-1", kind: "read" }))).status).toBe(200);
+
+    expect(files.held().asks).toEqual([expect.objectContaining({ number: 7, label: REVIEW_LABEL, dispatches: 1 })]);
+    expect(files.held().jobs).toEqual([expect.not.objectContaining({ label: expect.anything() })]);
+  });
+
+  it("reads a stored scan's job without a label, an older file's, as a dispatch already counted (#600)", async () => {
+    const files = fakeFiles();
+    const deadline = new Date(START.getTime() + 60 * MINUTE_MS).toISOString();
+    files.disk.set(
+      STATE_PATH,
+      JSON.stringify({ version: 1, asks: [], jobs: [{ id: "job-old", repo: REPO, deadline, workflow: "review", number: 7, posted: true, scanned: true, order: 1 }] }),
+    );
+    const s = setup({ files });
+
+    expect((await s.dispatcher.token(tokenRequest({ jobId: "job-old", kind: "read" }))).status).toBe(200);
+    expect(files.held().asks).toEqual([]);
   });
 
   it("holds no token, key, secret or signature: identifiers, counts, flags and dates only, and no instance id", async () => {

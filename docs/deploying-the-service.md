@@ -283,7 +283,7 @@ so does an App whose own record cannot be read, since that is where the App's ow
 | `TOKEN_PORT` | optional | `8791` | the token door's port; the worker asks at `POST /token`, and announces its start at `POST /started` |
 | `JOB_DEADLINE_MARGIN_MINUTES` | optional | `60` | added to a job's own time limit for its deadline, review's (its CI wait and `AGENT_REVIEW_TIMEOUT_MINUTES`) or fix's, update-branch's and implement's (`AGENT_TIMEOUT_MINUTES`), or implement-prd's (35 minutes and `AGENT_TIMEOUT_MINUTES`), or follow-ups' (10 minutes), or merge's (20 minutes), covering the phases around the runner's and the time a job waits in the worker's queue: in its lane, behind an earlier job for its item, and, for an update-branch whose merge conflicted, for the agent lane, a hold on the plan's usage limit included (*The worker*, below) |
 | `EXTRA_OWNERS` | optional | `""` | accounts, comma-separated, whose installations the dispatcher serves besides the App owner's; empty is none. An installation on any other account is refused |
-| `SCAN_DISPATCH_LIMIT` | optional | `2` | how many times the scan dispatches an item for a label that stays on across scans before it leaves the item for a person, and comments once to say so (*The scan's limit*, below), never applied to `agent:merge`. At least `1`: `0` is refused at start, since it would not turn the scan off |
+| `SCAN_DISPATCH_LIMIT` | optional | `2` | how many times a scan's job for an item's label that stays on across scans may start (ask for its first token) before the scan leaves the item for a person, and comments once to say so (*The scan's limit*, below), never applied to `agent:merge`. At least `1`: `0` is refused at start, since it would not turn the scan off |
 | `SCAN_MERGED_WINDOW_DAYS` | optional | `7` | how many days back the scan lists merged pull requests still carrying `agent:follow-ups` (*What a restart recovers*, below), so one someone left the label on for months is not dispatched at every restart. A positive whole number: `0` is refused at start |
 | `STATE_FILE` | optional | `""` | the path of the file the dispatcher keeps its dispatched jobs and the scan's counts in, so a restart keeps them (*What it does not keep*, below). Empty is none: both are held in memory only. A path it cannot write to is refused at start, naming the setting. One dispatcher per file |
 
@@ -313,7 +313,7 @@ Each door also answers `GET /health` with `200`.
     are answered, and they end normally. Every other record is dropped. Where the worker cannot be
     reached at that start, the records are kept, and the scan its announcement starts decides.
 - **The scan's counts.** With `STATE_FILE` unset they are held in memory, and a restarted
-  dispatcher forgets how many times its scans have dispatched each item (*The scan's limit*,
+  dispatcher forgets how many times each item's scan job has started (*The scan's limit*,
   below), so each item's count starts from zero again, and the comment saying the scan stopped may
   be posted once more. With it set they are kept: an item at the limit is not dispatched again
   after a restart, and its comment is not posted a second time. A count is still dropped for an
@@ -322,7 +322,9 @@ Each door also answers `GET /health` with `200`.
 **The state file**, where `STATE_FILE` names one, is one small JSON file: a `version`, the scan's
 counts (`asks`: the repository, item, label, dispatches, whether the comment was posted, and when
 the last was counted) and the dispatched jobs (`jobs`: each one's id, repository, item, kind,
-deadline, whether the worker had answered its post, whether a scan dispatched it, and its order).
+deadline, whether the worker had answered its post, whether a scan dispatched it, its order, and,
+for a scan's job that has not asked for a token yet, the label its start is counted toward). A job
+stored without that label, as an older file's are, is read as one already counted.
 It holds no token, key, secret or signature, and no instance id, which is fresh at each start. It
 is written on each change, a scan's pass writing once at its end however many items it decided, to
 a temporary file beside it (`<file>.tmp`), flushed, then renamed over it, so a crash leaves the old
@@ -412,8 +414,14 @@ the loop's commands take the trigger label off however a decided run ends. Two l
 cleanly, leaves its label on; the worker is restarted, its start makes the dispatcher scan, and the
 scan dispatches the item again, which ends the process again. So the dispatcher counts the
 dispatches its scans make, whatever started the scan, per item and label: another item, and
-another label on the same item, count apart. Past `SCAN_DISPATCH_LIMIT` (default `2`) a crashing
-job is tried no more: each later scan skips the item with a line naming it, the label and the
+another label on the same item, count apart. A dispatch is counted when its job **starts**, at the
+job's first token request, which every kind makes before it does any work, and once however many
+kinds the label starts. A job lost from the worker's queue before it started, such as one queued
+behind a job that crashed the worker, asks for no token and is not counted, however many restarts
+it sits through. A job that started and was then lost is counted, whatever ended it: a long job
+cut by two unrelated restarts counts twice, as a crash does. A scan's job dispatched before a
+dispatcher's restart and started after it is still counted, where `STATE_FILE` is set. Past `SCAN_DISPATCH_LIMIT` (default `2`) a crashing
+job is tried no more: once its job has started that many times, each later scan skips the item with a line naming it, the label and the
 limit, and the first one comments once on the item, naming the label to remove and add again by
 hand. On a merged pull request's `agent:follow-ups` the comment says instead that the filing refused
 or failed, which leaves the label on by design, or ended before its run did. A comment that cannot be posted is logged, the scan goes on, and the next scan tries it
@@ -813,9 +821,10 @@ The job door also answers `GET /health` with `200`.
   waiting behind them. Its start announcement makes the dispatcher scan, which dispatches each of
   them again, the running ones and the queued ones alike, since each item keeps its label. Where
   the dispatcher is down when the worker starts, its own start scans instead. A job that itself
-  ends the worker's process is dispatched again by the scan up to `SCAN_DISPATCH_LIMIT`'s number of
-  times, and then left for a person, with a comment on its item saying so (*The scan's limit*,
-  above).
+  ends the worker's process is dispatched again by the scan until it has started
+  `SCAN_DISPATCH_LIMIT`'s number of times, and then left for a person, with a comment on its item
+  saying so (*The scan's limit*, above). A queued job lost before it started is not counted, so it
+  is dispatched again at every restart until it runs.
 - **A worker restarted while the plan's usage limit holds** forgets the hold and the announcement
   it would have made at the reset: both are in its memory only. Its start announcement makes the
   dispatcher scan, which still skips an item whose resume note names a reset still ahead, so

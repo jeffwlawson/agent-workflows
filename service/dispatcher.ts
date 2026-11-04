@@ -176,8 +176,9 @@ export interface DispatcherEdges {
   /** The release this dispatcher is, which each job carries. */
   readonly version: string;
   /**
-   * How many times the scan dispatches an item for a label that stays on
-   * across scans, before it leaves the item for a person (#596). At least `1`.
+   * How many times a scan's job for an item's label that stays on across
+   * scans may start, at its first token request (#600), before the scan
+   * leaves the item for a person (#596). At least `1`.
    */
   readonly scanLimit: number;
   /**
@@ -474,7 +475,7 @@ const message = (error: unknown): string => (error instanceof Error ? error.mess
 /**
  * What the dispatcher remembers of a job it dispatched: enough to mint for
  * it, to tell a scan what it is on, whether the worker has answered its
- * post yet, and whether a scan dispatched it.
+ * post yet, whether a scan dispatched it, and what its start is counted toward.
  */
 interface Dispatched {
   readonly repo: string;
@@ -485,17 +486,41 @@ interface Dispatched {
   readonly scanned: boolean;
   /** Its place among every job the dispatcher has reserved, first `1`. */
   readonly order: number;
+  /**
+   * The label a scan dispatched it for, whose count (`asks`) it adds to at
+   * its first token request, when it has started running (#600), and which
+   * it no longer carries once counted. Absent on a delivery's job, a job the
+   * scan's limit is not applied to, and one already counted.
+   */
+  readonly label?: string;
+  /** The scan's dispatch it is one job of, while it is uncounted, held in memory only. */
+  readonly scan?: ScanOrigin;
 }
 
 /**
- * Who a dispatch is for: a scan, told of each job of it the worker takes, or a
- * delivery, with the reservations made before it arrived.
+ * A scan's dispatch for one item: the label its jobs are counted toward once
+ * one of them starts, or none where the limit is not applied to it, and
+ * whether one has. Shared by every kind the label starts, so a kind reserved
+ * after another of the same dispatch has started, as `dispatchIssue`'s second
+ * is, carries no label to be counted again (#600).
  */
-type Origin = { readonly taken: () => void } | { readonly arrived: number };
+interface ScanOrigin {
+  readonly counts: string | undefined;
+  counted: boolean;
+}
+
+/**
+ * Who a dispatch is for: a scan, or a delivery, with the reservations made
+ * before it arrived.
+ */
+type Origin = ScanOrigin | { readonly arrived: number };
+
+/** A scan's origin, counting toward `label` where there is one. */
+const scanOf = (label: string | undefined): ScanOrigin => ({ counts: label, counted: false });
 
 /**
  * What the dispatcher counts of one item's label a scan lists (#596): how many
- * times a scan has dispatched it, and whether the comment saying the scan has
+ * times a scan's job for it has started, at its first token request (#600), and whether the comment saying the scan has
  * stopped was posted.
  */
 interface Asked {
@@ -518,11 +543,11 @@ const times = (limit: number): string => (limit === 1 ? "once" : `${limit} times
  */
 const stoppedComment = (label: string, limit: number): string =>
   label === FOLLOW_UPS_LABEL
-    ? `**The service has stopped dispatching \`${label}\` here.** Its scan, which runs at each restart, has dispatched this merged pull request's ` +
+    ? `**The service has stopped dispatching \`${label}\` here.** Its scan, which runs at each restart, has started this merged pull request's ` +
       `follow-ups job ${times(limit)}, and each time \`${label}\` was still on at the next scan: the filing refused or failed, which leaves the label on ` +
       `by design and says why in the run's own comment where it got that far, or the job ended before its run did. The scan will not dispatch it again. ` +
       `To try once more, remove \`${label}\` and add it again by hand.`
-    : `**The service has stopped dispatching \`${label}\` here.** Its scan, which runs at each restart, has dispatched this item's job for ` +
+    : `**The service has stopped dispatching \`${label}\` here.** Its scan, which runs at each restart, has started this item's job for ` +
       `\`${label}\` ${times(limit)}, and each time the label was still on at the next scan: the job ended before its run did, ` +
       `most likely by ending the worker's process. The scan will not dispatch it again. To try once more, remove \`${label}\` and add it again by hand.`;
 
@@ -560,7 +585,7 @@ export const createDispatcher = (edges: DispatcherEdges) => {
   /** How many jobs have been reserved so far, which a delivery notes at its arrival. */
   let reservations = 0;
   /**
-   * Each item's label a scan has dispatched for, by `askedKey` (#596). Kept in
+   * Each item's label whose scan's job has started, at its first token request (#600), by `askedKey` (#596). Kept in
    * memory, and in the state file where there is one (#618); dropped when a
    * scan no longer lists the item with the label, and reset by a delivery for it.
    */
@@ -587,7 +612,7 @@ export const createDispatcher = (edges: DispatcherEdges) => {
   /** Whether a change has not been written yet: one that came during a pass, or whose write failed. */
   let unwritten = false;
   const snapshot = (): DispatcherState => ({
-    jobs: [...jobs].map(([id, job]) => ({ id, ...job })),
+    jobs: [...jobs].map(([id, { scan: _, ...job }]) => ({ id, ...job })),
     asks: [...asks.values()].map(({ repo, number, label, dispatches, told, at }) => ({ repo, number, label, dispatches, told, ...(at === undefined ? {} : { at }) })),
   });
   const write = (): void => {
@@ -685,7 +710,7 @@ export const createDispatcher = (edges: DispatcherEdges) => {
     const job = { ...fields, id: newId(), version: edges.version, instance, deadline: deadline.toISOString(), appLogin: login, variables } as Job;
 
     prune();
-    const scanned = "taken" in origin;
+    const scanned = "counts" in origin;
     const answers = (held: Dispatched): boolean => scanned || (held.scanned && (!held.posted || held.order > origin.arrived));
     const same = [...jobs.values()].find(
       (held) => held.repo === job.repo && held.number === ("issue" in job ? job.issue : job.pr) && held.workflow === job.workflow && answers(held),
@@ -694,7 +719,16 @@ export const createDispatcher = (edges: DispatcherEdges) => {
     // Known before the worker hears of it, so its first token request cannot
     // arrive ahead of the job it names.
     reservations += 1;
-    const entry = { repo: job.repo, deadline, workflow: job.workflow, number: "issue" in job ? job.issue : job.pr, scanned, order: reservations };
+    const counts = "counts" in origin && !origin.counted ? origin.counts : undefined;
+    const entry = {
+      repo: job.repo,
+      deadline,
+      workflow: job.workflow,
+      number: "issue" in job ? job.issue : job.pr,
+      scanned,
+      order: reservations,
+      ...(counts === undefined || !("counts" in origin) ? {} : { label: counts, scan: origin }),
+    };
     jobs.set(job.id, { ...entry, posted: false });
     changed();
     const body = JSON.stringify(job);
@@ -711,8 +745,10 @@ export const createDispatcher = (edges: DispatcherEdges) => {
       changed();
       return `failed on ${where}: the worker answered ${status}`;
     }
-    if (jobs.has(job.id)) jobs.set(job.id, { ...entry, posted: true });
-    if ("taken" in origin) origin.taken();
+    // Read again rather than rebuilt from `entry`: a job the worker started
+    // at once may have asked for its first token, and been counted, already.
+    const held = jobs.get(job.id);
+    if (held !== undefined) jobs.set(job.id, { ...held, posted: true });
     changed();
     return `dispatched ${where}${at} as job ${job.id}, deadline ${job.deadline}`;
   };
@@ -988,6 +1024,32 @@ export const createDispatcher = (edges: DispatcherEdges) => {
   };
 
   /**
+   * Counts a scan's dispatch of `job` toward its item's label (#596) at the
+   * job's first token request, the dispatcher's evidence that it started
+   * running (#600): a job lost from the worker's queue before it started asks
+   * for none, and is never counted. Counted once, however many kinds the
+   * label starts: each job of the dispatch stops carrying the label, and one
+   * not reserved yet is reserved without it.
+   */
+  const countStart = (job: Dispatched): void => {
+    const { repo, number, label } = job;
+    if (label === undefined) return;
+    for (const [id, held] of jobs) {
+      if (held.repo === repo && held.number === number && held.label === label) {
+        if (held.scan !== undefined) held.scan.counted = true;
+        const { label: _, scan: __, ...uncounted } = held;
+        jobs.set(id, uncounted);
+      }
+    }
+    const key = askedKey(repo, number, label);
+    const asked = asks.get(key) ?? { repo, number, label, dispatches: 0, told: false };
+    asked.dispatches += 1;
+    asked.at = now().getTime();
+    asks.set(key, asked);
+    changed();
+  };
+
+  /**
    * **The token door.** A request whose signature does not verify is refused.
    * One that does gets a token only for a job this dispatcher dispatched,
    * before that job's deadline, for that job's repository alone, with the
@@ -1008,6 +1070,7 @@ export const createDispatcher = (edges: DispatcherEdges) => {
       changed();
       return answer(403, { refusal: `job ${asked.jobId} is past its deadline, ${job.deadline.toISOString()}` });
     }
+    countStart(job);
     // A GitHub that cannot be read is refused like a repository that has
     // opted out: the dispatcher mints for nothing it cannot confirm.
     try {
@@ -1089,29 +1152,9 @@ export const createDispatcher = (edges: DispatcherEdges) => {
   };
 
   /**
-   * A scan's origin for `repo`'s item `number` and `label`, which counts the
-   * scan's dispatch for them once the worker takes a job of it: once, however
-   * many kinds the label starts (#596).
-   */
-  const scanFor = (repo: string, number: number, label: string): Origin => {
-    let counted = false;
-    return {
-      taken: () => {
-        if (counted) return;
-        counted = true;
-        const key = askedKey(repo, number, label);
-        const asked = asks.get(key) ?? { repo, number, label, dispatches: 0, told: false };
-        asked.dispatches += 1;
-        asked.at = now().getTime();
-        asks.set(key, asked);
-      },
-    };
-  };
-
-  /**
    * Why a scan leaves `repo`'s item `number` for a person, or `undefined`
-   * where it does not (#596): a scan has dispatched it for `label` the limit's
-   * number of times, and the label is still on, so its job keeps ending before
+   * where it does not (#596): its scan's job for `label` has started the
+   * limit's number of times (#600), and the label is still on, so its job keeps ending before
    * its run does. The first time, the item is told so, with a token minted for
    * the comment alone. A comment that cannot be posted is logged, never
    * thrown, and tried again at the next scan.
@@ -1119,7 +1162,7 @@ export const createDispatcher = (edges: DispatcherEdges) => {
   const countedOut = async (repo: string, number: number, label: string, where: string): Promise<string | undefined> => {
     const asked = asks.get(askedKey(repo, number, label));
     if (asked === undefined || asked.dispatches < edges.scanLimit) return undefined;
-    const skip = `skipped on ${where}: a scan has dispatched it for \`${label}\` ${asked.dispatches} times, SCAN_DISPATCH_LIMIT's ${edges.scanLimit}, so it is left for a person to add \`${label}\` again`;
+    const skip = `skipped on ${where}: its job for \`${label}\` has started ${asked.dispatches} times, SCAN_DISPATCH_LIMIT's ${edges.scanLimit}, so it is left for a person to add \`${label}\` again`;
     if (asked.told) return skip;
     try {
       const { token } = await edges.github.mint(repo, COMMENT_PERMISSIONS);
@@ -1166,7 +1209,7 @@ export const createDispatcher = (edges: DispatcherEdges) => {
    * One item a scan lists, decided as its label's delivery would be past the
    * opt-in, which its repository passed, and built into the same job. An item
    * the system already holds a job for, of a kind its label starts, is skipped,
-   * and so is one a scan has dispatched for its label the limit's number of times,
+   * and so is one whose scan's job for its label has started the limit's number of times,
    * and one waiting on the plan's usage limit (`waitsOnReset`).
    *
    * **`agent:merge` is the exception** (#591). It is a standing authorisation,
@@ -1194,7 +1237,7 @@ export const createDispatcher = (edges: DispatcherEdges) => {
       const asker = await unasked(repo, item.number, label, login, where);
       if ("refusal" in asker) return asker.refusal;
       const fields = { repo, issue: item.number, title: item.title, state: item.state, baseRef: await baseRef() };
-      return dispatchIssue(kinds, fields, login, where, scanFor(repo, item.number, label));
+      return dispatchIssue(kinds, fields, login, where, scanOf(label));
     }
     const kind = kindOf(LABEL_KINDS.pull_request, label);
     if (kind === undefined || kind === "follow-ups") return `ignored on ${where}: \`${label}\` is not a label a scan answers on a pull request`;
@@ -1212,8 +1255,8 @@ export const createDispatcher = (edges: DispatcherEdges) => {
     const { number: pr, branch, headSha, baseRef: base, state, merged, draft } = item;
     const fields = { repo, pr, branch, headSha, baseRef: base, state, merged };
     // A scan's origin that counts nothing, for the label the limit is not applied to.
-    if (standing) return dispatch({ workflow: kind, ...fields, draft, action: "synchronize", sender: asker.sender }, login, where, ` at ${headSha}`, { taken: () => {} });
-    return dispatch({ workflow: kind, ...fields }, login, where, ` at ${headSha}`, scanFor(repo, pr, label));
+    if (standing) return dispatch({ workflow: kind, ...fields, draft, action: "synchronize", sender: asker.sender }, login, where, ` at ${headSha}`, scanOf(undefined));
+    return dispatch({ workflow: kind, ...fields }, login, where, ` at ${headSha}`, scanOf(label));
   };
 
   /**
@@ -1244,7 +1287,7 @@ export const createDispatcher = (edges: DispatcherEdges) => {
     const asker = await unasked(repo, item.number, FOLLOW_UPS_LABEL, login, where);
     if ("refusal" in asker) return asker.refusal;
     const at = ` merged at ${item.mergedAt.toISOString()}, still carrying \`${FOLLOW_UPS_LABEL}\``;
-    return dispatch({ workflow: "follow-ups", repo, pr: item.number }, login, where, at, scanFor(repo, item.number, FOLLOW_UPS_LABEL));
+    return dispatch({ workflow: "follow-ups", repo, pr: item.number }, login, where, at, scanOf(FOLLOW_UPS_LABEL));
   };
 
   /**

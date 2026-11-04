@@ -4,10 +4,12 @@
 #
 # A gated section is written for a state of the input it names: it reaches a
 # case only where the case sets that input to something other than the
-# "nothing here" value suite.yaml fixes it to. With every case on the suite's
-# values, as now, none of them reaches a gated section: the verification pass,
-# the open, settled and noted findings, the carried follow-ups, a failing CI
-# check and a configured red check are never read by any case.
+# "nothing here" value suite.yaml fixes it to. One case,
+# verification-fetch-token (#699), replays a verification pass: it reaches
+# WHAT THIS REVIEW FOLLOWS (HISTORY) and FINDINGS AN EARLIER REVIEW LEFT OPEN
+# (OPEN_FINDINGS). Every other case is on the suite's values, and no case
+# reaches the rest: the settled and noted findings, the carried follow-ups, a
+# failing CI check and a configured red check are never read by any case.
 # `node scripts/eval-prompts.ts review --stage-only ...` prints each case's
 # share.
 

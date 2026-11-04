@@ -1,0 +1,56 @@
+diff --git a/engine/git.ts b/engine/git.ts
+index 0278a3a..96a53ac 100644
+--- a/engine/git.ts
++++ b/engine/git.ts
+@@ -406,8 +406,11 @@ export interface GitMerger {
+    * than at the one checked out: resolved after the fetch, so the base's
+    * remote-tracking name is the base as fetched. With `message`, a merge
+    * commit is made with that message, and always made, never a fast-forward,
+-   * so a mark the message carries is never lost; without it, git writes its
+-   * own.
++   * so a mark the message carries is never lost; without it, the merge is
++   * made under the subject a person's `git merge origin/<base>` makes,
++   * `Merge remote-tracking branch 'origin/<base>' into <into>`, spelled here
++   * rather than left to git, so config such as `merge.suppressDest` does not
++   * change it.
+    */
+   merge(options: {
+     readonly base: string;
+diff --git a/service/worker-live.ts b/service/worker-live.ts
+index 784d719..2ef4582 100644
+--- a/service/worker-live.ts
++++ b/service/worker-live.ts
+@@ -185,6 +185,9 @@ export const liveSandbox =
+     }
+   };
+ 
++/** A commit's full id, SHA-1 or SHA-256; anything else `checkout` is handed as `sha` is a branch's name. */
++const COMMIT_ID = /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/;
++
+ /**
+  * The checkout, with the token passed to each fetch as a header in the
+  * command's own environment (`GIT_CONFIG_*`), so it is neither in the
+@@ -193,9 +196,6 @@ export const liveSandbox =
+  * one thing it configures there, as `fix.yml`'s checkout step does: the
+  * agent's commits need a name, and the sandbox's home has no git config.
+  */
+-/** A commit's full id, SHA-1 or SHA-256; anything else `checkout` is handed as `sha` is a branch's name. */
+-const COMMIT_ID = /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/;
+-
+ export const liveGit = (host: HostEnvironment): Git => ({
+   checkout: async ({ dir, repo, branch, sha, baseRef, token, committer, signal }) => {
+     const auth = Buffer.from(`x-access-token:${token}`).toString("base64");
+@@ -217,11 +217,8 @@ export const liveGit = (host: HostEnvironment): Git => ({
+     // otherwise be fetched, or checked out, in the branch's place (#569).
+     const source = COMMIT_ID.test(sha) ? sha : `refs/heads/${sha}`;
+     const tracking = `refs/remotes/origin/${branch}`;
+-    await run(
+-      "git",
+-      ["-C", dir, "fetch", "--quiet", "--tags", "origin", `+${source}:${tracking}`, `+refs/heads/${baseRef}:refs/heads/${baseRef}`],
+-      { env: withToken, signal },
+-    );
++    const refspecs = [`+${source}:${tracking}`, `+refs/heads/${baseRef}:refs/heads/${baseRef}`];
++    await run("git", ["-C", dir, "fetch", "--quiet", "--tags", "origin", ...refspecs], { env, signal });
+     await run("git", ["-C", dir, "checkout", "--quiet", "--no-track", "-B", branch, tracking], { env, signal });
+     await run("git", ["-C", dir, "config", "user.name", committer], { env, signal });
+     await run("git", ["-C", dir, "config", "user.email", `${committer}@users.noreply.github.com`], { env, signal });

@@ -86,6 +86,18 @@ export interface Control {
   readonly text: string;
 }
 
+/**
+ * A fix round a case replays as written for it (#699): a patch in the case's
+ * folder, applied on the case's `head`, which is then the head the last review
+ * read, and committed as the head under review. The review is a verification
+ * pass of that round.
+ */
+export interface FixRound {
+  /** The patch's path in the case's folder. */
+  readonly patch: string;
+  readonly message: string;
+}
+
 /** One case, as its folder holds it. */
 export interface Case {
   readonly name: string;
@@ -94,7 +106,9 @@ export interface Case {
   readonly repository: string;
   readonly baseRef: string;
   readonly base: string;
+  /** The head checked out, or with `fixRound`, the head the last review read, on which the round is applied. */
   readonly head: string;
+  readonly fixRound?: FixRound;
   /** The case's file holding the brief or finding it is graded against. */
   readonly brief: string;
   /** A case whose every grader holds false findings. */
@@ -182,6 +196,7 @@ export const readCase = (dir: string): Case => {
     : {};
   const brief = field(data, "brief", isString, file);
   if (!fs.existsSync(path.join(dir, brief))) throw new Error(`${file}: its brief, \`${brief}\`, is not in the case.`);
+  const fixRound = readFixRound(data["fix_round"], dir, file);
   const gradersDir = path.join(dir, "graders");
   const graders = fs.existsSync(gradersDir) ? fs.readdirSync(gradersDir).filter((name) => name.endsWith(".md")).sort() : [];
   const names = graders.map(graderName);
@@ -193,6 +208,7 @@ export const readCase = (dir: string): Case => {
     baseRef: field(data, "base_ref", isString, file),
     base: sha("base"),
     head: sha("head"),
+    ...(fixRound === undefined ? {} : { fixRound }),
     brief,
     clean: data["clean"] === true,
     inputs: { ...strings(data["inputs"], `${file} inputs`), ...fromFiles },
@@ -201,6 +217,27 @@ export const readCase = (dir: string): Case => {
     controls: readControls(path.join(dir, "controls"), names),
   };
 };
+
+/** `replay.yaml`'s `fix_round`: `{ patch: <file in the case>, message: <the commit's message> }`. */
+const readFixRound = (value: unknown, dir: string, file: string): FixRound | undefined => {
+  if (value === undefined) return undefined;
+  const data = typeof value === "object" && value !== null && !Array.isArray(value) ? (value as Record<string, unknown>) : {};
+  const patch = field(data, "patch", isString, `${file} fix_round`);
+  if (!fs.existsSync(path.join(dir, patch))) throw new Error(`${file}: its fix round's patch, \`${patch}\`, is not in the case.`);
+  return { patch, message: field(data, "message", isString, `${file} fix_round`) };
+};
+
+/** The files a patch changes, by their path after it, sorted: what its `diff --git` lines name. */
+export const patchFiles = (patch: string): readonly string[] =>
+  [...new Set([...patch.matchAll(/^diff --git a\/\S+ b\/(\S+)$/gm)].map((match) => match[1] ?? ""))].sort();
+
+/**
+ * The placeholders a fix-round case's `DIFF_SCOPE` holds for what the stage
+ * reads off git: the whole pull request's `git diff --stat`, and the round's
+ * own diff. The rest of its text is what `renderDiffScope` returns for a
+ * scoped diff, which `tests/evals.test.ts` holds it to.
+ */
+export const SCOPE_PLACEHOLDERS = { stat: "{{PR_STAT}}", since: "{{SINCE_DIFF}}" } as const;
 
 /** `replay.yaml`'s `grading`: `<grader>: verdict`, or `<grader>: { given: <grader> }`. */
 const readGrading = (value: unknown, graders: readonly string[], file: string): Record<string, GraderRule> => {
@@ -340,8 +377,82 @@ export const render = (template: string, inputs: Readonly<Record<string, string>
   return template.replace(PLACEHOLDER, (_match, key: string) => inputs[key] ?? "");
 };
 
-const git = (root: string, args: readonly string[]): string =>
-  execFileSync("git", ["-C", root, ...args], { encoding: "utf8", maxBuffer: 256 * 1024 * 1024 });
+const git = (root: string, args: readonly string[], env?: NodeJS.ProcessEnv): string =>
+  execFileSync("git", ["-C", root, ...args], { encoding: "utf8", maxBuffer: 256 * 1024 * 1024, ...(env === undefined ? {} : { env }) });
+
+/** When a fix round's commit is made, so the same patch on the same head is the same commit at every stage. */
+const FIX_ROUND_DATE = "2026-11-01T00:00:00Z";
+
+/**
+ * A case's fix round as a commit on its `head`, in the local clone: the patch
+ * applied to a scratch index, and the tree committed with a fixed identity and
+ * date, so the commit is the same at every stage. Its objects are written to
+ * the clone and no ref is, as `ensureCommits` leaves them; `evals/checkout.sh`
+ * fetches it by SHA like any pinned head, with the reviewed head its parent.
+ */
+const fixRoundHead = (root: string, c: Case, round: FixRound): string => {
+  const scratch = fs.mkdtempSync(path.join(os.tmpdir(), "eval-fix-round-"));
+  try {
+    const env = {
+      ...process.env,
+      GIT_INDEX_FILE: path.join(scratch, "index"),
+      GIT_AUTHOR_NAME: "eval",
+      GIT_AUTHOR_EMAIL: "eval@example.invalid",
+      GIT_AUTHOR_DATE: FIX_ROUND_DATE,
+      GIT_COMMITTER_NAME: "eval",
+      GIT_COMMITTER_EMAIL: "eval@example.invalid",
+      GIT_COMMITTER_DATE: FIX_ROUND_DATE,
+    };
+    git(root, ["read-tree", c.head], env);
+    git(root, ["apply", "--cached", path.resolve(c.dir, round.patch)], env);
+    const tree = git(root, ["write-tree"], env).trim();
+    return git(root, ["commit-tree", tree, "-p", c.head, "-m", round.message], env).trim();
+  } finally {
+    fs.rmSync(scratch, { recursive: true, force: true });
+  }
+};
+
+/**
+ * The head a case is staged at, and the diff its prompt carries: the pinned
+ * head and the whole pull request's diff, or for a fix round, the round's
+ * commit and the inputs a verification pass is given (`readPromptDiff` and
+ * `renderDiffScope` in `review/review-diff.ts`): `PR_DIFF` the pull request's
+ * whole diff of each file the round touches, and `DIFF_SCOPE` the case's text
+ * with the whole pull request's stat and the round's own diff put in. A round
+ * whose scoped form would be no smaller than the whole diff is refused: the
+ * runner would carry the whole, and the case would not be the pass it says.
+ */
+const stagedDiff = (root: string, c: Case): { readonly head: string; readonly inputs: Record<string, string> } => {
+  if (c.fixRound === undefined) return { head: c.head, inputs: { PR_DIFF: git(root, ["diff", `${c.base}...${c.head}`]) } };
+  const head = fixRoundHead(root, c, c.fixRound);
+  const range = `${c.base}...${head}`;
+  const whole = git(root, ["-c", "core.quotePath=false", "diff", range]);
+  const changed = new Set(git(root, ["diff", "--name-only", "-z", range]).split("\0"));
+  const touched = git(root, ["diff", "--name-only", "-z", c.head, head]).split("\0").filter((file) => file !== "");
+  const files = touched.filter((file) => changed.has(file)).sort();
+  const named = patchFiles(fs.readFileSync(path.join(c.dir, c.fixRound.patch), "utf8"));
+  if (files.join("\n") !== named.join("\n")) {
+    throw new Error(`${c.name}: its fix round touches ${touched.join(", ")}, of which the pull request changes ${files.join(", ") || "none"}; its DIFF_SCOPE is written for ${named.join(", ")}, the files its patch names.`);
+  }
+  const stat = git(root, ["-c", "core.quotePath=false", "diff", range, "--stat=1000"]).trimEnd();
+  const since = git(root, ["-c", "core.quotePath=false", "diff", c.head, head]).trimEnd();
+  const diff = git(root, ["--literal-pathspecs", "-c", "core.quotePath=false", "diff", range, "--", ...files]);
+  if (stat.length + since.length + diff.length >= whole.length) {
+    throw new Error(`${c.name}: its fix round's scoped diff is no smaller than the whole diff, so the runner would carry the whole one: touch less in the round.`);
+  }
+  const scope = c.inputs["DIFF_SCOPE"];
+  if (scope === undefined || !scope.includes(SCOPE_PLACEHOLDERS.stat) || !scope.includes(SCOPE_PLACEHOLDERS.since)) {
+    throw new Error(`${c.name}: a fix-round case's inputs/DIFF_SCOPE.md holds ${SCOPE_PLACEHOLDERS.stat} and ${SCOPE_PLACEHOLDERS.since}, for the stage to fill in.`);
+  }
+  return {
+    head,
+    inputs: {
+      HEAD: head,
+      PR_DIFF: diff,
+      DIFF_SCOPE: scope.replace(SCOPE_PLACEHOLDERS.stat, () => stat).replace(SCOPE_PLACEHOLDERS.since, () => since),
+    },
+  };
+};
 
 const hasCommit = (root: string, sha: string): boolean => {
   try {
@@ -484,7 +595,8 @@ export const stage = (
   const staged: StagedCase[] = [];
   for (const c of cases) {
     ensureCommits(root, c);
-    const inputs = { ...caseInputs(suite, c), PR_DIFF: git(root, ["diff", `${c.base}...${c.head}`]) };
+    const { head, inputs: diffInputs } = stagedDiff(root, c);
+    const inputs = { ...caseInputs(suite, c), ...diffInputs };
     const graders = Object.fromEntries(c.graders.map((file) => [graderName(file), blobHash(path.join(c.dir, "graders", file))]));
     const reached = reach(armList.at(-1)?.template ?? "", map, suite, inputs);
     console.log(
@@ -510,12 +622,12 @@ export const stage = (
       }
       fs.cpSync(path.join(c.dir, "graders"), path.join(dir, "graders"), { recursive: true });
       const checkout = path.join(root, "evals", "checkout.sh");
-      const args = [root, c.base, c.head, String(c.inputs["BRANCH"] ?? `eval/${c.name}`), c.baseRef].map(quote).join(" ");
+      const args = [root, c.base, head, String(c.inputs["BRANCH"] ?? `eval/${c.name}`), c.baseRef].map(quote).join(" ");
       fs.writeFileSync(path.join(dir, "place-files.sh"), `#!/usr/bin/env bash\nexec bash ${quote(checkout)} ${args}\n`, { mode: 0o755 });
       staged.push({
         name,
         pr: c.pr,
-        head: c.head,
+        head,
         clean: c.clean,
         case: c.name,
         ...(arm.name === "" ? {} : { arm: arm.name }),

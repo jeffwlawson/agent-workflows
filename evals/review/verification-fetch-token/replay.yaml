@@ -1,0 +1,49 @@
+# PR #584's verification pass, on a fix round written for this case (#699):
+# the one case that replays a review following a fix round, so the one a
+# change to what a verification pass reads (#641, #748) is measured on.
+#
+# How the history is built. The round is a patch, fix-round.patch, which the
+# stage applies on `head` and commits with a fixed identity and date, so it is
+# the same commit, 7cfe705, at every stage; `evals/checkout.sh` checks that out
+# with `head` its parent. A real round that made a mistake was looked for
+# first: #658's, #662's and #664's rounds (2026-11-04) fixed what they were
+# asked to and left only stale docs for the next review, so none introduced a
+# regression, and the round here is written.
+#
+# `head` is bbb7761, the pull request's first commit, where Review 1
+# (2026-11-01T01:09Z) raised two Low findings on comments the change left
+# wrong. Its real fix round, 1159e02, fixed both, and Review 2 approved it.
+# This case's round is that round's change exactly, plus one regression
+# written into it: in service/worker-live.ts it folds the fetch's refspecs
+# into a `refspecs` array and passes the fetch `env` where it passed
+# `withToken`, so the fetch sends no token and a private repository's
+# checkout fails. Only the round's diff shows it, no finding or criterion
+# names it, and the tests miss it (their origin is a local path), as
+# typecheck does. The pull request is clean-full-ref-names's (#719): nothing
+# merged since fixed it, so the part the round got right draws no finding.
+#
+# Rendered as the runner renders a verification pass: HISTORY is the line
+# `describeHistory` returns for one; OPEN_FINDINGS and DISCUSSION are Review
+# 1's two threads, each with the fix run's reply, read through
+# `fetchPullRequestFeedback` and `renderCarriedFindings` over the threads'
+# real comments (only the reply's commit, 4319d18, is this round's, 7cfe705);
+# DIFF_SCOPE is `renderDiffScope`'s scoped text, which the stage fills in
+# with the pull request's stat and the round's diff, and PR_DIFF the whole
+# diff of the two files the round touches. tests/evals.test.ts holds each to
+# its renderer. The base is the merge-base of both heads.
+pr: 584
+repository: https://github.com/jeffwlawson/agent-workflows.git
+base_ref: main
+base: b87ba46b2ffa466f9cc7c5385794280842bf9476
+head: bbb7761bee90d16233ed5772b55463adcac195e3
+fix_round:
+  patch: fix-round.patch
+  message: "docs(engine,service): keep the merge and checkout comments true to #569's change"
+brief: inputs/LINKED_ISSUE.md
+inputs:
+  PR_NUMBER: "584"
+  BRANCH: agent/issue-569-a-tag-named-like-a-branch-is-read-as-that-branch-b
+  PR_TITLE: "fix(service): name every ref in full so a tag cannot shadow a branch (#569)"
+  ISSUE_NUMBER: "569"
+  ISSUE_TITLE: "A tag named like a branch is read as that branch by the service's checkout and update-branch's merge"
+  HISTORY: "This review **follows a fix round**: an earlier review of this pull request started one, and commits have landed since."

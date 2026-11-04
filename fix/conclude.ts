@@ -1,4 +1,5 @@
 import * as path from "node:path";
+import type { GitFetcher } from "../engine/git.js";
 import { GitHubError } from "../engine/github.js";
 import { WriteFailed, type Lease, type Limits, type Writer } from "../engine/writer.js";
 import { checkBundle } from "../shared/bundle.js";
@@ -10,12 +11,14 @@ import type { InputValues } from "../shared/env.js";
 import { choice, json, matching, object, optional, readDirectory, text } from "../shared/hand-over.js";
 import { loopAccounts } from "../shared/loop-accounts.js";
 import { BLOCKED_LABEL, FIX_LABEL, REVIEW_LABEL, USAGE_LIMIT } from "../shared/record.js";
+import { keepSetAside } from "../shared/rescue.js";
 import { limitEnding } from "../shared/usage-limit.js";
 import { present, rescueIgnored, setAsideNote } from "./hand-over.js";
 
 type Declared = (typeof COMMANDS)["fix:conclude"];
 type Inputs = InputValues<Declared["inputs"]>;
-type Io = CheckoutIo<Declared["outputs"]>;
+/** With a fetcher, which fetches a set-aside rescue before it is kept (#578). */
+type Io = CheckoutIo<Declared["outputs"]> & { readonly fetcher: GitFetcher };
 
 /**
  * `fix:conclude` (#469): how every fix run ends, success included. It runs
@@ -104,7 +107,7 @@ export const conclude = async (inputs: Inputs, io: Io): Promise<void> => {
     bundle: bundled["failure_reason.txt"],
     publish: published["failure_reason.txt"],
   });
-  const saved = pushed ? { kind: "none" as const } : await rescueCommits(inputs, io, loop, started, bundled["branch.bundle"] !== undefined);
+  const saved = pushed ? { kind: "none" as const } : await rescueCommits(inputs, io, loop, started, bundled["branch.bundle"] !== undefined, setAside?.movedPast);
 
   // The plan's usage limit (#635) is a wait, not a fix that failed, and said
   // as one. Not where anything was pushed or posted, whose retry is a review.
@@ -140,7 +143,7 @@ export const conclude = async (inputs: Inputs, io: Io): Promise<void> => {
  */
 const readRunner = (
   inputs: Inputs,
-): { readonly "failure_reason.txt"?: string | undefined; readonly "rescue_ignored.json"?: { readonly branch: string } | undefined } => {
+): { readonly "failure_reason.txt"?: string | undefined; readonly "rescue_ignored.json"?: { readonly branch: string; readonly movedPast: string } | undefined } => {
   const declared = COMMANDS["fix:conclude"].inputs.FIX_DIR;
   const skipped = () => undefined;
   const reason = readDirectory(declared, inputs.FIX_DIR, { "failure_reason.txt": text, "rescue_ignored.json": skipped })[
@@ -238,7 +241,13 @@ export const MINT_FAILED =
 const DOWNLOAD_FAILED = "The agent finished, but what it handed over could not be fetched from its job, so nothing was pushed or posted.";
 
 /** What became of a stopped run's commits. */
-type Saved = { readonly kind: "none" } | { readonly kind: "rescued" } | { readonly kind: "no token" };
+type Saved =
+  | { readonly kind: "none" }
+  /** `kept` is the side branch a set-aside rescue was kept on before the push (#578). */
+  | { readonly kind: "rescued"; readonly kept?: string }
+  | { readonly kind: "no token" }
+  /** A set-aside rescue that could not be kept, so nothing was pushed over it (#578); `why` as the comment says it. */
+  | { readonly kind: "unsaved"; readonly why: string };
 
 /**
  * **A stopped run's commits, kept on a side branch** (#303): the rescue
@@ -255,12 +264,22 @@ type Saved = { readonly kind: "none" } | { readonly kind: "rescued" } | { readon
  *
  * Under a lease on the rescue as it is read here: a run that stops again
  * overwrites the earlier rescue, which it started from and so holds all of,
- * and nothing that moved it in between is lost silently. With the loop's
- * token, as `fix:publish` pushes, since the agent's commits may touch a
+ * and nothing that moved it in between is lost silently. **A rescue the
+ * runner set aside** (#578), at `setAside`, the run does not hold, so it is
+ * kept on a branch of its own first and the push is leased on it; where it
+ * cannot be kept, nothing is pushed over it, and the comment says why. With
+ * the loop's token, as `fix:publish` pushes, since the agent's commits may touch a
  * workflow file; a mint that failed leaves none to push with, which the
  * comment says.
  */
-const rescueCommits = async (inputs: Inputs, io: Io, loop: Writer, started: string, bundled: boolean): Promise<Saved> => {
+const rescueCommits = async (
+  inputs: Inputs,
+  io: Io,
+  loop: Writer,
+  started: string,
+  bundled: boolean,
+  setAside: string | undefined,
+): Promise<Saved> => {
   if (!bundled) {
     console.log("No commits ahead of the head this run started from, so there is nothing to rescue.");
     return { kind: "none" };
@@ -283,14 +302,25 @@ const rescueCommits = async (inputs: Inputs, io: Io, loop: Writer, started: stri
   }
 
   let lease: Lease;
-  try {
-    lease = { tip: await io.github.branchTip(rescue) };
-  } catch (error) {
-    if (!(error instanceof GitHubError && error.status === 404)) {
-      console.log(`::warning::Could not read ${rescue}, so the agent's commits were not saved there: ${describe(error)}`);
-      return { kind: "none" };
+  let kept: string | undefined;
+  if (setAside === undefined) {
+    try {
+      lease = { tip: await io.github.branchTip(rescue) };
+    } catch (error) {
+      if (!(error instanceof GitHubError && error.status === 404)) {
+        console.log(`::warning::Could not read ${rescue}, so the agent's commits were not saved there: ${describe(error)}`);
+        return { kind: "none" };
+      }
+      lease = { absent: true };
     }
-    lease = { absent: true };
+  } else {
+    const side = await keepSetAside(io.fetcher, loop, rescue, setAside);
+    if (side.kind === "unkept") {
+      console.log(`::warning::The commits set aside on ${rescue} could not be kept on ${side.branch}, so the agent's commits were not pushed over them.`);
+      return { kind: "unsaved", why: UNKEPT(side.branch, side.why) };
+    }
+    kept = side.branch;
+    lease = { tip: setAside };
   }
   try {
     await loop.pushRef({ ref: `refs/heads/${rescue}`, commit: tip, lease });
@@ -300,8 +330,13 @@ const rescueCommits = async (inputs: Inputs, io: Io, loop: Writer, started: stri
     return { kind: "none" };
   }
   console.log(`Rescued the agent's commits, up to ${tip}, to ${rescue}.`);
-  return { kind: "rescued" };
+  return kept === undefined ? { kind: "rescued" } : { kind: "rescued", kept };
 };
+
+/** Why the run's commits went unsaved where a set-aside rescue could not be kept, as the comment says it after "were not saved on `<rescue>`:". */
+const UNKEPT = (side: string, why: string): string =>
+  `the earlier commits this run set aside there could not be kept on \`${side}\` first, so the branch was left as it was rather than lose them. ` +
+  `${why.charAt(0).toUpperCase()}${why.slice(1)}`;
 
 /**
  * What to do next, which depends on what the run left behind (#105).
@@ -320,10 +355,15 @@ const retryOf = (pushed: boolean, noted: boolean, saved: Saved, rescue: string):
       ? `Its out-of-scope notes were posted before it stopped, so running it again would repeat work. Fix the problem above, then add \`${REVIEW_LABEL}\` to have them ruled on.`
       : plain;
   if (saved.kind === "rescued") {
+    const kept =
+      saved.kept === undefined
+        ? ""
+        : ` The earlier commits it set aside are kept on \`${saved.kept}\`, which nothing resumes from; delete it once you are done with them.`;
     return retry === plain
-      ? `Its commits so far are saved on \`${rescue}\`. To resume from them, add \`${FIX_LABEL}\`.`
-      : `${retry} Its commits so far are saved on \`${rescue}\`, and adding \`${FIX_LABEL}\` resumes from them.`;
+      ? `Its commits so far are saved on \`${rescue}\`. To resume from them, add \`${FIX_LABEL}\`.${kept}`
+      : `${retry} Its commits so far are saved on \`${rescue}\`, and adding \`${FIX_LABEL}\` resumes from them.${kept}`;
   }
+  if (saved.kind === "unsaved") return `${retry} Its commits were not saved on \`${rescue}\`: ${saved.why}`;
   if (saved.kind === "no token") {
     return `${retry} Its commits were not saved on \`${rescue}\`: the loop's token was not minted, so there was nothing to push them with.`;
   }
@@ -357,10 +397,10 @@ const removeTrigger = (pr: number, workflow: Writer): Promise<boolean> => tolera
 
 /**
  * What conclude may write, and how many of each (ADR 0005): the rescue push,
- * two comments (the rescue-set-aside note and the failure comment),
+ * and before it the push keeping a set-aside rescue (#578), two comments (the rescue-set-aside note and the failure comment),
  * `agent:fix` off and `agent:blocked` on.
  */
-const LIMITS: Limits = { pushRef: 1, comment: 2, removeLabel: 1, addLabel: 1 };
+const LIMITS: Limits = { pushRef: 2, comment: 2, removeLabel: 1, addLabel: 1 };
 
 const FLAG = choice([true, false]);
 

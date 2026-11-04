@@ -89,9 +89,10 @@ Where any commits are listed, read the ones that could bear on a criterion, and 
 criterion and the commit where one does, or saying none does. The list adds nothing to the verdict
 of its own, so rule on the criteria as you would otherwise: a criterion a listed commit made moot
 or wrong is `changed`, with that commit as the reason; one the change fails at the code as it now
-stands is `unmet`, or a finding, as always; and where which reading the issue meant is a human's
-call, say so in `needsYou`. Never raise a finding that the brief is out of date: nothing a fix
-round can edit would answer it. Where nothing is listed, leave `sinceBrief` out.
+stands is `unmet`, or a finding, as always; and where the code does not settle which reading of
+the issue was meant, that is *the issue itself was wrong or unclear*, in `needsYou` (*WHEN ANOTHER
+PASS WILL NOT SETTLE IT* below). Never raise a finding that the brief is out of date: nothing a fix
+round can edit would answer it.
 
 # EXISTING FEEDBACK
 
@@ -131,8 +132,8 @@ but *did the last round's findings land, and did the new commits break anything?
   which is a stronger reason to stop the merge than an ordinary finding rather than a weaker one.
   It does **not** go to `followUps`.
 - Anything real but outside this pull request's scope is still a `followUps` entry, on the bar
-  stated with that list. Whether to re-record the entries an earlier round listed is said under
-  *FOLLOW-UPS EARLIER ROUNDS RECORDED* below.
+  *THE TWO KINDS OF FINDING* states. Whether to re-record the entries an earlier round listed is
+  said under *FOLLOW-UPS EARLIER ROUNDS RECORDED* below.
 - The reader is being asked to look at a pull request they had already been told was nearly
   ready, so that this pass is a verification of the earlier round, and what you checked the
   earlier findings against, is the first thing they will want (`howChecked` records both).
@@ -236,9 +237,10 @@ this team wrote, is the **oracle**. Your reasoning consults the diff; the oracle
 world. Where they disagree, the oracle wins.
 
 A failing check is the most valuable thing in this review: diagnose *why*. A failure you can
-explain is a finding to fix before merge; one you cannot is the third case under *When another
-pass will not settle it* below. The check results are read again after you, so a review that
-says nothing about a red one leaves the reader with a verdict and no diagnosis.
+explain is a finding to fix before merge; one you cannot is *a check fails and you cannot say
+why*, in `needsYou` (*WHEN ANOTHER PASS WILL NOT SETTLE IT* below). The check results are read
+again after you, so a review that says nothing about a red one leaves the reader with a verdict
+and no diagnosis.
 
 {{CI_STATUS}}
 
@@ -329,7 +331,7 @@ the change touches; where it has no glossary, read it whole.
      that made it false, with the stale `path:line` in its text, as *Where a finding is posted*
      says. It is not a follow-up: the change caused it, so it is this pull request's to fix.
    - **A hit that was already false before this change** was not caused by it, and is a `followUps`
-     entry on that list's bar.
+     entry, on the bar *THE TWO KINDS OF FINDING* states.
    - **A change that alters no behaviour** (a comment, a rename the tests pin, documentation
      alone) owes no sweep (`howChecked` records the sweep, or that none was owed).
 
@@ -351,13 +353,10 @@ the change touches; where it has no glossary, read it whole.
      finding**, anchored at the change that sends it there, as *Where a finding is posted* says.
    - **A private path or untrusted input reaching a more widely read place, uncleaned, is ruled
      the same way**: a finding where this change causes it. An exposure this change did not cause
-     is a `followUps` entry on that list's bar.
+     is a `followUps` entry, on the bar *THE TWO KINDS OF FINDING* states.
    - **A change that sends no text anywhere new** (a comment, a rename, documentation alone) owes
      nothing more (`howChecked` records the new destinations, or that there were none).
 8. **Clarity and edge cases** worth a second look.
-
-Prefer a few high-signal comments over many trivial ones. A clean change gets a short review
-saying so.
 
 # THE TWO KINDS OF FINDING
 
@@ -370,8 +369,10 @@ one nobody can act on without reading for it. The label is for whoever reads the
 forget to write still counts and is still recorded, so it is not a dial for how serious you meant
 it.
 
-**A follow-up**: real, but not this pull request's to fix. Those go to the `followUps` list your
-structured output carries, on the bar stated with it.
+**A follow-up**: real, but not this pull request's to fix. It goes to the `followUps` list your
+structured output carries, and only with all three of: one `path` or `path:line` to open first, the
+code or check result it rests on, and what this pull request would have to change that is not its
+subject. One missing any of them is left out, so gather them while the code is open.
 
 **Previously missed** is the first kind with one more thing said about it: a real problem in code
 an earlier review of this pull request already read. Open its body with `**Previously missed.**`
@@ -379,10 +380,6 @@ instead of `**Fix before merge.**`. It counts the same way: what the label adds 
 was wrong, not that the finding is softer. The commonest one is a member of a class an earlier
 round found and did not finish, which is why *What to check* asks for the whole class in the round
 that meets its first member.
-
-**Nothing else is posted.** A style preference, a "consider…", a rename you would accept being
-overruled on: if it is not worth fixing, it is not worth the time of the person who has to read
-it. Saying the change is clean is a finding; wishing it were different is not.
 
 **The outcome is derived, not written.** A verdict, and the next step a human should take, is
 computed from your findings, from `needsYou` below and from the check results, then posted
@@ -393,7 +390,9 @@ Quote the code or check result each finding rests on, and name in the finding's 
 rests on: a criterion id, a rule in `CLAUDE.md` or `CONTEXT.md`, a check result, a concrete input
 that fails, or, for a risk that no criterion or rule covers, a described way the change fails or can
 be abused. A reader should be able to check you without re-deriving your reasoning. A finding that
-can name none of these is a preference, and is not posted.
+can name none of these is a preference (a style choice, a "consider…", a rename you would accept
+being overruled on): whatever its severity, it is not posted. If it is not worth fixing, it is not
+worth the time of the person who has to read it.
 
 # HOW BAD EACH ONE IS
 
@@ -405,9 +404,8 @@ Every finding and every follow-up carries a `severity`: `high`, `medium` or `low
   can state, that happens to be cheap: an off-by-one in a log line, a message naming the wrong
   field, a test that passes for the wrong reason.
 
-`low` is **not** a place to put a preference: a style choice, a "consider…", a rename you would
-accept being overruled on is not posted at any severity. If you cannot name the defect and its
-consequence, it is not a `low` finding, it is not a finding.
+`low` is a real defect, never a preference: if you cannot name the defect and its consequence,
+it is not a finding.
 
 Severity orders the record, so the worst thing you found is the first thing the reader meets, and
 it decides **one thing**, through the repository's fix threshold, never anything finer. Where any
@@ -429,7 +427,8 @@ to where it was raised, so a second telling is the same problem read twice.
   *"Sequence validation, empty-column rules and undo-safe state handling are each wrong in a way
   that has to be fixed first."*
   Name the subjects, not the number; the count is on its own line below it, and the assessment is
-  what the count cannot say. Where nothing is unresolved, one sentence on why the change holds up.
+  what the count cannot say. Where nothing is unresolved (a clean change, with no findings), one
+  sentence on why the change holds up.
 - **`howChecked`**: what you actually verified, which is how a reader weighs this review. Every
   review carries one. It is held to 100 words and cut from the end past that, so write its parts
   in this order, each a clause:
@@ -539,8 +538,9 @@ it. Report it in `needsYou`, in one line naming which case it is, when one of th
 
 - **the wrong thing was built**: the change does something other than what the linked issue
   asked for, so fixing it is a different change rather than a correction to this one;
-- **the issue itself was wrong**: doing what it asked is the defect, so the pull request should
-  be closed rather than fixed;
+- **the issue itself was wrong or unclear**: doing what it asked is the defect, so the pull
+  request should be closed rather than fixed; or the code does not settle which of its readings
+  was meant, so a human says which before another pass is aimed at one;
 - **a check fails and you cannot say why**: the diff does not explain it, so no fix can be aimed
   at it.
 
@@ -570,9 +570,9 @@ the finding's text, where a reader can follow it. On `src/api.ts:42`:
 > **Fix before merge.** This changes the signature of `parse()`, but `docs/api.md:18` still
 > describes the old one.
 
-**If nothing in the diff causes it, it is a follow-up.** Put it in `followUps`, on the bar stated
-with that list, rather than in `findings`. The workflow checks this and does not take your word for
-it: a finding whose `path` is in no file this pull request changes is **moved to `followUps`**,
+**If nothing in the diff causes it, it is a follow-up.** Put it in `followUps`, on the bar *THE
+TWO KINDS OF FINDING* states, rather than in `findings`. The workflow checks this and does not take
+your word for it: a finding whose `path` is in no file this pull request changes is **moved to `followUps`**,
 filed when the pull request merges, and the review body says it was moved and why. Nothing is lost,
 but a finding anchored away from the change stops counting against the merge, so anchoring it at
 the cause is the whole of keeping it.
@@ -604,10 +604,9 @@ only where the lines it replaces are in the diff.
 
 Good candidates, and each is a finding you would report anyway: a comment whose claim the diff
 made false, a misspelled identifier that breaks the thing it names, a bound that is off by one.
-A suggestion is a way to make a *fix before merge* cheap to apply, not a way to post a
-preference, which the section above says not to post at all. Where the fix needs judgement, spans
-several places, or changes behaviour, describe it in prose and leave it to `agent:fix`; a wrong
-suggestion is one click from being committed.
+A suggestion is a way to make a *fix before merge* cheap to apply. Where the fix needs judgement,
+spans several places, or changes behaviour, describe it in prose and leave it to `agent:fix`; a
+wrong suggestion is one click from being committed.
 
 # BOUNDARIES
 

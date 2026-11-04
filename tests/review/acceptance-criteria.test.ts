@@ -511,4 +511,23 @@ describe("the review brief's commits since the brief", () => {
   ])("%s asks for the ruling in `sinceBrief`", (_half, text) => {
     expect(text).toContain("`sinceBrief`");
   });
+
+  /**
+   * The placeholder says to leave the field out on the runs it applies to, so
+   * the prompt does not say it again (#746, audit L3).
+   */
+  it("leaves the leave-out rule to the placeholder", () => {
+    expect(PROMPT).not.toContain("leave `sinceBrief` out");
+    expect(fs.readFileSync("review/since-brief.ts", "utf8")).toContain("leave `sinceBrief` out");
+  });
+
+  /**
+   * A reading of the issue the code does not settle goes to `needsYou` through
+   * a case it already has, never to closing the pull request (#746, audit M6).
+   */
+  it("routes an unsettled reading of the issue through a needsYou case", () => {
+    const criteria = PROMPT.slice(PROMPT.indexOf("# ACCEPTANCE CRITERIA\n"), PROMPT.indexOf("# EXISTING FEEDBACK"));
+    expect(criteria.replace(/\s+/g, " ")).toMatch(/which reading of the issue was meant[^.]*the issue itself was wrong or unclear/);
+    expect(criteria).not.toMatch(/a human's call, say so in `needsYou`/);
+  });
 });

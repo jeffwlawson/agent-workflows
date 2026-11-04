@@ -143,10 +143,10 @@ parentheses, or a new sentence instead.
 
 ## When another pass will not settle it: `needsYou`
 
-One line naming which case it is: the wrong thing was built, the issue itself was wrong, or a
-check fails and the diff does not explain why. Omit the field entirely on every other review; it
-is not a severity dial, and a review that sets it for a finding another pass would settle spends
-the one signal that says a human is needed.
+One line naming which case it is: the wrong thing was built, the issue itself was wrong or
+unclear, or a check fails and the diff does not explain why. Omit the field entirely on every
+other review; it is not a severity dial, and a review that sets it for a finding another pass
+would settle spends the one signal that says a human is needed.
 
 ## Out-of-scope findings: `followUps`
 

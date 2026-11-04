@@ -3481,6 +3481,8 @@ describe("the review brief asks for the class rather than the member", () => {
 
   it("asks for every input that can reach the quiet path, not only the intended one", () => {
     expect(plain(PROMPT)).toMatch(/every input that can reach/i);
+    expect(plain(PROMPT)).toMatch(/The change.s own input is the least likely to reach the quiet path/);
+    expect(plain(PROMPT)).not.toMatch(/is not checking this/);
   });
 
   it("asks for the gaps in one round, grouped as one class", () => {
@@ -3558,9 +3560,10 @@ describe("the review brief sweeps the checkout for text the change made false", 
     expect(item6()).toMatch(/whole checkout/i);
   });
 
-  it("is done only when every hit has been ruled on", () => {
+  it("is done only when every hit has been ruled on, and ends on that bar", () => {
     expect(item6()).toMatch(/rule on every hit/i);
-    expect(item6()).toMatch(/done only when every hit/i);
+    expect(item6()).toMatch(/done only when every hit has been ruled on\. -/i);
+    expect(item6()).not.toMatch(/first few/i);
   });
 
   it("points the sweep at howChecked, whose contract asks for the phrases searched for and the hits read", () => {
@@ -3586,9 +3589,10 @@ describe("the review brief sweeps the checkout for text the change made false", 
     expect(item6()).toMatch(/verification pass sweeps the behaviours its new commits change/i);
   });
 
-  it("keeps clarity and edge cases last, after the item on what text can carry", () => {
+  it("keeps edge cases last, after the item on what text can carry, bounded by the input they name", () => {
     expect(plain(PROMPT)).toMatch(/ 7\. What text sent somewhere new can carry/);
-    expect(plain(PROMPT)).toMatch(/ 8\. Clarity and edge cases/);
+    expect(plain(PROMPT)).toMatch(/ 8\. Edge cases the change handles wrongly: name the input\./);
+    expect(plain(PROMPT)).not.toMatch(/worth a second look/);
   });
 });
 
@@ -3623,10 +3627,10 @@ describe("the review brief asks what text sent somewhere new can carry", () => {
     expect(item7()).toMatch(/read more widely than where the text came from/i);
   });
 
-  it("asks whether it is cleaned of that thing, and a cleanup removing something else does not count", () => {
+  it("asks whether it is cleaned of that thing, stating cleaned as that specific thing removed or masked", () => {
     expect(item7()).toMatch(/cleaned of what it can carry/i);
-    expect(item7()).toMatch(/removed or masked/i);
-    expect(item7()).toMatch(/cleanup that removes something else does not count/i);
+    expect(item7()).toMatch(/Cleaned means that specific thing is removed or masked \(the credential stripped from the URL, the token replaced\)\./);
+    expect(item7()).not.toMatch(/is not enough|does not count/i);
   });
 
   it("makes a secret reaching a more widely read place a fix-before-merge finding at the change", () => {
@@ -4472,5 +4476,38 @@ describe("recordFollowUps over minor findings", () => {
   it("keeps one carried minor finding once where this review records it again by the same id", () => {
     const recorded = recordFollowUps([], [], [], { carried: [{ minor: [minor("fu-a")], moved: [], rest: [] }], minor: [minor("fu-a")] });
     expect(recorded.minor.map((m) => m.id)).toEqual(["fu-a"]);
+  });
+});
+
+/**
+ * The CI section and the suggested-changes block, worded positively (#747,
+ * audit #704 L5 and L12). `red` is the red check's word for a test that failed
+ * at the base, so the CI section says "failing check" for a failing CI check;
+ * and a suggestion's lines are stated as they should appear, the range being
+ * the extraction brief's to define.
+ */
+describe("the review brief's CI and suggestion sections say one thing one way", () => {
+  const PROMPT = fs.readFileSync(path.join("review", "prompt.md"), "utf8");
+  const plain = (text: string): string => text.replace(/[*_]/g, "").replace(/\s+/g, " ");
+  const section = (name: string): string =>
+    plain(PROMPT).match(new RegExp(`# ${name} .*?(?= # [A-Z])`, "s"))?.[0] ?? "";
+
+  it("calls a failing CI check a failing check, names its needsYou case, and points by name", () => {
+    const ci = section("CI RESULTS");
+    expect(ci).toMatch(/A failing check is the most valuable evidence in this review/);
+    expect(ci).toMatch(/says nothing about a failing check/);
+    expect(ci).not.toMatch(/\bred\b/i);
+    expect(ci).toMatch(/a check fails and you cannot say why, in `needsYou`/);
+    expect(ci).not.toMatch(/\b(first|second|third|fourth) case\b/i);
+  });
+
+  it("states a suggestion's lines exactly as they should appear, and leaves the range to the extraction", () => {
+    const suggested = section("SUGGESTED CHANGES");
+    expect(suggested).toMatch(
+      /write the replacement lines exactly as they should appear, with the surrounding indentation\./,
+    );
+    expect(suggested).toMatch(/Replaces exactly the anchored lines/);
+    expect(suggested).not.toMatch(/startLine whenever/);
+    expect(suggested).not.toMatch(/nested code fence|-\/\+ markers/);
   });
 });

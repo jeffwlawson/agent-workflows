@@ -236,11 +236,11 @@ A check that validates the code against known-good real-world data, rather than 
 this team wrote, is the **oracle**. Your reasoning consults the diff; the oracle consults the
 world. Where they disagree, the oracle wins.
 
-A failing check is the most valuable thing in this review: diagnose *why*. A failure you can
+A failing check is the most valuable evidence in this review: diagnose *why*. A failure you can
 explain is a finding to fix before merge; one you cannot is *a check fails and you cannot say
 why*, in `needsYou` (*WHEN ANOTHER PASS WILL NOT SETTLE IT* below). The check results are read
-again after you, so a review that says nothing about a red one leaves the reader with a verdict
-and no diagnosis.
+again after you, so a review that says nothing about a failing check leaves the reader with a
+verdict and no diagnosis.
 
 {{CI_STATUS}}
 
@@ -309,8 +309,8 @@ the change touches; where it has no glossary, read it whole.
    yours to list.
 5. **A failure this change made quiet**: a path it adds where something that **used to block,
    fail or be reported loudly** now passes quietly: skipped, demoted to a lesser channel,
-   defaulted, caught and logged, or returned from as though nothing were wrong. Checking the one
-   input the change was written for is not checking this:
+   defaulted, caught and logged, or returned from as though nothing were wrong. The change's own
+   input is the least likely to reach the quiet path:
    - **List every input that can reach the quiet path**, every kind the surrounding code can be
      handed, not only the intended one, and check each of them against the code.
    - **Report every gap you find in one round, grouped as one class.** One finding naming the class
@@ -326,7 +326,7 @@ the change touches; where it has no glossary, read it whole.
    - **For each behaviour the diff changes, write down the phrases that described the old
      behaviour**, then search the whole checkout for each, not only the changed files.
    - **Rule on every hit**: still true, or made false by this change. The step is done only when
-     every hit has been ruled on, not when the first few have been.
+     every hit has been ruled on.
    - **A hit this change made false is a fix-before-merge finding**, anchored at the changed line
      that made it false, with the stale `path:line` in its text, as *Where a finding is posted*
      says. It is not a follow-up: the change caused it, so it is this pull request's to fix.
@@ -346,9 +346,7 @@ the change touches; where it has no glossary, read it whole.
    - **What can it carry?** A secret, a credential inside a URL, a private path, untrusted input.
    - **Is the new place read more widely than where the text came from?**
    - **Is it cleaned of what it can carry before it gets there?** Cleaned means that specific
-     thing is removed or masked: the credential stripped from the URL, the token replaced. Passing
-     through some cleanup step is not enough, and a cleanup that removes something else does not
-     count.
+     thing is removed or masked (the credential stripped from the URL, the token replaced).
    - **Text that can carry a secret to a more widely read place, uncleaned, is a fix-before-merge
      finding**, anchored at the change that sends it there, as *Where a finding is posted* says.
    - **A private path or untrusted input reaching a more widely read place, uncleaned, is ruled
@@ -356,7 +354,7 @@ the change touches; where it has no glossary, read it whole.
      is a `followUps` entry, on the bar *THE TWO KINDS OF FINDING* states.
    - **A change that sends no text anywhere new** (a comment, a rename, documentation alone) owes
      nothing more (`howChecked` records the new destinations, or that there were none).
-8. **Clarity and edge cases** worth a second look.
+8. **Edge cases** the change handles wrongly: name the input.
 
 # THE TWO KINDS OF FINDING
 
@@ -597,10 +595,8 @@ only where the lines it replaces are in the diff.
     ```
 
 - **Replaces exactly the anchored lines**: `line` alone, or `startLine`..`line`.
-- **`startLine` whenever the replacement spans more than one line.** A stale sentence running
-  across two needs `startLine` on the first and `line` on the last, or half of it survives.
-- **Literal content**: reproduce surrounding indentation; no diff `-`/`+` markers; no nested
-  code fence.
+- **Literal content**: write the replacement lines exactly as they should appear, with the
+  surrounding indentation.
 
 Good candidates, and each is a finding you would report anyway: a comment whose claim the diff
 made false, a misspelled identifier that breaks the thing it names, a bound that is off by one.

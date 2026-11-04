@@ -3268,6 +3268,42 @@ describe("the review's finding vocabulary", () => {
     expect(PROMPT).toContain("the issue itself was wrong");
     expect(PROMPT).toMatch(/cannot say why/);
   });
+
+  /**
+   * The bar on what is posted is stated once (#746, audit M3), where a finding
+   * names its basis; a second statement that "saying the change is clean is a
+   * finding" contradicted the count, and "prefer a few" (M4) contradicted the
+   * bars that ask for the whole class.
+   */
+  it("states the bar on what is posted once, and asks for few comments nowhere", () => {
+    expect(plain(PROMPT).split("a rename you would accept being overruled on")).toHaveLength(2);
+    expect(PROMPT).not.toMatch(/change is clean is a finding/);
+    expect(PROMPT).not.toMatch(/high-signal|Prefer a few/i);
+  });
+
+  /**
+   * The follow-up bar is stated in the pass that does the work (#746, audit
+   * M5): every pointer at it names the section that holds it.
+   */
+  it("states the follow-up bar where the work is done, and points at it by section", () => {
+    const kinds = plain(PROMPT.slice(PROMPT.indexOf("# THE TWO KINDS OF FINDING"), PROMPT.indexOf("# HOW BAD EACH ONE IS")));
+    expect(kinds).toMatch(/one `path` or `path:line`/);
+    expect(kinds).toMatch(/the code or check result it rests on/);
+    expect(kinds).toMatch(/what this pull request would have to change that is not its subject/);
+    expect(PROMPT).not.toMatch(/bar stated with|that list.s bar/);
+  });
+
+  /**
+   * `needsYou` has three cases, listed the same in both halves, and a case is
+   * named rather than counted to (#746, audit M6).
+   */
+  it.each(halves)("%s lists needsYou's cases the same way", (_half, text) => {
+    expect(plain(text)).toContain("the issue itself was wrong or unclear");
+  });
+
+  it("names a needsYou case rather than counting to it", () => {
+    expect(PROMPT).not.toMatch(/the third case/);
+  });
 });
 
 /**

@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { GitHubError } from "../../engine/github.js";
 import type { CheckRun, GitHubReader, WorkflowRun } from "../../engine/read.js";
-import { CI_WAIT_SECONDS, collectChecks, GRACE_SECONDS, POLL_SECONDS } from "../../review/collect-checks.js";
+import { ACTIONS_REFUSED, CI_WAIT_SECONDS, collectChecks, GRACE_SECONDS, POLL_SECONDS } from "../../review/collect-checks.js";
 import { AGENT_CHECKS } from "../../shared/loop-checks.js";
 import type { ReadingIo } from "../../shared/command-io.js";
 import type { COMMANDS } from "../../shared/contract.js";
@@ -99,15 +99,17 @@ const set = (state: { checks?: readonly CheckRun[]; statuses?: readonly [string,
 };
 
 /**
- * A failure of the read `method`, as GitHub answering 403 or not at all, on
+ * A failure of the read `method`, as GitHub answering 403, another status or not at all, on
  * its calls from the `from`th to the `to`th (1-based), every one by default.
  */
-type Failure = { readonly method: keyof GitHubReader; readonly how: "403" | "unreachable"; readonly from?: number; readonly to?: number };
+type Failure = { readonly method: keyof GitHubReader; readonly how: "403" | "unreachable" | number; readonly from?: number; readonly to?: number };
 
-const refusal = (how: "403" | "unreachable"): GitHubError =>
+const refusal = (how: "403" | "unreachable" | number): GitHubError =>
   how === "403"
     ? new GitHubError("GET /repos/acme/widgets/…: 403 Resource not accessible by integration", 403)
-    : new GitHubError("fetch failed: connect ECONNREFUSED");
+    : typeof how === "number"
+      ? new GitHubError(`GET /repos/acme/widgets/…: ${how}`, how)
+      : new GitHubError("fetch failed: connect ECONNREFUSED");
 
 /**
  * The CLI's half: the reader, the outputs, the call, and the fake clock run
@@ -552,12 +554,31 @@ describe("review:collect-checks says what it could not read", () => {
     const { evidence, result, log } = await collect({ fail: [{ method: "workflowRuns", how }] });
 
     expect(evidence).toContain("Could not list this commit's workflow runs");
-    expect(evidence).not.toMatch(/lacks|must|required/i);
     expect(evidence).not.toContain("### Failure output");
     expect(log).toContain("::warning::Could not list this commit's workflow runs");
     expect(log).toContain(refusal(how).message);
     expect(log).toContain("--- collected CI context ---");
     expect(result).toBe("unknown");
+  });
+
+  /**
+   * #632: on the service, a refused listing is the App's Actions permission,
+   * missing or not accepted on the installation, and the evidence says so in
+   * words a person can act on, rather than reading as an empty list.
+   */
+  it("names Actions: read when the runs listing is refused, 403, and only then", async () => {
+    set({});
+    const refused = await collect({ fail: [{ method: "workflowRuns", how: "403" }] });
+
+    expect(refused.evidence).toContain(ACTIONS_REFUSED);
+    expect(refused.evidence).toContain("Actions: read");
+    expect(refused.log).not.toContain("It is not the `actions: read` grant");
+
+    set({});
+    const unreachable = await collect({ fail: [{ method: "workflowRuns", how: "unreachable" }] });
+
+    expect(unreachable.evidence).not.toContain("Actions: read");
+    expect(unreachable.evidence).not.toMatch(/lacks|must|required/i);
   });
 
   it("adds no line when the runs were listed and none failed", async () => {
@@ -615,6 +636,24 @@ describe("review:collect-checks tails the failed runs' logs", () => {
     expect(evidence).not.toContain("Agent Review");
     expect(log).toContain("--- collected CI context ---");
     expect(log).toContain("### Failure output: Corpus");
+  });
+
+  /**
+   * #632: a refused log read names the missing permission, in the listing's
+   * words, and an expired log says it expired; anything else keeps the
+   * generic line.
+   */
+  it.each([
+    [403, `(could not read the failure log for run 101: ${ACTIONS_REFUSED})`],
+    [404, "(the failure log for run 101 has expired: GitHub no longer keeps it, so read the run at its link above, or run it again)"],
+    [410, "(the failure log for run 101 has expired: GitHub no longer keeps it, so read the run at its link above, or run it again)"],
+    [500, "(no failure log available for run 101)"],
+    ["unreachable", "(no failure log available for run 101)"],
+  ] as const)("says why a failed run's log could not be read (%s)", async (how, line) => {
+    set({ checks: NO_CI, runs: [run(101, "CI", "completed", "failure")] });
+    const { evidence } = await collect({ fail: [{ method: "failedJobLogs", how }] });
+
+    expect(evidence.split("\n")).toContain(line);
   });
 
   it("names a run that has no name by its id", async () => {

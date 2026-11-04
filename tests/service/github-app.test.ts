@@ -37,8 +37,11 @@ interface World {
  * loop's App's, as GitHub reported them in an `installation` webhook on
  * 2026-10-12. GitHub refuses a token asking for any other, `422`, as it
  * refused the dispatcher's first live mint, which asked for `variables`.
+ * `actions` was added for #632, by the name GitHub's REST reference gives
+ * Actions in an installation token's permissions.
  */
 const GRANTED: Readonly<Record<string, string>> = {
+  actions: "read",
   actions_variables: "read",
   checks: "read",
   contents: "write",

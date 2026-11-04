@@ -2781,6 +2781,7 @@ describe("init --service registers a service-ready App", () => {
           actions_variables: "read",
           checks: "read",
           statuses: "write",
+          actions: "read",
         },
         hook_attributes: { url: URL_GIVEN, active: true },
         default_events: ["pull_request", "issues", "check_suite", "status"],

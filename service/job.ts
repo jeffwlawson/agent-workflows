@@ -278,11 +278,12 @@ export const TIME_LIMITS: Readonly<Record<JobKind, (variables: Readonly<Record<R
 };
 
 /**
- * What a token is for: reading only, the posting phases' writes as well,
+ * What a token is for: reading only, reading CI's failure logs as well
+ * (`review:collect-checks`, #632), the posting phases' writes as well,
  * those and resolving a review thread on a pull request the App did not open,
  * or those and a push.
  */
-export const TOKEN_KINDS = ["read", "write", "resolve", "push"] as const;
+export const TOKEN_KINDS = ["read", "ci", "write", "resolve", "push"] as const;
 
 export type TokenKind = (typeof TOKEN_KINDS)[number];
 

@@ -2044,8 +2044,9 @@ text, and `review:publish` and `review:advance` write every final string from th
 > asks the dispatcher for a `read` token and runs `review:gate` with the head commit, state and
 > merged flag the label's event carried, and the repository's variables. Where the gate went ahead
 > it checks out the settled commit as `BRANCH`, fetches `BASE_REF` and the repository's tags, the token passed with each
-> fetch and never stored in the checkout, then runs `review:budget` and `review:collect-checks`,
-> and the runner, in the sandbox its settings name, with a fresh `read` token as `GH_TOKEN`. Where the
+> fetch and never stored in the checkout, then runs `review:budget`, and `review:collect-checks`
+> with a `ci` token, `read`'s permissions with Actions: read for the failed runs' logs (#632), or
+> the gate's `read` token where that is refused, and the runner, in the sandbox its settings name, with a fresh `read` token as `GH_TOKEN`. Where the
 > review finished it asks for a `resolve` token, `write`'s permissions with Contents: write, without
 > which a thread on a pull request the App did not open cannot be resolved, and runs
 > `review:publish` with it, pointed at the runner's directory; where that is refused, a `write`

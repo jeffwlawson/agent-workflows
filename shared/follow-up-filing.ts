@@ -26,8 +26,12 @@ import type { FilingReview } from "./follow-up-plan.js";
  * Review bodies only. PR conversation comments are not read here and must not
  * be added: the loop closed that channel deliberately, and reopening it would
  * readmit bodies from authors who never needed write access to post them.
+ *
+ * Exported for `tests/review-history-query.test.ts` only, which holds it equal
+ * to `REVIEW_HISTORY` in `engine/read.ts` apart from whitespace until the two
+ * copies are one (#513).
  */
-const REVIEWS_QUERY = `
+export const REVIEWS_QUERY = `
 query($owner:String!,$repo:String!,$number:Int!) {
   repository(owner:$owner,name:$repo) {
     pullRequest(number:$number) {

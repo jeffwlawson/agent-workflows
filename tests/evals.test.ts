@@ -563,6 +563,10 @@ describe("a fix-round case's stage", { timeout: 12 * SUBPROCESS_TIMEOUT }, () =>
       run(checkout, "bash", [path.join(out, "evals", "round", "place-files.sh")]);
       expect(git(checkout, "rev-parse", "HEAD")).toBe(head);
       expect(run(checkout, "git", ["diff", reviewed.slice(0, 7), "HEAD"])).toContain("+export const touched = 3;");
+      // The review prompt prints `git diff <base_ref>...HEAD`, which needs a local branch at the base (#760).
+      expect(git(checkout, "rev-parse", "refs/heads/main")).toBe(base);
+      expect(run(checkout, "git", ["diff", "main...HEAD"])).toBe(run(checkout, "git", ["diff", `${base}...HEAD`]));
+      expect(run(checkout, "git", ["diff", "main...HEAD"])).toContain("+export const touched = 3;");
     } finally {
       fs.rmSync(scratch, { recursive: true, force: true });
     }

@@ -423,9 +423,11 @@ const CONVERSATION_COMMENTS = `query($owner:String!,$name:String!,$number:Int!,$
  * The newest 100 by `last:`, since the newest block wins and a pull request
  * with more reviews than fit must lose the oldest, never the newest. The repo
  * name is a `String!` variable, so one spelled in digits is still sent as a
- * string.
+ * string. Exported for `tests/review-history-query.test.ts`, which holds it
+ * equal to `REVIEWS_QUERY` in `shared/follow-up-filing.ts` apart from
+ * whitespace (#513).
  */
-const REVIEW_HISTORY = `query($owner:String!,$repo:String!,$number:Int!){
+export const REVIEW_HISTORY = `query($owner:String!,$repo:String!,$number:Int!){
   repository(owner:$owner,name:$repo){pullRequest(number:$number){
     reviews(last:100){nodes{body url lastEditedAt submittedAt author{login} commit{oid}}}
   }}

@@ -80,11 +80,12 @@ export const frontmatterProblems = (skillsDir: string, name: string): string[] =
 
 /**
  * The target of every markdown link in a text. Fenced blocks and inline code
- * are removed first: a backticked path in prose is not a link.
+ * are removed first: a backticked path in prose is not a link. A title may be
+ * `"double-quoted"`, `'single-quoted'` or `(parenthesised)`, as CommonMark allows.
  */
 export const linkTargets = (text: string): string[] => {
   const prose = text.replace(/^(```|~~~)[^\n]*\n[\s\S]*?^\1[^\n]*$/gm, "").replace(/`[^`\n]*`/g, "");
-  return [...prose.matchAll(/!?\[[^\]\n]*\]\(\s*(<[^>\n]*>|[^)\s]+)(?:\s+"[^"\n]*")?\s*\)/g)].map((m) =>
+  return [...prose.matchAll(/!?\[[^\]\n]*\]\(\s*(<[^>\n]*>|[^)\s]+)(?:\s+(?:"[^"\n]*"|'[^'\n]*'|\([^)\n]*\)))?\s*\)/g)].map((m) =>
     (m[1] ?? "").replace(/^<|>$/g, ""),
   );
 };

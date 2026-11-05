@@ -1,11 +1,16 @@
 ---
 name: merge-check
-description: "Pre-merge check of a pull request the agent loop handed back, a PRD PR or a plain issue's: verify its exact head, grade it against its briefs, run what CI skipped or only a real host can check, and report merge-ready or the findings. Use when asked to check, vet or sign off a PR before merging it, or whether a loop PR is safe to merge."
+description: "Pre-merge check of a pull request the agent loop handed back, a PRD PR or a plain issue's: verify its exact head, grade it against its briefs, run what CI skipped or only a real host can check, and report merge-ready or the findings. Or, as a digest (`/merge-check --digest`), the same check on every open loop PR the loop approved, writing nothing, so it runs unattended under a read-only token (contents, pull requests, issues, statuses, checks, actions), ending in one brief with what needs the maintainer first. Use when asked to check, vet or sign off a PR before merging it, whether a loop PR is safe to merge, or to digest the open loop PRs."
 ---
 
 # Merge check
 
 The loop has reviewed this PR. Your review is the one it cannot give: on a real environment, across the whole repo, and against briefs the world moved under. You report; the maintainer decides the merge, and either carries it out or arms the loop to (`agent:merge`, the loop's ADR 0009).
+
+## Two modes
+
+- **One pull request** (`/merge-check <PR>`): the steps below, ending in *The report*.
+- **A digest** (`/merge-check --digest`, or "digest the open loop PRs"): the same check on every open loop pull request whose verdict on its head is 🟢, read-only and asking nothing, ending in one digest. Read [references/digest.md](references/digest.md) and follow it; where it and the steps below differ, it wins. Step 1 applies as written.
 
 ## Steps
 

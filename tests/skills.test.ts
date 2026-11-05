@@ -2,7 +2,7 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { frontmatterProblems, linkProblems, readmeProblems, skillNames } from "./skills.js";
+import { evalCaseProblems, frontmatterProblems, linkProblems, readmeProblems, skillNames } from "./skills.js";
 
 /**
  * `skills/` held to its structure (#620). The real folder must have no problem;
@@ -31,6 +31,14 @@ describe("the skills in this repository", () => {
 
   it("each have a row in skills/README.md, which links no missing skill", () => {
     expect(readmeProblems(SKILLS)).toEqual([]);
+  });
+
+  it("have eval cases in the layout claude plugin eval reads", () => {
+    expect(evalCaseProblems(SKILLS)).toEqual([]);
+  });
+
+  it("include merge-check's digest case (#583)", () => {
+    expect(fs.existsSync(path.join(SKILLS, "evals", "merge-check", "digest-mixed", "case.yaml"))).toBe(true);
   });
 });
 
@@ -62,7 +70,11 @@ const fixture = (overrides: Record<string, string | null> = {}): string => {
     "alpha/SKILL.md": MODEL,
     "alpha/references/guide.md": "Back to [the skill](../SKILL.md).\n",
     "beta/SKILL.md": USER,
-    "evals/alpha/case/prompt.md": "A case.\n",
+    "evals/alpha/case/case.yaml": "name: case\n",
+    "evals/alpha/case/prompt.md": "---\ntags: [alpha]\n---\n\nA case.\n",
+    "evals/alpha/case/place-files.sh": "#!/usr/bin/env bash\n",
+    "evals/alpha/case/files/world.md": "# World\n",
+    "evals/alpha/case/graders/01.md": "An assertion.\n",
     ...overrides,
   };
   for (const [rel, text] of Object.entries(files)) {
@@ -77,6 +89,7 @@ const allProblems = (root: string): string[] => [
   ...skillNames(root).flatMap((name) => frontmatterProblems(root, name)),
   ...linkProblems(root),
   ...readmeProblems(root),
+  ...evalCaseProblems(root),
 ];
 
 describe("the checks over a fixture", () => {
@@ -178,6 +191,34 @@ describe("the checks over a fixture", () => {
       const root = fixture({ "beta/SKILL.md": null });
       expect(readmeProblems(root)).toEqual([
         "skills/README.md links to the skill beta, which has no folder under skills/ with a SKILL.md.",
+      ]);
+    });
+  });
+
+  describe("eval cases", () => {
+    it("fail a case missing a file or its graders, naming the case and the file", () => {
+      const root = fixture({ "evals/alpha/case/files/world.md": null, "evals/alpha/case/graders/01.md": null });
+      expect(evalCaseProblems(root)).toEqual([
+        "skills/evals/alpha/case has no files/world.md; every case holds case.yaml, prompt.md, place-files.sh, files/world.md and graders/.",
+        "skills/evals/alpha/case has no grader; add one graders/<nn>.md per assertion.",
+      ]);
+    });
+
+    it("fail a case.yaml not named for its folder, and a prompt not tagged with its skill", () => {
+      const root = fixture({
+        "evals/alpha/case/case.yaml": "name: other\n",
+        "evals/alpha/case/prompt.md": "---\ntags: [beta]\n---\n",
+      });
+      expect(evalCaseProblems(root)).toEqual([
+        'skills/evals/alpha/case/case.yaml has name "other"; it must be its folder\'s name, "case".',
+        'skills/evals/alpha/case/prompt.md\'s frontmatter has no tags list holding "alpha"; add tags: [alpha].',
+      ]);
+    });
+
+    it("fail a folder of cases not named for a skill", () => {
+      const root = fixture({ "evals/gamma/case/case.yaml": "name: case\n" });
+      expect(evalCaseProblems(root)).toEqual([
+        "skills/evals/gamma/ is not named for a skill; rename it to the skill its cases test.",
       ]);
     });
   });

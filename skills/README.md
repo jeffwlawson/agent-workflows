@@ -5,7 +5,7 @@ Claude Code skills for the maintainer's side of the loop, in any repository that
 | Skill | Invoked | What it does |
 |---|---|---|
 | [`issues-to-prd`](issues-to-prd/SKILL.md) | `/issues-to-prd` | Checks one issue and says what it needs, or stages a set of existing issues: triages the ones without a current brief, groups the ones that depend on or conflict with each other into PRDs (the existing issues become ordered sub-issues), leaves the rest as plain issues, and stops with everything ready for the maintainer to add `agent:implement`. |
-| [`merge-check`](merge-check/SKILL.md) | `/merge-check <PR>`, or by Claude when asked to check a PR before merging | The review the loop cannot give a PR it handed back: verify on the exact head, grade against the briefs, sweep for stale text, run what CI skipped or only a real host can check, and report merge-ready, with the two ways on (the maintainer's own guarded merge, or `agent:merge` at the checked head), or the findings. |
+| [`merge-check`](merge-check/SKILL.md) | `/merge-check <PR>`, or by Claude when asked to check a PR before merging | The review the loop cannot give a PR it handed back: verify on the exact head, grade against the briefs, sweep for stale text, run what CI skipped or only a real host can check, and report merge-ready, with the two ways on (the maintainer's own guarded merge, or `agent:merge` at the checked head), or the findings. As a digest (`/merge-check --digest`, or "digest the open loop PRs"), the same check on every open loop PR approved at its head, writing nothing, so it can run on a schedule under a read-only token (read access to contents, pull requests, issues, commit statuses, checks and actions); it ends in one brief, *Needs you* first, that `conduct` reads. |
 
 Both read their rules at run time rather than carrying them: the repository's own `CLAUDE.md` and `docs/agents/`, and this repository's `CONTEXT.md` and `docs/agents/` at the release the repository's callers pin.
 
@@ -21,4 +21,4 @@ npx skills add jeffwlawson/agent-workflows -g -s issues-to-prd -s merge-check
 
 ## Tests
 
-`evals/<skill>/<case>/` holds each skill's test cases in the layout `claude plugin eval` reads (a prompt, a simulated `world.md`, and one grader per assertion). They are rehearsals: GitHub is simulated, so a run makes no call. `merge-check` has none yet.
+`evals/<skill>/<case>/` holds each skill's test cases in the layout `claude plugin eval` reads (a prompt, a simulated `world.md`, and one grader per assertion). They are rehearsals: GitHub is simulated, so a run makes no call. `tests/skills.test.ts` holds each case to that layout.

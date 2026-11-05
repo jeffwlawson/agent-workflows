@@ -747,6 +747,17 @@ the id. A run with no `summary.json`, or one that does not parse, is listed as s
 died before it wrote its summary is the one you are most likely looking for. It reads only the
 summaries, so it prints no log text and no token, and nothing outside `WORK_DIR/runs`.
 
+What the loop is running now is `deploy/unraid/status.sh`, run on Unraid as root, beside
+`check-unraid.sh`: `bash /boot/config/agent-service/status.sh` prints the dispatcher container's
+state, whether the worker answers and the jobs it holds in the order they arrived, and the jobs and
+the items at `SCAN_DISPATCH_LIMIT` that the dispatcher's state file records. `status.sh 50` lists
+50 of each rather than 20. The worker is asked at its held door from inside the dispatcher's
+container, as `upgrade.sh` asks it: the question names no dispatcher instance, so the worker drops
+nothing for it, and the shared secret stays in the container. Each part it cannot reach (the
+container stopped, the worker down, no state file) is a line saying so, and the rest still
+answers. It changes nothing and prints no secret. `runs.sh` on the box says how the runs ended;
+`status.sh` says what is held now.
+
 Every phase has a time limit, as every job on Actions does, so a hung agent cannot hold the queue.
 The gate, the checkout, the budget, the CI wait and the runner share the review's: 15 minutes of CI
 wait plus `AGENT_REVIEW_TIMEOUT_MINUTES` (5 where unset). `review:publish` and `review:conclude`

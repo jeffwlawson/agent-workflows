@@ -4,7 +4,7 @@ import { file } from "../../follow-ups/file.js";
 import type { CommandIo, Token } from "../../shared/command-io.js";
 import type { COMMANDS } from "../../shared/contract.js";
 import { OPENING } from "../../follow-ups/checklist.js";
-import { FOLLOW_UP_STUB_LABEL, FOLLOW_UPS_LABEL, minorFindingsMarker, POST_MERGE_CHECKLIST_MARK, stubMarker, TRIAGE_LABEL } from "../../shared/record.js";
+import { FOLLOW_UP_STUB_LABEL, FOLLOW_UPS_LABEL, matchedCommentMarker, minorFindingsMarker, POST_MERGE_CHECKLIST_MARK, stubMarker, TRIAGE_LABEL } from "../../shared/record.js";
 import { followUpsPayload, renderFollowUpsBlock, type FollowUp } from "../../shared/review-output.js";
 import { fakeGitHub, fakeReader, fakeWriters, type FakeGitHub, type ReceivedRead } from "../engine/fakes.js";
 
@@ -48,10 +48,14 @@ const reviewed = (findings: readonly FollowUp[], over: { lastEditedAt?: string |
   ]);
 };
 
+/** The issues a test put in the tracker, which `filed` leaves out. */
+let seeded: Set<number>;
+
 /** A stub already in the tracker, labelled `pr-follow-up`, with `body`. */
-const stub = (number: number, body: string): void => {
-  github.filed.set(number, { title: "theirs", body, state: "OPEN", stateReason: null });
+const stub = (number: number, body: string, over: { title?: string; state?: "OPEN" | "CLOSED"; stateReason?: string | null } = {}): void => {
+  github.filed.set(number, { title: over.title ?? "theirs", body, state: over.state ?? "OPEN", stateReason: over.stateReason ?? null });
   github.issueLabels.set(number, [TRIAGE_LABEL, FOLLOW_UP_STUB_LABEL]);
+  seeded.add(number);
 };
 
 beforeEach(() => {
@@ -59,6 +63,7 @@ beforeEach(() => {
   github.repoLabels.push(TRIAGE_LABEL, FOLLOW_UP_STUB_LABEL);
   made = undefined;
   asked = undefined;
+  seeded = new Set();
   reads = [];
   log = vi.spyOn(console, "log").mockImplementation(() => {});
 });
@@ -107,7 +112,7 @@ const comments = () => github.comments.map((c) => c.body);
 const markerOn = () => github.pullRequests.get(PR)?.labels.includes(FOLLOW_UPS_LABEL);
 /** The issues this run filed, by number, title and labels: every one but those a test put there. */
 const filed = () =>
-  [...github.filed].filter(([, issue]) => issue.title !== "theirs").map(([number, issue]) => [number, issue.title, github.issueLabels.get(number)] as const);
+  [...github.filed].filter(([number]) => !seeded.has(number)).map(([number, issue]) => [number, issue.title, github.issueLabels.get(number)] as const);
 
 describe("follow-ups:file without the marker", () => {
   it("writes nothing and says so in the log", async () => {
@@ -208,7 +213,7 @@ describe("follow-ups:file with the marker", () => {
 
     await run();
 
-    expect(asked).toEqual({ createIssue: 200, comment: 2, removeLabel: 1 });
+    expect(asked).toEqual({ createIssue: 200, comment: 202, removeLabel: 1 });
     expect(new Set(made?.writes.map((w) => w.token))).toEqual(new Set(["workflow"]));
     expect(made?.entries.map((e) => `${e.token} ${e.type} ${e.outcome}`)).toEqual([
       "workflow createIssue applied",
@@ -218,14 +223,16 @@ describe("follow-ups:file with the marker", () => {
     expect(made?.entries[0]?.target).toBe(`"Finding 0" ${TRIAGE_LABEL} ${FOLLOW_UP_STUB_LABEL}`);
   });
 
-  it("refuses a stub past its limit, posting nothing and leaving the marker on", async () => {
+  it("refuses a plan past its limit before writing anything, leaving the marker on", async () => {
     reviewed(
       Array.from({ length: 201 }, (_, n) => followUp(n)),
       { cap: 300 },
     );
 
-    await expect(run()).rejects.toThrow(/past the limit of 200/);
-    expect(filed()).toHaveLength(200);
+    await expect(run()).rejects.toThrow(
+      "The plan files 201 issue(s) and comments on 0, more than the 200 one run may write, so nothing was filed and `agent:follow-ups` is left on.",
+    );
+    expect(writes()).toEqual([]);
     expect(comments()).toEqual([]);
     expect(markerOn()).toBe(true);
   });
@@ -245,6 +252,90 @@ describe("follow-ups:file with the marker", () => {
  * so one is read back (#510): the `pr-follow-up` issues are listed, and the
  * one whose key is this finding's identity is the one this run filed.
  */
+/**
+ * A finding an open `pr-follow-up` issue from another pull request already
+ * records, by file and title (#606), is written onto that issue as a comment,
+ * and a retry finds its own comment by its key and posts it once.
+ */
+describe("follow-ups:file on a finding an open stub already records", () => {
+  /** Another pull request's open stub for `followUp(n)`, under its title. */
+  const recorded = (number: number, n: number, over: { state?: "OPEN" | "CLOSED"; stateReason?: string | null } = {}): void =>
+    stub(number, `Prose.\n\n${stubMarker(`src/f${n}.ts:9`, 31, 0)}`, { title: `Finding ${n}`, ...over });
+
+  it("comments on the open issue with the finding, files nothing for it, and reports it as matched", async () => {
+    reviewed([followUp(0), followUp(1)]);
+    recorded(40, 0);
+
+    await run();
+
+    expect(writes()).toEqual(["workflow createIssue", "workflow comment", "workflow comment", "workflow removeLabel"]);
+    expect(filed().map(([number, title]) => [number, title])).toEqual([[41, "Finding 1"]]);
+    const [onIssue, report] = github.comments;
+    expect(onIssue?.issue).toBe(40);
+    expect(onIssue?.body).toContain("Evidence for 0.");
+    expect(onIssue?.body).toContain("**Location:** `src/f0.ts:1`");
+    expect(onIssue?.body).toContain(`Found in [a review](${REVIEW_URL}) on #${PR}.`);
+    expect(onIssue?.body.split("\n").at(-1)).toBe(matchedCommentMarker("src/f0.ts:1", PR, 0));
+    expect(report?.issue).toBe(PR);
+    expect(report?.body).toContain("- **Matched** · `src/f0.ts` · #40");
+    expect(report?.body).toContain("- **Filed** · `src/f1.ts` · #41");
+    expect(markerOn()).toBe(false);
+    expect(reads.map((r) => r.method)).toEqual(["pullRequest", "reviewHistory", "labelledIssues", "repoLabels", "authoredComments"]);
+    expect(logged()).toContain("Commented on 1 matched issue(s) of 1.");
+  });
+
+  it("files a stub, and comments nowhere, where the only match is closed", async () => {
+    reviewed([followUp(0)]);
+    recorded(40, 0, { state: "CLOSED", stateReason: "NOT_PLANNED" });
+
+    await run();
+
+    expect(filed().map(([, title]) => title)).toEqual(["Finding 0"]);
+    expect(github.comments.map((c) => c.issue)).toEqual([PR]);
+  });
+
+  it("posts no second comment on a retry after a run that commented and stopped", async () => {
+    reviewed([followUp(0), followUp(1)]);
+    recorded(40, 0);
+    // The earlier attempt: it filed finding 1, commented for finding 0, and
+    // stopped before the report.
+    stub(41, `Evidence for 1.\n\n${stubMarker("src/f1.ts:2", PR, 1)}`, { title: "Finding 1" });
+    github.discussion.set(40, [
+      // Anyone can quote the key; only the loop's own comment counts.
+      { body: `Quoting ${matchedCommentMarker("src/f0.ts:1", PR, 0)}`, author: "someone", association: "NONE" },
+      { body: `Earlier.\n\n${matchedCommentMarker("src/f0.ts:1", PR, 0)}`, author: "github-actions[bot]", association: "NONE" },
+    ]);
+
+    await run();
+
+    expect(writes()).toEqual(["workflow comment", "workflow removeLabel"]);
+    expect(github.comments.map((c) => c.issue)).toEqual([PR]);
+    expect(comments()[0]).toContain("- **Matched** · `src/f0.ts` · #40");
+    expect(comments()[0]).toContain("- **Already filed by this pull request** · `src/f1.ts` · #41");
+    expect(logged()).toContain(`#40 already carries this pull request's comment for \`src/f0.ts\`, so it is not posted again.`);
+  });
+
+  it("posts the comment where the only one carrying its key was written by someone else", async () => {
+    reviewed([followUp(0)]);
+    recorded(40, 0);
+    github.discussion.set(40, [{ body: matchedCommentMarker("src/f0.ts:1", PR, 0), author: "someone", association: "NONE" }]);
+
+    await run();
+
+    expect(github.comments.map((c) => c.issue)).toEqual([40, PR]);
+  });
+
+  it("stops with the marker on, posting no report, where the comment cannot be posted", async () => {
+    reviewed([followUp(0)]);
+    recorded(40, 0);
+    github.fails = (write) => write.type === "comment";
+
+    await expect(run()).rejects.toThrow(/^Couldn't comment on #40, so `agent:follow-ups` is left on/);
+    expect(github.comments).toEqual([]);
+    expect(markerOn()).toBe(true);
+  });
+});
+
 describe("follow-ups:file on a server error filing a stub", () => {
   const erroring = (landed: boolean, readBack: false | "fails" = false): void => {
     github.fails = (write, call) => {

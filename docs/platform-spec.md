@@ -502,6 +502,7 @@ string the agent wrote, so the agent cannot forge one of those through a review.
 | `<summary><b>Acceptance criteria</b>` | A review body's criteria group, its `- **Changed:**` and `- **Unmet:**` lines. | `review:publish`, from `review`'s `review_body.json` | `review`, on later rounds of the same slice |
 | `<!--{"version",…,"location","pr","seq"}-->` | The end of a filed follow-up issue's body. | `follow-ups:file`, which files it through `createIssue`, as `stubMarker` in `shared/record.ts` spells it | `follow-ups:file`, to not file one twice, and to read back a stub GitHub filed while answering with a server error |
 | `<!--{"version","kind":"minor","pr"}-->` | The end of a pull request's minor-findings issue's body (#625), the one issue its minor findings are filed as. Additive: the stub key's `version`, with a shape of its own, so a stub filed under the key above is read as it was. The last readable key in a body is its key, whichever shape it is. | `follow-ups:file`, which files it through `createIssue`, as `minorFindingsMarker` in `shared/record.ts` spells it | `follow-ups:file`, to not file a second for the pull request, and to read it back where GitHub answered the create with a server error |
+| `<!--{"version","kind":"comment","location","pr","seq"}-->` | The end of a comment writing a finding onto the open `pr-follow-up` issue that already records it (#606), another pull request's stub whose file and title the finding's match, in place of a stub of its own. The stub key's fields, with a kind of its own, so it is never read as a stub's. A path-only match still files a stub, which links the other. | `follow-ups:file`, which posts it through `comment`, as `matchedCommentMarker` in `shared/record.ts` spells it | `follow-ups:file`, reading the loop's own comments on that issue, to not post it twice on a retry |
 | `<!-- agent:prd-started -->` | The end of a PRD chain's first run's comment on the parent, saying which sub-issue it builds first. | `implement-prd:gate`, as `PRD_STARTED_MARK` in `shared/record.ts` spells it | `implement-prd:gate`, to not post it twice on a retry |
 | `<!-- agent:slice-approved <sha> -->` | The end of the note on an approved slice's sub-issue, `<sha>` the PRD PR head it was approved on. | `implement-prd:gate`, past an approval, as `sliceApprovedMark` in `shared/record.ts` spells it | `implement-prd:gate`, to not post it twice on a retry |
 | `<!-- agent:post-merge-checklist -->` | The end of the post-merge checklist on a merged pull request (§11). | `follow-ups:file`, as `POST_MERGE_CHECKLIST_MARK` in `shared/record.ts` spells it | `follow-ups:file`, to not post it twice on a retry |
@@ -3765,6 +3766,20 @@ out of it. The report names it on one line, `Filed #M: minor findings from #N (k
 that finds it by its key, as already filed by this pull request. It counts as one `createIssue`
 within the command's limits.
 
+An out-of-scope follow-up an **open** `pr-follow-up` issue already records (#606) is not filed: one
+filed for another pull request, with a readable stub key, whose key's path, normalised (the first
+path-shaped token, its line number stripped), equals the finding's, and whose title equals the
+finding's once both are one line, case folded and stripped of trailing punctuation, the finding's
+held to the stub title limit first. Where several match, the lowest-numbered is the target. The
+finding is written onto it as one comment, its body, location, severity and provenance as the stub
+would carry them, ending in the matched comment's key (§4), with the workflow token; a retry that
+finds a comment of the loop's own identity carrying that key posts none. The report names it as
+`Matched · <path> · #N`. Identity, this pull request's own stub for the finding, is checked first
+and wins. A match on the path alone, or only on a closed issue, fixed or `wontfix`, files a stub as
+before, which links the other as *Possibly related*. Stubs and these comments together are held to
+the most a review's hand-over may carry, 200, before anything is written, and a plan past it fails
+with nothing filed.
+
 #### Inputs
 
 | Input | Kind | Default | What it is |
@@ -3800,7 +3815,10 @@ within the command's limits.
   merge without it files nothing, and a second run files nothing.
 - The newest review by the loop's identity carrying `agent-follow-ups`; an edited one is refused,
   after the checklist is posted.
-- Every `pr-follow-up` issue, with the key in its body, so as not to file one twice.
+- Every `pr-follow-up` issue, with its title and the key in its body, so as not to file one twice,
+  and to find an open one that already records a finding (#606).
+- The comments on each issue a finding is written onto (#606), for one by the loop's identity
+  carrying that finding's key. One by anyone else does not count.
 
 **`doctor` cannot check this.** The record is written by the orchestrator's posting code, for the reason §4.3 gives.
 

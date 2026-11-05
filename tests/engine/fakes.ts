@@ -253,6 +253,7 @@ const labelledIn = (github: FakeGitHub, label: string): LabelledIssue[] =>
     .map(([number, issue]) => ({
       number,
       url: `https://github.com/o/r/issues/${number}`,
+      title: issue.title,
       state: issue.state,
       stateReason: issue.stateReason,
       body: issue.body,
@@ -306,7 +307,7 @@ export const fakeReader = (github: FakeGitHub): { readonly reader: GitHubReader;
       reads.push({ method: "authoredComments", args: [number] });
       const seeded = github.discussion.get(number);
       const posted = github.comments.filter((comment) => comment.issue === number);
-      if (seeded === undefined && !github.bodies.has(number) && !github.pullRequests.has(number)) {
+      if (seeded === undefined && !github.bodies.has(number) && !github.pullRequests.has(number) && !github.filed.has(number)) {
         throw new GitHubError(`issue #${number}: 404 Not Found`, 404);
       }
       return [

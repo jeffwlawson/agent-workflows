@@ -6,8 +6,8 @@ import type { CommandIo } from "../shared/command-io.js";
 import type { COMMANDS } from "../shared/contract.js";
 import type { InputValues } from "../shared/env.js";
 import { planChecklist, type ChecklistIssue } from "./checklist.js";
-import { isStubFor, planFollowUps, type PlannedIssue } from "../shared/follow-up-plan.js";
-import { loopAccounts, type LoopAccounts } from "../shared/loop-accounts.js";
+import { isCommentFor, isStubFor, planFollowUps, type PlannedComment, type PlannedIssue } from "../shared/follow-up-plan.js";
+import { isWorkflowBot, loopAccounts, type LoopAccounts } from "../shared/loop-accounts.js";
 import { FOLLOW_UP_STUB_LABEL, FOLLOW_UPS_LABEL, LINKED_ISSUE } from "../shared/record.js";
 import { FOLLOW_UPS_LIST_LIMIT } from "../shared/review-output.js";
 
@@ -40,12 +40,14 @@ type Io = CommandIo<Declared["outputs"]>;
  * with the workflow's token alone and within `LIMITS`, so every write it makes
  * is capped and in its write log, and a test drives it with the fakes. Issues
  * first, because the report names them and cannot be written until they have
- * numbers; the report; and the marker **last, and only on a plan that asked for
+ * numbers; then the comments on open issues that already record a finding
+ * (#606); the report; and the marker **last, and only on a plan that asked for
  * it**: it is left in place on every refusal and every failure, where it is both
  * the retry affordance and the signal that this pull request's findings are
  * unfiled. A retry is safe: every stub carries its finding's identity in its
  * marker, so the retry reports it as *already filed* and creates only what is
- * missing.
+ * missing, and every comment carries the same key, so the retry finds its own
+ * and posts it once.
  *
  * The off switch is **the caller**. `follow-ups.yml` invokes this subcommand,
  * and nothing invokes a reusable except a caller's reference — so a repository
@@ -117,6 +119,15 @@ const fileFindings = async (io: Io, workflow: Writer, pr: number, labels: readon
     { prNumber: pr, reviews: await io.github.reviewHistory(pr), stubs: await io.github.labelledIssues(FOLLOW_UP_STUB_LABEL) },
     accounts,
   );
+  // Bounded before anything is written, so a runaway plan fails whole rather
+  // than at the limit half way through: each finding is one stub or one
+  // comment, and together they stay within the cap the stubs always had.
+  const planned = plan.issues.length + plan.comments.length;
+  if (planned > FOLLOW_UPS_LIST_LIMIT) {
+    throw new Error(
+      `The plan files ${plan.issues.length} issue(s) and comments on ${plan.comments.length}, more than the ${FOLLOW_UPS_LIST_LIMIT} one run may write, so nothing was filed and \`${FOLLOW_UPS_LABEL}\` is left on.`,
+    );
+  }
   const available = new Set(plan.issues.length === 0 ? [] : await io.github.repoLabels());
 
   const created: number[] = [];
@@ -127,6 +138,11 @@ const fileFindings = async (io: Io, workflow: Writer, pr: number, labels: readon
     report = report?.replace(issue.placeholder, `#${number}`);
   }
 
+  let commented = 0;
+  for (const comment of plan.comments) {
+    if (await commentOnMatch(io.github, workflow, comment, accounts)) commented += 1;
+  }
+
   if (report !== undefined) {
     await stopping(`Couldn't post the report on #${pr}`, () => workflow.comment(pr, report));
   }
@@ -135,6 +151,7 @@ const fileFindings = async (io: Io, workflow: Writer, pr: number, labels: readon
   }
 
   console.log(`Filed ${created.length} issue(s)${created.length === 0 ? "" : `: ${created.map((n) => `#${n}`).join(", ")}`}.`);
+  if (plan.comments.length > 0) console.log(`Commented on ${commented} matched issue(s) of ${plan.comments.length}.`);
   // Both are worth a line even when nothing was filed. A run that reported
   // without removing the marker is a refusal, and a run that removed it
   // without reporting decided there was nothing to say — and telling those
@@ -146,13 +163,16 @@ const fileFindings = async (io: Io, workflow: Writer, pr: number, labels: readon
 /**
  * What it may write, and how many of each, on the workflow's writer: stubs up
  * to the most a review's hand-over may carry, a guard against a runaway plan
- * rather than a quota; the post-merge checklist and the one report; and the
- * marker's removal. Every other
+ * rather than a quota; comments up to that same figure, for the findings
+ * written onto the open issue that records them (#606), and two more, the
+ * post-merge checklist and the one report; and the marker's removal. The plan
+ * is held to the figure before anything is written, stubs and those comments
+ * together, one per finding. Every other
  * type is limited to none, and the loop's writer is never used: a stub made
  * with the workflow token starts no workflow, and a repository without
  * `AGENT_PAT` still files.
  */
-const LIMITS: Limits = { createIssue: FOLLOW_UPS_LIST_LIMIT, comment: 2, removeLabel: 1 };
+const LIMITS: Limits = { createIssue: FOLLOW_UPS_LIST_LIMIT, comment: 2 + FOLLOW_UPS_LIST_LIMIT, removeLabel: 1 };
 
 /**
  * The post-merge checklist (#544), gathered, planned by `planChecklist` and
@@ -272,6 +292,30 @@ const createStub = async (workflow: Writer, issue: PlannedIssue, available: Read
     );
   }
   return created.number;
+};
+
+/**
+ * One finding written onto the open issue that records it (#606), unless a
+ * comment the loop's own account wrote there already carries its key: a run
+ * that commented and stopped before the marker came off, run again, posts it
+ * once. Only the loop's comments are read back, because anyone can comment on
+ * an issue and a comment quoting the key must not stop a finding being written.
+ * Whether it posted.
+ */
+const commentOnMatch = async (github: GitHubReader, workflow: Writer, comment: PlannedComment, accounts: LoopAccounts): Promise<boolean> => {
+  let existing;
+  try {
+    existing = await github.authoredComments(comment.issue);
+  } catch (error) {
+    throw new Error(`Couldn't read the comments on #${comment.issue}, so \`${FOLLOW_UPS_LABEL}\` is left on: ${describe(error)}`, { cause: error });
+  }
+  const own = isCommentFor(comment);
+  if (existing.some((posted) => isWorkflowBot(posted.author, accounts) && own(posted.body))) {
+    console.log(`#${comment.issue} already carries this pull request's comment for \`${comment.path}\`, so it is not posted again.`);
+    return false;
+  }
+  await stopping(`Couldn't comment on #${comment.issue}`, () => workflow.comment(comment.issue, comment.body));
+  return true;
 };
 
 /** `write`, or a sentence saying what failed and that `agent:follow-ups` is left on. */

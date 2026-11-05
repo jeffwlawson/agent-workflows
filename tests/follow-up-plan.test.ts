@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   earlierFollowUps,
+  isCommentFor,
   MAX_STUB_TITLE,
   planFollowUps,
   type FilingReview,
@@ -15,7 +16,8 @@ import {
   type FollowUp,
   type FollowUpRuling,
 } from "../shared/review-output.js";
-import { FOLLOW_UP_STUB_LABEL, FOLLOW_UPS_MARKER, TRIAGE_LABEL } from "../shared/record.js";
+import { FOLLOW_UP_STUB_LABEL, FOLLOW_UPS_MARKER, matchedCommentMarker, stubMarker, TRIAGE_LABEL } from "../shared/record.js";
+import { severityTextBadge } from "../shared/review-findings.js";
 import { loopAccounts } from "../shared/loop-accounts.js";
 
 /** The loop's accounts with `AGENT_LOOP_LOGINS` unset: the default alone. */
@@ -66,6 +68,7 @@ const stub = (
   const { location = "src/a.ts", pr = 7, seq = 0, ...rest } = over;
   return {
     number: 71,
+    title: "An earlier stub",
     state: "OPEN",
     stateReason: null,
     body: `Prose that may be reworded freely.\n\n<!--{"version":2,"location":"${location}","pr":${pr},"seq":${seq}}-->`,
@@ -85,7 +88,7 @@ const plan = (
     stubs,
   }, ACCOUNTS);
 
-const NOTHING = { issues: [] };
+const NOTHING = { issues: [], comments: [] };
 
 /** The outcome lines of the planned comment, which is where every outcome is visible. */
 const reportLines = (report: string | undefined): readonly string[] =>
@@ -313,6 +316,7 @@ describe("planFollowUps: what counts as the same finding", () => {
   it("reads relatedness off the payload even when the stub's prose names another path", () => {
     const misleading: FilingStub = {
       number: 71,
+      title: "An earlier stub",
       state: "OPEN",
       stateReason: null,
       body: `**Location:** \`src/decoy.ts:4\`\n\n<!--{"version":2,"location":"src/a.ts","pr":7,"seq":0}-->`,
@@ -336,6 +340,7 @@ describe("planFollowUps: what counts as the same finding", () => {
   it("reads the stub's own key, not a payload its evidence quotes", () => {
     const quoting: FilingStub = {
       number: 71,
+      title: "An earlier stub",
       state: "OPEN",
       stateReason: null,
       body: [
@@ -363,7 +368,7 @@ describe("planFollowUps: what counts as the same finding", () => {
   it("links nothing to a stub carrying no payload", () => {
     const result = plan(
       [followUp({ location: "src/a.ts" })],
-      [{ number: 71, state: "OPEN", stateReason: null, body: "A hand-written issue about src/a.ts." }],
+      [{ number: 71, title: "An earlier stub", state: "OPEN", stateReason: null, body: "A hand-written issue about src/a.ts." }],
     );
 
     expect(result.issues).toHaveLength(1);
@@ -375,6 +380,7 @@ describe("planFollowUps: what counts as the same finding", () => {
       [followUp({ location: "src/a.ts" })],
       [{
         number: 71,
+        title: "An earlier stub",
         state: "OPEN",
         stateReason: null,
         body: `<!--{"version":3,"location":"src/a.ts","pr":7,"seq":0}-->`,
@@ -769,6 +775,7 @@ describe("planFollowUps: the stub it plans", () => {
     const first = planFollowUps({ prNumber: 32, reviews: [review(findings)], stubs: [] }, ACCOUNTS);
     const asStub: FilingStub = {
       number: 71,
+      title: "An earlier stub",
       state: "OPEN",
       stateReason: null,
       body: first.issues[0]?.body ?? "",
@@ -1229,6 +1236,7 @@ describe("filing the minor findings", () => {
   /** The minor-findings issue a run filed, as the listing returns it. */
   const grouped = (number: number, over: Partial<FilingStub> = {}): FilingStub => ({
     number,
+    title: "Minor findings from #32",
     state: "OPEN",
     stateReason: null,
     body: `Prose.\n\n${KEY}`,
@@ -1371,5 +1379,146 @@ describe("earlierFollowUps over minor findings", () => {
     ];
 
     expect(earlierFollowUps(reviews, ACCOUNTS)).toMatchObject({ carried: [{ minor: [], moved: [], rest: [] }, { moved: [], rest: [] }], resolved: ["fu-a"] });
+  });
+});
+
+/**
+ * The match (#606): a finding an **open** `pr-follow-up` issue from another
+ * pull request already records, by file and by title, is written onto that
+ * issue as a comment rather than filed again. Every condition is required,
+ * and a path alone still files and links, as #82 left it.
+ */
+describe("planFollowUps: a finding an open stub already records", () => {
+  const TITLE = followUp().title;
+
+  it("plans one comment on the open issue carrying the whole finding, files nothing, and reports it as matched", () => {
+    const result = plan([followUp({ location: "src/a.ts:12" })], [stub({ title: TITLE, location: "src/a.ts:40", pr: 7 })]);
+
+    expect(result.issues).toEqual([]);
+    expect(result.comments).toHaveLength(1);
+    const comment = result.comments[0];
+    expect(comment?.issue).toBe(71);
+    expect(comment?.path).toBe("src/a.ts");
+    expect(comment?.body).toContain(followUp().body);
+    expect(comment?.body).toContain("**Location:** `src/a.ts:12`");
+    expect(comment?.body).toContain(`**Severity:** ${severityTextBadge("medium")}`);
+    expect(comment?.body).toContain(`Found in [a review](${REVIEW_URL}) on #32. An earlier review on that PR may have raised it first.`);
+    expect(comment?.body).toContain("#32");
+    expect(comment?.body.split("\n").at(-1)).toBe(matchedCommentMarker("src/a.ts:12", 32, 0));
+    expect(reportLines(result.report)).toEqual(["- **Matched** · `src/a.ts` · #71"]);
+    expect(result.removeMarker).toBe(true);
+  });
+
+  it("compares titles with whitespace collapsed, case folded and trailing punctuation dropped", () => {
+    const result = plan([followUp({ title: "  Parse()   DROPS the guard.  " })], [stub({ title: "parse() drops the guard" })]);
+
+    expect(result.issues).toEqual([]);
+    expect(result.comments.map((c) => c.issue)).toEqual([71]);
+  });
+
+  it("compares a long title as it was filed, held to the stub title limit", () => {
+    const long = `${"a very long title about the guard ".repeat(4)}that runs on`;
+    const filed = plan([followUp({ title: long })]).issues[0]?.title ?? "";
+    expect(filed.length).toBe(MAX_STUB_TITLE);
+
+    const result = plan([followUp({ title: long })], [stub({ title: filed })]);
+
+    expect(result.comments.map((c) => c.issue)).toEqual([71]);
+  });
+
+  it("files a finding at the same file under another title, with the related link, open or wontfix", () => {
+    const open = plan([followUp({ title: "another problem" })], [stub({ title: TITLE })]);
+    expect(open.comments).toEqual([]);
+    expect(open.issues).toHaveLength(1);
+    expect(relationOf(open.issues[0]?.body)).toContain("#71 (open)");
+
+    const declined = plan(
+      [followUp({ title: "another problem" })],
+      [stub({ title: TITLE, state: "CLOSED", stateReason: "NOT_PLANNED" })],
+    );
+    expect(declined.comments).toEqual([]);
+    expect(relationOf(declined.issues[0]?.body)).toContain("#71, closed as `wontfix`");
+  });
+
+  it("files a finding under the same title at another file", () => {
+    const result = plan([followUp({ location: "src/b.ts:3" })], [stub({ title: TITLE, location: "src/a.ts" })]);
+
+    expect(result.comments).toEqual([]);
+    expect(result.issues).toHaveLength(1);
+  });
+
+  it.each([
+    ["fixed", "COMPLETED"],
+    ["wontfix", "NOT_PLANNED"],
+  ])("never comments on a closed issue (%s), and files a new stub that links it where it may", (_, reason) => {
+    const result = plan([followUp()], [stub({ title: TITLE, state: "CLOSED", stateReason: reason })]);
+
+    expect(result.comments).toEqual([]);
+    expect(result.issues).toHaveLength(1);
+    expect(reportLines(result.report)[0]).toMatch(/Filed/);
+  });
+
+  it("gives two findings that match one open issue a comment each, each with its own key", () => {
+    const result = plan(
+      [followUp({ location: "src/a.ts:12" }), followUp({ location: "src/a.ts:90" })],
+      [stub({ title: TITLE })],
+    );
+
+    expect(result.issues).toEqual([]);
+    expect(result.comments.map((c) => [c.issue, c.body.split("\n").at(-1)])).toEqual([
+      [71, matchedCommentMarker("src/a.ts:12", 32, 0)],
+      [71, matchedCommentMarker("src/a.ts:90", 32, 1)],
+    ]);
+    expect(reportLines(result.report)).toEqual(["- **Matched** · `src/a.ts` · #71", "- **Matched** · `src/a.ts` · #71"]);
+  });
+
+  it("lets identity win: a finding this pull request already filed is already filed, never matched", () => {
+    const result = plan(
+      [followUp({ location: "src/a.ts:12" })],
+      [stub({ number: 60, title: TITLE }), stub({ number: 80, title: TITLE, location: "src/a.ts:12", pr: 32, seq: 0 })],
+    );
+
+    expect(result.issues).toEqual([]);
+    expect(result.comments).toEqual([]);
+    expect(reportLines(result.report)[0]).toMatch(/Already filed by this pull request.*#80/);
+  });
+
+  it("never targets this pull request's own stub for another finding", () => {
+    const result = plan([followUp({ location: "src/a.ts:12" })], [stub({ title: TITLE, pr: 32, seq: 5 })]);
+
+    expect(result.comments).toEqual([]);
+    expect(result.issues).toHaveLength(1);
+  });
+
+  it("never targets an issue it cannot read a key from", () => {
+    const result = plan(
+      [followUp()],
+      [
+        { number: 71, title: TITLE, state: "OPEN", stateReason: null, body: "A hand-written issue about src/a.ts." },
+        { number: 72, title: TITLE, state: "OPEN", stateReason: null, body: `<!--{"version":3,"location":"src/a.ts","pr":7,"seq":0}-->` },
+      ],
+    );
+
+    expect(result.comments).toEqual([]);
+    expect(result.issues).toHaveLength(1);
+  });
+
+  it("targets the lowest-numbered of several matches, the original", () => {
+    const result = plan([followUp()], [stub({ number: 90, title: TITLE }), stub({ number: 71, title: TITLE }), stub({ number: 80, title: TITLE })]);
+
+    expect(result.comments.map((c) => c.issue)).toEqual([71]);
+  });
+
+  it("reads a comment back as its own by its key alone, the last readable one", () => {
+    const [comment] = plan([followUp({ location: "src/a.ts:12" })], [stub({ title: TITLE })]).comments;
+    if (comment === undefined) throw new Error("no comment planned");
+    const matches = isCommentFor(comment);
+
+    expect(matches(comment.body)).toBe(true);
+    expect(matches(`Reworded.\n\n${matchedCommentMarker("src/a.ts:12", 32, 0)}`)).toBe(true);
+    expect(matches(matchedCommentMarker("src/a.ts:12", 32, 1))).toBe(false);
+    expect(matches(matchedCommentMarker("src/a.ts:12", 33, 0))).toBe(false);
+    expect(matches(stubMarker("src/a.ts:12", 32, 0))).toBe(false);
+    expect(matches(`Quotes ${matchedCommentMarker("src/a.ts:12", 32, 0)}.\n\n${matchedCommentMarker("src/b.ts", 31, 0)}`)).toBe(false);
   });
 });

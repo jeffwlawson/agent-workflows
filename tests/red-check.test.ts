@@ -25,6 +25,7 @@ import {
 import { VERDICTS } from "../shared/review-output.js";
 import { SUBPROCESS_TIMEOUT } from "../vitest.config.js";
 import { BASE, classified, HEAD as PLACED_HEAD, READY } from "./review/classified.js";
+import { RAN_REPORT, REVIEWED_HEAD } from "./review/branch-rules.js";
 import { renderDecided } from "./review/decided.js";
 
 /**
@@ -330,15 +331,21 @@ describe("the review reads the red check's report as evidence", () => {
     expect(seen).toContain("**This pull request changes no non-test file**");
   });
 
-  /** The review is told what to do with it, and the runner hands it over. */
+  /**
+   * The review is told what to do with it, and the runner hands it over. The
+   * rule rides with a report that was read (#780), so it is read off the
+   * renderer's output rather than the static prompt.
+   */
   it("is a section of the review's brief, which tells it to flag an uncovered change", () => {
     const prompt = fs.readFileSync(path.join("review", "prompt.md"), "utf8");
     const runner = fs.readFileSync(path.join("review", "review.ts"), "utf8");
+    const ran = renderRedCheck({ kind: "ran", report: RAN_REPORT }, REVIEWED_HEAD);
 
     expect(prompt).toContain("{{RED_CHECK}}");
     expect(runner).toMatch(/RED_CHECK:[^,]*: renderRedCheck\(redCheck, headSha\)/);
-    expect(prompt).toMatch(/\*\*A broken test is not red\*\*/);
-    expect(prompt).toMatch(/no red test covers/);
+    expect(ran).toMatch(/\*\*A broken test is not red\*\*/);
+    expect(ran).toMatch(/no red test covers/);
+    expect(renderRedCheck({ kind: "not-configured" }, REVIEWED_HEAD)).not.toMatch(/A broken test is not red|no red test covers/);
   });
 });
 

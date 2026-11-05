@@ -37,7 +37,7 @@ import {
   surfaceText,
   unreadableNote,
 } from "../shared/pr-feedback.js";
-import { fetchPullRequestContext } from "../review/review-context.js";
+import { fetchPullRequestContext, UNREADABLE_FEEDBACK_RULE } from "../review/review-context.js";
 import { findingMarker, severityBadge } from "../shared/review-findings.js";
 import { criteriaCase, followUpsPayload, reviewRecord, type FollowUp } from "../shared/review-output.js";
 import { carriedFindings, declineReply, resolutionReply } from "../shared/review-verification.js";
@@ -1270,6 +1270,8 @@ describe("the review context surfaces what it could not read", () => {
     expect(context.discussion).toContain("Looks close");
     expect(context.discussion).toContain("repository.pullRequest.reviewThreads");
     expect(context.unreadableFeedback).toHaveLength(1);
+    // With the review's framing for the note ahead of the feedback it sits with (#780).
+    expect(context.discussion.startsWith(`${UNREADABLE_FEEDBACK_RULE}\n\n`)).toBe(true);
   });
 
   it("says so even when nothing else survived, rather than rendering no comments", () => {
@@ -1292,6 +1294,7 @@ describe("the review context surfaces what it could not read", () => {
 
     expect(context.unreadableFeedback).toEqual([]);
     expect(context.discussion).not.toContain("could not be read");
+    expect(context.discussion).not.toContain(UNREADABLE_FEEDBACK_RULE);
   });
 
   /**
@@ -1492,8 +1495,10 @@ describe("both prompts frame a section that could not be read", () => {
     .split("\n")[0]!
     .replace(/^#+\s*/, "");
 
-  it("names in review/prompt.md the heading the note actually emits", () => {
-    expect(fs.readFileSync("review/prompt.md", "utf8")).toContain(heading);
+  /** The review's framing rides with the note, printed only where a selection was refused (#780). */
+  it("names, in the review's framing for the note, the heading the note actually emits", () => {
+    expect(UNREADABLE_FEEDBACK_RULE).toContain(heading);
+    expect(fs.readFileSync("review/prompt.md", "utf8")).not.toContain(heading);
   });
 
   it("tells the fix agent a surface may say it could not be read", () => {

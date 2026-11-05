@@ -255,15 +255,37 @@ export const fixRoundProgress = (
   return { given: given.size, closed: closed.size };
 };
 
-/** The one line the prompt carries, so the agent knows which pass it is doing. */
+/**
+ * What a verification pass is asked, printed only beside a history that
+ * follows a fix round, assumed or established (#780, audit #704 H4): a review
+ * that follows none is handed the one line saying so and nothing of this.
+ * Moved out of `review/prompt.md` as it was, line breaks and all.
+ */
+const VERIFICATION_PASS = [
+  "**A review that follows a fix round is a verification pass.** An earlier review of this pull request",
+  "stands, a fix round has pushed since, and the question is no longer *what is wrong with this change*",
+  "but *did the last round's findings land, and did the new commits break anything?* Rule on every open",
+  "finding (the section below), and read the new commits for what they broke: a fix that resolves its",
+  "own finding and regresses something else is what nothing else is looking for. A real problem in",
+  "code an earlier review of this pull request already read is *previously missed* (*THE TWO KINDS OF",
+  "FINDING*); one outside this pull request's scope is still a `followUps` entry, and *FOLLOW-UPS",
+  "EARLIER ROUNDS RECORDED* says whether to re-record an earlier round's (`howChecked` records that",
+  "this was a verification pass, and what you checked the earlier findings against)."
+].join("\n");
+
+/**
+ * The line the prompt carries, so the agent knows which pass it is doing, and
+ * on a verification pass the rules for one.
+ */
 export const describeHistory = (history: ReviewHistory): string => {
   if (history.unreadable !== undefined) {
-    return `This review is taken to **follow a fix round**, the stricter reading, because ${history.unreadable}.`;
+    return `This review is taken to **follow a fix round**, the stricter reading, because ${history.unreadable}.\n\n${VERIFICATION_PASS}`;
   }
   if (history.afterFixRound) {
-    return history.unreviewedCommits
+    const line = history.unreviewedCommits
       ? "This review **follows a fix round**: an earlier review of this pull request started one, and commits have landed since."
       : "This review **follows a fix round**: an earlier review of this pull request started one, and the fix run pushed nothing but left out-of-scope notes.";
+    return `${line}\n\n${VERIFICATION_PASS}`;
   }
   if (history.unreviewedCommits) {
     return "This review follows **no fix round** it can recognise: either no earlier verdict stands on this pull request, or the commits since the last one are a human's push, a merge, or a fix round a human started by adding `agent:fix`, which posts no verdict of its own. Review them as a change in full.";

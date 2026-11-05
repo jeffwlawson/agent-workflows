@@ -52,7 +52,8 @@ import {
 import { FOLLOW_UPS_MARKER, VERDICT_CONTEXT } from "../shared/record.js";
 import { renderDecided, postDecided, type Decided } from "./review/decided.js";
 import { applyCriteriaRulings } from "../review/acceptance-criteria.js";
-import { LIVE_FINDING_HISTORY, REVIEW_PROMPT, withFindingHistory } from "./review/finding-history.js";
+import { LIVE_PROMPT } from "./review/branch-rules.js";
+import { REVIEW_PROMPT } from "./review/finding-history.js";
 
 /** Every row a verdict can post: the table's three, and each cause of a closer look. */
 const EVERY_ROW: readonly VerdictRow[] = [
@@ -3104,10 +3105,11 @@ index 0ff3bbb..c6ca7ae 100644
 describe("the review's finding vocabulary", () => {
   /**
    * The prompt as a review with an open finding, a settled one and a fix note
-   * is handed it: those sections' rules ride with their placeholders and are
-   * printed only where they apply (#749), so a rule of theirs is read here.
+   * is handed it, after a fix round, with refused feedback and a red check that
+   * ran: those sections' rules ride with their placeholders and are printed
+   * only where they apply (#749, #780), so a rule of theirs is read here.
    */
-  const PROMPT = withFindingHistory(LIVE_FINDING_HISTORY);
+  const PROMPT = LIVE_PROMPT;
   const EXTRACTION = fs.readFileSync(path.join("review", "extraction.md"), "utf8");
   const halves = [
     ["prompt.md", PROMPT],
@@ -3343,7 +3345,7 @@ describe("the review's finding vocabulary", () => {
    * opener, and a third telling of *previously missed* are gone.
    */
   it("writes the verification pass as one paragraph, naming previously missed once", () => {
-    const follows = PROMPT.match(/# WHAT THIS REVIEW FOLLOWS\n\n\{\{HISTORY\}\}\n\n(.*?)\n\n# FINDINGS/s)?.[1] ?? "";
+    const follows = PROMPT.match(/# WHAT THIS REVIEW FOLLOWS\n\n[^\n]*\n\n(.*?)\n\n# FINDINGS/s)?.[1] ?? "";
 
     expect(follows).toMatch(/^\*\*A review that follows a fix round is a verification pass\.\*\*/);
     expect(follows).not.toContain("\n\n");

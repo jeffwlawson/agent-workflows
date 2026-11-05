@@ -186,6 +186,32 @@ const NOT_RUN: Readonly<Record<string, string>> = {
 const UNKNOWN =
   "**Which tests are red is unknown.** That is not \"no red tests\", and it is not \"all covered\": judge the tests in the diff yourself, and take no claim that a test was red on the pull request's word.";
 
+/**
+ * What the review does with a report it can read: printed only where the
+ * check ran and came back with results (#780, audit #704 H4). Moved out of
+ * `review/prompt.md` as it was, line breaks and all.
+ */
+const HOLD_TO_IT = [
+  "**Where the check ran, hold every behaviour change to it.** For each behaviour change this pull",
+  "request makes in a non-test file, find the red test that covers it: one whose failing assertion",
+  "exercises that behaviour. **A broken test is not red**, so it covers nothing. Where no red test",
+  "covers it, **flag it plainly**, as a finding to fix before merge, anchored at the change, naming the",
+  "behaviour and saying that no red test covers it. One finding per uncovered behaviour, or one naming",
+  "the class where several share a cause. A change that alters no behaviour (a comment, a rename, a",
+  "refactor the existing tests pin, documentation) is owed nothing (`howChecked` records which",
+  "changes you treated that way). A claim in the pull request's body or a commit message that a test was red is",
+  "not evidence: the report is."
+].join("\n");
+
+/**
+ * What the review does where which tests are red is unknown, printed only
+ * beside an unknown (#780). Moved out of `review/prompt.md` as it was.
+ */
+const WHERE_UNKNOWN = [
+  "Where the report says which tests are red is unknown, raise no finding on the strength of the",
+  "missing report (`howChecked` records that the red evidence was unavailable)."
+].join("\n");
+
 const code = (text: string): string => `\`${text.replaceAll("`", "'")}\``;
 
 /** A fence no backtick run in the text can close: a test's message is the pull request's to write. */
@@ -262,7 +288,11 @@ const opening = (report: RedCheckReport): string => {
 
 const renderRan = (report: RedCheckReport, reviewedHead: string): string => {
   const parts: string[] = [opening(report)];
-  if (report.head !== null && report.head !== reviewedHead) {
+  const moved = report.head !== null && report.head !== reviewedHead;
+  // A report that came back with results is held to; one read at another head
+  // leaves the commits after it unknown, so it carries both rules.
+  const known = (): string => [...parts, HOLD_TO_IT, ...(moved ? [WHERE_UNKNOWN] : [])].join("\n\n");
+  if (moved) {
     parts.push(
       `**It read the pull request at ${code(report.head)}, and this review reads ${code(reviewedHead)}.** Anything pushed between the two is not in it, so whether a red test covers what those commits change is unknown, as for a report that could not be read.`,
     );
@@ -274,12 +304,12 @@ const renderRan = (report: RedCheckReport, reviewedHead: string): string => {
       `**${capital(whose(report))} adds or changes no test file**, so no test is red against ${before(report)}.`,
     );
     parts.push(renderSource(report, 0));
-    return parts.join("\n\n");
+    return known();
   }
   if (status !== "ran") {
     const why = NOT_RUN[status] ?? `it reported ${code(status)}`;
     parts.push(`**No test result came back:** ${why}.${report.reason ? ` It said:\n\n${fenced(report.reason)}` : ""}`);
-    parts.push(UNKNOWN);
+    parts.push(UNKNOWN, WHERE_UNKNOWN);
     return parts.join("\n\n");
   }
 
@@ -294,7 +324,7 @@ const renderRan = (report: RedCheckReport, reviewedHead: string): string => {
         ? `the JUnit report it read held ${report.skipped} skipped test(s) and none that ran`
         : "the JUnit report it read held no test at all, so the command may not have run the files above";
     parts.push(`**No test result came back:** ${skipped}.`);
-    parts.push(UNKNOWN);
+    parts.push(UNKNOWN, WHERE_UNKNOWN);
     return parts.join("\n\n");
   }
 
@@ -318,7 +348,7 @@ const renderRan = (report: RedCheckReport, reviewedHead: string): string => {
     );
   }
   parts.push(renderSource(report, red.length));
-  return parts.join("\n\n");
+  return known();
 };
 
 /** The red check's evidence as the review prompt carries it. */
@@ -327,7 +357,7 @@ export const renderRedCheck = (check: RedCheck, reviewedHead: string): string =>
     case "not-configured":
       return "**The red check is not configured** for this repository, so there is no red evidence. Review the tests as the rest of this brief says, and do not flag a change only for having no red test.";
     case "unreadable":
-      return `**The red check is configured, and its result could not be read**: ${check.reason}.\n\n${UNKNOWN}`;
+      return `**The red check is configured, and its result could not be read**: ${check.reason}.\n\n${UNKNOWN}\n\n${WHERE_UNKNOWN}`;
     case "ran":
       return renderRan(check.report, reviewedHead);
   }
@@ -350,7 +380,9 @@ export const renderRedCheckForFinal = (slices: readonly SliceRedTests[] | undefi
 
 **The PRD branch's history could not be read**, so no slice's record is known.
 
-${UNKNOWN}`;
+${UNKNOWN}
+
+${WHERE_UNKNOWN}`;
   }
   if (slices.length === 0) return `${intro}
 
@@ -369,10 +401,14 @@ No slice has landed, so there is no record to read.`;
       ...(record.more > 0 ? [`  - And ${record.more} more, not named in the record.`] : []),
     ];
   });
+  const unknown = slices.some(({ record }) => record === undefined || !record.known);
+  const known = slices.some(({ record }) => record !== undefined && record.known);
   return [
     intro,
     lines.join("\n"),
     "Hold each slice's behaviour changes to its own line above. Where a slice's record is **unknown**, which tests are red for that slice is unknown: raise no finding on the strength of the missing record, take no claim of a red test on trust, and judge that slice's coverage from the tests in the diff yourself. Where it is **none red**, a behaviour change that slice makes is not covered by a red test.",
+    ...(known ? [HOLD_TO_IT] : []),
+    ...(unknown ? [WHERE_UNKNOWN] : []),
   ].join("\n\n");
 };
 

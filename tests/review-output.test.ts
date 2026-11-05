@@ -53,6 +53,7 @@ import { FOLLOW_UPS_MARKER, VERDICT_CONTEXT } from "../shared/record.js";
 import { renderDecided, postDecided, type Decided } from "./review/decided.js";
 import { applyCriteriaRulings } from "../review/acceptance-criteria.js";
 import { LIVE_PROMPT } from "./review/branch-rules.js";
+import { FINAL_SUMMARY_SHAPE } from "../review/pr-summary.js";
 import { REVIEW_PROMPT } from "./review/finding-history.js";
 
 /** Every row a verdict can post: the table's three, and each cause of a closer look. */
@@ -3410,11 +3411,12 @@ describe("the review's finding vocabulary", () => {
  * outcome, from the runner's own text since that is where its shape lives.
  */
 describe("the review brief's summary sketch", () => {
-  const PROMPT = fs.readFileSync(path.join("review", "prompt.md"), "utf8");
-  const RUNNER = fs.readFileSync(path.join("review", "review.ts"), "utf8");
+  // The section as a review that writes the title and the summary is handed
+  // it (#781): the rules ride with the placeholder.
+  const PROMPT = LIVE_PROMPT;
   const plain = (text: string): string => text.replace(/[*_]/g, "").replace(/\s+/g, " ");
   const section = (): string => plain(PROMPT).match(/# THE TITLE AND THE SUMMARY.*?(?= # )/s)?.[0] ?? "";
-  const finalShape = (): string => plain(RUNNER.match(/const FINAL_SUMMARY_SHAPE = \[.*?\]\.join/s)?.[0] ?? "");
+  const finalShape = (): string => plain(FINAL_SUMMARY_SHAPE);
 
   it("asks for zero, one or two sketches, each beside the text it supports", () => {
     expect(section()).toMatch(/smallest view that makes the point/i);
@@ -3495,12 +3497,14 @@ describe("the review brief's carried follow-ups", () => {
  * was cheap to revert, and its danger was that it was live on merge.
  */
 describe("the review brief's Merge Danger", () => {
-  const PROMPT = fs.readFileSync(path.join("review", "prompt.md"), "utf8");
+  // The prompt as a review that writes the title and the summary is handed it (#781).
+  const PROMPT = LIVE_PROMPT;
   const EXTRACTION = fs.readFileSync(path.join("review", "extraction.md"), "utf8");
   const RUNNER = fs.readFileSync(path.join("review", "review.ts"), "utf8");
+  const SUMMARY = fs.readFileSync(path.join("review", "pr-summary.ts"), "utf8");
   const plain = (text: string): string => text.replace(/[*_]/g, "").replace(/\s+/g, " ");
   const section = (): string => plain(PROMPT).match(/# THE TITLE AND THE SUMMARY.*?(?= # )/s)?.[0] ?? "";
-  const finalShape = (): string => plain(RUNNER.match(/const FINAL_SUMMARY_SHAPE = \[.*?\]\.join/s)?.[0] ?? "");
+  const finalShape = (): string => plain(FINAL_SUMMARY_SHAPE);
 
   it.each([
     ["prompt.md", PROMPT],
@@ -3526,7 +3530,7 @@ describe("the review brief's Merge Danger", () => {
   });
 
   it("retires behaviourChanges, and has the final review write the Merge Danger of the whole PRD", () => {
-    for (const text of [PROMPT, EXTRACTION, RUNNER]) expect(text).not.toContain("behaviourChanges");
+    for (const text of [PROMPT, EXTRACTION, RUNNER, SUMMARY]) expect(text).not.toContain("behaviourChanges");
     expect(finalShape()).toMatch(/`breaking`/);
     expect(finalShape()).toMatch(/Differs from the PRD/);
     // The runner hands the review's danger fields over, and publish lays the

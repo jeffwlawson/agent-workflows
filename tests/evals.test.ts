@@ -38,7 +38,7 @@ import { renderRedCheck } from "../shared/red-check.js";
 import { resumeSection } from "../shared/rescue.js";
 import type { SinceBriefSkip } from "../shared/review-output.js";
 import { renderCarriedFindings, renderSettledFindings } from "../shared/review-verification.js";
-import { currentSummary, summaryBlock } from "../review/pr-summary.js";
+import { currentSummary, renderSummarySection, summaryBlock } from "../review/pr-summary.js";
 import { renderDiffScope } from "../review/review-diff.js";
 import { renderFixDiffScope } from "../fix/fix-diff.js";
 import { describeHistory } from "../review/review-round.js";
@@ -393,12 +393,8 @@ describe("the inputs the suites fix", () => {
       // The one input the replay words itself, in the renderer's form.
       SINCE_BRIEF: () => expect(review["SINCE_BRIEF"]).toBe(renderSinceBriefForReview({ kind: "not run", reason: EVAL_REPLAY as SinceBriefSkip })),
       DIFF_SCOPE: () => expect(review["DIFF_SCOPE"]).toBe(renderDiffScope({ kind: "whole", diff: "" }, "main")),
-      CURRENT_SUMMARY: () => expect(review["CURRENT_SUMMARY"]).toBe(currentSummary(summaryBlock("", "a".repeat(40), false))),
-      SUMMARY_RULE: inSource(JSON.stringify(review["SUMMARY_RULE"])),
-      FINAL_SUMMARY: () => {
-        expect(review["FINAL_SUMMARY"]).toBe("");
-        inSource('FINAL_SUMMARY: final ? FINAL_SUMMARY_SHAPE : "",')();
-      },
+      SUMMARY_SECTION: () =>
+        expect(review["SUMMARY_SECTION"]).toBe(renderSummarySection("writes", currentSummary(summaryBlock("", "a".repeat(40), false)))),
       CARRIED_FOLLOW_UPS: inSource(`const NOT_CARRIED =\n  ${JSON.stringify(review["CARRIED_FOLLOW_UPS"])};`),
     },
     fix: {

@@ -33,7 +33,7 @@ import {
   type PrdRound,
   type SliceCriteria,
 } from "../shared/prd-round.js";
-import { currentSummary, summaryDue } from "./pr-summary.js";
+import { currentSummary, renderSummarySection, summaryDue } from "./pr-summary.js";
 import {
   describeRedCheck,
   evidenceCheck,
@@ -213,21 +213,6 @@ const fixRounds = (): FixRounds | undefined => {
   const budget = count(INPUTS.FIX_ROUND_BUDGET);
   return spent === undefined || budget === undefined ? undefined : { spent, budget };
 };
-
-/**
- * The final review's summary shape (#247, #356). The review writes the
- * outcome, and the Merge Danger's fields as every summary write does; the
- * workflow adds the *Differs from the PRD* lines and the Evidence from the
- * slice rounds' records, and the known issues from this review's follow-ups.
- */
-const FINAL_SUMMARY_SHAPE = [
-  "**This is the final review of a PRD PR, so the summary is the whole PRD's**, in the layout the summary section above describes. Write:",
-  "",
-  "- **`summary`**: the **outcome**, what the PRD delivered as a whole. Open it as the summary section above asks, with the **smallest view that makes the point**: zero, one or two sketches of the whole change, drawn from the diff as it stands and never from the PRD, each beside the short text it supports. Then a few sentences, brief and with no preamble, and a bullet per behaviour the PRD changes, cut to what the sketches do not already show; sketches do not count against the word budget, which stays for the prose. Nothing about the review, and no list of slices: the body already shows them.",
-  "- **`door`**, **`blastRadius`**, their notes and **`breaking`**: as the summary section above asks, of the whole PRD. A breaking change goes in `breaking`, never in a bullet.",
-  "",
-  "A **Differs from the PRD:** line for each slice that changed or dropped one of its criteria, and the Evidence (each slice's failing-first tests, where the red check is configured, beside CI's result), are added from each slice round's record, and the known issues from the follow-ups this review records, so write none of them. The title is the whole PRD's, never the PRD issue's title copied. Nothing in what you write may say the pull request is a draft or that slices are still to come: every slice is built.",
-].join("\n");
 
 /** Off a PRD PR, the brief's follow-ups section is the ordinary one. */
 const NOT_CARRIED =
@@ -539,15 +524,10 @@ try {
       FIX_NOTES: renderNotesForReview(context.fixNotes),
       DIFF_SCOPE: renderDiffScope(promptDiff, BASE_REF),
       PR_DIFF: promptDiff.diff,
-      CURRENT_SUMMARY: currentSummary(context.prBody),
-      SUMMARY_RULE: sliceOfMany
-        ? "**This review leaves them as they are.** This is a slice round, and the final review writes the pull request's title and summary for the whole PRD, so the workflow writes neither; omit both fields."
-        : !writesSummary
-        ? "**This review leaves them as they are.** Nothing was pushed since the summary was last written, so the workflow writes neither; omit both fields."
-        : final
-          ? "**This review writes them.** It is the final review, so the workflow replaces the title and the summary block with yours, laid out as the section below says."
-          : "**This review writes them.** Something was pushed since the summary was last written, so the workflow replaces the title and the summary block with yours.",
-      FINAL_SUMMARY: final ? FINAL_SUMMARY_SHAPE : "",
+      SUMMARY_SECTION: renderSummarySection(
+        sliceOfMany ? "slice" : !writesSummary ? "unchanged" : final ? "final" : "writes",
+        currentSummary(context.prBody),
+      ),
       CARRIED_FOLLOW_UPS:
         round === undefined && carried.length === 0
           ? NOT_CARRIED

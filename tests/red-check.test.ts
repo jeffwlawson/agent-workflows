@@ -25,6 +25,7 @@ import {
 import { VERDICTS } from "../shared/review-output.js";
 import { SUBPROCESS_TIMEOUT } from "../vitest.config.js";
 import { BASE, classified, HEAD as PLACED_HEAD, READY } from "./review/classified.js";
+import { renderSummarySection } from "../review/pr-summary.js";
 import { RAN_REPORT, REVIEWED_HEAD } from "./review/branch-rules.js";
 import { renderDecided } from "./review/decided.js";
 
@@ -604,7 +605,8 @@ describe("the pull request's body gives its Evidence, Before and After (#234, #3
   it("is what publish writes under a slice or regular pull request's summary, the Merge Danger after it", () => {
     const runner = fs.readFileSync(path.join("review", "review.ts"), "utf8");
     const publish = fs.readFileSync(path.join("review", "publish.ts"), "utf8");
-    const prompt = fs.readFileSync(path.join("review", "prompt.md"), "utf8");
+    // The section a review that writes the summary is handed (#781).
+    const prompt = renderSummarySection("writes", "(empty)");
 
     // The runner hands over the red check as the Evidence reads it, and
     // publish lays the section out (ADR 0007).

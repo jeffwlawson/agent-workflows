@@ -1,3 +1,4 @@
+import { renderSummarySection } from "../../review/pr-summary.js";
 import { UNREADABLE_FEEDBACK_RULE } from "../../review/review-context.js";
 import { describeHistory } from "../../review/review-round.js";
 import { unreadableNote } from "../../shared/pr-feedback.js";
@@ -7,7 +8,9 @@ import { EMPTY_FINDING_HISTORY, LIVE_FINDING_HISTORY, REVIEW_PROMPT } from "./fi
 /**
  * The review prompt's branch sections as a review where each branch is live is
  * handed them (#780, audit #704 H4, stage 1b): a review that follows a fix
- * round, feedback a selection of which was refused, and a red check that ran.
+ * round, feedback a selection of which was refused, and a red check that ran;
+ * and the title and the summary as the final review is handed them (#781,
+ * stage 2).
  * Their rules ride with the placeholder the runner fills (`review/review.ts`)
  * and are printed only where they apply, so a test about those rules reads this
  * rather than the static file.
@@ -35,13 +38,16 @@ export const LIVE_BRANCHES = {
   HISTORY: describeHistory({ afterFixRound: true, unreviewedCommits: true }),
   DISCUSSION: [UNREADABLE_FEEDBACK_RULE, REFUSED_NOTE].join("\n\n"),
   RED_CHECK: renderRedCheck({ kind: "ran", report: RAN_REPORT }, REVIEWED_HEAD),
+  // The final review, the one round handed every title-and-summary rule (#781).
+  SUMMARY_SECTION: renderSummarySection("final", "(empty)"),
 } as const;
 
-/** The same three where none is live: what nearly every review is handed. */
+/** The same four where none is live: what nearly every review is handed, the summary one a review that omits both fields. */
 export const EMPTY_BRANCHES = {
   HISTORY: describeHistory({ afterFixRound: false, unreviewedCommits: true }),
   DISCUSSION: "(no collaborator comments)",
   RED_CHECK: renderRedCheck({ kind: "not-configured" }, REVIEWED_HEAD),
+  SUMMARY_SECTION: renderSummarySection("unchanged", "(empty)"),
 } as const;
 
 type Inputs = Readonly<Record<string, string>>;

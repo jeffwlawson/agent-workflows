@@ -217,6 +217,34 @@ describe("runs.sh, the run index", () => {
     expect(output).toContain("Unknown option '--prune'");
   });
 
+  it("refuses an empty argument, with a usage line", () => {
+    const { root } = setUp();
+    const { status, output } = index(root, [""]);
+
+    expect(status).toBe(2);
+    expect(output).toContain("An empty argument");
+    expect(output).toContain("Usage: sudo bash");
+  });
+
+  it("refuses a second count, with a usage line, rather than taking the last", () => {
+    const { root } = setUp();
+    const { status, output } = index(root, ["2", "3"]);
+
+    expect(status).toBe(2);
+    expect(output).toContain("One count at a time: '2' and '3' were given.");
+    expect(output).toContain("Usage: sudo bash");
+  });
+
+  it("takes an id with the link's leading job- as the id, and says so in its usage text", () => {
+    const { root, failedDir } = setUp();
+    const { status, output } = index(root, [`job-${FAILED_ID}`]);
+
+    expect(status).toBe(0);
+    expect(output).toContain(`Run ${FAILED_ID}`);
+    expect(output).toContain(`directory: ${failedDir}`);
+    expect(index(root, ["--help"]).output.replace(/\s+/g, " ")).toContain("A leading 'job-' on <job-id> is dropped");
+  });
+
   it.skipIf(process.getuid?.() === 0)("refuses to run as a user that cannot read the runs, saying why", () => {
     const { root, runs } = setUp();
     fs.chmodSync(runs, 0o000);

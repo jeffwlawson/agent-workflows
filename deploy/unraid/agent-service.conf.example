@@ -66,7 +66,8 @@
 # are kept in known_hosts beside this file, never under ~/.ssh.
 #BOX_SSH_KEY=/boot/config/agent-service/box_key
 
-# Where upgrade.sh stages the tarball on Unraid (/root is in memory there).
+# Where upgrade.sh and install-unraid.sh stage the tarball on Unraid (/root is
+# in memory there).
 #STAGE_DIR=/root
 
 # How long upgrade.sh waits, in minutes, for the worker to hold no job before

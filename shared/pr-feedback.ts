@@ -88,7 +88,9 @@ export interface PullRequestFeedback {
   readonly inline: string;
   /**
    * Top-level conversation comments on the PR, **excluding** the ones
-   * `agent:fix` posted itself (see `TOP_LEVEL_COMMENT_MARKER`).
+   * `agent:fix` posted itself (see `TOP_LEVEL_COMMENT_MARKER`). Ends with
+   * `UNREAD_COMMENTS` where the PR has more than the one page of them the
+   * query reads (#263).
    */
   readonly conversation: string;
   /** All of the above rendered as one block, or "" when there is none. */
@@ -278,7 +280,7 @@ const QUERY = `
 query($owner:String!,$repo:String!,$number:Int!) {
   repository(owner:$owner,name:$repo) {
     pullRequest(number:$number) {
-      comments(first:100) { nodes { id url body createdAt author { login } authorAssociation } }
+      comments(first:100) { nodes { id url body createdAt author { login } authorAssociation } pageInfo { hasNextPage } }
       reviews(last:50) { nodes { body state submittedAt author { login } authorAssociation } }
       reviewThreads(first:100) {
         nodes {
@@ -407,7 +409,14 @@ interface GqlThread {
 type GqlReview = GqlAuthored & { state?: string; submittedAt?: string | null };
 
 interface GqlPullRequest {
-  comments?: { nodes?: (GqlComment | null)[] | null } | null;
+  /**
+   * `pageInfo.hasNextPage` is read only to say that comments past the first
+   * page were not read (#263); nothing here reads a second page.
+   */
+  comments?: {
+    nodes?: (GqlComment | null)[] | null;
+    pageInfo?: { hasNextPage?: boolean | null } | null;
+  } | null;
   reviews?: { nodes?: (GqlReview | null)[] | null } | null;
   reviewThreads?: { nodes?: (GqlThread | null)[] | null } | null;
 }
@@ -1226,6 +1235,19 @@ const LOOP_NOTE =
   "_(posted by this loop's own workflows rather than by a person: a status note, shown for its evidence. It asks for nothing, so no outcome is owed on it, which is why it carries no comment id.)_";
 
 /**
+ * Rendered at the end of the conversation surface where the PR has more
+ * conversation comments than the one page of them the query reads (#263).
+ *
+ * The page is the **oldest** hundred, so what falls past it is the newest
+ * comments, and an out-of-scope note `agent:fix` posted among them: the review
+ * is handed none of those notes, and files and drops nothing, so without this
+ * line the note is lost without a word. Saying so is the whole change; reading
+ * the later pages is not made here.
+ */
+const UNREAD_COMMENTS =
+  "_(this pull request has more conversation comments than the first 100 this run read, the oldest: any posted after them, an out-of-scope note included, was not read and is not in this feedback. Nothing here says what those later comments asked for.)_";
+
+/**
  * The elements a partial answer actually left behind.
  *
  * A nulled element is a hole in the list, not an object with absent fields, so
@@ -1389,7 +1411,7 @@ export const fetchPullRequestFeedback = (
   // prompt (#104). A comment no outcome is owed on carries none — there is
   // nothing for it to name — and the loop's own notes say why rather than
   // leaving the omission to be read as an oversight.
-  const conversation = render(conversationNodes, (n, login) =>
+  const renderedConversation = render(conversationNodes, (n, login) =>
     owedAnOutcome(n)
       ? `**@${login}** · comment \`${n.id}\`\n${(n.body ?? "").trim()}`
       : [
@@ -1398,6 +1420,20 @@ export const fetchPullRequestFeedback = (
         ].join("\n\n"),
     accounts,
   );
+
+  // Where the page is full, the comments past it are the newest ones, and the
+  // run is told it did not read them rather than left to read the page as the
+  // whole conversation (#263). Appended to the surface both the fix run and the
+  // review are handed, and counted by nothing: it asks for no outcome.
+  const commentsTruncated = pr?.comments?.pageInfo?.hasNextPage === true;
+  if (commentsTruncated) {
+    console.log(
+      `::warning::Pull request #${prNumber} has more than 100 conversation comments; only the first 100 were read, so a comment or out-of-scope note posted after them is not in this run's feedback.`,
+    );
+  }
+  const conversation = [renderedConversation, ...(commentsTruncated ? [UNREAD_COMMENTS] : [])]
+    .filter(Boolean)
+    .join("\n\n---\n\n");
 
   const conversationComments = conversationNodes
     .filter(owedAnOutcome)

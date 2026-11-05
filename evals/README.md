@@ -323,7 +323,11 @@ node scripts/eval-prompts.ts report <run-dir>
 
 `ab <prompt> <ref>` runs **both arms in one session**: every case is staged twice, as
 `<case>.before` with the prompt file as it is at `<ref>` (`git show`) and as `<case>.after` with the
-working tree's, against the same cases, graders and inputs, and the tool runs them together. With
+working tree's, against the same cases and graders, and the tool runs them together. Each arm's
+inputs are the ones its prompt was written for: the before arm reads `suite.yaml`'s `inputs` and each
+case's `replay.yaml` `inputs` and `inputs/*.md` at `<ref>` too, so an input reshaped alongside the
+prompt is not rendered under the old prompt; a case `<ref>` does not have takes the working tree's.
+The pins, the diff and the note are the working tree's in both arms. With
 `-j` the arms interleave in time, so drift in the model or the service falls on both. `noise
 <prompt>` does the same with the working tree's prompt in both arms (`.a` and `.b`): an A/A run,
 whose differences are all noise.

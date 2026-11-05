@@ -14,12 +14,21 @@ import { RESUME_NOTE_MARKER, SERVICE_ORCHESTRATOR } from "./record.js";
  */
 
 /**
- * The CLI's message, as seen: `hit your <kind> limit · resets <h>[:<mm>]<am|pm> (UTC)`,
+ * The CLI's message, as seen: `hit your <kind> limit · resets [<Mon> <d>, ]<h>[:<mm>]<am|pm> (UTC)`,
  * where `<kind>` is words, digits and hyphens: `session` and `5-hour` (#739)
- * both seen. Narrow on purpose. Any other shape, a zone other than UTC included, is not
- * this ending, and the run ends as any other stopped run does.
+ * both seen, and the weekly limit's `weekly` with a date, `resets Nov 8, 6am (UTC)`
+ * (seen 2026-11-05, which the time-of-day-only form did not match, so the
+ * service ended the run as a failure). Narrow on purpose. Any other shape, a
+ * zone other than UTC included, is not this ending, and the run ends as any
+ * other stopped run does.
  */
-const LIMIT_MESSAGE = /hit your [a-z0-9][a-z0-9 -]* limit · resets ([0-9]{1,2})(?::([0-9]{2}))?(am|pm) \(UTC\)/i;
+const LIMIT_MESSAGE =
+  /hit your [a-z0-9][a-z0-9 -]* limit · resets (?:([a-z]{3,9}) ([0-9]{1,2}), )?([0-9]{1,2})(?::([0-9]{2}))?(am|pm) \(UTC\)/i;
+
+const MONTHS = ["jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec"] as const;
+
+/** Half a year, in milliseconds: how far a stated date may sit from the reading and still be read in the reading's year. */
+const HALF_YEAR_MS = 183 * 24 * 60 * 60_000;
 
 /**
  * How long past the stated time a reader still takes it as today's reset.
@@ -34,21 +43,37 @@ export const RESET_GRACE_MINUTES = 60;
 
 /**
  * The instant the plan's usage limit resets, read off a failure `reason`, or
- * `undefined` where the reason is not the CLI's usage-limit message. The
- * message gives a time of day and no date, so the answer is the **next** such
+ * `undefined` where the reason is not the CLI's usage-limit message. A message
+ * that gives a time of day and no date answers the **next** such
  * instant after `readAt`, less `RESET_GRACE_MINUTES`: later today, today's
  * where it passed within the grace, or tomorrow where it passed before that.
  * So every reader of one message answers the same instant, read within the
- * grace of it on whichever host's clock.
+ * grace of it on whichever host's clock. A message that gives a date too (the
+ * weekly limit's) answers that date's instant, in the year of `readAt` or the
+ * adjacent one that puts it within half a year of it; a date that is not a
+ * real one is not this ending.
  */
 export const usageLimitReset = (reason: string | undefined, readAt: Date): Date | undefined => {
   if (reason === undefined) return undefined;
   const match = LIMIT_MESSAGE.exec(reason);
-  if (match === null || match[1] === undefined || match[3] === undefined) return undefined;
-  const hour = Number(match[1]);
-  const minute = match[2] === undefined ? 0 : Number(match[2]);
+  if (match === null || match[3] === undefined || match[5] === undefined) return undefined;
+  const hour = Number(match[3]);
+  const minute = match[4] === undefined ? 0 : Number(match[4]);
   if (hour < 1 || hour > 12 || minute > 59) return undefined;
-  const hours = (hour % 12) + (match[3].toLowerCase() === "pm" ? 12 : 0);
+  const hours = (hour % 12) + (match[5].toLowerCase() === "pm" ? 12 : 0);
+  if (match[1] !== undefined && match[2] !== undefined) {
+    const month = MONTHS.findIndex((name) => name === match[1]?.slice(0, 3).toLowerCase());
+    const day = Number(match[2]);
+    if (month === -1 || day < 1 || day > 31) return undefined;
+    const year = readAt.getUTCFullYear();
+    const dated = (y: number): Date => new Date(Date.UTC(y, month, day, hours, minute));
+    let at = dated(year);
+    if (at.getTime() - readAt.getTime() > HALF_YEAR_MS) at = dated(year - 1);
+    else if (readAt.getTime() - at.getTime() > HALF_YEAR_MS) at = dated(year + 1);
+    // A day the month does not have (Feb 31) rolls into the next month: not a date the CLI wrote.
+    if (at.getUTCMonth() !== month) return undefined;
+    return at;
+  }
   const after = readAt.getTime() - RESET_GRACE_MINUTES * 60_000;
   const at = new Date(Date.UTC(readAt.getUTCFullYear(), readAt.getUTCMonth(), readAt.getUTCDate(), hours, minute));
   if (at.getTime() <= after) at.setUTCDate(at.getUTCDate() + 1);

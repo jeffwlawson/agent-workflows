@@ -910,10 +910,15 @@ export const controlsReport = (meta: StageMeta, result: EvalResult, dir?: string
 /**
  * The report a run is compared by, as Markdown to paste into a pull request:
  * per case its runs and each grader's pass rate (the catch rate), the
- * false-finding rate on a clean case, and the model and prompt revision.
+ * false-finding rate on a clean case (for fix, the false-change rate), pooled
+ * across clean cases where there are several, and the model and prompt
+ * revision.
  *
- * A clean case's graders all hold false findings, so a finished run that fails
- * any of them is a run that raised one.
+ * A clean review case's graders all hold false findings, so a finished run
+ * that fails any of them is a run that raised one. A clean fix case's graders
+ * all hold a false change (#719), so a run that fails any of them changed
+ * something, or answered a thread as though it had, where the right change is
+ * none.
  */
 export const report = (meta: StageMeta, result: EvalResult, dir?: string): string => {
   if (meta.controls !== undefined) return controlsReport(meta, result, dir);

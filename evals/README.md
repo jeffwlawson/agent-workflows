@@ -63,8 +63,10 @@ runs of different pull requests and is read beside the per-case lines.
 `clean-explained-difference` is the mirror #614 asks for beside a scope-creep case: #698 at its
 merged head departs from its criterion C5 (a golden-PR eval) because the maintainer said so in the
 pull request's conversation, and the review that approved it ruled C5 changed. Its DISCUSSION holds
-that comment, which no other case's does, since every other case's conversation is a first review's,
-empty. **The scope-creep case itself is not yet built**: no real one was found. The loop's review
+that comment, which no other case's does. Every other case but one replays a first review, whose
+pull request has no conversation yet; the one, `verification-fetch-token`, replays a verification
+pass, and its DISCUSSION holds Review 1's two threads with the fix run's replies, not a maintainer's
+direction. **The scope-creep case itself is not yet built**: no real one was found. The loop's review
 has asked the question only since #697 (2026-11-03); the maintainer's pre-merge checks read for
 this (#572, #577, #601) raise no unrequested behaviour; and a search of the pull requests for "scope
 creep" finds only #697, whose own evals say no case contains it. A synthetic
@@ -496,5 +498,7 @@ one grader per outcome, and a positive and a negative control for each grader. C
 the verdict status history, as above, and write each grader as something a reader could check in
 the output, "however it is worded". A clean case
 says `clean: true`, is a pull request nothing merged later had to fix (search `main`'s log for
-its number and its files), and its graders all hold false findings. Run it with `--stage-only`
+its number and its files), and its graders all hold false findings; a clean fix case's graders
+all hold a false change instead. The report gives each clean case's rate and, with more than one,
+the rate pooled across them. Run it with `--stage-only`
 first and read the staged prompt.

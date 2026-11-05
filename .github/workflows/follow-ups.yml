@@ -143,8 +143,11 @@ jobs:
       # addition, so omitting this line sets `contents: none`, which is an
       # untested configuration for the runner install.
       contents: read
-      # Creating the stubs. This is the grant the whole feature is about, and
-      # the reason every other line in this file is about what it may not do.
+      # Creating the stubs, and the one comment a finding gets in place of a
+      # stub when an open stub another pull request filed matches its path
+      # **and** its title (#606); a path match alone files a stub with a link.
+      # This is the grant the whole feature is about, and the reason every
+      # other line in this file is about what it may not do.
       issues: write
       # Installing the runner package. GitHub Packages has no anonymous install,
       # so this is needed even though the package is public — and, being a
@@ -260,8 +263,9 @@ jobs:
       # (docs/ADOPTING.md §1). Hence the gesture the comment names.
       #
       # A failure before the package can install, the auth step's own, posts
-      # nothing: this is the package. That is the "never got as far as the
-      # runner" case `CLAUDE.md` names.
+      # nothing: this is the package. That is why `CONTEXT.md` holds the
+      # *Authenticate to GitHub Packages* step toolchain-free: a failure there
+      # comes before the runner exists to write `failure_reason.txt`.
       - name: Conclude the run
         if: always()
         env:

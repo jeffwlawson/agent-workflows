@@ -471,9 +471,9 @@ describe("the fix brief on a maintainer's direction", () => {
 
   /**
    * Precedence is about whose ask wins where two of them conflict, not about
-   * the fixer's own judgement — which *Do not make a change you believe is
-   * wrong* holds for every other piece of feedback and would otherwise read as
-   * silent on this one.
+   * the fixer's own judgement, which *Make the change you judge correct,
+   * whoever asked for it* holds for every other piece of feedback and would
+   * otherwise read as silent on this one.
    */
   it("still lets the fixer decline a direction it believes is wrong, with the reason", () => {
     expect(direction()).toMatch(/may still decline/i);

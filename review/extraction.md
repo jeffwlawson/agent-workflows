@@ -48,19 +48,13 @@ dropped.
 
 - `landed`: the current code resolves it. The workflow closes its thread, quoting your `note` as
   the reason it closed.
-- `open`: it does not. It counts against this pull request exactly as one of your own findings
-  does, so do **not** write it up again as one of your own `findings`. Ruling it `open` is the
-  whole of reporting it. A second write-up mints a second
-  identifier on the same problem (nothing matches them, by design), so it is counted twice, gets
-  a second thread, and is carried separately every round after.
-- `declined`: a maintainer replied on the thread refusing it ("won't fix", "this is intended").
-  The workflow closes the thread as *won't fix*, quoting **them** rather than you, and it stops
-  counting. This reports their decision; it is never yours to take. A reply you cannot read as a
-  refusal is `open`, and so is one from anybody who is not a maintainer.
-
-  It must be the maintainer's **latest** reply on that thread. The workflow quotes that comment
-  and no other, so an earlier refusal a later reply revisits ("actually, please do fix this") is
-  `open`. A thread is a conversation, and the last word in it is their position.
+- `open`: it does not, or not clearly. It counts against this pull request exactly as one of your
+  own findings does, and ruling it `open` is the whole of reporting it. A second write-up in
+  `findings` mints a second identifier on the same problem (nothing matches them, by design), so it
+  is counted twice, gets a second thread, and is carried separately every round after.
+- `declined`: the maintainer's latest reply on its thread refuses it, by the rule the brief gave
+  under **FINDINGS AN EARLIER REVIEW LEFT OPEN**. The workflow closes the thread as *won't fix*,
+  quoting **them** rather than you, and it stops counting.
 
 `note` is one line, written to whoever raised the finding and whoever has to read the thread after
 it closes. An identifier you omit stays open, which is the safe direction and not a way to skip the
@@ -190,8 +184,8 @@ given none, which is nearly every review.
 
 - `promoted`: real, not this pull request's to fix, and worth an issue. Carries a `severity`, and a
   `location` (`path` or `path:line`) where you can name a better one than the note did. The
-  workflow files it on merge as a follow-up, ahead of your own and inside the same cap of three.
-  Do not also write it into `followUps`.
+  workflow files it on merge as a follow-up, ahead of your own and inside the same cap of three,
+  so promoting it is the whole of recording it.
 - `dropped`: not worth filing. Carries a `reason`, one line, which the review body shows beside
   the note's title. A drop with no reason is refused.
 
@@ -225,8 +219,8 @@ given (`C1`, `C2`, …). An id you were not given is dropped. Empty where you we
   finding.
 - `unmet`: it does not, and nothing says why. Carries a one-line `reason` saying what is missing, a
   `severity`, and the `path` and `line` it is anchored at, by the same rule as a finding's. The
-  workflow raises it as a fix-before-merge finding there, so do **not** also write it into
-  `findings`.
+  workflow raises it as a fix-before-merge finding there, so ruling it `unmet` is the whole of
+  reporting it.
 
 A criterion you omit is listed as not checked.
 

@@ -3206,10 +3206,38 @@ describe("the review's finding vocabulary", () => {
    * about `findings`, which is where the rest of it says every finding goes,
    * and nothing dedupes, by design: ids are the workflow's and text is never
    * matched. So a re-raise mints a second thread, a second id and a second
-   * entry in the count, carried separately every round after.
+   * entry in the count, carried separately every round after. Stated as the
+   * positive (#748, audit M2): each ruling keeps only its positive clause,
+   * and the mechanics of a second write-up are told once, in the extraction.
+   * Not as one rule in the prompt's steps: a dropped note can be a finding of
+   * the reviewer's own, which a general rule there would contradict (see
+   * "adds no rule about what a ruling replaces").
    */
-  it.each(halves)("%s forbids writing an open carried finding up again", (_half, text) => {
-    expect(plain(text)).toMatch(/not (?:also )?(?:write it up again|restate it)[^.]{0,160}`findings`/i);
+  it.each(halves)("%s makes ruling an open carried finding the whole of reporting it", (_half, text) => {
+    expect(plain(text)).toMatch(/ruling it `open` is the whole of reporting it/i);
+    expect(plain(text)).not.toMatch(/not (?:also )?(?:write it up again|restate it)/i);
+  });
+
+  it("states each ruling as the whole of reporting it, as the positive, with the mechanics in the extraction alone", () => {
+    expect(plain(PROMPT)).toMatch(/Ruling it `unmet` is the whole of reporting it/);
+    expect(plain(PROMPT)).toMatch(/promoting it is the whole of recording it/);
+    expect(plain(PROMPT)).not.toMatch(/(?:do not|never) also write it into/i);
+    expect(plain(PROMPT)).not.toMatch(/counted twice/i);
+    expect(plain(EXTRACTION)).not.toMatch(/(?:do not|never) also write it into/i);
+    expect(plain(EXTRACTION).match(/counted twice/gi)).toHaveLength(1);
+  });
+
+  /**
+   * **`open` is the ruling where the code does not clearly resolve it** (#748,
+   * audit H2). Beside the demand to rule on everything the prompt once said an
+   * unruled id is safe and deliberate: true of the workflow, and an invitation
+   * to stop early where the prompt's length makes stopping likeliest. The
+   * consequence of omission stays in the extraction, where fields are emitted.
+   */
+  it("rules an unresolved earlier finding open by one positive rule, with no escape clause", () => {
+    expect(plain(PROMPT)).toMatch(/`open` is the ruling for a finding the current code does not clearly resolve/);
+    expect(plain(PROMPT)).not.toMatch(/safe direction/i);
+    expect(plain(PROMPT)).not.toMatch(/say nothing about (?:stays open|is recorded)/i);
   });
 
   /**
@@ -3259,6 +3287,61 @@ describe("the review's finding vocabulary", () => {
    */
   it.each(halves)("%s rules a decline on the maintainer's latest reply", (_half, text) => {
     expect(plain(text)).toMatch(/latest reply/i);
+  });
+
+  /**
+   * One positive rule, in the prompt, and the extraction points at it rather
+   * than keeping a copy that can drift (#748, audit M7).
+   */
+  it("states the decline rule once, in the prompt, and the extraction points at it", () => {
+    expect(plain(PROMPT)).toMatch(
+      /Rule a finding `declined` only on the maintainer's latest reply on its thread, and only where that reply refuses it in words/,
+    );
+    expect(plain(PROMPT)).toMatch(/Every other reply .* leaves the finding `open`/);
+    expect(plain(PROMPT)).not.toMatch(/already gated|third answer/i);
+    expect(plain(EXTRACTION)).toMatch(/by the rule the brief gave under FINDINGS AN EARLIER REVIEW LEFT OPEN/);
+    expect(plain(EXTRACTION)).not.toMatch(/actually, please do fix this/);
+  });
+
+  /**
+   * The settled-findings rule is printed by the runner under its list; the
+   * prompt keeps the reason and the exception, not a second command (#748,
+   * audit M8).
+   */
+  it("leaves the settled-findings rule to the runner's list", () => {
+    const settled = plain(PROMPT).match(/# WHAT THE MAINTAINER HAS SETTLED.*?(?=# NOTES THE FIX RUN LEFT)/s)?.[0] ?? "";
+
+    expect(settled).toContain("{{SETTLEDFINDINGS}}");
+    expect(settled).not.toMatch(/raise (?:any of these|it) again/i);
+    expect(settled).toMatch(/say so about that problem, naming what changed/);
+  });
+
+  /**
+   * *Raise only what is new* once promised a line acknowledging an addressed
+   * point and a reinforced outstanding one, and no field holds either (#748,
+   * audit M10). Each point now has a destination that exists.
+   */
+  it("gives every point raise only what is new names a field that exists", () => {
+    const rule = plain(PROMPT).match(/Raise only what is new\..*?(?=A note headed)/s)?.[0] ?? "";
+
+    expect(rule).toMatch(/ruled in `verified`/);
+    expect(rule).toMatch(/is a finding of yours on the usual terms/);
+    expect(rule).not.toMatch(/acknowledg|reinforc/i);
+  });
+
+  /**
+   * The verification pass is one paragraph (#748, audit M11): the no-op for a
+   * review that follows no fix round, the repeat of the next section's
+   * opener, and a third telling of *previously missed* are gone.
+   */
+  it("writes the verification pass as one paragraph, naming previously missed once", () => {
+    const follows = PROMPT.match(/# WHAT THIS REVIEW FOLLOWS\n\n\{\{HISTORY\}\}\n\n(.*?)\n\n# FINDINGS/s)?.[1] ?? "";
+
+    expect(follows).toMatch(/^\*\*A review that follows a fix round is a verification pass\.\*\*/);
+    expect(follows).not.toContain("\n\n");
+    expect(follows).not.toMatch(/follows no fix round|That is the pass/);
+    expect(plain(follows).match(/previously missed/gi)).toHaveLength(1);
+    expect(plain(follows)).toMatch(/THE TWO KINDS OF FINDING/);
   });
 
   it("names needsYou and the three cases it is for", () => {
@@ -3380,7 +3463,8 @@ describe("the review brief's carried follow-ups", () => {
     expect(carried()).toContain("in `followUpRulings`");
     expect(carried()).toMatch(/open: it still holds/);
     expect(carried()).toMatch(/resolved, with a `reason`/);
-    expect(carried()).toMatch(/A follow-up you say nothing about is kept/);
+    expect(carried()).toMatch(/Rule one resolved only where the code shows it fixed/);
+    expect(carried()).not.toMatch(/say nothing about|safe direction/);
   });
 
   it("names the field and both rulings in the extraction brief", () => {

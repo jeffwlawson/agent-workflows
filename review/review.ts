@@ -950,7 +950,7 @@ function renderCarriedFollowUps(carried: readonly EarlierFollowUps[], minorOnly 
           "- **open**: it still holds. The workflow keeps carrying it, unchanged.",
           "- **resolved**, with a `reason` the body shows: a commit since it was recorded fixed it, so it no longer holds. The workflow drops it from the record for good, and it is not filed. Say what fixed it.",
           "",
-          "A follow-up you say nothing about is kept. That is the safe direction: losing a real follow-up costs more than filing one already done. Rule one resolved only where the code shows it fixed, not where it merely seems less important.",
+          "Rule one resolved only where the code shows it fixed, not where it merely seems less important.",
         ]
       : []),
   ].join("\n");

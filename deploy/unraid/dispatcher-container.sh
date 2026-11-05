@@ -60,9 +60,15 @@ dispatcher_drift() {
 }
 
 # Remove the container, unless $1 (dispatcher_drift's list, comma-separated) says
-# it is missing, and create it as an install does.
+# it is missing, and create it as an install does. The image is checked, or
+# pulled, first (#738): where it can be neither, the old container is left
+# running and the script stops, rather than leaving no dispatcher at all.
 dispatcher_create() {
   local wrong=$1
+  if ! docker image inspect "$IMAGE" >/dev/null 2>&1 && ! docker pull "$IMAGE" >/dev/null; then
+    echo "$IMAGE is not on this server and could not be pulled: $CONTAINER was left as it is. Stopping before the container is recreated." >&2
+    exit 1
+  fi
   if [ "$wrong" != "missing" ]; then
     docker rm -f "$CONTAINER" >/dev/null
     echo "  removed    $CONTAINER, whose $wrong differed"

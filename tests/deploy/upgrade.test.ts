@@ -147,6 +147,11 @@ case "$1" in
     shift 3
     WORKER_URL=http://box.example:8787/jobs WORKER_SECRET='${SECRET}' exec "$1" --import "file://$FAKE/fetch.mjs" "\${@:2}" ;;
   rm) rm -rf "$c" ;;
+  # The image the dispatcher runs on: here unless FAKE_IMAGE_ABSENT, and pulled
+  # unless FAKE_PULL_FAIL.
+  image) [ "$2 $3" = "inspect node:24-alpine" ] && [ -z "\${FAKE_IMAGE_ABSENT:-}" ] ;;
+  pull)
+    if [ -n "\${FAKE_PULL_FAIL:-}" ]; then echo "Error response from daemon: manifest for $2 not found" >&2; exit 1; fi ;;
   inspect)
     if [ "$2" != -f ]; then [ "$2" = agent-dispatcher ] && [ -d "$c" ]; exit; fi
     [ "$4" = agent-dispatcher ] && [ -d "$c" ] || { echo "Error: No such object: $4" >&2; exit 1; }
@@ -1013,6 +1018,39 @@ describe("the dispatcher's container on an upgrade (#691)", { concurrent: true }
     expect(output).toContain("whose image differed");
     expect(changes(root, calls).map((call) => call.split(" ").slice(0, 2).join(" "))).toEqual(["docker rm", "docker run"]);
     expect(serviceEnv(root)).toBe(SERVICE_ENV);
+  });
+
+  // #738: the image is checked, or pulled, before the old container goes, so a
+  // pull that fails leaves the dispatcher running rather than none at all.
+  const imageCalls = (calls: readonly string[]) => calls.filter((call) => /^docker (image|pull|rm|run -d)/.test(call)).map((call) => call.split(" ").slice(0, 2).join(" "));
+
+  it.each(["upgrade-unraid.sh", "install-unraid.sh"])("%s removes nothing, and says why, where the image is neither here nor pulled", async (script) => {
+    const root = setUp({ container: "before-state" });
+    const before = container(root);
+    const { status, output, calls } = await runScript(root, script, script === "install-unraid.sh" ? ["1.2.2"] : ["--restart", "1.2.2"], { FAKE_IMAGE_ABSENT: "1", FAKE_PULL_FAIL: "1" });
+
+    expect(status).toBe(1);
+    expect(imageCalls(calls)).toEqual(["docker image", "docker pull"]);
+    expect(container(root)).toEqual(before);
+    expect(output).toContain("manifest for node:24-alpine not found");
+    expect(output).toContain("node:24-alpine is not on this server and could not be pulled: agent-dispatcher was left as it is.");
+    expect(output).not.toContain("removed ");
+  });
+
+  it("pulls an image that is not here, then recreates the container", async () => {
+    const root = setUp({ container: "before-state" });
+    const { status, calls } = await runScript(root, "upgrade-unraid.sh", ["--restart", "1.2.2"], { FAKE_IMAGE_ABSENT: "1" });
+
+    expect(status).toBe(0);
+    expect(imageCalls(calls)).toEqual(["docker image", "docker pull", "docker rm", "docker run"]);
+  });
+
+  it("pulls nothing where the image is here", async () => {
+    const root = setUp({ container: "before-state" });
+    const { status, calls } = await runScript(root, "upgrade-unraid.sh", ["--restart", "1.2.2"], { FAKE_PULL_FAIL: "1" });
+
+    expect(status).toBe(0);
+    expect(imageCalls(calls)).toEqual(["docker image", "docker rm", "docker run"]);
   });
 
   it("does it all within upgrade.sh, with the dispatcher's settings asked for nowhere", async () => {

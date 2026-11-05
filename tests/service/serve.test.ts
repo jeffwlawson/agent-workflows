@@ -179,7 +179,7 @@ describe("the dispatcher's start", () => {
   });
 
   // #618: a state file that silently does not persist is the failure it ends.
-  it("refuses a STATE_FILE it cannot write to, naming the setting, before it reads the App's key", async () => {
+  it("refuses a STATE_FILE in no such directory, naming the setting, before it reads the App's key", async () => {
     const lines: string[] = [];
     const key = path.join(scratch, "no-such-key.pem");
     const file = path.join(scratch, "no-such-directory", "dispatcher.json");
@@ -188,6 +188,26 @@ describe("the dispatcher's start", () => {
       serveDispatcher({ ...DISPATCHER_SETTINGS, GITHUB_APP_PRIVATE_KEY_FILE: key, SCAN_DISPATCH_LIMIT: "2", STATE_FILE: file }, (text) => lines.push(text)),
     ).rejects.toThrow(new RegExp(`^\`STATE_FILE\` names ${file.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}, which cannot be written: `));
     expect(fs.existsSync(path.dirname(file))).toBe(false);
+  });
+
+  // #806: a full disk, read-only mount or no permission warns and runs from memory, rather than loop the container in a restart.
+  it("starts past a STATE_FILE it has no permission to write, with one warning naming the setting, as far as reading the App's key", async () => {
+    const lines: string[] = [];
+    const key = path.join(scratch, "no-such-key.pem");
+    const directory = path.join(scratch, "read-only");
+    fs.mkdirSync(directory, { mode: 0o500 });
+    const file = path.join(directory, "dispatcher.json");
+    try {
+      await expect(
+        serveDispatcher({ ...DISPATCHER_SETTINGS, GITHUB_APP_PRIVATE_KEY_FILE: key, SCAN_DISPATCH_LIMIT: "2", STATE_FILE: file }, (text) => lines.push(text)),
+      ).rejects.toThrow(/`GITHUB_APP_PRIVATE_KEY_FILE` names/);
+    } finally {
+      fs.chmodSync(directory, 0o700);
+    }
+    expect(lines.filter((line) => line.includes(" warning: "))).toEqual([
+      expect.stringMatching(new RegExp(` warning: \`STATE_FILE\` names ${file.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}, which cannot be written: EACCES: .*Starting with the state in memory only`)),
+    ]);
+    expect(fs.readdirSync(directory)).toEqual([]);
   });
 
   it("starts past a STATE_FILE it can write to, as far as reading the App's key, and leaves the file written", async () => {

@@ -90,6 +90,31 @@ describe("the state file on disk (#675)", () => {
     expect(fs.readdirSync(scratch)).toEqual(["state.json"]);
   });
 
+  // #806: a short write at start, as a full disk gives, warns and starts in memory; the file is kept from the first write that succeeds.
+  it("starts in memory where a full disk shortens the first write, leaves the good file whole, and keeps it from the first write that succeeds", () => {
+    vi.mocked(fs.writeSync).mockImplementation(((fd: number, buffer: Uint8Array) => actual.writeSync(fd, buffer, 0, 10)) as typeof fs.writeSync);
+    const store = openState("STATE_FILE", file, liveStateFiles, (line) => lines.push(line));
+
+    expect(store.initial.asks).toEqual([expect.objectContaining({ number: 7 })]);
+    expect(lines.filter((line) => line.startsWith("warning:"))).toEqual([
+      expect.stringMatching(/^warning: `STATE_FILE` names .*, which cannot be written: only 10 of its \d+ bytes were written\. Starting with the state in memory only/),
+    ]);
+    expect(fs.readFileSync(file, "utf8")).toBe(GOOD);
+    expect(fs.readdirSync(scratch)).toEqual(["state.json"]);
+
+    expect(() => store.save(EMPTY_STATE)).toThrow(/could not be written/);
+    vi.mocked(fs.writeSync).mockImplementation(actual.writeSync);
+    store.save(EMPTY_STATE);
+    store.save(EMPTY_STATE);
+
+    expect(lines.filter((line) => line.startsWith(`state: wrote ${file}`))).toHaveLength(1);
+    expect(JSON.parse(fs.readFileSync(file, "utf8"))).toEqual({ version: 1, asks: [], jobs: [] });
+  });
+
+  it("refuses a path that is a directory, naming the setting", () => {
+    expect(() => openState("STATE_FILE", scratch, liveStateFiles, (line) => lines.push(line))).toThrow(`\`STATE_FILE\` names ${scratch}, which cannot be written: `);
+  });
+
   it("starts where its directory has write and search permission but not read", () => {
     fs.chmodSync(scratch, 0o300);
     try {

@@ -290,7 +290,7 @@ so does an App whose own record cannot be read, since that is where the App's ow
 | `SCAN_INTERVAL_MINUTES` | optional | `60` | how many minutes apart the dispatcher scans for labelled work nothing holds a job for (*What a restart recovers*, below), after the scan at its start, so an item a reset's announcement did not reach, or found still held, is dispatched without a restart. A tick while the timer's last scan still runs starts nothing; one while another scan runs waits behind it. Each scan costs about four calls per repository served that has not opted in, and a few more per one that has; a scan that finds nothing to do logs only what any scan logs. At most `1440`, a day: more is refused at start, naming the setting. `0` turns the timer off |
 | `REDELIVERY_INTERVAL_MINUTES` | optional | `5` | how many minutes apart the dispatcher lists the App's recent webhook deliveries and asks GitHub to send again each that failed (*What it does not keep*, below); it also does so at start. One list call each time, and a line only when it asks for a redelivery or the list cannot be read. At most `1440`, a day: more is refused at start, naming the setting. `0` turns the poll off |
 | `REDELIVERY_WINDOW_MINUTES` | optional | `30` | how many minutes back a failed delivery is redelivered; one older is left lost, so an event long past is never sent again. A positive whole number: `0` is refused at start |
-| `STATE_FILE` | optional | `""` | the path of the file the dispatcher keeps its dispatched jobs and the scan's counts in, so a restart keeps them (*What it does not keep*, below). Empty is none: both are held in memory only. A path it cannot write to is refused at start, naming the setting. One dispatcher per file |
+| `STATE_FILE` | optional | `""` | the path of the file the dispatcher keeps its dispatched jobs and the scan's counts in, so a restart keeps them (*What it does not keep*, below). Empty is none: both are held in memory only. A full disk, read-only mount or no permission at start warns once and runs from memory until a write succeeds (*What it does not keep*, below); any other error is refused at start, naming the setting. One dispatcher per file |
 
 Each door also answers `GET /health` with `200`.
 
@@ -352,8 +352,14 @@ file or the new one and never half of one; its directory must be writable by the
 write that fails is logged (`state: …`) and the dispatcher goes on; the next change tries again.
 It is read once, at start. A file that cannot be read, is not valid, or has a `version` this
 release does not read is logged, naming the file and the reason, and the dispatcher starts empty,
-as without the setting, and replaces it; a path that cannot be written is refused at start. One
-dispatcher per file: two sharing one are not supported, and nothing locks it.
+as without the setting, and replaces it. **A full disk**, a read-only mount, or no permission to
+write the file at start does not stop the dispatcher, so it does not loop in a restart: one
+`warning:` line names the setting and the cause, the dispatcher starts with what the file held (or
+empty) in memory only, as without the setting, and each change tries the file again. Until one
+succeeds, a restart forgets what the file has not been given, as with `STATE_FILE` unset; the
+first write that succeeds is logged once (`state: wrote …`), and the file is kept from there. Any
+other error at start (no such directory, a directory itself, a single file bind-mounted over the
+path, an I/O error) is refused, naming the setting. One dispatcher per file: two sharing one are not supported, and nothing locks it.
 - **An item waiting on the plan's usage limit is kept by its note, not by the dispatcher.** Its
   label stays on and its resume note names the reset time (*The worker*, below), so a scan at any
   restart lists it. A scan before the reset reads the newest resume note and skips the item, so a

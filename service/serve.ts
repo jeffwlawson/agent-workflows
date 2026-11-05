@@ -113,8 +113,10 @@ export const serveDispatcher = async (
   if (redeliveryWindow === 0) {
     throw new Error("`REDELIVERY_WINDOW_MINUTES` is `0`, a window no failed delivery is inside. It must be at least 1; `REDELIVERY_INTERVAL_MINUTES=0` turns the poll off.");
   }
-  // Opened before anything else is read, so a path that cannot be written is
-  // refused at once (#618); unset, the dispatcher keeps its state in memory.
+  // Opened before anything else is read, so a file that cannot be written for
+  // now (a full disk, a read-only mount, no permission) is warned of and kept
+  // in memory until it can (#806), and any other error is refused at once
+  // (#618); unset, the dispatcher keeps its state in memory.
   const state = settings.STATE_FILE === "" ? undefined : openState("STATE_FILE", settings.STATE_FILE, liveStateFiles, log);
   let privateKey: string;
   try {

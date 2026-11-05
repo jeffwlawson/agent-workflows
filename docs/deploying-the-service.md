@@ -910,7 +910,7 @@ Inside it:
   `/usr/local/bin`, ahead of `/usr/bin` on root's `PATH`, to one of them; a release that happens to
   give the admin's uid is no reason to skip the flag, since the next may give the worker's.
   Unpack with `--no-same-owner`;
-- tinyproxy, allowing GitHub, the model's API and the package registries by hostname, and the
+- tinyproxy, allowing GitHub, the model's API and the npm registry (`registry.npmjs.org`) by hostname, and the
   dispatcher's token door, `192.168.250.1`, which the worker reaches through it. Node tunnels a
   plain `http:` request through `CONNECT` too, so `ConnectPort 8791` sits beside `ConnectPort 443`;
 - an nft rule (`meta skuid`) letting the worker's user open connections on loopback alone,

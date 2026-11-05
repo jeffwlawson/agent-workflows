@@ -394,16 +394,6 @@ export const fetchPullRequestHeading = (prNumber: string): string =>
   `PR #${prNumber}`;
 
 /**
- * A pull request's body, byte for byte. `--json` and a parse rather than
- * `--jq .body`, which prints a newline after the body that is not in it — and a
- * caller that writes the body back would add one on every run.
- */
-export const fetchPullRequestBody = (prNumber: string): string => {
-  const pr = JSON.parse(gh(["pr", "view", prNumber, "--json", "body"])) as { readonly body?: unknown };
-  return typeof pr.body === "string" ? pr.body : "";
-};
-
-/**
  * Wrap a plain validation function as a Standard Schema, so it can be handed to
  * `sandcastle.Output.object({ schema })` without pulling in a schema library.
  * On a thrown error the message is surfaced as a validation issue, which the

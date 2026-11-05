@@ -1403,15 +1403,17 @@ const shedSentence = (shed: Shed): string | undefined => {
 
 /**
  * The body as it is posted: the findings record decision 8 describes, in one
- * fixed order, and the one place that order is written down.
+ * fixed order. `renderBody` below writes that order down, and is the copy to
+ * trust where this one lags it.
  *
- * Top to bottom: the heading that says which comment this is, the assessment,
- * the review's own sentence naming what is unresolved, the step in italics, the
- * count and — on the rounds that have one — the line saying a finding was moved
- * to the follow-ups, then *Open*, *Previously missed*, *Resolved since last
- * review*, *Acceptance criteria* (#214), *Since the brief* (#541), *Not checked
- * here* (#543), *Follow-ups* and *How this was checked*, then a rule and the run
- * that produced it. What the change *is* is not here: it is the summary block
+ * Top to bottom: the round header (#298) where there is one, the heading that
+ * says which comment this is, the assessment, the review's own sentence naming
+ * what is unresolved, the step in italics, the count and — on the rounds that
+ * have one — the line saying a finding was moved to the follow-ups, then
+ * *Open*, *Minor findings* (#616), *Previously missed*, *Still open* (#257),
+ * *Resolved since last review*, *Acceptance criteria* (#214), *Since the brief*
+ * (#541), *Not checked here* (#543), *Follow-ups*, the fix notes not filed and
+ * *How this was checked*, then a rule and the run that produced it. What the change *is* is not here: it is the summary block
  * in the pull request's body (#218), so it is said in one place. The order is Copilot code review's
  * own overview, which is the point — a maintainer who has read one of those
  * already knows where to look.

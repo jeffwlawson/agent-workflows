@@ -1038,21 +1038,6 @@ describe("workflow files", () => {
 });
 
 /**
- * A hardcoded `main` is the failure class of
- * jeffwlawson/winget-manifest-lint#71 and jeffwlawson/winget-manifest-lint#100:
- * on a PR stacked on another branch — or in a repo whose default branch is
- * `master` — every git operation silently addresses the wrong branch. No error,
- * wrong result.
- *
- * jeffwlawson/winget-manifest-lint#71 and jeffwlawson/winget-manifest-lint#100
- * fixed the three PR workflows, which read the base from the event. The two
- * `implement` workflows have no event field to read: they *choose* a branch to
- * work from, and jeffwlawson/winget-manifest-lint#98 made that choice the
- * `default-branch` input rather than a literal. So the rule is now one rule
- * over the whole loop — no workflow, and no runner, names a default branch of
- * its own.
- */
-/**
  * **A repository opted into the service orchestrator gets no Actions run**
  * (#455). Every job of every reusable either caller set calls opens its `if:`
  * with the skip, so the service and Actions never both answer one label. Each
@@ -1152,6 +1137,21 @@ describe("every reusable that starts the agent installs one pinned Claude Code",
   });
 });
 
+/**
+ * A hardcoded `main` is the failure class of
+ * jeffwlawson/winget-manifest-lint#71 and jeffwlawson/winget-manifest-lint#100:
+ * on a PR stacked on another branch — or in a repo whose default branch is
+ * `master` — every git operation silently addresses the wrong branch. No error,
+ * wrong result.
+ *
+ * jeffwlawson/winget-manifest-lint#71 and jeffwlawson/winget-manifest-lint#100
+ * fixed the three PR workflows, which read the base from the event. The two
+ * `implement` workflows have no event field to read: they *choose* a branch to
+ * work from, and jeffwlawson/winget-manifest-lint#98 made that choice the
+ * `default-branch` input rather than a literal. So the rule is now one rule
+ * over the whole loop — no workflow, and no runner, names a default branch of
+ * its own.
+ */
 describe("the loop works against a base ref it is told, never a literal", () => {
   /**
    * Where the base comes from, per event. A PR event carries the real base and
@@ -6449,19 +6449,22 @@ describe("the one-PR-per-PRD rule is amended where it is written, not only where
 
   /**
    * §10 names the clause it overturns in the words it used to be true in, and
-   * keeps the bound it did not touch: the automatic fix is still bounded per
-   * pull request (once, until #201 made it a budget), so a slice PR and the PRD
-   * PR each get the budget.
+   * describes the chain as it is (#293, #479): slice rounds on the one PRD PR
+   * since PRD #222, with no slice PR left, and the automatic fix bounded per
+   * round there since #331 and per pull request elsewhere.
    */
-  it("amends parity §10's review bullet, keeping the per-PR automatic-fix bound", () => {
+  it("amends parity §10's review bullet, with the automatic-fix bound per round on a PRD PR", () => {
     const invariants = topLevel(parity, "## 10.");
-    const amended = bullet(invariants, "Review is requested once per slice PR, plus one integration review.");
+    const amended = bullet(invariants, "Review is requested once per slice round, plus one final review.");
 
     expect(bullet(invariants, "Review is requested once per PR, never once per slice.")).toBe("");
+    expect(bullet(invariants, "Review is requested once per slice PR, plus one integration review.")).toBe("");
     expect(amended).not.toBe("");
     expect(amended).toContain('"once per PR, never once per slice"');
     expect(amended).toMatch(/no per-slice\s+review workflow/);
-    expect(amended).toMatch(/bounded per pull\s+request/);
+    expect(amended).not.toMatch(/integration review/);
+    expect(amended).toMatch(/bounded per round on a PRD PR/);
+    expect(amended).toMatch(/per pull request\s+elsewhere/);
     expect(amended).toContain("](#the-trade-the-slice-round-is-the-unit-of-review-the-prd-pr-the-unit-of-merge)");
   });
 

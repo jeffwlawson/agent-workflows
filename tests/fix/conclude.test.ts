@@ -789,6 +789,21 @@ describe("fix:conclude keeps a set-aside rescue on a branch of its own before a 
     );
   });
 
+  it("names the side branch where the set-aside commits were kept but the run's own push was then refused (#773)", async () => {
+    let pushes = 0;
+    github.fails = (write) => write.type === "pushRef" && ++pushes === 2;
+
+    await run(INPUTS(AGENT_FAILED({ PUBLISH_OUTCOME: "skipped" })));
+
+    expect(github.branches.get(SIDE)).toBe(EARLIER);
+    expect(github.branches.get(RESCUE)).toBe(EARLIER);
+    expect(comment()).toMatch(STOPPED);
+    expect(comment()).toContain(
+      `· To try again, add \`agent:fix\`. Its commits were not saved on \`${RESCUE}\`: GitHub refused the push, and the workflow run's log says why. ` +
+        `The earlier commits this run set aside there are kept on \`${SIDE}\`; delete it once you are done with them.\n`,
+    );
+  });
+
   it("leaves the rescue as it was where it moved since the runner set it aside", async () => {
     const moved = "f".repeat(40);
     github.branches.set(RESCUE, moved);

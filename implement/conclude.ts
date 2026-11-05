@@ -10,7 +10,7 @@ import type { InputValues } from "../shared/env.js";
 import { choice, count, json, matching, object, optional, readDirectory, text, type FileParsers, type HandOver, type Parser } from "../shared/hand-over.js";
 import { loopAccounts } from "../shared/loop-accounts.js";
 import { BLOCKED_LABEL, IMPLEMENT_LABEL, REVIEW_LABEL, USAGE_LIMIT } from "../shared/record.js";
-import { keepSetAside } from "../shared/rescue.js";
+import { keepSetAside, unpushedButKept } from "../shared/rescue.js";
 import { limitEnding } from "../shared/usage-limit.js";
 import { present, rescueIgnored, setAsideNote } from "./hand-over.js";
 
@@ -353,7 +353,7 @@ const rescueCommits = async (
   } catch (error) {
     if (!(error instanceof WriteFailed)) throw error;
     console.log(`::warning::${inWriteLog(`Could not push the agent's commits to ${rescue}, so nothing was rescued.`)}`);
-    return { kind: "unsaved", why: UNPUSHED };
+    return { kind: "unsaved", why: kept === undefined ? UNPUSHED : unpushedButKept(kept) };
   }
   console.log(`Rescued the agent's commits, up to ${tip}, to ${rescue}.`);
   return kept === undefined ? { kind: "rescued" } : { kind: "rescued", kept };

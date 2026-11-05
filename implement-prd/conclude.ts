@@ -14,7 +14,7 @@ import { renderPrdStatus, renderProgressList, spliceProgressList, spliceStatus, 
 import { BLOCKED_LABEL, FIX_LABEL, IMPLEMENT_LABEL, PROGRESS_END, PROGRESS_START, REVIEW_LABEL, USAGE_LIMIT } from "../shared/record.js";
 import { roundCounts, type RoundCounts } from "../shared/round-header.js";
 import { sliceRanges } from "../shared/slice-ranges.js";
-import { keepSetAside } from "../shared/rescue.js";
+import { keepSetAside, unpushedButKept } from "../shared/rescue.js";
 import { limitEnding, type LimitEnding } from "../shared/usage-limit.js";
 import { present, rescueIgnored, setAsideNote, SNAPSHOT } from "./hand-over.js";
 
@@ -257,7 +257,11 @@ type Saved =
   | { readonly kind: "none" }
   /** `kept` is the side branch a set-aside rescue was kept on before the push (#578). */
   | { readonly kind: "rescued"; readonly kept?: string }
-  /** A set-aside rescue that could not be kept, so nothing was pushed over it (#578); `why` as the comment says it. */
+  /**
+   * A set-aside rescue that could not be kept, so nothing was pushed over it (#578), or one kept on its
+   * side branch before GitHub refused the run's own push, which `why` names beside the refusal (#773);
+   * `why` as the comment says it.
+   */
   | { readonly kind: "unsaved"; readonly why: string };
 
 /**
@@ -327,7 +331,8 @@ const rescueCommits = async (inputs: Inputs, io: Io, loop: Writer, bundled: bool
   } catch (error) {
     if (!(error instanceof WriteFailed)) throw error;
     console.log(`::warning::${inWriteLog(`Could not push the agent's commits to ${rescue}, so nothing was rescued.`)}`);
-    return { kind: "none" };
+    // A kept side branch is named, so its commits are not taken for lost (#773).
+    return kept === undefined ? { kind: "none" } : { kind: "unsaved", why: unpushedButKept(kept) };
   }
   console.log(`Rescued the agent's commits, up to ${tip}, to ${rescue}.`);
   return kept === undefined ? { kind: "rescued" } : { kind: "rescued", kept };
@@ -359,7 +364,9 @@ const UNKEPT = (side: string, why: string): string =>
  * A rescue is named whatever else the retry says, and is the retry where
  * nothing else was: adding the label resumes from it. A set-aside rescue kept
  * on a branch of its own (#578) is named after it, and one that could not be
- * kept is why the run's commits went unsaved.
+ * kept is why the run's commits went unsaved. Where it was kept but the run's
+ * own push was then refused, the refusal is why, with the kept side branch
+ * named beside it (#773).
  */
 const retryOf = (inputs: Inputs, undecided: boolean, pushed: boolean, pr: number | undefined, saved: Saved): string => {
   const plain = `To try again, add \`${IMPLEMENT_LABEL}\`.`;

@@ -140,6 +140,15 @@ export const ignoredNote = (label: string, branch: string, moved: string): strin
  */
 export const setAsideBranch = (rescue: string, tip: string): string => `${rescue}-set-aside-${tip.slice(0, 7)}`;
 
+/**
+ * Why a stopped run's commits went unsaved where its set-aside rescue was kept
+ * on `side` but the push of its own was then refused (#773), as a comment says
+ * it after "were not saved on `<rescue>`:": the side branch is named, so the
+ * earlier commits are not taken for lost with the run's.
+ */
+export const unpushedButKept = (side: string): string =>
+  `GitHub refused the push, and the workflow run's log says why. The earlier commits this run set aside there are kept on \`${side}\`; delete it once you are done with them.`;
+
 /** Where the agent's job fetches a set-aside rescue to before it keeps it: a ref of its own, outside `refs/heads/`. */
 const setAsideRef = (rescue: string): string => `refs/set-aside/${rescue}`;
 

@@ -20,7 +20,7 @@ Lessons from runs in Claude Code cloud sessions. A local session with a normal `
 | Add / remove a label | `POST issues/<n>/labels -f 'labels[]=<l>'` / `DELETE issues/<n>/labels/<l>` |
 | Comment from a file | `POST issues/<n>/comments -F body=@<file>` |
 
-The two write rows above, and the merge and arm below, are the single-PR mode's alone, on the maintainer's word. A digest makes only the read calls [digest.md](digest.md) lists, and does not retry a refused write by any route.
+The two write rows above, and the merge and arm below, are the single-PR mode's alone, on the maintainer's word. A digest makes read calls only ([digest.md](digest.md) lists the usual ones), and does not retry a refused write by any route.
 
 Ready for review, resolving review threads and auto-merge have no REST route; the 403 names the `…/pulls/<n>/ccr/…` route to use instead.
 

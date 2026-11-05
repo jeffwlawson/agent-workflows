@@ -1,8 +1,8 @@
 import { defineConfig } from "vitest/config";
 
 /**
- * How long one test may take, and how long any one synchronous spawn inside it
- * may run. Two roles, one figure — every test that spawns imports this rather
+ * How long one test may take, and how long any one spawn inside it may run,
+ * synchronous or not. Two roles, one figure — every test that spawns imports this rather
  * than repeating it (`tests/red-check.test.ts`, `tests/sync-version.test.ts`),
  * so the ceiling and the bound cannot drift apart.
  *
@@ -15,6 +15,13 @@ import { defineConfig } from "vitest/config";
  * sized instead for a *cold start under a loaded parallel run*, which is what
  * put the real-`gh` tests past vitest's 5-second default (#139) and left the
  * replay-based ones at 14–29x headroom against it (#144).
+ *
+ * An asynchronous spawn (`execFile`) does not block the loop, so vitest's timer
+ * can fire on it; it passes the same bound all the same, so that the child is
+ * killed rather than left running past a failed test. A file that spawns once
+ * per test spawns this way, in `{ concurrent: true }` blocks, because a blocked
+ * worker runs a file's tests strictly one after another (#271,
+ * `tests/deploy/upgrade.test.ts`).
  *
  * Held *equal* to a spawn's bound rather than over it, so that one bounded spawn
  * is exactly covered and a report of this limit means a test accumulated several

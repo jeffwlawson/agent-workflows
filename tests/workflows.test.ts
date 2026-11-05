@@ -334,7 +334,20 @@ interface Workflow {
   readonly jobs: Record<string, Job>;
 }
 
-const workflowOf = (file: string): Workflow => parse(fs.readFileSync(file, "utf8")) as Workflow;
+/**
+ * Parses a YAML text once per distinct text and hands each caller its own
+ * copy, so a test that mutates what it got cannot leak into the next. Keyed by
+ * the text rather than the path, so a file rewritten mid-run is parsed afresh.
+ * Re-parsing on every call was most of this file's wall clock (#271).
+ */
+const parsedByText = new Map<string, unknown>();
+const parseYaml = (text: string): unknown => {
+  if (!parsedByText.has(text)) parsedByText.set(text, parse(text));
+  return structuredClone(parsedByText.get(text));
+};
+const parseFile = (file: string): unknown => parseYaml(fs.readFileSync(file, "utf8"));
+
+const workflowOf = (file: string): Workflow => parseFile(file) as Workflow;
 
 /**
  * The skip every job of every reusable opens its `if:` with (#455): a
@@ -3760,7 +3773,7 @@ describe("each caller set holds one caller file per side", () => {
    * `follow-ups`, and `follow-ups`' `issues: write` to the review.
    */
   it.each(callerFiles)("%s: grants nothing at the top level, and every caller its own", (file) => {
-    const text = parse(fs.readFileSync(file, "utf8")) as { readonly permissions?: unknown };
+    const text = parseFile(file) as { readonly permissions?: unknown };
 
     expect(text).toHaveProperty("permissions");
     expect(text.permissions).toEqual({});
@@ -6838,7 +6851,7 @@ describe("Dependabot watches the caller pins no test here can reach", () => {
     readonly updates?: readonly Update[];
   }
 
-  const configOf = (file: string): Dependabot => parse(fs.readFileSync(file, "utf8")) as Dependabot;
+  const configOf = (file: string): Dependabot => parseFile(file) as Dependabot;
 
   /** The one `github-actions` block. Every grouping check below reads it. */
   const actions = (): Update => {
@@ -9131,7 +9144,7 @@ describe("a job that installs the package early runs it from that install", () =
       Object.entries(workflowOf(file).jobs).map(([id, job]) => [`${path.basename(file)} ${id}`, job] as const),
     ),
     ...actionFiles.map((file) => {
-      const action = parse(fs.readFileSync(file, "utf8")) as { readonly runs?: { readonly steps?: readonly Step[] } };
+      const action = parseFile(file) as { readonly runs?: { readonly steps?: readonly Step[] } };
       return [file, { steps: action.runs?.steps ?? [] }] as const;
     }),
   ];
@@ -9753,7 +9766,7 @@ describe("the loop resolves its token in the jobs that write", () => {
     readonly outputs?: Record<string, { readonly value?: string }>;
     readonly runs?: { readonly using?: string; readonly steps?: readonly Step[] };
   }
-  const action = (): Action => parse(fs.readFileSync(TOKEN_ACTION, "utf8")) as Action;
+  const action = (): Action => parseFile(TOKEN_ACTION) as Action;
   const actionStep = (id: string): Step | undefined => (action().runs?.steps ?? []).find((s) => s.id === id);
 
   const RESOLVER = `jeffwlawson/agent-workflows/.github/actions/loop-token@${PIN}`;
@@ -10169,7 +10182,7 @@ describe("a status-check function appears only in an `if:`", () => {
   });
 
   it.each([...workflowFiles, ...actionFiles])("%s", (file) => {
-    expect(misplaced(parse(fs.readFileSync(file, "utf8")), "")).toEqual([]);
+    expect(misplaced(parseFile(file), "")).toEqual([]);
   });
 
   it("would catch one in a step's env", () => {

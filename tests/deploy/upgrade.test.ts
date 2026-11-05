@@ -1,9 +1,9 @@
-import { spawnSync } from "node:child_process";
+import { execFile } from "node:child_process";
 import { createHash, createHmac } from "node:crypto";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterAll, describe, expect, it } from "vitest";
 
 import { SUBPROCESS_TIMEOUT } from "../../vitest.config.js";
 
@@ -283,8 +283,10 @@ const writeContainer = (root: string, container: Container, serviceEnv: string):
   for (const [name, answer] of Object.entries(answers)) fs.writeFileSync(path.join(dir, name), `${answer}\n`);
 };
 
+// Removed once the file is done rather than after each test: the tests run
+// concurrently, and an afterEach would remove the scratch of a test still running.
 const scratches: string[] = [];
-afterEach(() => {
+afterAll(() => {
   for (const dir of scratches.splice(0)) fs.rmSync(dir, { recursive: true, force: true });
 });
 
@@ -347,20 +349,37 @@ const setUp = (setup: Setup = {}): string => {
 
 const run = (root: string, env: Record<string, string> = {}, args: readonly string[] = ["1.2.3"]) => runScript(root, "upgrade.sh", args, env);
 
-const runScript = (root: string, script: string, args: readonly string[], env: Record<string, string> = {}) => {
-  const result = spawnSync("bash", [path.join(root, "unraid", script), ...args], {
-    encoding: "utf8",
-    input: "",
-    timeout: SUBPROCESS_TIMEOUT,
-    env: {
-      PATH: `${path.join(root, "bin")}:${process.env["PATH"] ?? ""}`,
-      HOME: path.join(root, "home"),
-      FAKE: root,
-      PROMPT_TTY: path.join(root, "tty"),
-      ...env,
-    },
+/**
+ * Runs `script` as `spawnSync` did, but without blocking the worker, so the
+ * file's tests run concurrently (#271): stdin closed at once, the exit status
+ * reported as `status` (`null` where a signal ended it), and the same
+ * `SUBPROCESS_TIMEOUT` bound, which throws where it fires.
+ */
+const runScript = async (root: string, script: string, args: readonly string[], env: Record<string, string> = {}) => {
+  const result = await new Promise<{ status: number | null; stdout: string; stderr: string }>((resolve, reject) => {
+    const child = execFile(
+      "bash",
+      [path.join(root, "unraid", script), ...args],
+      {
+        encoding: "utf8",
+        timeout: SUBPROCESS_TIMEOUT,
+        env: {
+          PATH: `${path.join(root, "bin")}:${process.env["PATH"] ?? ""}`,
+          HOME: path.join(root, "home"),
+          FAKE: root,
+          PROMPT_TTY: path.join(root, "tty"),
+          ...env,
+        },
+      },
+      (error, stdout, stderr) => {
+        if (error === null) resolve({ status: 0, stdout, stderr });
+        else if (typeof error.code === "number") resolve({ status: error.code, stdout, stderr });
+        else if (error.signal != null && !error.killed) resolve({ status: null, stdout, stderr });
+        else reject(error);
+      },
+    );
+    child.stdin?.end();
   });
-  if (result.error !== undefined) throw result.error;
   const callsFile = path.join(root, "state", "calls");
   const calls = fs.existsSync(callsFile) ? fs.readFileSync(callsFile, "utf8").trim().split("\n") : [];
   return { status: result.status, output: `${result.stdout}${result.stderr}`, calls };
@@ -375,10 +394,10 @@ const installed = (root: string, prefix: string): string =>
 const touches = (calls: readonly string[]): string[] =>
   calls.filter((call) => /^(npm|systemctl restart|docker (run|restart))/.test(call));
 
-describe("upgrade.sh", () => {
-  it("moves both machines to the version from the release's tarball, with no token", () => {
+describe("upgrade.sh", { concurrent: true }, () => {
+  it("moves both machines to the version from the release's tarball, with no token", async () => {
     const root = setUp();
-    const { status, output, calls } = run(root);
+    const { status, output, calls } = await run(root);
 
     expect(output).toContain("Both machines run 1.2.3 and share the secret.");
     expect(status).toBe(0);
@@ -400,8 +419,8 @@ describe("upgrade.sh", () => {
     expect(fs.readdirSync(path.join(root, "stage"))).toEqual([]);
   });
 
-  it("downloads over https only, redirects included", () => {
-    const { status, calls } = run(setUp());
+  it("downloads over https only, redirects included", async () => {
+    const { status, calls } = await run(setUp());
 
     expect(status).toBe(0);
     const downloads = calls.filter((call) => call.startsWith("curl "));
@@ -409,9 +428,9 @@ describe("upgrade.sh", () => {
     for (const call of downloads) expect(call).toContain("--proto =https --proto-redir =https");
   });
 
-  it("stops before restarting the dispatcher when the worker's restart fails, and names the commands that finish", () => {
+  it("stops before restarting the dispatcher when the worker's restart fails, and names the commands that finish", async () => {
     const root = setUp();
-    const { status, output, calls } = run(root, { FAKE_WORKER_RESTART_FAIL: "1" });
+    const { status, output, calls } = await run(root, { FAKE_WORKER_RESTART_FAIL: "1" });
 
     expect(status).toBe(1);
     expect(calls.filter((call) => call.startsWith("docker restart"))).toEqual([]);
@@ -422,9 +441,9 @@ describe("upgrade.sh", () => {
     expect(output).not.toContain("got 409 from the worker, for about");
   });
 
-  it("names the command that finishes when the dispatcher's restart fails after the worker's", () => {
+  it("names the command that finishes when the dispatcher's restart fails after the worker's", async () => {
     const root = setUp();
-    const { status, output } = run(root, { FAKE_DISPATCHER_RESTART_FAIL: "1" });
+    const { status, output } = await run(root, { FAKE_DISPATCHER_RESTART_FAIL: "1" });
 
     expect(status).toBe(1);
     expect(running(root, "worker")).toBe("1.2.3");
@@ -432,9 +451,9 @@ describe("upgrade.sh", () => {
     expect(output).not.toContain("got 409 from the worker, for about");
   });
 
-  it("names the earlier version as the way back when the install on Unraid fails", () => {
+  it("names the earlier version as the way back when the install on Unraid fails", async () => {
     const root = setUp();
-    const { status, output, calls } = run(root, { FAKE_UNRAID_INSTALL_FAIL: "1" });
+    const { status, output, calls } = await run(root, { FAKE_UNRAID_INSTALL_FAIL: "1" });
 
     expect(status).toBe(1);
     expect(calls.filter((call) => /^(systemctl|docker) restart/.test(call))).toEqual([]);
@@ -445,11 +464,11 @@ describe("upgrade.sh", () => {
     expect(output).not.toContain("install-box.sh");
   });
 
-  it("names the same way back when the install on the box fails", () => {
+  it("names the same way back when the install on the box fails", async () => {
     const root = setUp();
     fs.rmSync(path.join(root, "bin", "npm"));
     fs.writeFileSync(path.join(root, "bin", "npm"), "#!/usr/bin/env bash\nexit 1\n", { mode: 0o755 });
-    const { status, output, calls } = run(root);
+    const { status, output, calls } = await run(root);
 
     expect(status).toBe(1);
     expect(calls.filter((call) => call.startsWith("docker"))).toEqual([]);
@@ -458,9 +477,9 @@ describe("upgrade.sh", () => {
     expect(output).not.toContain("install-box.sh");
   });
 
-  it("says which files may already be on the box when the copy fails partway", () => {
+  it("says which files may already be on the box when the copy fails partway", async () => {
     const root = setUp();
-    const { status, output, calls } = run(root, { FAKE_SCP_FAIL_AT: "check-box.sh" });
+    const { status, output, calls } = await run(root, { FAKE_SCP_FAIL_AT: "check-box.sh" });
 
     expect(status).toBe(2);
     expect(output).toContain(`Could not copy all of ${TARBALL} ${TARBALL}.sha256 upgrade-box.sh check-box.sh agent-service.conf`);
@@ -469,19 +488,19 @@ describe("upgrade.sh", () => {
     expect(touches(calls)).toEqual([]);
   });
 
-  it("copies the run index to the box where it is beside the script", () => {
+  it("copies the run index to the box where it is beside the script", async () => {
     const root = setUp();
     fs.copyFileSync(path.join(DEPLOY, "runs.sh"), path.join(root, "unraid", "runs.sh"));
-    const { status, output } = run(root);
+    const { status, output } = await run(root);
 
     expect(status).toBe(0);
     expect(output).toContain(`Copied ${TARBALL} ${TARBALL}.sha256 upgrade-box.sh check-box.sh runs.sh agent-service.conf to `);
     expect(fs.readFileSync(path.join(root, "box-home", "runs.sh"), "utf8")).toBe(fs.readFileSync(path.join(DEPLOY, "runs.sh"), "utf8"));
   });
 
-  it("upgrades onto machines with no package installed yet, printing no stray error", () => {
+  it("upgrades onto machines with no package installed yet, printing no stray error", async () => {
     const root = setUp({ fresh: true, conf: `PACKAGE_SOURCE=owner/repo\nPACKAGE_NAME=${NAME}` });
-    const { status, output } = run(root);
+    const { status, output } = await run(root);
 
     expect(output).not.toMatch(/no such file/i);
     expect(output).toContain("Installed now: none. Moving to 1.2.3.");
@@ -489,16 +508,16 @@ describe("upgrade.sh", () => {
     expect([installed(root, "appdata/pkg"), installed(root, "opt")]).toEqual(["1.2.3", "1.2.3"]);
   });
 
-  it("refuses with no package installed and no PACKAGE_NAME, printing no stray error", () => {
-    const { status, output } = run(setUp({ fresh: true }));
+  it("refuses with no package installed and no PACKAGE_NAME, printing no stray error", async () => {
+    const { status, output } = await run(setUp({ fresh: true }));
 
     expect(status).toBe(2);
     expect(output).not.toMatch(/no such file/i);
     expect(output).toContain("set PACKAGE_NAME");
   });
 
-  it("says, with --now, that the worker's restart drops its queue, and how long the 409 window lasted", () => {
-    const { output } = run(setUp(), {}, ["--now", "1.2.3"]);
+  it("says, with --now, that the worker's restart drops its queue, and how long the 409 window lasted", async () => {
+    const { output } = await run(setUp(), {}, ["--now", "1.2.3"]);
 
     expect(output).toContain("Restarting the worker drops any job queued in it: its queue is in memory.");
     expect(output).toMatch(/the dispatcher got 409 from the worker, for about \d+ seconds/);
@@ -514,9 +533,9 @@ describe("upgrade.sh", () => {
     const restarts = (calls: readonly string[]) => calls.filter((call) => /^(systemctl|docker) restart/.test(call));
     const sleeps = (calls: readonly string[]) => calls.filter((call) => call.startsWith("sleep "));
 
-    it("restarts at once where the worker holds no job, having asked once", () => {
+    it("restarts at once where the worker holds no job, having asked once", async () => {
       const root = setUp();
-      const { status, output, calls } = run(root);
+      const { status, output, calls } = await run(root);
 
       expect(status).toBe(0);
       expect(output).toContain("The worker holds no job.");
@@ -530,9 +549,9 @@ describe("upgrade.sh", () => {
       expect(output).toContain("dispatcher's scan dispatches it again");
     });
 
-    it("asks the held door a signed read that names no instance, with the secret on no command line and in no output", () => {
+    it("asks the held door a signed read that names no instance, with the secret on no command line and in no output", async () => {
       const root = setUp();
-      const { status, output, calls } = run(root);
+      const { status, output, calls } = await run(root);
 
       expect(status).toBe(0);
       const [request] = held(root);
@@ -547,7 +566,7 @@ describe("upgrade.sh", () => {
       expect(output).not.toContain(SECRET);
     });
 
-    it("waits while the worker holds a job, printing it and each change, and restarts once it holds none", () => {
+    it("waits while the worker holds a job, printing it and each change, and restarts once it holds none", async () => {
       const root = setUp({
         held: [
           heldJobs(["implement", "owner/repo", 12], ["review", "owner/repo", 14]),
@@ -556,7 +575,7 @@ describe("upgrade.sh", () => {
           heldJobs(),
         ],
       });
-      const { status, output, calls } = run(root);
+      const { status, output, calls } = await run(root);
 
       expect(status).toBe(0);
       expect(output).toContain("The worker holds 2 job(s); waiting up to 90 minutes for it to hold none:\n  implement on owner/repo#12\n  review on owner/repo#14\n");
@@ -571,19 +590,19 @@ describe("upgrade.sh", () => {
       expect([running(root, "dispatcher"), running(root, "worker")]).toEqual(["1.2.3", "1.2.3"]);
     });
 
-    it("prints a heartbeat at a fixed interval while nothing held changes", () => {
+    it("prints a heartbeat at a fixed interval while nothing held changes", async () => {
       const same = heldJobs(["fix", "owner/repo", 7]);
       const root = setUp({ held: [...Array.from({ length: 11 }, () => same), heldJobs()] });
-      const { status, output } = run(root);
+      const { status, output } = await run(root);
 
       expect(status).toBe(0);
       expect(output.match(/Still waiting/g)).toHaveLength(1);
       expect(output).toContain("Still waiting, 5 of 90 minutes: the worker holds the same 1 job(s).");
     });
 
-    it("restarts nothing past the bound, naming what is held, re-running and --now", () => {
+    it("restarts nothing past the bound, naming what is held, re-running and --now", async () => {
       const root = setUp({ conf: "PACKAGE_SOURCE=owner/repo\nIDLE_WAIT_MINUTES=1", held: [heldJobs(["implement-prd", "owner/repo", 3])] });
-      const { status, output, calls } = run(root);
+      const { status, output, calls } = await run(root);
 
       expect(status).toBe(1);
       expect(restarts(calls)).toEqual([]);
@@ -595,9 +614,9 @@ describe("upgrade.sh", () => {
       expect([running(root, "dispatcher"), running(root, "worker")]).toEqual(["1.2.2", "1.2.2"]);
     });
 
-    it("with --now, restarts without asking the worker", () => {
+    it("with --now, restarts without asking the worker", async () => {
       const root = setUp({ held: [heldJobs(["implement", "owner/repo", 12])] });
-      const { status, output, calls } = run(root, {}, ["--now", "1.2.3"]);
+      const { status, output, calls } = await run(root, {}, ["--now", "1.2.3"]);
 
       expect(status).toBe(0);
       expect(calls.filter((call) => call.startsWith("docker exec"))).toEqual([]);
@@ -606,9 +625,9 @@ describe("upgrade.sh", () => {
       expect(restarts(calls)).toHaveLength(2);
     });
 
-    it.each([[[]], [["1.2.3", "--later"]], [["--now"]], [["1.2.3", "1.2.4"]]])("refuses %j with the usage line", (args) => {
+    it.each([[[]], [["1.2.3", "--later"]], [["--now"]], [["1.2.3", "1.2.4"]]])("refuses %j with the usage line", async (args) => {
       const root = setUp();
-      const { status, output, calls } = run(root, {}, args);
+      const { status, output, calls } = await run(root, {}, args);
 
       expect(status).toBe(2);
       expect(output).toContain("Usage: bash ");
@@ -622,9 +641,9 @@ describe("upgrade.sh", () => {
       ["a refused question", { status: 400, body: { refusal: "`asked` is not a time" } }, "the worker answered 400: `asked` is not a time"],
       ["an answer that is not a list", { status: 200, body: { jobs: "none" } }, "the worker's answer is not a list of jobs"],
       ["an answer that is not JSON", { status: 200, body: "<html>" }, "the worker's answer is not a list of jobs"],
-    ])("stops before either restart on %s, naming --now", (_, answer, reason) => {
+    ])("stops before either restart on %s, naming --now", async (_, answer, reason) => {
       const root = setUp({ held: [answer] });
-      const { status, output, calls } = run(root);
+      const { status, output, calls } = await run(root);
 
       expect(status).toBe(1);
       expect(output).toContain(`Could not tell which jobs the worker holds: ${reason}.`);
@@ -634,9 +653,9 @@ describe("upgrade.sh", () => {
       expect(output).not.toContain(SECRET);
     });
 
-    it("stops on a worker it cannot ask partway through the wait", () => {
+    it("stops on a worker it cannot ask partway through the wait", async () => {
       const root = setUp({ held: [heldJobs(["fix", "owner/repo", 7]), "unreachable"] });
-      const { status, output, calls } = run(root);
+      const { status, output, calls } = await run(root);
 
       expect(status).toBe(1);
       expect(output).toContain("Could not tell which jobs the worker holds, after waiting 0 minutes: the worker could not be reached");
@@ -644,10 +663,10 @@ describe("upgrade.sh", () => {
       expect(restarts(calls)).toEqual([]);
     });
 
-    it("stops where the dispatcher's container cannot be asked", () => {
+    it("stops where the dispatcher's container cannot be asked", async () => {
       const root = setUp();
       fs.writeFileSync(path.join(root, "bin", "docker"), fs.readFileSync(path.join(root, "bin", "docker"), "utf8").replace("  exec)\n", "  exec)\n    echo 'Error: container agent-dispatcher is not running' >&2; exit 1\n"));
-      const { status, output, calls } = run(root);
+      const { status, output, calls } = await run(root);
 
       expect(status).toBe(1);
       expect(output).toContain("the dispatcher's container, agent-dispatcher, could not be asked to ask it: Error: container agent-dispatcher is not running.");
@@ -655,9 +674,9 @@ describe("upgrade.sh", () => {
       expect(restarts(calls)).toEqual([]);
     });
 
-    it("says a worker with no held door cannot tell, and goes on once", () => {
+    it("says a worker with no held door cannot tell, and goes on once", async () => {
       const root = setUp({ held: [{ status: 404, body: { refusal: "no such door" } }] });
-      const { status, output, calls } = run(root);
+      const { status, output, calls } = await run(root);
 
       expect(status).toBe(0);
       expect(output).toContain("whether it holds a job cannot be told. Going on without waiting.");
@@ -667,9 +686,9 @@ describe("upgrade.sh", () => {
       expect(restarts(calls)).toHaveLength(2);
     });
 
-    it("refuses an IDLE_WAIT_MINUTES that is not a whole number", () => {
+    it("refuses an IDLE_WAIT_MINUTES that is not a whole number", async () => {
       const root = setUp({ conf: "PACKAGE_SOURCE=owner/repo\nIDLE_WAIT_MINUTES=an-hour" });
-      const { status, output, calls } = run(root);
+      const { status, output, calls } = await run(root);
 
       expect(status).toBe(2);
       expect(output).toContain("IDLE_WAIT_MINUTES");
@@ -677,8 +696,8 @@ describe("upgrade.sh", () => {
     });
   });
 
-  it("reaches the box with host keys beside the conf, accept-new, and nothing under ~/.ssh", () => {
-    const { status, calls } = run(setUp());
+  it("reaches the box with host keys beside the conf, accept-new, and nothing under ~/.ssh", async () => {
+    const { status, calls } = await run(setUp());
     expect(status).toBe(0);
 
     const remote = calls.filter((call) => /^(ssh|scp) /.test(call));
@@ -699,8 +718,8 @@ describe("upgrade.sh", () => {
     const remote = (calls: readonly string[]) => calls.filter((call) => /^(ssh|scp) /.test(call));
     const controlPath = (call: string): string | undefined => call.match(/-o ControlPath=(\S+)/)?.[1];
 
-    it("opens one master connection, which every other ssh and scp shares, and closes it", () => {
-      const { status, calls } = run(setUp());
+    it("opens one master connection, which every other ssh and scp shares, and closes it", async () => {
+      const { status, calls } = await run(setUp());
 
       expect(status).toBe(0);
       const masters = calls.filter((call) => call.startsWith("ssh ") && / -M -N -f /.test(call));
@@ -720,9 +739,9 @@ describe("upgrade.sh", () => {
       ["a successful run", () => setUp(), {}, 0],
       ["a failed run", () => setUp(), { FAKE_WORKER_RESTART_FAIL: "1" }, 1],
       ["an interrupted run", () => setUp({ held: [heldJobs(["fix", "owner/repo", 7])] }), { FAKE_INTERRUPT: "1" }, 143],
-    ])("keeps the socket in a private directory outside the conf's and /boot, gone after %s", (_, make, env, expected) => {
+    ])("keeps the socket in a private directory outside the conf's and /boot, gone after %s", async (_, make, env, expected) => {
       const root = make();
-      const { status, calls } = run(root, env);
+      const { status, calls } = await run(root, env);
 
       expect(status).toBe(expected);
       const [recorded] = fs.readFileSync(path.join(root, "state", "control-dirs"), "utf8").trim().split("\n");
@@ -737,18 +756,18 @@ describe("upgrade.sh", () => {
       expect(fs.readdirSync(path.join(root, "stage"))).toEqual([]);
     });
 
-    it("goes on, a connection a step, where the master cannot be opened", () => {
+    it("goes on, a connection a step, where the master cannot be opened", async () => {
       const root = setUp();
-      const { status, output } = run(root, { FAKE_MASTER_STATUS: "255" });
+      const { status, output } = await run(root, { FAKE_MASTER_STATUS: "255" });
 
       expect(status).toBe(0);
       expect(output).toContain("Could not open one shared connection to admin@box.example");
       expect(output).toContain("Both machines run 1.2.3 and share the secret.");
     });
 
-    it("reads the sudo password once and hands it to each box sudo on stdin, never on a command line, in output or in a file", () => {
+    it("reads the sudo password once and hands it to each box sudo on stdin, never on a command line, in output or in a file", async () => {
       const root = setUp();
-      const { status, output, calls } = run(root);
+      const { status, output, calls } = await run(root);
 
       expect(status).toBe(0);
       // The install, the restart and the check each ran sudo, which read it.
@@ -772,17 +791,17 @@ describe("upgrade.sh", () => {
       expect(leaving.filter((file) => fs.readFileSync(file, "utf8").includes(SUDO_PASSWORD))).toEqual([]);
     });
 
-    it("parses the box's check, which comes through no terminal, with no carriage return to strip", () => {
-      const { status, output } = run(setUp());
+    it("parses the box's check, which comes through no terminal, with no carriage return to strip", async () => {
+      const { status, output } = await run(setUp());
 
       expect(status).toBe(0);
       expect(output).toContain("worker version:            1.2.3\n");
       expect(output).toContain("box secret fingerprint:    0123456789abcdef\n");
     });
 
-    it("with no terminal to read the password from, fails the step whose sudo wants one, naming the terminal and the commands that finish", () => {
+    it("with no terminal to read the password from, fails the step whose sudo wants one, naming the terminal and the commands that finish", async () => {
       const root = setUp();
-      const { status, output, calls } = run(root, { PROMPT_TTY: path.join(root, "no-such-terminal"), FAKE_SUDO_NOPASSWD: "--install" });
+      const { status, output, calls } = await run(root, { PROMPT_TTY: path.join(root, "no-such-terminal"), FAKE_SUDO_NOPASSWD: "--install" });
 
       expect(status).toBe(1);
       expect(installed(root, "opt")).toBe("1.2.3");
@@ -794,14 +813,14 @@ describe("upgrade.sh", () => {
       expect(calls.filter((call) => call.startsWith("docker restart"))).toEqual([]);
     });
 
-    it("uses a mode 600 copy of the key BOX_SSH_KEY names for every ssh and scp, removed at the end, the original untouched", () => {
+    it("uses a mode 600 copy of the key BOX_SSH_KEY names for every ssh and scp, removed at the end, the original untouched", async () => {
       const root = setUp();
       const key = path.join(root, "unraid", "box_key");
       fs.writeFileSync(key, "a private key\n", { mode: 0o644 });
       fs.chmodSync(key, 0o644);
       const conf = path.join(root, "unraid", "agent-service.conf");
       fs.appendFileSync(conf, `BOX_SSH_KEY=${key}\n`);
-      const { status, output, calls } = run(root);
+      const { status, output, calls } = await run(root);
 
       expect(status).toBe(0);
       const copy = calls.find((call) => call.startsWith("ssh "))?.match(/ -i (\S+)/)?.[1] ?? "";
@@ -821,12 +840,12 @@ describe("upgrade.sh", () => {
       expect(output).not.toContain(copy);
     });
 
-    it("pastes the original key, not the copy, into the commands that finish", () => {
+    it("pastes the original key, not the copy, into the commands that finish", async () => {
       const root = setUp();
       const key = path.join(root, "unraid", "box_key");
       fs.writeFileSync(key, "a private key\n");
       fs.appendFileSync(path.join(root, "unraid", "agent-service.conf"), `BOX_SSH_KEY=${key}\n`);
-      const { status, output } = run(root, { FAKE_WORKER_RESTART_FAIL: "1" });
+      const { status, output } = await run(root, { FAKE_WORKER_RESTART_FAIL: "1" });
 
       expect(status).toBe(1);
       expect(output).toContain(`-i ${key} -t admin@box.example 'sudo bash ~/upgrade-box.sh --restart 1.2.3'`);
@@ -834,9 +853,9 @@ describe("upgrade.sh", () => {
     });
   });
 
-  it("stops before either machine is touched when the tarball does not match its .sha256", () => {
+  it("stops before either machine is touched when the tarball does not match its .sha256", async () => {
     const root = setUp({ digest: "0".repeat(64) });
-    const { status, output, calls } = run(root);
+    const { status, output, calls } = await run(root);
 
     expect(status).not.toBe(0);
     expect(output).toContain("does not match its .sha256");
@@ -845,9 +864,9 @@ describe("upgrade.sh", () => {
     expect(touches(calls)).toEqual([]);
   });
 
-  it("stops before either machine is touched when the tarball arrives on the box changed", () => {
+  it("stops before either machine is touched when the tarball arrives on the box changed", async () => {
     const root = setUp();
-    const { status, output, calls } = run(root, { FAKE_CORRUPT_SCP: "1" });
+    const { status, output, calls } = await run(root, { FAKE_CORRUPT_SCP: "1" });
 
     expect(status).not.toBe(0);
     expect(output).toContain(`${TARBALL} does not match its .sha256. Nothing was changed.`);
@@ -855,9 +874,9 @@ describe("upgrade.sh", () => {
     expect([installed(root, "appdata/pkg"), installed(root, "opt")]).toEqual(["1.2.2", "1.2.2"]);
   });
 
-  it("refuses, naming PACKAGE_SOURCE, when neither it nor the installed package names the repository", () => {
+  it("refuses, naming PACKAGE_SOURCE, when neither it nor the installed package names the repository", async () => {
     const root = setUp({ conf: "" });
-    const { status, output, calls } = run(root);
+    const { status, output, calls } = await run(root);
 
     expect(status).toBe(2);
     expect(output).toContain("set PACKAGE_SOURCE=<owner>/<repo>");
@@ -868,9 +887,9 @@ describe("upgrade.sh", () => {
   it.each([
     ['"repository": "github:owner/repo",'],
     ['"repository": { "type": "git", "url": "git+https://github.com/owner/repo.git" },'],
-  ])("reads the repository from the installed package where PACKAGE_SOURCE is unset: %s", (field) => {
+  ])("reads the repository from the installed package where PACKAGE_SOURCE is unset: %s", async (field) => {
     const root = setUp({ conf: "", installedExtra: `\n  ${field}` });
-    const { status, calls } = run(root);
+    const { status, calls } = await run(root);
 
     expect(status).toBe(0);
     expect(calls.find((call) => call.startsWith("curl"))).toMatch(
@@ -878,28 +897,28 @@ describe("upgrade.sh", () => {
     );
   });
 
-  it("refuses a repository that is not on github.com", () => {
+  it("refuses a repository that is not on github.com", async () => {
     const root = setUp({ conf: "", installedExtra: `\n  "repository": "https://gitlab.com/owner/repo",` });
-    const { status, output, calls } = run(root);
+    const { status, output, calls } = await run(root);
 
     expect(status).toBe(2);
     expect(output).toContain("PACKAGE_SOURCE");
     expect(calls).toEqual(["id -u"]);
   });
 
-  it("refuses without BOX_SSH_USER, naming it", () => {
+  it("refuses without BOX_SSH_USER, naming it", async () => {
     const root = setUp();
     const conf = path.join(root, "unraid", "agent-service.conf");
     fs.writeFileSync(conf, fs.readFileSync(conf, "utf8").replace("BOX_SSH_USER=admin\n", ""));
-    const { status, output, calls } = run(root);
+    const { status, output, calls } = await run(root);
 
     expect(status).toBe(2);
     expect(output).toContain("Set BOX_SSH_USER");
     expect(calls).toEqual(["id -u"]);
   });
 
-  it("exits non-zero, printing both, when the two machines report different versions", () => {
-    const { status, output } = run(setUp(), { FAKE_BOX_VERSION: "1.2.2" });
+  it("exits non-zero, printing both, when the two machines report different versions", async () => {
+    const { status, output } = await run(setUp(), { FAKE_BOX_VERSION: "1.2.2" });
 
     expect(status).toBe(1);
     expect(output).toContain("dispatcher version:        1.2.3");
@@ -907,22 +926,22 @@ describe("upgrade.sh", () => {
     expect(output.trim().split("\n").at(-1)).toMatch(/^FAILED: the dispatcher runs 1\.2\.3 and the worker 1\.2\.2/);
   });
 
-  it("exits non-zero, printing both, when the shared secret's fingerprints differ", () => {
-    const { status, output } = run(setUp(), { FAKE_FP_BOX: "fedcba9876543210" });
+  it("exits non-zero, printing both, when the shared secret's fingerprints differ", async () => {
+    const { status, output } = await run(setUp(), { FAKE_FP_BOX: "fedcba9876543210" });
 
     expect(status).toBe(1);
     expect(output).toContain("FAILED: the shared secret's fingerprints differ (0123456789abcdef on Unraid, fedcba9876543210 on the box).");
   });
 
-  it("fails the run when a check script fails, though versions and fingerprints match", () => {
-    const { status, output } = run(setUp(), { FAKE_CHECK_UNRAID_STATUS: "1" });
+  it("fails the run when a check script fails, though versions and fingerprints match", async () => {
+    const { status, output } = await run(setUp(), { FAKE_CHECK_UNRAID_STATUS: "1" });
 
     expect(status).toBe(1);
     expect(output).toContain("FAILED: a restart or a check failed");
   });
 });
 
-describe("the dispatcher's container on an upgrade (#691)", () => {
+describe("the dispatcher's container on an upgrade (#691)", { concurrent: true }, () => {
   /** The container as the stubbed docker holds it, one file an answer. */
   const container = (root: string): Record<string, string> | undefined => {
     const dir = path.join(root, "state", "container");
@@ -935,9 +954,9 @@ describe("the dispatcher's container on an upgrade (#691)", () => {
   const stateDir = (root: string) => path.join(root, "appdata", "state");
   const serviceEnv = (root: string) => fs.readFileSync(path.join(root, "appdata", "service.env"), "utf8");
 
-  it("recreates a container made before the state file with the /state mount and the install's options, adding STATE_FILE", () => {
+  it("recreates a container made before the state file with the /state mount and the install's options, adding STATE_FILE", async () => {
     const root = setUp({ container: "before-state" });
-    const { status, output, calls } = runScript(root, "upgrade-unraid.sh", ["--restart", "1.2.2"]);
+    const { status, output, calls } = await runScript(root, "upgrade-unraid.sh", ["--restart", "1.2.2"]);
 
     expect(status).toBe(0);
     expect(changes(root, calls)).toEqual([
@@ -952,9 +971,9 @@ describe("the dispatcher's container on an upgrade (#691)", () => {
     expect(container(root)?.["env"]).toContain("STATE_FILE=/state/dispatcher.json\n");
   });
 
-  it("adds the one STATE_FILE line where service.env has none, and makes the state folder as the install does", () => {
+  it("adds the one STATE_FILE line where service.env has none, and makes the state folder as the install does", async () => {
     const root = setUp({ container: "before-state" });
-    const { status, output, calls } = runScript(root, "upgrade-unraid.sh", ["--restart", "1.2.2"]);
+    const { status, output, calls } = await runScript(root, "upgrade-unraid.sh", ["--restart", "1.2.2"]);
 
     expect(status).toBe(0);
     expect(serviceEnv(root)).toBe(`${SERVICE_ENV_BEFORE_STATE}STATE_FILE=/state/dispatcher.json\n`);
@@ -964,18 +983,18 @@ describe("the dispatcher's container on an upgrade (#691)", () => {
     expect(calls).toContain(`chown 99:100 ${stateDir(root)}`);
   });
 
-  it("adds the line on a line of its own where service.env ends with no newline", () => {
+  it("adds the line on a line of its own where service.env ends with no newline", async () => {
     const root = setUp({ container: "before-state", serviceEnv: SERVICE_ENV_BEFORE_STATE.trimEnd() });
-    const { status } = runScript(root, "upgrade-unraid.sh", ["--restart", "1.2.2"]);
+    const { status } = await runScript(root, "upgrade-unraid.sh", ["--restart", "1.2.2"]);
 
     expect(status).toBe(0);
     expect(serviceEnv(root)).toBe(`${SERVICE_ENV_BEFORE_STATE}STATE_FILE=/state/dispatcher.json\n`);
   });
 
-  it("restarts a container with no drift, removing and creating nothing, and leaves service.env byte for byte", () => {
+  it("restarts a container with no drift, removing and creating nothing, and leaves service.env byte for byte", async () => {
     const root = setUp();
     const before = container(root);
-    const { status, output, calls } = runScript(root, "upgrade-unraid.sh", ["--restart", "1.2.2"]);
+    const { status, output, calls } = await runScript(root, "upgrade-unraid.sh", ["--restart", "1.2.2"]);
 
     expect(status).toBe(0);
     expect(changes(root, calls)).toEqual(["docker restart agent-dispatcher"]);
@@ -986,9 +1005,9 @@ describe("the dispatcher's container on an upgrade (#691)", () => {
     expect(fs.statSync(stateDir(root)).mode & 0o777).toBe(0o700);
   });
 
-  it("recreates a container on another image, with service.env left as it was", () => {
+  it("recreates a container on another image, with service.env left as it was", async () => {
     const root = setUp({ container: "other-image" });
-    const { status, output, calls } = runScript(root, "upgrade-unraid.sh", ["--restart", "1.2.2"]);
+    const { status, output, calls } = await runScript(root, "upgrade-unraid.sh", ["--restart", "1.2.2"]);
 
     expect(status).toBe(0);
     expect(output).toContain("whose image differed");
@@ -996,9 +1015,9 @@ describe("the dispatcher's container on an upgrade (#691)", () => {
     expect(serviceEnv(root)).toBe(SERVICE_ENV);
   });
 
-  it("does it all within upgrade.sh, with the dispatcher's settings asked for nowhere", () => {
+  it("does it all within upgrade.sh, with the dispatcher's settings asked for nowhere", async () => {
     const root = setUp({ container: "before-state" });
-    const { status, output, calls } = run(root);
+    const { status, output, calls } = await run(root);
 
     expect(status).toBe(0);
     expect(output).toContain("Both machines run 1.2.3 and share the secret.");
@@ -1007,27 +1026,27 @@ describe("the dispatcher's container on an upgrade (#691)", () => {
     expect(output).not.toMatch(/webhook secret|App's ID|GitHub token/i);
   });
 
-  it("reads no terminal on Unraid's side of an upgrade", () => {
+  it("reads no terminal on Unraid's side of an upgrade", async () => {
     for (const file of ["upgrade-unraid.sh", "dispatcher-container.sh"]) {
       const code = fs.readFileSync(path.join(DEPLOY, file), "utf8").split("\n").filter((line) => !line.trimStart().startsWith("#")).join("\n");
       expect(code, file).not.toMatch(/\/dev\/tty|\bread -r?s?p\b/);
     }
   });
 
-  it("stops before the restart, naming install-unraid.sh, where there are no settings to create a container from", () => {
+  it("stops before the restart, naming install-unraid.sh, where there are no settings to create a container from", async () => {
     const root = setUp();
     fs.rmSync(path.join(root, "appdata", "service.env"));
-    const { status, output, calls } = runScript(root, "upgrade-unraid.sh", ["--restart", "1.2.2"]);
+    const { status, output, calls } = await runScript(root, "upgrade-unraid.sh", ["--restart", "1.2.2"]);
 
     expect(status).toBe(1);
     expect(output).toContain(`No settings at ${root}/appdata/service.env: run install-unraid.sh 1.2.2`);
     expect(changes(root, calls)).toEqual([]);
   });
 
-  it("refuses, changing nothing, where dispatcher-container.sh is not beside it", () => {
+  it("refuses, changing nothing, where dispatcher-container.sh is not beside it", async () => {
     const root = setUp({ container: "before-state" });
     fs.rmSync(path.join(root, "unraid", "dispatcher-container.sh"));
-    const { status, output, calls } = runScript(root, "upgrade-unraid.sh", ["--restart", "1.2.2"]);
+    const { status, output, calls } = await runScript(root, "upgrade-unraid.sh", ["--restart", "1.2.2"]);
 
     expect(status).toBe(2);
     expect(output).toContain("dispatcher-container.sh is not beside this script");
@@ -1037,11 +1056,11 @@ describe("the dispatcher's container on an upgrade (#691)", () => {
 
   // The same drift check and create step: install-unraid.sh, run with nothing
   // to ask, changes the container as the upgrade does from the same start.
-  it.each<Container>(["before-state", "other-image", "missing"])("changes a %s container as install-unraid.sh does, reading no terminal", (start) => {
+  it.each<Container>(["before-state", "other-image", "missing"])("changes a %s container as install-unraid.sh does, reading no terminal", async (start) => {
     const upgraded = setUp({ container: start });
     const installedRoot = setUp({ container: start });
-    const upgrade = runScript(upgraded, "upgrade-unraid.sh", ["--restart", "1.2.2"]);
-    const install = runScript(installedRoot, "install-unraid.sh", ["1.2.2"]);
+    const upgrade = await runScript(upgraded, "upgrade-unraid.sh", ["--restart", "1.2.2"]);
+    const install = await runScript(installedRoot, "install-unraid.sh", ["1.2.2"]);
 
     expect(install.output).not.toContain("needs a terminal");
     expect(install.status).toBe(0);
@@ -1055,7 +1074,7 @@ describe("the dispatcher's container on an upgrade (#691)", () => {
   });
 });
 
-describe("the install scripts' package, from the release's tarball (#576)", () => {
+describe("the install scripts' package, from the release's tarball (#576)", { concurrent: true }, () => {
   const RELEASE_URL = `https://github.com/owner/repo/releases/download/v1.2.3/${TARBALL}`;
   const downloads = (calls: readonly string[]): string[] =>
     calls.filter((call) => call.startsWith("curl ")).map((call) => call.split(" ").at(-1) ?? "");
@@ -1063,9 +1082,9 @@ describe("the install scripts' package, from the release's tarball (#576)", () =
   describe("install-unraid.sh", () => {
     const install = (root: string, version = "1.2.3") => runScript(root, "install-unraid.sh", [version]);
 
-    it("installs a version that is not installed from the downloaded tarball, its digest checked, asking for no token and reading no terminal", () => {
+    it("installs a version that is not installed from the downloaded tarball, its digest checked, asking for no token and reading no terminal", async () => {
       const root = setUp();
-      const { status, output, calls } = install(root);
+      const { status, output, calls } = await install(root);
 
       expect(output).not.toContain("needs a terminal");
       expect(output).not.toMatch(/GitHub token|read:packages/);
@@ -1082,9 +1101,9 @@ describe("the install scripts' package, from the release's tarball (#576)", () =
       expect(fs.readdirSync(path.join(root, "stage"))).toEqual([]);
     });
 
-    it("installs onto a server with no package yet", () => {
+    it("installs onto a server with no package yet", async () => {
       const root = setUp({ fresh: true });
-      const { status, output } = install(root);
+      const { status, output } = await install(root);
 
       expect(output).not.toMatch(/GitHub token|no such file/i);
       expect(status).toBe(0);
@@ -1094,10 +1113,10 @@ describe("the install scripts' package, from the release's tarball (#576)", () =
     it.each([
       ["the tarball", TARBALL, RELEASE_URL],
       ["its .sha256", `${TARBALL}.sha256`, `${RELEASE_URL}.sha256`],
-    ])("stops, naming the URL and leaving the package as it was, when %s cannot be downloaded", (_what, file, url) => {
+    ])("stops, naming the URL and leaving the package as it was, when %s cannot be downloaded", async (_what, file, url) => {
       const root = setUp();
       fs.rmSync(path.join(root, "release", file));
-      const { status, output, calls } = install(root);
+      const { status, output, calls } = await install(root);
 
       expect(status).toBe(1);
       expect(output).toContain(`Could not download ${url}`);
@@ -1106,9 +1125,9 @@ describe("the install scripts' package, from the release's tarball (#576)", () =
       expect(fs.readdirSync(path.join(root, "stage"))).toEqual([]);
     });
 
-    it("stops, naming the URL and leaving the package as it was, when the tarball does not match its .sha256", () => {
+    it("stops, naming the URL and leaving the package as it was, when the tarball does not match its .sha256", async () => {
       const root = setUp({ digest: "0".repeat(64) });
-      const { status, output, calls } = install(root);
+      const { status, output, calls } = await install(root);
 
       expect(status).toBe(1);
       expect(output).toContain(`${RELEASE_URL} does not match its .sha256`);
@@ -1116,9 +1135,9 @@ describe("the install scripts' package, from the release's tarball (#576)", () =
       expect(installed(root, "appdata/pkg")).toBe("1.2.2");
     });
 
-    it("refuses before changing anything, naming PACKAGE_SOURCE, where it is not set and the package is not at the version", () => {
+    it("refuses before changing anything, naming PACKAGE_SOURCE, where it is not set and the package is not at the version", async () => {
       const root = setUp({ conf: "" });
-      const { status, output, calls } = install(root);
+      const { status, output, calls } = await install(root);
 
       expect(status).toBe(2);
       expect(output).toContain("set PACKAGE_SOURCE=<owner>/<repo>");
@@ -1126,9 +1145,9 @@ describe("the install scripts' package, from the release's tarball (#576)", () =
       expect(calls.filter((call) => !call.startsWith("id "))).toEqual([]);
     });
 
-    it("leaves the package at the version already installed alone, downloading nothing and needing no PACKAGE_SOURCE or terminal", () => {
+    it("leaves the package at the version already installed alone, downloading nothing and needing no PACKAGE_SOURCE or terminal", async () => {
       const root = setUp({ conf: "" });
-      const { status, output, calls } = install(root, "1.2.2");
+      const { status, output, calls } = await install(root, "1.2.2");
 
       expect(output).not.toContain("needs a terminal");
       expect(status).toBe(0);
@@ -1164,9 +1183,9 @@ describe("the install scripts' package, from the release's tarball (#576)", () =
       return runScript(root, "box-package.sh", [], { TMPDIR: path.join(root, "stage"), ...env });
     };
 
-    it("installs a version that is not installed from the downloaded tarball, its digest checked, asking for no token", () => {
+    it("installs a version that is not installed from the downloaded tarball, its digest checked, asking for no token", async () => {
       const root = setUp();
-      const { status, output, calls } = runSection(root, "1.2.3");
+      const { status, output, calls } = await runSection(root, "1.2.3");
 
       expect(output).not.toMatch(/GitHub token|read:packages/);
       expect(status).toBe(0);
@@ -1183,10 +1202,10 @@ describe("the install scripts' package, from the release's tarball (#576)", () =
     it.each([
       ["the tarball", TARBALL, RELEASE_URL],
       ["its .sha256", `${TARBALL}.sha256`, `${RELEASE_URL}.sha256`],
-    ])("stops, naming the URL and leaving the package as it was, when %s cannot be downloaded", (_what, file, url) => {
+    ])("stops, naming the URL and leaving the package as it was, when %s cannot be downloaded", async (_what, file, url) => {
       const root = setUp();
       fs.rmSync(path.join(root, "release", file));
-      const { status, output, calls } = runSection(root, "1.2.3");
+      const { status, output, calls } = await runSection(root, "1.2.3");
 
       expect(status).toBe(1);
       expect(output).toContain(`Could not download ${url}`);
@@ -1195,9 +1214,9 @@ describe("the install scripts' package, from the release's tarball (#576)", () =
       expect(fs.readdirSync(path.join(root, "stage"))).toEqual([]);
     });
 
-    it("stops, naming the URL and leaving the package as it was, when the tarball does not match its .sha256", () => {
+    it("stops, naming the URL and leaving the package as it was, when the tarball does not match its .sha256", async () => {
       const root = setUp({ digest: "0".repeat(64) });
-      const { status, output, calls } = runSection(root, "1.2.3");
+      const { status, output, calls } = await runSection(root, "1.2.3");
 
       expect(status).toBe(1);
       expect(output).toContain(`${RELEASE_URL} does not match its .sha256`);
@@ -1205,19 +1224,19 @@ describe("the install scripts' package, from the release's tarball (#576)", () =
       expect(installed(root, "opt")).toBe("1.2.2");
     });
 
-    it("leaves the package at the version already installed alone, downloading nothing", () => {
+    it("leaves the package at the version already installed alone, downloading nothing", async () => {
       const root = setUp();
-      const { status, output, calls } = runSection(root, "1.2.2");
+      const { status, output, calls } = await runSection(root, "1.2.2");
 
       expect(status).toBe(0);
       expect(output).toContain(`unchanged  ${NAME} 1.2.2`);
       expect(calls).toEqual([]);
     });
 
-    it("refuses before changing anything, naming PACKAGE_SOURCE, where it is not set and the package is not at the version", () => {
+    it("refuses before changing anything, naming PACKAGE_SOURCE, where it is not set and the package is not at the version", async () => {
       const root = setUp({ conf: "" });
       fs.copyFileSync(path.join(DEPLOY, "install-box.sh"), path.join(root, "unraid", "install-box.sh"));
-      const { status, output, calls } = runScript(root, "install-box.sh", ["1.2.3"]);
+      const { status, output, calls } = await runScript(root, "install-box.sh", ["1.2.3"]);
 
       expect(status).toBe(2);
       expect(output).toContain("set PACKAGE_SOURCE=<owner>/<repo>");
@@ -1230,7 +1249,7 @@ describe("the install scripts' package, from the release's tarball (#576)", () =
 describe("the deploy scripts", () => {
   const scripts = fs.readdirSync(DEPLOY).filter((file) => file.endsWith(".sh"));
 
-  it("use no registry token, and no doc of the deployment tells an operator to make one", () => {
+  it("use no registry token, and no doc of the deployment tells an operator to make one", async () => {
     expect(scripts).toContain("install-unraid.sh");
     expect(scripts).toContain("install-box.sh");
     const doc = fs.readFileSync(path.join(DEPLOY, "..", "..", "docs", "deploying-the-service.md"), "utf8");
@@ -1247,7 +1266,7 @@ describe("the deploy scripts", () => {
     }
   });
 
-  it("name a tarball wherever a half's closing advice names the other half", () => {
+  it("name a tarball wherever a half's closing advice names the other half", async () => {
     for (const file of ["upgrade-unraid.sh", "upgrade-box.sh"]) {
       const text = fs.readFileSync(path.join(DEPLOY, file), "utf8");
       const advice = text.match(/\((upgrade-(?:box|unraid)\.sh [^,]*),/)?.[1];
@@ -1257,7 +1276,7 @@ describe("the deploy scripts", () => {
 
   // CI's shellcheck runs without -x and knows no shell for a file with neither:
   // a script read with `.` names its shell in a directive instead (#737).
-  it("name their shell on the first line, by a shebang or, for one read with ., a shellcheck directive", () => {
+  it("name their shell on the first line, by a shebang or, for one read with ., a shellcheck directive", async () => {
     expect(scripts).toContain("dispatcher-container.sh");
     for (const file of scripts) {
       const first = fs.readFileSync(path.join(DEPLOY, file), "utf8").split("\n")[0];
@@ -1265,7 +1284,7 @@ describe("the deploy scripts", () => {
     }
   });
 
-  it("name no owner, address or account in the orchestrator", () => {
+  it("name no owner, address or account in the orchestrator", async () => {
     const text = fs.readFileSync(path.join(DEPLOY, "upgrade.sh"), "utf8");
     const code = text.split("\n").filter((line) => !line.trimStart().startsWith("#")).join("\n");
     expect(code).not.toMatch(/\d+\.\d+\.\d+\.\d+/);

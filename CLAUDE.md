@@ -62,9 +62,11 @@ are what fail when one is skipped.
   is run from source and names `../shared/pins.ts`.
 - Prefer `execFileSync` argv over shell strings for anything holding a variable. A git ref may
   legally contain `` ` ``, `$()`, `;`, `|` and `&`.
-- **A test that spawns synchronously bounds the spawn** at `SUBPROCESS_TIMEOUT`, imported from
-  `vitest.config.ts` and never written out (`tests/vitest-config.test.ts` fails on a copy; the
-  config's comment has the reasoning). A test that runs a subcommand does it through
+- **A test that spawns bounds the spawn** at `SUBPROCESS_TIMEOUT`, synchronous or not, imported
+  from `vitest.config.ts` and never written out (`tests/vitest-config.test.ts` fails on a copy; the
+  config's comment has the reasoning). A file that spawns once per test spawns asynchronously
+  (`execFile`) in `{ concurrent: true }` blocks, so its tests do not run one after another
+  (`tests/deploy/upgrade.test.ts`, #271). A test that runs a subcommand does it through
   `tests/cli-inputs.ts` and writes `process.env` nowhere else.
 - `docs/friction.md` is a dated narrative log. Append; never rewrite an entry to match today.
 

@@ -553,12 +553,14 @@ Jobs run in two lanes, each one job at a time, beneath a chain per pull request 
 
 **The plan's usage limit holds the agent lane** (#635). The agent's CLI stops a run that hits the
 plan's usage limit with `You've hit your session limit · resets 5:50am (UTC)`, or the same with
-another kind of limit or time. That run is not a failure: its conclude command says on the item
+another kind of limit or time, the weekly limit's with a date: `You've hit your weekly limit ·
+resets Nov 8, 6am (UTC)`, which holds the lane for days. That run is not a failure: its conclude command says on the item
 that it hit the plan's usage limit and will resume after the reset time in UTC, leaves the trigger
 label on, and adds no `agent:blocked`. The worker reads the reset instant off the runner's reason
 as it ends, the next such time after the run ended, a time up to an hour past read as today's
 (`RESET_GRACE_MINUTES`, so the worker and a conclude that reads the message a few minutes later, or
-on a clock ahead, answer the same instant), and holds the agent lane until it and two
+on a clock ahead, answer the same instant; a message that names a date gives that date's instant),
+and holds the agent lane until it and two
 minutes more (`RESET_MARGIN_MINUTES`, a margin for the two hosts' clocks): no agent job starts, and
 no update-branch job's agent part, so the jobs behind the stop do not hit the same limit one by one.
 The light lane runs on meanwhile: a filing, a clean refresh, a gate that refuses. A later reset

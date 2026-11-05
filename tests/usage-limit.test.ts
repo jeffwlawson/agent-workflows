@@ -58,6 +58,44 @@ describe("usageLimitReset reads the reset instant off the CLI's message", () => 
     expect(usageLimitReset("You've hit your weekly limit · resets 12:30pm (UTC)", at("2026-11-01T08:00:00Z"))).toEqual(at("2026-11-01T12:30:00Z"));
   });
 
+  // The weekly limit's wording on 2026-11-05, which the time-of-day-only form
+  // did not match: the box ended a weekly-limited job as a failure, with
+  // `agent:blocked`, not as a wait.
+  describe("reads the weekly limit's message, which names a date", () => {
+    const WEEKLY = "Claude-code exited with code 1: You've hit your weekly limit · resets Nov 8, 6am (UTC).";
+
+    it("answers that date's instant, days ahead", () => {
+      expect(usageLimitReset(WEEKLY, at("2026-11-05T14:33:00Z"))).toEqual(at("2026-11-08T06:00:00Z"));
+      expect(usageLimitReset("You've hit your weekly limit · resets Nov 8, 6:30pm (UTC)", at("2026-11-05T14:33:00Z"))).toEqual(at("2026-11-08T18:30:00Z"));
+      expect(usageLimitReset("You've hit your weekly limit · resets November 8, 6am (UTC)", at("2026-11-05T14:33:00Z"))).toEqual(at("2026-11-08T06:00:00Z"));
+    });
+
+    it("answers the same instant to every reader, whatever the clock says, without the time-of-day rollover", () => {
+      expect(usageLimitReset(WEEKLY, at("2026-11-08T05:59:00Z"))).toEqual(at("2026-11-08T06:00:00Z"));
+      expect(usageLimitReset(WEEKLY, at("2026-11-08T06:30:00Z"))).toEqual(at("2026-11-08T06:00:00Z"));
+      expect(usageLimitReset(WEEKLY, at("2026-11-08T23:00:00Z"))).toEqual(at("2026-11-08T06:00:00Z"));
+    });
+
+    it("takes the year that puts the date within half a year of the reading", () => {
+      expect(usageLimitReset("You've hit your weekly limit · resets Jan 2, 6am (UTC)", at("2026-12-30T10:00:00Z"))).toEqual(at("2027-01-02T06:00:00Z"));
+      expect(usageLimitReset("You've hit your weekly limit · resets Dec 30, 6am (UTC)", at("2027-01-01T10:00:00Z"))).toEqual(at("2026-12-30T06:00:00Z"));
+    });
+
+    it("answers nothing for a date that is not one", () => {
+      const ended = at("2026-11-05T14:33:00Z");
+      for (const reason of [
+        "You've hit your weekly limit · resets Feb 30, 6am (UTC)",
+        "You've hit your weekly limit · resets Nov 32, 6am (UTC)",
+        "You've hit your weekly limit · resets Nov 0, 6am (UTC)",
+        "You've hit your weekly limit · resets Foo 8, 6am (UTC)",
+        "You've hit your weekly limit · resets Nov 8, 6am (America/Los_Angeles)",
+        "You've hit your weekly limit · resets Nov 8, 13am (UTC)",
+      ]) {
+        expect(usageLimitReset(reason, ended), reason).toBeUndefined();
+      }
+    });
+  });
+
   it("answers nothing for any other shape", () => {
     const ended = at("2026-11-01T01:10:00Z");
     for (const reason of [

@@ -287,7 +287,7 @@ so does an App whose own record cannot be read, since that is where the App's ow
 | `EXTRA_OWNERS` | optional | `""` | accounts, comma-separated, whose installations the dispatcher serves besides the App owner's; empty is none. An installation on any other account is refused |
 | `SCAN_DISPATCH_LIMIT` | optional | `2` | how many times a scan's job for an item's label that stays on across scans may start (ask for its first token) before the scan leaves the item for a person, and comments once to say so (*The scan's limit*, below), never applied to `agent:merge`. At least `1`: `0` is refused at start, since it would not turn the scan off |
 | `SCAN_MERGED_WINDOW_DAYS` | optional | `7` | how many days back the scan lists merged pull requests still carrying `agent:follow-ups` (*What a restart recovers*, below), so one someone left the label on for months is not dispatched at every restart. A positive whole number: `0` is refused at start |
-| `REDELIVERY_INTERVAL_MINUTES` | optional | `5` | how many minutes apart the dispatcher lists the App's recent webhook deliveries and asks GitHub to send again each that failed (*What it does not keep*, below); it also does so at start. One list call each time, and a line only when it asks for a redelivery or the list cannot be read. `0` turns the poll off |
+| `REDELIVERY_INTERVAL_MINUTES` | optional | `5` | how many minutes apart the dispatcher lists the App's recent webhook deliveries and asks GitHub to send again each that failed (*What it does not keep*, below); it also does so at start. One list call each time, and a line only when it asks for a redelivery or the list cannot be read. At most `1440`, a day: more is refused at start, naming the setting. `0` turns the poll off |
 | `REDELIVERY_WINDOW_MINUTES` | optional | `30` | how many minutes back a failed delivery is redelivered; one older is left lost, so an event long past is never sent again. A positive whole number: `0` is refused at start |
 | `STATE_FILE` | optional | `""` | the path of the file the dispatcher keeps its dispatched jobs and the scan's counts in, so a restart keeps them (*What it does not keep*, below). Empty is none: both are held in memory only. A path it cannot write to is refused at start, naming the setting. One dispatcher per file |
 
@@ -1061,7 +1061,9 @@ starts, `agentnet-firewall` puts the rules in and starts the VM, the VM's units 
 (its egress rules, tinyproxy, the worker), the dispatcher's container comes back, and the Funnel
 stays public. About 11 minutes from *Reboot* to a review. Restarting the VM service alone does
 **not** bring it back (Unraid cannot remount `libvirt.img` until a reboot), so reboot the server
-instead of turning VM Manager off and on. Deliveries made while it was down are lost, as above,
-but a label they added to an open item is dispatched by the dispatcher's start scan, and so is a
-recent merge's filing where `agent:follow-ups` is still on; only what a scan does not list, the
-post-merge checklist of a merge carrying no label above all, needs a hand.
+instead of turning VM Manager off and on. Deliveries made while it was down or restarting are
+redelivered by the dispatcher within `REDELIVERY_WINDOW_MINUTES`, as above, and lost only past the
+window or with the poll off. A label a lost one added to an open item is dispatched by the
+dispatcher's start scan, and so is a recent merge's filing where `agent:follow-ups` is still on;
+only what a scan does not list, the post-merge checklist of a merge carrying no label above all,
+needs a hand.

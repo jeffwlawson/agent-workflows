@@ -141,6 +141,9 @@ describe("the dispatcher's start", () => {
     ["REDELIVERY_WINDOW_MINUTES", "0", /`REDELIVERY_WINDOW_MINUTES` is `0`.*at least 1; `REDELIVERY_INTERVAL_MINUTES=0` turns the poll off/],
     ["REDELIVERY_WINDOW_MINUTES", "half an hour", /`REDELIVERY_WINDOW_MINUTES` is `half an hour`, which is not a whole number/],
     ["REDELIVERY_INTERVAL_MINUTES", "-5", /`REDELIVERY_INTERVAL_MINUTES` is `-5`, which is not a whole number/],
+    // An interval past setInterval's 2^31-1 ms would fire every millisecond.
+    ["REDELIVERY_INTERVAL_MINUTES", "1441", /`REDELIVERY_INTERVAL_MINUTES` is `1441`, more than a day.*at most 1440; `0` turns the poll off/],
+    ["REDELIVERY_INTERVAL_MINUTES", "35792", /`REDELIVERY_INTERVAL_MINUTES` is `35792`, more than a day.*at most 1440/],
   ])("refuses a %s of %s, naming the setting, before it reads the App's key", async (name, value, refusal) => {
     const lines: string[] = [];
     const key = path.join(scratch, "no-such-key.pem");

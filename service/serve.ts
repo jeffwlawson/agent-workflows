@@ -99,6 +99,11 @@ export const serveDispatcher = async (
     throw new Error("`SCAN_MERGED_WINDOW_DAYS` is `0`, a window no merge is inside. It must be at least 1.");
   }
   const redeliveryInterval = wholeNumber("REDELIVERY_INTERVAL_MINUTES", settings.REDELIVERY_INTERVAL_MINUTES);
+  // A day at most: past setInterval's 2^31-1 ms (35792 minutes) the timer
+  // fires every millisecond, listing deliveries non-stop with the App's token.
+  if (redeliveryInterval > 1440) {
+    throw new Error(`\`REDELIVERY_INTERVAL_MINUTES\` is \`${redeliveryInterval}\`, more than a day. It must be at most 1440; \`0\` turns the poll off.`);
+  }
   const redeliveryWindow = wholeNumber("REDELIVERY_WINDOW_MINUTES", settings.REDELIVERY_WINDOW_MINUTES);
   if (redeliveryWindow === 0) {
     throw new Error("`REDELIVERY_WINDOW_MINUTES` is `0`, a window no failed delivery is inside. It must be at least 1; `REDELIVERY_INTERVAL_MINUTES=0` turns the poll off.");

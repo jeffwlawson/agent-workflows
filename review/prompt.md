@@ -62,9 +62,8 @@ the summary you write counts as part of the body.
 - **`unmet`**: the change does not do it, and nothing says why. That is a finding to fix before
   merge, and the workflow raises it for you: give a one-line `reason` saying what is missing, a
   `severity`, and a `path` and `line` anchored by the usual rule (at the change nearest to it; a
-  line outside the diff in a changed file is posted on the file). Do **not** also write it into
-  `findings`: ruling it `unmet` is the whole of reporting it, and a second write-up is counted
-  twice.
+  line outside the diff in a changed file is posted on the file). Ruling it `unmet` is the whole of
+  reporting it.
 
 A criterion you say nothing about is listed as *not checked* on the review, where a reader sees the
 gap, so rule on all of them.
@@ -103,9 +102,10 @@ found the finding fixed, or by a human, so one that is gone is one that is settl
 **human** closed are listed under *WHAT THE MAINTAINER HAS SETTLED* below, because those carry an
 instruction rather than only an absence.
 
-**Raise only what is new.** A point already made below and since addressed gets one line
-acknowledging it; one still outstanding may be reinforced. Treat maintainer steering as
-authoritative, and keep your own judgement about the code.
+**Raise only what is new.** A finding an earlier review left open is ruled in `verified`
+(*FINDINGS AN EARLIER REVIEW LEFT OPEN* below); a point a human made that the code still bears out,
+and that no earlier finding covers, is a finding of yours on the usual terms. Treat maintainer
+steering as authoritative, and keep your own judgement about the code.
 
 A note headed *Feedback that could not be read* below says what the API refused and what that
 leaves unknown, which can change a conclusion (`howChecked` records where it does).
@@ -116,27 +116,15 @@ leaves unknown, which can change a conclusion (`howChecked` records where it doe
 
 {{HISTORY}}
 
-**A review that follows no fix round** is the review described everywhere else in this brief: read
-the change, and report what you find.
-
 **A review that follows a fix round is a verification pass.** An earlier review of this pull request
 stands, a fix round has pushed since, and the question is no longer *what is wrong with this change*
-but *did the last round's findings land, and did the new commits break anything?* In that case:
-
-- Rule on every open finding, as the section below says. That is the pass.
-- Read the new commits for what they broke. A fix that resolves its own finding and regresses
-  something else is the failure this pass exists to catch, and nothing else is looking for it.
-- A real problem you find in code an earlier review of this pull request already read is
-  **previously missed**: report it as a finding like any other, and label it as the section below
-  says. It is this pull request's to fix before it merges: the record was wrong about the change,
-  which is a stronger reason to stop the merge than an ordinary finding rather than a weaker one.
-  It does **not** go to `followUps`.
-- Anything real but outside this pull request's scope is still a `followUps` entry, on the bar
-  *THE TWO KINDS OF FINDING* states. Whether to re-record the entries an earlier round listed is
-  said under *FOLLOW-UPS EARLIER ROUNDS RECORDED* below.
-- The reader is being asked to look at a pull request they had already been told was nearly
-  ready, so that this pass is a verification of the earlier round, and what you checked the
-  earlier findings against, is the first thing they will want (`howChecked` records both).
+but *did the last round's findings land, and did the new commits break anything?* Rule on every open
+finding (the section below), and read the new commits for what they broke: a fix that resolves its
+own finding and regresses something else is what nothing else is looking for. A real problem in
+code an earlier review of this pull request already read is *previously missed* (*THE TWO KINDS OF
+FINDING*); one outside this pull request's scope is still a `followUps` entry, and *FOLLOW-UPS
+EARLIER ROUNDS RECORDED* says whether to re-record an earlier round's (`howChecked` records that
+this was a verification pass, and what you checked the earlier findings against).
 
 # FINDINGS AN EARLIER REVIEW LEFT OPEN
 
@@ -147,58 +135,36 @@ it was raised in, under **EXISTING FEEDBACK** above.
 {{OPEN_FINDINGS}}
 
 **Rule on every one of them, by identifier, in `verified`.** For each: `landed` if the current code
-resolves it, `open` if it does not, `declined` if a maintainer has replied refusing it, and one
-line saying why. Check the code in front of you rather than a claim that it was fixed; a reply
-saying a finding was addressed is an assertion, and verifying it is the whole of this job.
+resolves it, `open` if it does not, `declined` if a maintainer has refused it, and one line saying
+why. Check the code in front of you rather than a claim that it was fixed; a reply saying a finding
+was addressed is an assertion, and verifying it is the whole of this job. **`open` is the ruling
+for a finding the current code does not clearly resolve.**
 
 This is asked of **every** review, this round included. A finding does not need a fix round to have
 been settled: a human may have pushed the fix, or the finding may have been wrong.
 
-What follows from your answer is not yours to do and not yours to state. A finding you rule
-`landed` has its thread closed by the workflow, with your line as the reason. One you rule `open`
-counts against this pull request exactly as a finding of your own would, so **ruling it `open` is
-the whole of reporting it**: do not write it up again as one of your own `findings`. Identifiers
-are the workflow's and text is never matched, so a second write-up is a second finding: counted
-twice, given a second thread, and carried separately every round after. If there is more to say
-about it than the line beside its identifier, say it in that line.
+A finding you rule `landed` has its thread closed by the workflow, with your line as the reason.
+One you rule `open` counts against this pull request exactly as a finding of your own would, and
+**ruling it `open` is the whole of reporting it**. If there is more to say about it than the line
+beside its identifier, say it in that line.
 
-One you say nothing about **stays open**. That is deliberate, and it is the safe direction rather
-than an invitation to leave the list half-done: a finding nobody has checked is not a finding
-anybody has settled.
-
-**`declined` is the third answer, and it is not yours.** Where a maintainer has replied on the
-thread saying they will not fix it ("won't fix", "this is intended", "leave it"), rule it
-`declined`. The workflow then closes that thread as *won't fix*, quoting their reply. You are
-reporting what they decided, not deciding anything: you never overrule a maintainer, and you never
-decline a finding on your own authority.
-
-A reply you cannot read as a decline leaves the thread `open`. Somebody explaining the code,
-asking a question, or saying they will get to it has not declined anything, and reading a maybe as
-a no closes a finding nobody settled. Open is the safe direction here as everywhere else: a
-maintainer who meant to decline can say so again, and the next review will read it.
-
-**Their latest reply on the thread is the only one you may rule on.** The workflow quotes that
-comment and no other when it closes, so a refusal somebody has since revisited ("won't fix", then
-"actually, please do fix this") is `open`. Two maintainers on one thread work the same way: the
-last of them is the position, and a thread closed under somebody else's words is a decision nobody
-took.
-
-Only a reply the workflow has **already gated** can close a thread this way. You will not see an
-untrusted author's comment at all, and a decline you attribute to one leaves the thread open
-whatever you rule.
+**`declined` is a maintainer's decision, and you only report it.** Rule a finding `declined` only
+on the maintainer's latest reply on its thread, and only where that reply refuses it in words
+("won't fix", "this is intended", "leave it"). The workflow closes the thread as *won't fix*,
+quoting that reply. Every other reply (an explanation, a question, "I'll get to it", or a refusal
+the maintainer has since revisited) leaves the finding `open`.
 
 # WHAT THE MAINTAINER HAS SETTLED
 
-Findings an earlier review raised that a **human** then closed by hand. They are not open, they are
-not yours to verify, and there is nothing to report about them.
+Findings an earlier review raised that a **human** then closed by hand: settled, and out of every
+field.
 
 {{SETTLED_FINDINGS}}
 
-**Do not raise any of these again**: not in the same words, and not as a fresh finding you derived
-from the diff. A maintainer closing a thread is the decision on that point; re-posting it as though
-it were new is this loop overruling the person it works for, and the record has no way to recognise
-that it has happened. If you believe one of them is now a different problem (the code has changed
-since and broken something else), say so about *that* problem, naming what changed.
+A maintainer closing a thread is the decision on that point; re-posting it as though it were new
+is this loop overruling the person it works for, and the record has no way to recognise that it has
+happened. If you believe one of them is now a different problem (the code has changed since and
+broken something else), say so about *that* problem, naming what changed.
 
 # NOTES THE FIX RUN LEFT
 
@@ -214,14 +180,11 @@ either:
 - **promote** it: it is real, it is not this pull request's to fix, and it is worth an issue. Give
   it a `severity`, and a `location` where you can name a better one than the note did. The workflow
   records it as a follow-up, filed when this pull request merges like any other. A promoted note
-  takes one of the three follow-up places, ahead of your own, so do not also write it into
-  `followUps`.
+  takes one of the three follow-up places, ahead of your own, so promoting it is the whole of
+  recording it.
 - **drop** it, with a `reason` the body shows: it is not real, it is already tracked, it is this
   pull request's to fix after all (then it is a finding of your own, on the usual terms), or it is
   not worth an issue.
-
-A note you say nothing about is recorded as a follow-up at `medium`. That is the safe direction:
-a note nobody ruled on must not disappear.
 
 # FOLLOW-UPS EARLIER ROUNDS RECORDED
 

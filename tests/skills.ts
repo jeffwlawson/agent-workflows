@@ -11,8 +11,8 @@ import { parse } from "yaml";
  * found as sentences naming what to fix, empty when there are none, so the test
  * over the real folder and the tests over a faulty fixture run the same code.
  *
- * Structure only: a skill's prose, its length and its eval coverage are not
- * judged here.
+ * Structure only: a skill's prose, its length and how many eval cases it has
+ * are not judged here; the layout of each case that exists is.
  */
 
 /**
@@ -150,4 +150,58 @@ export const readmeProblems = (skillsDir: string): string[] => {
       .sort()
       .map((name) => `skills/README.md links to the skill ${name}, which has no folder under skills/ with a SKILL.md.`),
   ];
+};
+
+/** The files every eval case holds, in the layout `claude plugin eval` reads. */
+const CASE_FILES = ["case.yaml", "prompt.md", "place-files.sh", "files/world.md"];
+
+/**
+ * `skills/evals/<skill>/<case>/` against that layout: each `<skill>` is a skill,
+ * and each case holds the files above, a `case.yaml` named for its folder, a
+ * `prompt.md` tagged with its skill, and at least one grader in `graders/`.
+ */
+export const evalCaseProblems = (skillsDir: string): string[] => {
+  const evals = path.join(skillsDir, "evals");
+  if (!fs.existsSync(evals)) return [];
+  const names = skillNames(skillsDir);
+  const dirsIn = (dir: string): string[] =>
+    fs
+      .readdirSync(dir, { withFileTypes: true })
+      .filter((entry) => entry.isDirectory())
+      .map((entry) => entry.name)
+      .sort();
+  return dirsIn(evals).flatMap((skill) => {
+    if (!names.includes(skill)) {
+      return [`skills/evals/${skill}/ is not named for a skill; rename it to the skill its cases test.`];
+    }
+    return dirsIn(path.join(evals, skill)).flatMap((name) => {
+      const dir = path.join(evals, skill, name);
+      const shown = `skills/evals/${skill}/${name}`;
+      const problems = CASE_FILES.filter((file) => !fs.existsSync(path.join(dir, file))).map(
+        (file) => `${shown} has no ${file}; every case holds ${CASE_FILES.join(", ")} and graders/.`,
+      );
+      const graders = path.join(dir, "graders");
+      if (!fs.existsSync(graders) || !fs.readdirSync(graders).some((file) => file.endsWith(".md"))) {
+        problems.push(`${shown} has no grader; add one graders/<nn>.md per assertion.`);
+      }
+      const caseFile = path.join(dir, "case.yaml");
+      if (fs.existsSync(caseFile)) {
+        const data: unknown = parse(fs.readFileSync(caseFile, "utf8"));
+        const caseName = typeof data === "object" && data !== null ? (data as Record<string, unknown>)["name"] : undefined;
+        if (caseName !== name) {
+          problems.push(`${shown}/case.yaml has name ${JSON.stringify(caseName)}; it must be its folder's name, "${name}".`);
+        }
+      }
+      const promptFile = path.join(dir, "prompt.md");
+      if (fs.existsSync(promptFile)) {
+        const front = /^---\n([\s\S]*?)\n---(?:\n|$)/.exec(fs.readFileSync(promptFile, "utf8"))?.[1];
+        const data: unknown = front === undefined ? undefined : parse(front);
+        const tags = typeof data === "object" && data !== null ? (data as Record<string, unknown>)["tags"] : undefined;
+        if (!Array.isArray(tags) || !tags.includes(skill)) {
+          problems.push(`${shown}/prompt.md's frontmatter has no tags list holding "${skill}"; add tags: [${skill}].`);
+        }
+      }
+      return problems;
+    });
+  });
 };

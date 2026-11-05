@@ -37,7 +37,7 @@ WORK_DIR=${WORK_DIR:-/var/lib/agent-worker}
 NODE=${NODE:-/usr/local/bin/node}
 RUNS="$WORK_DIR/runs"
 
-count=20 counted= id=
+count=20 counted='' id=''
 usage="Usage: sudo bash $0 [<count>] [<job-id>]"
 for arg in "$@"; do
   case "$arg" in

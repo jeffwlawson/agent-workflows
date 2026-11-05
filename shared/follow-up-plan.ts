@@ -11,6 +11,7 @@ import {
 import {
   FOLLOW_UPS_LABEL,
   FOLLOW_UP_STUB_LABEL,
+  matchedCommentMarker,
   minorFindingsMarker,
   STUB_KEY_VERSION,
   stubMarker,
@@ -67,6 +68,8 @@ export interface FilingReview {
 /** An existing `pr-follow-up` issue, open or closed. */
 export interface FilingStub {
   readonly number: number;
+  /** As filed, or as a triager has since retitled it. What a title-and-file match compares (#606). */
+  readonly title: string;
   /** `OPEN` / `CLOSED`, in either API's casing. */
   readonly state: string;
   /** `NOT_PLANNED` / `COMPLETED` / `null`, in either API's casing. */
@@ -105,20 +108,45 @@ export interface PlannedIssue {
 }
 
 /**
- * What a run can plan, and the whole of it: issues to open, a report to post,
- * and the marker to take off.
+ * A finding written onto the open issue that already records it (#606), in
+ * place of a stub of its own.
+ */
+export interface PlannedComment {
+  /** The open `pr-follow-up` issue it goes on: the lowest-numbered match. */
+  readonly issue: number;
+  /** The finding as the stub would have carried it, its key last. */
+  readonly body: string;
+  /** The normalised path it matched on, for the log. */
+  readonly path: string;
+}
+
+/**
+ * What a run can plan, and the whole of it: issues to open, comments to post
+ * on open issues that already record a finding, a report to post, and the
+ * marker to take off.
  *
- * **Commenting on an existing stub is not on this list, and that is the
- * change #82 made.** Re-flagging wrote to an issue this pull request does not
- * own, and it was the visible half of a pair of rules whose other half skipped
- * a real finding silently. What replaced both is a link in the body of the
- * stub actually being filed, where the triager who has to judge it reads it —
- * so `issues: write` is spent on creation and nothing else, which is what
- * `setup/doctor.ts` tells an adopter the grant is for.
+ * **A comment on an existing stub is on this list for one match only (#606),
+ * and that narrows the change #82 made.** #82 removed commenting on, and
+ * skipping against, an existing stub on a *path* match, because the path is
+ * the whole file and two unrelated findings 358 lines apart were treated as
+ * one, the second lost in silence. What it kept, and what this keeps, is the
+ * link for a path match: a finding whose path alone matches is still filed,
+ * with "Possibly related" in its body. What is added is the match on the
+ * **title as well as the file**, against an **open** stub another pull request
+ * filed, and it loses nothing: the comment carries the finding in full, with
+ * its key, so the triager of that issue reads all a stub would have said and a
+ * retry finds its own comment. So `issues: write` is spent on creating a stub
+ * and on that one comment, which is what `setup/doctor.ts` tells an adopter
+ * the grant is for.
  */
 export interface FilingPlan {
   /** Stubs to open, in the order the reviewer listed them. */
   readonly issues: readonly PlannedIssue[];
+  /**
+   * Findings to write onto the open issue that records them, in the order the
+   * reviewer listed them, one each, so never more than there are findings.
+   */
+  readonly comments: readonly PlannedComment[];
   /**
    * What to post on the pull request, or `undefined` for the silent exit.
    *
@@ -140,12 +168,14 @@ export interface FilingPlan {
 /** Nothing to do and nothing to say. A fresh object each time, so no caller can share one. */
 const silent = (): FilingPlan => ({
   issues: [],
+  comments: [],
   report: undefined,
   removeMarker: false,
 });
 
 const refusal = (report: string): FilingPlan => ({
   issues: [],
+  comments: [],
   report,
   removeMarker: false,
 });
@@ -207,6 +237,15 @@ interface StubKey {
   readonly seq: number;
 }
 
+/**
+ * The key on a finding written as a comment on the open issue that records it
+ * (#606): the stub's key in a shape of its own, so a retry finds the comment
+ * it posted and a comment is never read as a stub.
+ */
+interface CommentKey extends Omit<StubKey, "kind"> {
+  readonly kind: "comment";
+}
+
 /** The key on a pull request's minor-findings issue (#625): the pull request, and nothing else. */
 interface MinorFindingsKey {
   readonly kind: "minor";
@@ -232,7 +271,7 @@ interface MinorFindingsKey {
  * unrelated issue, and, where the decoy named this pull request, skipping a
  * real finding as one already filed.
  */
-const issueKey = (body: string): StubKey | MinorFindingsKey | undefined => {
+const issueKey = (body: string): StubKey | CommentKey | MinorFindingsKey | undefined => {
   for (const match of [...body.matchAll(STUB_PAYLOAD)].reverse()) {
     let payload: unknown;
     try {
@@ -257,7 +296,8 @@ const issueKey = (body: string): StubKey | MinorFindingsKey | undefined => {
     // by hand — or by a release whose normalisation was narrower — is still
     // related to what this run would produce. The raw string is kept beside it
     // because identity has to compare what was written, not what it reduces to.
-    return { kind: "stub", location, path: normaliseLocation(location), pr, seq };
+    const kind = record["kind"] === "comment" ? "comment" : "stub";
+    return { kind, location, path: normaliseLocation(location), pr, seq };
   }
   return undefined;
 };
@@ -284,7 +324,29 @@ export const isStubFor =
     const filed = issueKey(body);
     if (planned === undefined || filed === undefined || filed.pr !== planned.pr) return false;
     if (planned.kind === "minor" || filed.kind === "minor") return planned.kind === filed.kind;
-    return filed.seq === planned.seq && filed.location === planned.location;
+    return filed.kind === planned.kind && filed.seq === planned.seq && filed.location === planned.location;
+  };
+
+/**
+ * Whether `body`, a comment on `comment.issue`, is that planned comment (#606):
+ * the same key, read the same way, last readable payload winning, so a retry
+ * that posted it and stopped before the marker came off posts it once. The
+ * caller reads only the comments the loop's own account wrote, since anyone
+ * can comment on an issue, and a comment quoting the key must not stop a
+ * finding from being written.
+ */
+export const isCommentFor =
+  (comment: PlannedComment) =>
+  (body: string): boolean => {
+    const planned = issueKey(comment.body);
+    const posted = issueKey(body);
+    return (
+      planned?.kind === "comment" &&
+      posted?.kind === "comment" &&
+      posted.pr === planned.pr &&
+      posted.seq === planned.seq &&
+      posted.location === planned.location
+    );
   };
 
 const isClosed = (stub: FilingStub): boolean => stub.state.toLowerCase() === "closed";
@@ -386,6 +448,55 @@ const matchRelated = (
 };
 
 /**
+ * A title as a match compares it (#606): one line, case folded, trailing
+ * punctuation dropped, so "Missing guard." and "missing guard" are one title
+ * and "Missing guard" and "Missing guard in parse" are two.
+ */
+const comparableTitle = (title: string): string =>
+  oneLine(title)
+    .toLowerCase()
+    .replace(/[\p{P}\s]+$/u, "");
+
+/**
+ * **The match** (#606): an open issue that already records this finding, which
+ * the finding is written onto as a comment instead of being filed again.
+ *
+ * Every condition is required. It carries `pr-follow-up` and is **open**: a
+ * closed one, fixed or declined, describes a decision already made, and a
+ * finding that comes back after it is a new issue that links it. It was filed
+ * for **another** pull request, since this one's own are identity's. Its key
+ * is readable, so a hand-written issue is never a target. Its path, normalised
+ * as relatedness normalises it, equals this finding's. And its title equals
+ * this finding's after `comparableTitle`, the planned one made one line and held to
+ * `MAX_STUB_TITLE` first so a long title compares as it was filed.
+ *
+ * The title is what keeps #82's loss out. A path alone is the whole file, and
+ * two findings in one file are often two problems; a path and a title are
+ * nearly always one. It trades recall for precision on purpose: two reviews
+ * rarely word one problem identically, so many repeats still file and link,
+ * and a missed match costs a duplicate, which is loud and cheap to close. The
+ * residual false match, two problems in one file under one generic title,
+ * writes the finding in full onto an issue the report names, so it is found.
+ *
+ * Several matches: the lowest-numbered, which is the original.
+ */
+const matchOpen = (
+  stubs: readonly FilingStub[],
+  path: string,
+  title: string,
+  prNumber: number,
+): FilingStub | undefined => {
+  const wanted = comparableTitle(heldTitle(title));
+  return stubs
+    .filter((stub) => {
+      if (isClosed(stub)) return false;
+      const key = stubKey(stub.body);
+      return key !== undefined && key.pr !== prNumber && key.path === path && comparableTitle(stub.title) === wanted;
+    })
+    .sort((a, b) => a.number - b.number)[0];
+};
+
+/**
  * The link, worded so it cannot be read as a verdict.
  *
  * The state is read off the stub rather than off how it was chosen, so the line
@@ -453,6 +564,29 @@ const stubBody = (
     ...(related === undefined ? [] : ["", relationLine(related, path)]),
     "",
     stubMarker(followUp.location, prNumber, seq),
+  ].join("\n");
+
+/**
+ * The comment that writes a finding onto the open issue that records it
+ * (#606): what the stub would have carried, its body, location, severity and
+ * provenance, under a line saying why it is a comment, and its own key last.
+ * No relation line: the issue it is on is the relation.
+ */
+const matchedCommentBody = (followUp: FollowUp, review: FilingReview, prNumber: number, seq: number): string =>
+  [
+    `**Raised again in #${prNumber}.** A review there recorded this finding at the same file under the same title as this issue, so it is written here rather than filed as a new issue.`,
+    "",
+    followUp.body.trim(),
+    "",
+    `**Location:** \`${oneLine(followUp.location)}\``,
+    "",
+    `**Severity:** ${severityTextBadge(followUp.severity)}`,
+    "",
+    "---",
+    "",
+    `Found in [a review](${review.url}) on #${prNumber}. An earlier review on that PR may have raised it first.`,
+    "",
+    matchedCommentMarker(followUp.location, prNumber, seq),
   ].join("\n");
 
 /**
@@ -590,6 +724,7 @@ export const planFollowUps = (input: FilingInput, accounts: LoopAccounts): Filin
   const dropped = byCap + cut;
 
   const issues: PlannedIssue[] = [];
+  const comments: PlannedComment[] = [];
   const lines: string[] = [];
 
   // The minor findings, filed as one issue (#625). One a release before this
@@ -643,6 +778,16 @@ export const planFollowUps = (input: FilingInput, accounts: LoopAccounts): Filin
       continue;
     }
 
+    // Second, after identity: an open issue another pull request filed for
+    // this same finding, by file and title. Written onto that issue as a
+    // comment carrying the whole finding, and nothing filed.
+    const open = matchOpen(input.stubs, path, title, input.prNumber);
+    if (open) {
+      comments.push({ issue: open.number, body: matchedCommentBody(followUp, review, input.prNumber, seq), path });
+      lines.push(`- **Matched** · \`${path}\` · #${open.number}`);
+      continue;
+    }
+
     const placeholder = `{{follow-up-issue-${seq}}}`;
     issues.push({
       // Verbatim and unprefixed. A pull-request-number prefix is provenance
@@ -674,11 +819,12 @@ export const planFollowUps = (input: FilingInput, accounts: LoopAccounts): Filin
   // nothing to say — but the marker comes off, because this pull request's
   // latest list is empty and there is nothing left unfiled to find it by.
   if (lines.length === 0 && dropped === 0) {
-    return { issues: [], report: undefined, removeMarker: true };
+    return { issues: [], comments: [], report: undefined, removeMarker: true };
   }
 
   return {
     issues,
+    comments,
     report: [
       // Named for what the list holds (#616): out of scope alone, as it
       // always was, or with this pull request's own minor findings.

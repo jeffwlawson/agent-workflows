@@ -404,6 +404,17 @@ export const stubMarker = (location: string, prNumber: number, seq: number): str
   `<!--${embeddableJson({ version: STUB_KEY_VERSION, location, pr: prNumber, seq })}-->`;
 
 /**
+ * The key on a finding written as a **comment** on the open issue that
+ * already records it (#606), in place of a stub: the stub's key with
+ * `kind: "comment"`, so a retry finds the comment it posted by this pull
+ * request, location and `seq`, as identity finds a stub, and the planner never
+ * reads a comment's key as a stub's. Additive, as the minor-findings key is,
+ * under the same `STUB_KEY_VERSION`. Read back by the planner's `issueKey`.
+ */
+export const matchedCommentMarker = (location: string, prNumber: number, seq: number): string =>
+  `<!--${embeddableJson({ version: STUB_KEY_VERSION, kind: "comment", location, pr: prNumber, seq })}-->`;
+
+/**
  * The key on a pull request's **minor-findings issue** (#625): the one issue
  * its minor findings are filed as, matched by the pull request and the kind
  * alone, since a pull request files at most one. Additive rather than a new

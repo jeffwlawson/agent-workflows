@@ -1,0 +1,6 @@
+schema_version: "1.1"
+name: digest-mixed
+context:
+  scaffold_script: place-files.sh
+expected_outcome: |
+  Checks only #801 and #802 (not draft, no trigger label, agent-review success on the head), lists both under Needs you with head, finding, verify result and a recommendation it does not carry out, the merge order where both touch setup/doctor.ts, and #801's unmet criterion under Escapes; puts #804 and #809 under In flight, groups #805 and #806 under their shared reason and #790 (no reason) as possible loop defects, skips #803 as verdict stale and #810 as not green; reports the worker's state as not checked; writes nothing to GitHub.

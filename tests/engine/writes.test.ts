@@ -868,6 +868,7 @@ describe("githubReader", () => {
     const node = (number: number) => ({
       number,
       url: `https://github.com/o/r/issues/${number}`,
+      title: number === 1 ? null : `title ${number}`,
       state: number % 2 === 0 ? "OPEN" : "CLOSED",
       stateReason: number % 2 === 0 ? null : "NOT_PLANNED",
       body: number === 1 ? null : `body ${number}`,
@@ -884,12 +885,13 @@ describe("githubReader", () => {
       const { transport, sent } = pages(3);
 
       expect(await githubReader(REPO, transport).labelledIssues("pr-follow-up")).toEqual([
-        { number: 3, url: "https://github.com/o/r/issues/3", state: "CLOSED", stateReason: "NOT_PLANNED", body: "body 3" },
-        { number: 2, url: "https://github.com/o/r/issues/2", state: "OPEN", stateReason: null, body: "body 2" },
-        { number: 1, url: "https://github.com/o/r/issues/1", state: "CLOSED", stateReason: "NOT_PLANNED", body: "" },
+        { number: 3, url: "https://github.com/o/r/issues/3", title: "title 3", state: "CLOSED", stateReason: "NOT_PLANNED", body: "body 3" },
+        { number: 2, url: "https://github.com/o/r/issues/2", title: "title 2", state: "OPEN", stateReason: null, body: "body 2" },
+        { number: 1, url: "https://github.com/o/r/issues/1", title: "", state: "CLOSED", stateReason: "NOT_PLANNED", body: "" },
       ]);
       const query = (sent[0] as { readonly query: string }).query;
       expect(query).toContain("issues(labels:[$label],states:[OPEN,CLOSED]");
+      expect(query).toContain("nodes{number url title state stateReason body}");
       expect(query).toContain("orderBy:{field:CREATED_AT,direction:DESC}");
       expect(sent[0]).toMatchObject({ variables: { owner: "o", name: "r", label: "pr-follow-up", after: null } });
     });

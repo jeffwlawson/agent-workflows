@@ -1648,7 +1648,7 @@ describe("the scan after a restart", () => {
 
     expect(s.posted).toEqual([]);
     expect(s.installations.listed).toEqual([]);
-    expect(s.lines).toEqual(["scan: skipped: the worker could not say which jobs it holds: connect ECONNREFUSED. Its start scans again"]);
+    expect(s.lines).toEqual(["scan: skipped: the worker could not say which jobs it holds: connect ECONNREFUSED. The next scan retries"]);
 
     s.worker.down = false;
     await announce(s);
@@ -1801,7 +1801,7 @@ describe("a dispatcher's restart, with the worker still up", () => {
     s.worker.down = true;
     await s.dispatcher.scan();
 
-    expect(s.lines).toContain("scan: skipped: the worker could not say which jobs it holds: connect ECONNREFUSED. Its start scans again");
+    expect(s.lines).toContain("scan: skipped: the worker could not say which jobs it holds: connect ECONNREFUSED. The next scan retries");
     expect(ids(s.queue.held())).toEqual(["job-1", "job-2", "job-3"]);
     expect(s.posted).toHaveLength(3);
 
@@ -1834,7 +1834,7 @@ describe("a dispatcher's restart, with the worker still up", () => {
 
     const line = `scan: skipped: the worker refused to say which jobs it holds: the worker answered 400: \`asked\` is ${START.toISOString()}, ${refused}`;
     expect(s.lines.filter((logged) => logged.startsWith("scan: skipped: the worker"))).toEqual([line, line]);
-    expect(s.lines.some((logged) => logged.includes("Its start scans again"))).toBe(false);
+    expect(s.lines.some((logged) => logged.includes("The next scan retries"))).toBe(false);
     expect(s.posted).toEqual([]);
   });
 });

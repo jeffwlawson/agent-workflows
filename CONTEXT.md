@@ -745,8 +745,9 @@ asks for one at the other door at the start of each phase, `read`, `write`, `res
 mints one for that job's repository alone, before its deadline, after reading the opt-in again, so
 deleting the variable stops a job in flight at its next phase. The job's format is one module,
 `service/job.ts`, which both processes import, so it only has to hold within one release.
-Neither process keeps its jobs past a restart, so the dispatcher **scans** (#581) at its start and
-at the worker's: since a trigger label is on while its run works, one on an open item with no job
+Neither process keeps its jobs past a restart, so the dispatcher **scans** (#581) at its start,
+at the worker's, at a usage limit's reset, and every `SCAN_INTERVAL_MINUTES` (#790), so a reset's
+lost announcement, or one that found the item still held, is recovered without a restart: since a trigger label is on while its run works, one on an open item with no job
 held for it, by the worker or the dispatcher, is a run that never reached its ending, and is
 dispatched as its delivery would have been, the actor of the label's latest `labeled` event
 standing in for the sender. `agent:follow-ups` on an open pull request is a marker, not a run, and

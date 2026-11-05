@@ -780,8 +780,11 @@ gh label create "needs-triage"     --color D93F0B --description "Maintainer need
   filed for. Worse for `pr-follow-up` specifically: it is the candidate filter the duplicate check
   lists on, so unlabelled stubs are stubs the next merge cannot see. Filing afresh is the
   *intended* outcome for a chronic finding — since #82 a path match links the earlier issue from
-  the new stub rather than suppressing it — but an unlabelled stub cannot be linked, so the triager
-  never learns there is already an issue about that file. Sharper still: the same listing is how a
+  the new stub rather than suppressing it, and since #606 a finding whose file **and** title match
+  an open stub from another pull request is written onto that stub as a comment, the whole finding
+  with its severity, location and links, rather than filed again; a path-only match still files
+  and links, and a closed stub is never commented on — but an unlabelled stub cannot be linked or
+  commented on, so the triager never learns there is already an issue about that file. Sharper still: the same listing is how a
   filing run recognises its **own** stubs, so a run that failed half way through refiles every one
   of them on the retry.
 - Both strings are **fixed in the runner**, not inputs. A tracker whose triage label is spelled
@@ -1487,7 +1490,9 @@ scope write.
 
 > **`issues: write` is on one row only, and it is the one that creates issues.** No other workflow
 > in the loop holds it to *file* anything — the `implement` pair spends it on labels and on
-> comments. It is also the only caller that passes **no secrets at all**:
+> comments. `follow-ups` spends it on its stubs, and on one comment per finding an open stub from
+> another pull request already records by file and title (#606), which carries the finding in full
+> rather than filing it twice. It is also the only caller that passes **no secrets at all**:
 > the job runs no model, so there is no `CLAUDE_CODE_OAUTH_TOKEN` to hand over, and it creates its
 > issues with `GITHUB_TOKEN`, so there is no `AGENT_PAT` and none of the App's secrets either: a
 > repository without the App or the PAT files exactly as much as one with them. Adding any of them

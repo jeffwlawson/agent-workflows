@@ -413,9 +413,11 @@ export const REQUIRED_PERMISSIONS: readonly {
     workflows: ["follow-ups"],
     why:
       "this is the grant the workflow exists for: it files the review's recorded out-of-scope " +
-      "findings as issues, with the workflow token rather than the PAT. Creation is the whole of " +
-      "what it spends the grant on since #82 — a related issue is linked from the stub being " +
-      "filed rather than commented on, so nothing here writes to an issue it did not open. " +
+      "findings as issues, with the workflow token rather than the PAT. It spends the grant on " +
+      "creating them, and since #606 on one comment per finding an open stub from another pull " +
+      "request already records by file and title, carrying the whole finding rather than filing " +
+      "it twice; a match on the file alone still files, linking the other from the new stub, as " +
+      "since #82. " +
       "Nothing here is waited on either: the whole run happens after a merge, and what would " +
       "report a problem with it is a comment on a pull request that is already closed",
   },

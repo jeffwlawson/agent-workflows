@@ -52,6 +52,7 @@ import {
 import { FOLLOW_UPS_MARKER, VERDICT_CONTEXT } from "../shared/record.js";
 import { renderDecided, postDecided, type Decided } from "./review/decided.js";
 import { applyCriteriaRulings } from "../review/acceptance-criteria.js";
+import { LIVE_FINDING_HISTORY, REVIEW_PROMPT, withFindingHistory } from "./review/finding-history.js";
 
 /** Every row a verdict can post: the table's three, and each cause of a closer look. */
 const EVERY_ROW: readonly VerdictRow[] = [
@@ -3101,7 +3102,12 @@ index 0ff3bbb..c6ca7ae 100644
 });
 
 describe("the review's finding vocabulary", () => {
-  const PROMPT = fs.readFileSync(path.join("review", "prompt.md"), "utf8");
+  /**
+   * The prompt as a review with an open finding, a settled one and a fix note
+   * is handed it: those sections' rules ride with their placeholders and are
+   * printed only where they apply (#749), so a rule of theirs is read here.
+   */
+  const PROMPT = withFindingHistory(LIVE_FINDING_HISTORY);
   const EXTRACTION = fs.readFileSync(path.join("review", "extraction.md"), "utf8");
   const halves = [
     ["prompt.md", PROMPT],
@@ -3305,14 +3311,16 @@ describe("the review's finding vocabulary", () => {
 
   /**
    * The settled-findings rule is printed by the runner under its list; the
-   * prompt keeps the reason and the exception, not a second command (#748,
-   * audit M8).
+   * section keeps the reason and the exception, not a second command (#748,
+   * audit M8). All of it is the runner's now, printed only beside a settled
+   * finding (#749), and the static prompt holds the placeholder alone.
    */
   it("leaves the settled-findings rule to the runner's list", () => {
-    const settled = plain(PROMPT).match(/# WHAT THE MAINTAINER HAS SETTLED.*?(?=# NOTES THE FIX RUN LEFT)/s)?.[0] ?? "";
+    const section = (text: string): string => plain(text).match(/# WHAT THE MAINTAINER HAS SETTLED.*?(?=# NOTES THE FIX RUN LEFT)/s)?.[0] ?? "";
+    const settled = section(PROMPT);
 
-    expect(settled).toContain("{{SETTLEDFINDINGS}}");
-    expect(settled).not.toMatch(/raise (?:any of these|it) again/i);
+    expect(section(REVIEW_PROMPT).trim()).toBe("# WHAT THE MAINTAINER HAS SETTLED {{SETTLEDFINDINGS}}");
+    expect(settled.match(/raise (?:any of these|it) again/gi)).toHaveLength(1);
     expect(settled).toMatch(/say so about that problem, naming what changed/);
   });
 

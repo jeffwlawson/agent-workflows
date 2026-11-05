@@ -205,6 +205,40 @@ const CLOSE_DID_NOT_LAND =
   " _(an earlier review already verified this and replied, but the close did not go through; rule on the code as it is now)_";
 
 /**
+ * What the open findings are, said above them, and how to rule on them, said
+ * below: printed only where there is one to rule on (#749, audit #704 H4), so
+ * a review with none is handed the one line `NOTHING_CARRIED` says and not
+ * the rules. Moved from `review/prompt.md` as they were written there.
+ */
+const CARRIED_INTRO = [
+  "These were raised by an earlier review of this pull request and nothing has verified them fixed.",
+  "Each carries the identifier the workflow gave it when it was posted; the evidence is on the thread",
+  "it was raised in, under **EXISTING FEEDBACK** above.",
+].join("\n");
+
+const CARRIED_RULES = [
+  "**Rule on every one of them, by identifier, in `verified`.** For each: `landed` if the current code",
+  "resolves it, `open` if it does not, `declined` if a maintainer has refused it, and one line saying",
+  "why. Check the code in front of you rather than a claim that it was fixed; a reply saying a finding",
+  "was addressed is an assertion, and verifying it is the whole of this job. **`open` is the ruling",
+  "for a finding the current code does not clearly resolve.**",
+  "",
+  "This is asked of **every** review, this round included. A finding does not need a fix round to have",
+  "been settled: a human may have pushed the fix, or the finding may have been wrong.",
+  "",
+  "A finding you rule `landed` has its thread closed by the workflow, with your line as the reason.",
+  "One you rule `open` counts against this pull request exactly as a finding of your own would, and",
+  "**ruling it `open` is the whole of reporting it**. If there is more to say about it than the line",
+  "beside its identifier, say it in that line.",
+  "",
+  "**`declined` is a maintainer's decision, and you only report it.** Rule a finding `declined` only",
+  "on the maintainer's latest reply on its thread, and only where that reply refuses it in words",
+  "(\"won't fix\", \"this is intended\", \"leave it\"). The workflow closes the thread as *won't fix*,",
+  "quoting that reply. Every other reply (an explanation, a question, \"I'll get to it\", or a refusal",
+  "the maintainer has since revisited) leaves the finding `open`.",
+].join("\n");
+
+/**
  * The open findings as the review agent is shown them: one line each, the id
  * first.
  *
@@ -222,16 +256,39 @@ const CLOSE_DID_NOT_LAND =
 export const renderCarriedFindings = (carried: readonly CarriedFinding[]): string =>
   carried.length === 0
     ? NOTHING_CARRIED
-    : carried
-        .map(
-          (finding) =>
-            `- \`${finding.id}\`: ${withSeverityBadgesAsText(finding.text)}` +
-            (finding.closedAs === undefined ? "" : CLOSE_DID_NOT_LAND),
-        )
-        .join("\n");
+    : [
+        CARRIED_INTRO,
+        "",
+        carried
+          .map(
+            (finding) =>
+              `- \`${finding.id}\`: ${withSeverityBadgesAsText(finding.text)}` +
+              (finding.closedAs === undefined ? "" : CLOSE_DID_NOT_LAND),
+          )
+          .join("\n"),
+        "",
+        CARRIED_RULES,
+      ].join("\n");
 
 /** Said where no maintainer has closed anything, for the reason `NOTHING_CARRIED` is said. */
 const NOTHING_SETTLED = "(no finding on this pull request has been closed by a maintainer.)";
+
+/**
+ * What the settled findings are, and what a maintainer's close means, printed
+ * only beside one (#749, as `CARRIED_INTRO` is). Moved from `review/prompt.md`
+ * as they were written there.
+ */
+const SETTLED_INTRO = [
+  "Findings an earlier review raised that a **human** then closed by hand: settled, and out of every",
+  "field.",
+].join("\n");
+
+const SETTLED_RULES = [
+  "A maintainer closing a thread is the decision on that point; re-posting it as though it were new",
+  "is this loop overruling the person it works for, and the record has no way to recognise that it has",
+  "happened. If you believe one of them is now a different problem (the code has changed since and",
+  "broken something else), say so about *that* problem, naming what changed.",
+].join("\n");
 
 /**
  * What a maintainer has already closed, as the review agent is shown it — and
@@ -254,12 +311,16 @@ export const renderSettledFindings = (settled: readonly SettledFinding[]): strin
   settled.length === 0
     ? NOTHING_SETTLED
     : [
+        SETTLED_INTRO,
+        "",
         ...settled.map(
           (finding) =>
             `- ${withSeverityBadgesAsText(finding.text)} · closed by @${finding.resolvedBy}`,
         ),
         "",
         "Each of these is **settled by the maintainer**. Do not raise it again, in these words or in any others.",
+        "",
+        SETTLED_RULES,
       ].join("\n");
 
 /**

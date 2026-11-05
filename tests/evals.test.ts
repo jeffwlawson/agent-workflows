@@ -450,13 +450,18 @@ describe("the review cases that replay a fix round", () => {
     });
 
     it("hands over the findings the round was started on, as renderCarriedFindings renders them", () => {
+      // The list lines; the rules around them are the renderer's own (#749).
       const open = c.inputs["OPEN_FINDINGS"] ?? "";
-      const carried = open.split("\n").map((line) => {
-        const match = /^- `([^`]+)`: (.*)$/.exec(line);
-        expect(match, line).not.toBeNull();
-        return { id: match?.[1] ?? "", threadId: "", text: match?.[2] ?? "", title: "", anchor: "" };
-      });
+      const carried = open
+        .split("\n")
+        .filter((line) => line.startsWith("- `"))
+        .map((line) => {
+          const match = /^- `([^`]+)`: (.*)$/.exec(line);
+          expect(match, line).not.toBeNull();
+          return { id: match?.[1] ?? "", threadId: "", text: match?.[2] ?? "", title: "", anchor: "" };
+        });
 
+      expect(carried.length).toBeGreaterThan(0);
       expect(open).not.toBe(suite.inputs["OPEN_FINDINGS"]);
       expect(open).toBe(renderCarriedFindings(carried));
       // Each is on a thread the review is shown, as the runner shows it.

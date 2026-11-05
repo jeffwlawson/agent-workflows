@@ -77,7 +77,7 @@ describe("renderCarriedFindings", () => {
       { id: "f-1", threadId: "PRRT_one", text: "src/queue.ts:206 · the guard runs after the return", title: "src/queue.ts:206 · the guard runs after the return", anchor: "src/a.ts:1" },
     ]);
 
-    expect(rendered).toBe("- `f-1`: src/queue.ts:206 · the guard runs after the return");
+    expect(rendered.split("\n")).toContain("- `f-1`: src/queue.ts:206 · the guard runs after the return");
   });
 
   /**
@@ -86,6 +86,22 @@ describe("renderCarriedFindings", () => {
    */
   it("says so in words when there is nothing to verify", () => {
     expect(renderCarriedFindings([])).toContain("no finding from an earlier review");
+  });
+
+  /**
+   * The rules for ruling on them ride with the list and are printed only
+   * beside one (#749, audit #704 H4): a review with nothing open is handed
+   * the one line and not the rules.
+   */
+  it("prints its ruling rules beside a finding, and only there", () => {
+    const rendered = renderCarriedFindings([
+      { id: "f-1", threadId: "PRRT_one", text: "the guard runs after the return", title: "the guard runs after the return", anchor: "src/a.ts:1" },
+    ]);
+
+    expect(rendered).toMatch(/^These were raised by an earlier review of this pull request/);
+    expect(rendered).toContain("**Rule on every one of them, by identifier, in `verified`.**");
+    expect(renderCarriedFindings([])).not.toContain("\n");
+    expect(renderCarriedFindings([])).not.toMatch(/Rule on every one/);
   });
 
   /**
@@ -105,9 +121,7 @@ describe("renderCarriedFindings", () => {
       },
     ]);
 
-    expect(rendered).toBe(
-      "- `f-2`: High the cache key omits the tenant · `src/other.ts:88`",
-    );
+    expect(rendered.split("\n")).toContain("- `f-2`: High the cache key omits the tenant · `src/other.ts:88`");
   });
 });
 
@@ -272,6 +286,7 @@ describe("a maintainer's decision settles a finding", () => {
      */
     it("says so in words when the maintainer has settled nothing", () => {
       expect(renderSettledFindings([])).toContain("no finding");
+      expect(renderSettledFindings([])).not.toContain("\n");
     });
   });
 
@@ -457,8 +472,11 @@ describe("a thread that already carries its closing reply", () => {
       { id: "f-2", threadId: "PRRT_two", text: "the new test asserts the old behaviour", title: "the new test asserts the old behaviour", anchor: "src/a.ts:1" },
     ]);
 
-    expect(rendered.split("\n")[0]).toMatch(/already verified.*did not go through/i);
-    expect(rendered.split("\n")[1]).not.toMatch(/already verified/i);
+    const listed = rendered.split("\n").filter((line) => line.startsWith("- `"));
+
+    expect(listed).toHaveLength(2);
+    expect(listed[0]).toMatch(/already verified.*did not go through/i);
+    expect(listed[1]).not.toMatch(/already verified/i);
   });
 });
 

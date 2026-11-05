@@ -160,10 +160,12 @@ elif [ ! -f "$file" ] || [ ! -r "$file" ]; then
   echo "  cannot tell: $file cannot be read"
 else
   # The file as the dispatcher writes it (service/dispatcher-state.ts): JSON,
-  # two spaces deep, one field a line. Each entry becomes one tab-separated line.
+  # two spaces deep, one field a line, but an empty list on its header's line
+  # ("jobs": []), which opens no list. Each entry becomes one tab-separated line.
   rows=$(awk '
     { line = $0; sub(/^[ \t]+/, "", line); sub(/,$/, "", line) }
     line == "\"version\": 1" { version = 1; next }
+    line ~ /^"(asks|jobs)": \[\]$/ { list = ""; next }
     line ~ /^"(asks|jobs)": \[/ { list = substr(line, 2, 4); next }
     line ~ /^\]/ { list = ""; next }
     list != "" && line == "{" { delete f; next }

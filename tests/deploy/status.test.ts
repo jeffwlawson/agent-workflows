@@ -232,6 +232,31 @@ describe("status.sh, what the loop is running now", () => {
     expect(output).toContain("holds 2 job(s)");
   });
 
+  // serialiseState writes an empty list on its header's line, `"jobs": []`, so
+  // each of these has a list the script never sees opened and closed.
+  it.each<[string, DispatcherState, readonly string[]]>([
+    ["nothing", { jobs: [], asks: [] }, ["records 0 dispatched job(s), oldest first:\n  and 0 item(s) at SCAN_DISPATCH_LIMIT (2), which the scan leaves for a person:\n"]],
+    [
+      "asks only",
+      { jobs: [], asks: STATE.asks },
+      ["records 0 dispatched job(s), oldest first:\n  and 1 item(s) at SCAN_DISPATCH_LIMIT (2), which the scan leaves for a person:\n    owner/other#5, agent:fix, started 2 times, commented on\n"],
+    ],
+    [
+      "jobs only",
+      { jobs: STATE.jobs, asks: [] },
+      [
+        "records 2 dispatched job(s), oldest first:\n    implement on owner/repo#12, job job-a, deadline 2026-11-05T11:00:00.000Z\n    review on owner/repo#14, job job-b, deadline 2026-11-05T12:00:00.000Z, not yet handed to the worker\n  and 0 item(s) at SCAN_DISPATCH_LIMIT (2), which the scan leaves for a person:\n",
+      ],
+    ],
+  ])("with a state file recording %s, lists no entry it does not hold", (_name, state, lines) => {
+    const root = setUp({ state: serialiseState(state) });
+    const { status: code, output } = status(root);
+
+    expect(code).toBe(0);
+    for (const line of lines) expect(output).toContain(line);
+    expect(output).not.toMatch(/ on #|job ,|#,/);
+  });
+
   it.skipIf(process.getuid?.() === 0)("with the state file unreadable, says so", () => {
     const root = setUp();
     fs.chmodSync(path.join(root, "appdata", "state", "dispatcher.json"), 0o000);

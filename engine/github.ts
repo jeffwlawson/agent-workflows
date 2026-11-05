@@ -30,21 +30,27 @@ const EXCERPT_CAP = 100;
  * the sentence reading code puts in front of a person, and is kept as it was;
  * the write log builds its line from the rest: GitHub's own short `reason` for
  * the refusal, and its `raw` answer, capped, kept as evidence on a write that
- * failed.
+ * failed. `rateLimitRemaining` and `retryAfter` are the headers GitHub marks
+ * a rate or abuse limit with, where it sent them: a 403 is a limit as well as
+ * a refusal, and the status alone cannot say which (#763).
  */
 export class GitHubError extends Error {
   readonly reason: string;
   readonly raw: string | undefined;
+  readonly rateLimitRemaining: string | undefined;
+  readonly retryAfter: string | undefined;
 
   constructor(
     message: string,
     readonly status?: number,
-    detail: { readonly reason?: string; readonly raw?: string } = {},
+    detail: { readonly reason?: string; readonly raw?: string; readonly rateLimitRemaining?: string; readonly retryAfter?: string } = {},
   ) {
     super(message);
     this.name = "GitHubError";
     this.reason = detail.reason ?? message;
     this.raw = detail.raw;
+    this.rateLimitRemaining = detail.rateLimitRemaining;
+    this.retryAfter = detail.retryAfter;
   }
 }
 
@@ -87,9 +93,13 @@ export const fetchTransport = (token: string, apiUrl = "https://api.github.com")
     });
     const text = await response.text();
     if (!response.ok) {
+      const remaining = response.headers.get("x-ratelimit-remaining");
+      const retryAfter = response.headers.get("retry-after");
       throw new GitHubError(`${method} ${path}: ${response.status} ${text.slice(0, RAW_CAP)}`, response.status, {
         reason: reasonIn(text),
         raw: text.slice(0, RAW_CAP),
+        ...(remaining === null ? {} : { rateLimitRemaining: remaining }),
+        ...(retryAfter === null ? {} : { retryAfter }),
       });
     }
     if (plain === true) return text;

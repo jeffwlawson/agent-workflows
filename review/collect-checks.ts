@@ -42,6 +42,34 @@ export const POLL_SECONDS = 10;
 export const ACTIONS_REFUSED =
   "GitHub refused the read, 403, so the token it was read with has no Actions: read. On the service, that is the App's Actions permission, missing from the App or not accepted on this installation: add Actions: read to the App and accept it on the installation, and read the run at its link meanwhile";
 
+/**
+ * What a 403 means where GitHub marks it as its rate limit or an abuse limit,
+ * by its message, `x-ratelimit-remaining: 0` or a `retry-after` (#763): a
+ * limit that clears by itself, so no permission is named.
+ */
+export const ACTIONS_RATE_LIMITED =
+  "GitHub refused the read, 403, for its rate limit, which clears by itself: the token's permissions are not the cause. Read the run at its link meanwhile, or run the review again once the limit has cleared";
+
+/** What a 403 means where GitHub marks it as neither a refused permission nor a limit (#763): either. */
+export const ACTIONS_REFUSED_OR_LIMITED =
+  "GitHub refused the read, 403, without saying why, so it is one of two causes: the token it was read with has no Actions: read (on the service, the App's Actions permission, missing from the App or not accepted on this installation), or GitHub's rate limit, which clears by itself. What GitHub said tells them apart; read the run at its link meanwhile";
+
+/** GitHub's words for a 403 that is the token's permission, and for one that is a limit. */
+const PERMISSION_REFUSED = /Resource not accessible by integration|Must have admin rights/i;
+const LIMITED = /rate limit|abuse/i;
+
+/**
+ * What a 403 from the Actions API means, in the evidence's words, or
+ * `undefined` for anything that is not a 403. A limit is read first: GitHub
+ * marks it by message or header, and a limit is never a permission to fix.
+ */
+const refusedWords = (error: unknown): string | undefined => {
+  if (!answered(error, 403) || !(error instanceof GitHubError)) return undefined;
+  const words = `${error.reason} ${error.message}`;
+  if (LIMITED.test(words) || error.rateLimitRemaining === "0" || error.retryAfter !== undefined) return ACTIONS_RATE_LIMITED;
+  return PERMISSION_REFUSED.test(words) ? ACTIONS_REFUSED : ACTIONS_REFUSED_OR_LIMITED;
+};
+
 /** Whether `error` is GitHub answering with `status`. */
 const answered = (error: unknown, ...statuses: number[]): boolean =>
   error instanceof GitHubError && error.status !== undefined && statuses.includes(error.status);
@@ -287,7 +315,8 @@ const statusesWord = async (github: GitHubReader, sha: string, filters: Filters)
  * from the other two without a word. On Actions it is not the grant: the job
  * declares `actions: read`, so a caller short of it is refused before any job
  * starts (#146). On the service it can be (#632): a 403 is said as the App's
- * Actions permission, missing or not accepted.
+ * Actions permission, missing or not accepted, unless GitHub marks it as a
+ * rate limit, or marks it as neither, when both causes are said (#763).
  */
 const workflowRunsWord = async (
   github: GitHubReader,
@@ -300,17 +329,18 @@ const workflowRunsWord = async (
     runs = (await github.workflowRuns(sha)).filter(filters.run).map(classify);
   } catch (error) {
     // A 403 is the token's Actions permission (#632): on the service the
-    // App's, which an installation may not have accepted.
-    const refused = answered(error, 403);
+    // App's, which an installation may not have accepted. Or a rate limit,
+    // where GitHub marks it as one (#763).
+    const refused = refusedWords(error);
     console.log(
-      refused
-        ? `::warning::Could not list this commit's workflow runs, so a run waiting for approval could not be seen and the review has no failure-log output. ${ACTIONS_REFUSED}. What GitHub said is below.`
+      refused !== undefined
+        ? `::warning::Could not list this commit's workflow runs, so a run waiting for approval could not be seen and the review has no failure-log output. ${refused}. What GitHub said is below.`
         : "::warning::Could not list this commit's workflow runs, so a run waiting for approval could not be seen and the review has no failure-log output. On Actions it is not the `actions: read` grant, which a run that started holds. What GitHub said is below.",
     );
     console.log(said(error));
     evidence.push(
-      refused
-        ? `_Could not list this commit's workflow runs: ${ACTIONS_REFUSED}. So a run waiting for approval or still going could not be seen here, and failure-log output is missing rather than absent._`
+      refused !== undefined
+        ? `_Could not list this commit's workflow runs: ${refused}. So a run waiting for approval or still going could not be seen here, and failure-log output is missing rather than absent._`
         : "_Could not list this commit's workflow runs, so a run waiting for approval or still going could not be seen here, and failure-log output is missing rather than absent._",
     );
     return { word: "unknown", listed: [] };
@@ -356,7 +386,7 @@ const TAIL_LINES = 60;
  * failed, so the steps that tidy up after it do not take the tail, and the
  * timestamp is taken off each line. A log that cannot be read is said, and
  * the runs after it are still tailed: a refusal, 403, as the missing Actions
- * permission; a log gone, 404 or 410, as expired; anything else (still
+ * permission, a rate limit or either, as the listing says it; a log gone, 404 or 410, as expired; anything else (still
  * uploading, GitHub unreachable) as no log available.
  */
 const tailFailures = async (github: GitHubReader, runs: readonly Run[], evidence: string[]): Promise<void> => {
@@ -374,8 +404,10 @@ const tailFailures = async (github: GitHubReader, runs: readonly Run[], evidence
     } catch (error) {
       lines = [];
       // Why it could not be read, where GitHub's answer says (#632): a
-      // refusal is the token's Actions permission, a log gone is expired.
-      if (answered(error, 403)) unread = `(could not read the failure log for run ${run.id}: ${ACTIONS_REFUSED})`;
+      // refusal is the token's Actions permission or a rate limit, a log gone
+      // is expired.
+      const refused = refusedWords(error);
+      if (refused !== undefined) unread = `(could not read the failure log for run ${run.id}: ${refused})`;
       else if (answered(error, 404, 410)) {
         unread = `(the failure log for run ${run.id} has expired: GitHub no longer keeps it, so read the run at its link above, or run it again)`;
       }

@@ -1,7 +1,9 @@
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { generateKeyPairSync } from "node:crypto";
+import { Server } from "node:http";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { serveDispatcher, serveWorker } from "../../service/serve.js";
 
 let scratch: string;
@@ -100,6 +102,7 @@ describe("the dispatcher's start", () => {
     JOB_DEADLINE_MARGIN_MINUTES: "60",
     EXTRA_OWNERS: "",
     SCAN_MERGED_WINDOW_DAYS: "7",
+    SCAN_INTERVAL_MINUTES: "60",
     REDELIVERY_INTERVAL_MINUTES: "5",
     REDELIVERY_WINDOW_MINUTES: "30",
     STATE_FILE: "",
@@ -144,6 +147,10 @@ describe("the dispatcher's start", () => {
     // An interval past setInterval's 2^31-1 ms would fire every millisecond.
     ["REDELIVERY_INTERVAL_MINUTES", "1441", /`REDELIVERY_INTERVAL_MINUTES` is `1441`, more than a day.*at most 1440; `0` turns the poll off/],
     ["REDELIVERY_INTERVAL_MINUTES", "35792", /`REDELIVERY_INTERVAL_MINUTES` is `35792`, more than a day.*at most 1440/],
+    // #790: the timed scan's interval, bounded as the redelivery poll's is.
+    ["SCAN_INTERVAL_MINUTES", "-60", /`SCAN_INTERVAL_MINUTES` is `-60`, which is not a whole number/],
+    ["SCAN_INTERVAL_MINUTES", "an hour", /`SCAN_INTERVAL_MINUTES` is `an hour`, which is not a whole number/],
+    ["SCAN_INTERVAL_MINUTES", "1441", /`SCAN_INTERVAL_MINUTES` is `1441`, more than a day.*at most 1440; `0` turns the timed scan off/],
   ])("refuses a %s of %s, naming the setting, before it reads the App's key", async (name, value, refusal) => {
     const lines: string[] = [];
     const key = path.join(scratch, "no-such-key.pem");
@@ -200,5 +207,141 @@ describe("the dispatcher's start", () => {
     await expect(serveDispatcher({ ...DISPATCHER_SETTINGS, GITHUB_APP_PRIVATE_KEY_FILE: key, SCAN_DISPATCH_LIMIT: "1" }, () => {})).rejects.toThrow(
       /`GITHUB_APP_PRIVATE_KEY_FILE` names/,
     );
+  });
+});
+
+/** The dispatcher's settings for a start that listens: any free port, the redelivery poll off. */
+const DISPATCHER_START = {
+  GITHUB_APP_ID: "1",
+  GITHUB_WEBHOOK_SECRET: "the-webhook-secret",
+  WORKER_URL: "http://192.0.2.2:8787/jobs",
+  WORKER_SECRET: "secret",
+  WEBHOOK_HOST: "127.0.0.1",
+  WEBHOOK_PORT: "0",
+  TOKEN_HOST: "127.0.0.1",
+  TOKEN_PORT: "0",
+  JOB_DEADLINE_MARGIN_MINUTES: "60",
+  EXTRA_OWNERS: "",
+  SCAN_DISPATCH_LIMIT: "2",
+  SCAN_MERGED_WINDOW_DAYS: "7",
+  REDELIVERY_INTERVAL_MINUTES: "0",
+  REDELIVERY_WINDOW_MINUTES: "30",
+  STATE_FILE: "",
+} as const;
+
+const MINUTE = 60 * 1000;
+const HOUR = 60 * MINUTE;
+
+/**
+ * The scan on a timer (#790), observed at the dispatcher's start with the
+ * network stubbed: each scan asks the worker's held door first, so each ask
+ * there is one scan. The worker cannot say, so each scan is skipped and logged.
+ */
+describe("the dispatcher's timed scan", () => {
+  const servers: Server[] = [];
+  let asks: Array<() => void>;
+  let lines: string[];
+
+  beforeEach(() => {
+    asks = [];
+    lines = [];
+    vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
+    const listen = Server.prototype.listen;
+    vi.spyOn(Server.prototype, "listen").mockImplementation(function (this: Server, ...args: unknown[]) {
+      servers.push(this);
+      return (listen as (...a: unknown[]) => Server).apply(this, args);
+    });
+    vi.stubGlobal("fetch", async (url: string | URL) => {
+      const where = String(url);
+      if (where.endsWith("/held")) {
+        // Held open until the test lets it go, so a scan can be kept running.
+        await new Promise<void>((resolve) => asks.push(resolve));
+        throw new Error("connect ECONNREFUSED");
+      }
+      if (where.endsWith("/app")) return new Response(JSON.stringify({ slug: "loop", owner: { login: "owner" }, permissions: {}, events: [] }), { status: 200 });
+      return new Response("[]", { status: 200 });
+    });
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+    vi.unstubAllGlobals();
+    vi.restoreAllMocks();
+    for (const server of servers.splice(0)) server.close();
+  });
+
+  const start = async (interval: string): Promise<void> => {
+    const key = path.join(scratch, "app.pem");
+    fs.writeFileSync(key, generateKeyPairSync("rsa", { modulusLength: 2048 }).privateKey.export({ type: "pkcs1", format: "pem" }));
+    await serveDispatcher(
+      {
+        ...DISPATCHER_START,
+        GITHUB_APP_PRIVATE_KEY_FILE: key,
+        SCAN_INTERVAL_MINUTES: interval,
+      },
+      (text) => lines.push(text),
+    );
+  };
+  const settle = async (): Promise<void> => {
+    for (let turn = 0; turn < 20; turn++) await new Promise((resolve) => setImmediate(resolve));
+  };
+  const release = async (): Promise<void> => {
+    for (const resolve of asks.splice(0)) resolve();
+    await settle();
+  };
+
+  it("scans again every SCAN_INTERVAL_MINUTES after the start scan, and a failed scan does not stop the timer", async () => {
+    await start("60");
+    await settle();
+    expect(asks).toHaveLength(1);
+    await release();
+    expect(lines.filter((line) => line.includes("timed scan: every 60 minutes"))).toHaveLength(1);
+    expect(lines.filter((line) => line.includes("scan: skipped: the worker could not say"))).toHaveLength(1);
+
+    await vi.advanceTimersByTimeAsync(HOUR - MINUTE);
+    await settle();
+    expect(asks).toHaveLength(0);
+    await vi.advanceTimersByTimeAsync(MINUTE);
+    await settle();
+    expect(asks).toHaveLength(1);
+    await release();
+
+    await vi.advanceTimersByTimeAsync(HOUR);
+    await settle();
+    expect(asks).toHaveLength(1);
+    await release();
+    expect(lines.filter((line) => line.includes("scan: skipped: the worker could not say"))).toHaveLength(3);
+  });
+
+  it("starts no timed scan while the timer's last one is still running", async () => {
+    await start("60");
+    await settle();
+    await release();
+
+    await vi.advanceTimersByTimeAsync(HOUR);
+    await settle();
+    expect(asks).toHaveLength(1);
+    // Three more ticks with that scan still waiting on the worker: none asks again.
+    await vi.advanceTimersByTimeAsync(3 * HOUR);
+    await settle();
+    expect(asks).toHaveLength(1);
+    await release();
+    expect(asks).toHaveLength(0);
+
+    await vi.advanceTimersByTimeAsync(HOUR);
+    await settle();
+    expect(asks).toHaveLength(1);
+    await release();
+  });
+
+  it("turns the timer off at 0, with one line at start, and scans only at start", async () => {
+    await start("0");
+    await settle();
+    await release();
+    expect(lines.filter((line) => line.includes("timed scan: off, SCAN_INTERVAL_MINUTES is 0"))).toHaveLength(1);
+
+    await vi.advanceTimersByTimeAsync(24 * HOUR);
+    await settle();
+    expect(asks).toHaveLength(0);
   });
 });

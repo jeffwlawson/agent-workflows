@@ -53,6 +53,11 @@ const REQUIRED = { required: true } as const;
  *   requests still carrying `agent:follow-ups`, a filing that never ran or
  *   stopped partway (#603), so one someone left the label on for months is
  *   not dispatched at every restart. At least `1`.
+ * - `SCAN_INTERVAL_MINUTES`: how many minutes apart the dispatcher scans
+ *   again, after its start scan (#790), so an item a reset's announcement
+ *   did not reach, or found still held by its stopped job, is dispatched
+ *   without a restart (#659, #660). A tick while the timer's last scan runs
+ *   starts nothing. At most `1440`; `0` turns the timer off.
  * - `REDELIVERY_INTERVAL_MINUTES`: how many minutes apart the dispatcher
  *   lists the App's recent webhook deliveries and asks GitHub to send again
  *   each that failed (#774): one the door did not answer in time is
@@ -81,6 +86,7 @@ export const DISPATCHER = {
   EXTRA_OWNERS: { required: false, default: "" },
   SCAN_DISPATCH_LIMIT: { required: false, default: "2" },
   SCAN_MERGED_WINDOW_DAYS: { required: false, default: "7" },
+  SCAN_INTERVAL_MINUTES: { required: false, default: "60" },
   REDELIVERY_INTERVAL_MINUTES: { required: false, default: "5" },
   REDELIVERY_WINDOW_MINUTES: { required: false, default: "30" },
   STATE_FILE: { required: false, default: "" },

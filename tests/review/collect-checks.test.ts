@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { GitHubError } from "../../engine/github.js";
 import type { CheckRun, GitHubReader, WorkflowRun } from "../../engine/read.js";
-import { ACTIONS_REFUSED, CI_WAIT_SECONDS, collectChecks, GRACE_SECONDS, POLL_SECONDS } from "../../review/collect-checks.js";
+import { ACTIONS_RATE_LIMITED, ACTIONS_REFUSED, ACTIONS_REFUSED_OR_LIMITED, CI_WAIT_SECONDS, collectChecks, GRACE_SECONDS, POLL_SECONDS } from "../../review/collect-checks.js";
 import { AGENT_CHECKS } from "../../shared/loop-checks.js";
 import type { ReadingIo } from "../../shared/command-io.js";
 import type { COMMANDS } from "../../shared/contract.js";
@@ -102,12 +102,32 @@ const set = (state: { checks?: readonly CheckRun[]; statuses?: readonly [string,
  * A failure of the read `method`, as GitHub answering 403, another status or not at all, on
  * its calls from the `from`th to the `to`th (1-based), every one by default.
  */
-type Failure = { readonly method: keyof GitHubReader; readonly how: "403" | "unreachable" | number; readonly from?: number; readonly to?: number };
+type How = "403" | "403 abuse-named repo" | "403 admin" | "403 rate limit" | "403 remaining 0" | "403 retry-after" | "403 bare" | "unreachable" | number;
+type Failure = { readonly method: keyof GitHubReader; readonly how: How; readonly from?: number; readonly to?: number };
 
-const refusal = (how: "403" | "unreachable" | number): GitHubError =>
+/** A 403 with GitHub's `message`, from `repo`, and its rate-limit headers where given. */
+const forbidden = (
+  message: string,
+  headers: { readonly rateLimitRemaining?: string; readonly retryAfter?: string } = {},
+  repo = "acme/widgets",
+): GitHubError => new GitHubError(`GET /repos/${repo}/actions/runs?head_sha=abc: 403 {"message":"${message}"}`, 403, { reason: message, ...headers });
+
+const refusal = (how: How): GitHubError =>
   how === "403"
-    ? new GitHubError("GET /repos/acme/widgets/…: 403 Resource not accessible by integration", 403)
-    : typeof how === "number"
+    ? forbidden("Resource not accessible by integration")
+    : how === "403 abuse-named repo"
+      ? forbidden("Resource not accessible by integration", {}, "owner/abuse-tracker")
+    : how === "403 admin"
+      ? forbidden("Must have admin rights to Repository.")
+      : how === "403 rate limit"
+        ? forbidden("API rate limit exceeded for installation ID 4242.")
+        : how === "403 remaining 0"
+          ? forbidden("Forbidden", { rateLimitRemaining: "0" })
+          : how === "403 retry-after"
+            ? forbidden("Forbidden", { retryAfter: "60" })
+            : how === "403 bare"
+              ? forbidden("Forbidden")
+              : typeof how === "number"
       ? new GitHubError(`GET /repos/acme/widgets/…: ${how}`, how)
       : new GitHubError("fetch failed: connect ECONNREFUSED");
 
@@ -591,6 +611,31 @@ describe("review:collect-checks says what it could not read", () => {
     expect(unreachable.evidence).not.toMatch(/lacks|must|required/i);
   });
 
+  /**
+   * #763: GitHub answers 403 for a rate limit too. A limit it marks, by its
+   * message or its headers, is said as the limit and names no permission; a
+   * refusal it marks as one keeps the permission; a bare 403 says both.
+   */
+  it.each([
+    ["403", ACTIONS_REFUSED],
+    ["403 abuse-named repo", ACTIONS_REFUSED],
+    ["403 admin", ACTIONS_REFUSED],
+    ["403 rate limit", ACTIONS_RATE_LIMITED],
+    ["403 remaining 0", ACTIONS_RATE_LIMITED],
+    ["403 retry-after", ACTIONS_RATE_LIMITED],
+    ["403 bare", ACTIONS_REFUSED_OR_LIMITED],
+  ] as const)("says a refused runs listing's cause as GitHub marks it (%s)", async (how, words) => {
+    set({});
+    const { evidence, log } = await collect({ fail: [{ method: "workflowRuns", how }] });
+
+    expect(evidence).toContain(`_Could not list this commit's workflow runs: ${words}.`);
+    expect(log).toContain(`::warning::Could not list this commit's workflow runs, so a run waiting for approval could not be seen and the review has no failure-log output. ${words}.`);
+    if (words === ACTIONS_RATE_LIMITED) {
+      expect(evidence).not.toMatch(/Actions: read/i);
+      expect(log).not.toMatch(/Actions: read/i);
+    }
+  });
+
   it("adds no line when the runs were listed and none failed", async () => {
     set({});
     const { evidence, log } = await collect();
@@ -654,7 +699,13 @@ describe("review:collect-checks tails the failed runs' logs", () => {
    * generic line.
    */
   it.each([
-    [403, `(could not read the failure log for run 101: ${ACTIONS_REFUSED})`],
+    ["403", `(could not read the failure log for run 101: ${ACTIONS_REFUSED})`],
+    ["403 abuse-named repo", `(could not read the failure log for run 101: ${ACTIONS_REFUSED})`],
+    ["403 admin", `(could not read the failure log for run 101: ${ACTIONS_REFUSED})`],
+    ["403 rate limit", `(could not read the failure log for run 101: ${ACTIONS_RATE_LIMITED})`],
+    ["403 remaining 0", `(could not read the failure log for run 101: ${ACTIONS_RATE_LIMITED})`],
+    ["403 retry-after", `(could not read the failure log for run 101: ${ACTIONS_RATE_LIMITED})`],
+    ["403 bare", `(could not read the failure log for run 101: ${ACTIONS_REFUSED_OR_LIMITED})`],
     [404, "(the failure log for run 101 has expired: GitHub no longer keeps it, so read the run at its link above, or run it again)"],
     [410, "(the failure log for run 101 has expired: GitHub no longer keeps it, so read the run at its link above, or run it again)"],
     [500, "(no failure log available for run 101)"],

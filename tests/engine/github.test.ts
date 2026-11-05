@@ -6,8 +6,8 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { fetchTransport, GitHubError, isServerError } from "../../engine/github.js";
 
 /** `fetch` answering every request with `status` and `body`. */
-const answering = (status: number, body: string): void => {
-  vi.stubGlobal("fetch", async () => new Response(body === "" ? null : body, { status }));
+const answering = (status: number, body: string, headers: Readonly<Record<string, string>> = {}): void => {
+  vi.stubGlobal("fetch", async () => new Response(body === "" ? null : body, { status, headers }));
 };
 
 const refusal = async (call: Promise<unknown>): Promise<GitHubError> => {
@@ -58,6 +58,22 @@ describe("a refused REST call", () => {
     expect(html.reason).toBe(`<html> <body>${"Unicorn! ".repeat(40)}`.slice(0, 100) + "…");
     expect(html.raw).toBe(page.slice(0, 300));
     expect(bare.reason).toBe('{"errors":["bad"]}');
+  });
+});
+
+describe("a refused REST call's rate-limit headers", () => {
+  /**
+   * #763: a 403 is a missing permission or a rate limit, and the status alone
+   * cannot say which; the two headers GitHub marks a limit with are kept.
+   */
+  it("keeps x-ratelimit-remaining and retry-after where GitHub sent them, and nothing where it did not", async () => {
+    answering(403, JSON.stringify({ message: "API rate limit exceeded" }), { "x-ratelimit-remaining": "0", "retry-after": "60" });
+    const limited = await refusal(fetchTransport("t").rest({ method: "GET", path: "/x" }));
+    answering(403, JSON.stringify({ message: "Resource not accessible by integration" }));
+    const refused = await refusal(fetchTransport("t").rest({ method: "GET", path: "/x" }));
+
+    expect([limited.rateLimitRemaining, limited.retryAfter]).toEqual(["0", "60"]);
+    expect([refused.rateLimitRemaining, refused.retryAfter]).toEqual([undefined, undefined]);
   });
 });
 

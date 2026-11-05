@@ -53,6 +53,14 @@ const REQUIRED = { required: true } as const;
  *   requests still carrying `agent:follow-ups`, a filing that never ran or
  *   stopped partway (#603), so one someone left the label on for months is
  *   not dispatched at every restart. At least `1`.
+ * - `REDELIVERY_INTERVAL_MINUTES`: how many minutes apart the dispatcher
+ *   lists the App's recent webhook deliveries and asks GitHub to send again
+ *   each that failed (#774): one the door did not answer in time is
+ *   otherwise lost, since GitHub tries once. It polls at start too. `0` turns
+ *   the poll off.
+ * - `REDELIVERY_WINDOW_MINUTES`: how many minutes back a failed delivery is
+ *   redelivered; one older is left lost, so an event long past is never
+ *   sent again. At least `1`.
  * - `STATE_FILE`: the path of the file the dispatcher keeps its dispatched
  *   jobs and the scan's counts in across a restart (#618,
  *   `dispatcher-state.ts`). Empty is none: both are held in memory only, and
@@ -73,6 +81,8 @@ export const DISPATCHER = {
   EXTRA_OWNERS: { required: false, default: "" },
   SCAN_DISPATCH_LIMIT: { required: false, default: "2" },
   SCAN_MERGED_WINDOW_DAYS: { required: false, default: "7" },
+  REDELIVERY_INTERVAL_MINUTES: { required: false, default: "5" },
+  REDELIVERY_WINDOW_MINUTES: { required: false, default: "30" },
   STATE_FILE: { required: false, default: "" },
 } as const satisfies Inputs;
 

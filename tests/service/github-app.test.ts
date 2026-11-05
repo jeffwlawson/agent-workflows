@@ -30,6 +30,8 @@ interface World {
   events: Record<number, unknown[]>;
   /** Each item's comments, oldest first, by number, as the comments list gives them. */
   comments?: Record<number, unknown[]>;
+  /** The App's recent webhook deliveries, as GitHub's list of them gives them (#774). */
+  deliveries?: unknown[];
 }
 
 /**
@@ -64,6 +66,8 @@ const mintedFor: (string[] | undefined)[] = [];
 const queried: string[] = [];
 /** Each comment posted: its path, its body and the token it was posted with. */
 const commented: { path: string; body: unknown; authorization: string | null }[] = [];
+/** Each request to the App's webhook deliveries (#774): its method and the authorization it carried. */
+const hooked: { method: string; authorization: string | null }[] = [];
 
 const reply = (status: number, body: unknown): Response => new Response(JSON.stringify(body), { status });
 
@@ -117,6 +121,16 @@ const answer = (url: string, init?: RequestInit): Response => {
   if (conversation !== null) return reply(200, paged(world.comments?.[Number(conversation[1])] ?? []));
   const events = /^\/repos\/owner\/repo\/issues\/(\d+)\/events$/.exec(pathname);
   if (events !== null) return reply(200, paged(world.events[Number(events[1])] ?? []));
+  const labels = /^\/repos\/owner\/repo\/issues\/(\d+)\/labels$/.exec(pathname);
+  if (labels !== null) return reply(200, paged((world.issues.find((issue) => issue.number === Number(labels[1]))?.labels ?? []).map((name) => ({ name }))));
+  if (pathname === "/app/hook/deliveries") {
+    hooked.push({ method: init?.method ?? "GET", authorization: new Headers(init?.headers).get("authorization") });
+    return reply(200, world.deliveries ?? []);
+  }
+  if (/^\/app\/hook\/deliveries\/\d+\/attempts$/.test(pathname)) {
+    hooked.push({ method: init?.method ?? "GET", authorization: new Headers(init?.headers).get("authorization") });
+    return reply(202, {});
+  }
   const own = /^\/repos\/owner\/repo\/actions\/variables\/(.+)$/.exec(pathname);
   if (own !== null) {
     const value = world.repository[own[1] ?? ""];
@@ -136,6 +150,7 @@ beforeEach(() => {
   mintedFor.length = 0;
   queried.length = 0;
   commented.length = 0;
+  hooked.length = 0;
   vi.stubGlobal("fetch", async (url: string, init?: RequestInit) => answer(url, init));
 });
 afterEach(() => {
@@ -402,5 +417,70 @@ describe("liveAppGitHub: what the scan reads (#581)", () => {
     world.failing = { path: /\/comments$/, status: 403 };
 
     await expect(liveAppGitHub("1", KEY).comment(REPO, 7, "a comment", "ghs_writer")).rejects.toThrow("commenting on owner/repo#7 answered 403");
+  });
+});
+
+describe("liveAppGitHub: the App's webhook deliveries (#774)", () => {
+  it("lists one page of the newest deliveries, with the App's JWT, read into what the poll compares", async () => {
+    world.deliveries = [
+      {
+        id: 12,
+        guid: "0b989ba4-242f-11e5-81e1-c7b6966d2516",
+        delivered_at: "2026-11-05T00:29:33Z",
+        redelivery: false,
+        duration: 10.01,
+        status: "timed out",
+        status_code: 0,
+        event: "issues",
+        action: "labeled",
+        installation_id: 1,
+        repository_id: 2,
+      },
+      { id: 11, guid: "g-2", delivered_at: "2026-11-05T00:20:00Z", redelivery: true, status: "OK", status_code: 202, event: "ping", action: null },
+      { id: "not a number", guid: "g-3", delivered_at: "2026-11-05T00:10:00Z", event: "issues" },
+    ];
+
+    expect(await liveAppGitHub("1", KEY).deliveries()).toEqual([
+      {
+        id: 12,
+        guid: "0b989ba4-242f-11e5-81e1-c7b6966d2516",
+        deliveredAt: new Date("2026-11-05T00:29:33Z"),
+        redelivery: false,
+        statusCode: 0,
+        event: "issues",
+        action: "labeled",
+      },
+      { id: 11, guid: "g-2", deliveredAt: new Date("2026-11-05T00:20:00Z"), redelivery: true, statusCode: 202, event: "ping", action: undefined },
+    ]);
+    expect(queried).toEqual(["/app/hook/deliveries?per_page=100"]);
+    expect(hooked).toEqual([{ method: "GET", authorization: expect.stringMatching(/^Bearer [\w-]+\.[\w-]+\.[\w-]+$/) }]);
+    expect(minted).toEqual([]);
+  });
+
+  it("throws where the list is refused", async () => {
+    world.failing = { path: /^\/app\/hook\/deliveries$/, status: 401 };
+
+    await expect(liveAppGitHub("1", KEY).deliveries()).rejects.toThrow("reading the App's webhook deliveries answered 401");
+  });
+
+  it("asks for a redelivery by the delivery's id, with the App's JWT and no installation token", async () => {
+    await liveAppGitHub("1", KEY).redeliver(12);
+
+    expect(asked).toEqual(["/app/hook/deliveries/12/attempts"]);
+    expect(hooked).toEqual([{ method: "POST", authorization: expect.stringMatching(/^Bearer [\w-]+\.[\w-]+\.[\w-]+$/) }]);
+    expect(minted).toEqual([]);
+  });
+
+  it("throws where the redelivery is refused", async () => {
+    world.failing = { path: /attempts$/, status: 422 };
+
+    await expect(liveAppGitHub("1", KEY).redeliver(12)).rejects.toThrow("redelivering delivery 12 answered 422");
+  });
+
+  it("reads an item's labels now, with the scan's reader", async () => {
+    world.issues = [{ number: 7, title: "a thing", state: "open", labels: ["agent:review", "bug"] }];
+
+    expect(await liveAppGitHub("1", KEY).labels(REPO, 7)).toEqual(["agent:review", "bug"]);
+    expect(minted).toEqual([SCAN_PERMISSIONS]);
   });
 });

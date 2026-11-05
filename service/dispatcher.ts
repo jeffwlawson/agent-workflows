@@ -94,6 +94,26 @@ export type HeadPull = Omit<Extract<Labelled, { readonly type: "pull_request" }>
  */
 export type MergedPull = Extract<Labelled, { readonly type: "pull_request" }> & { readonly mergedAt: Date };
 
+/**
+ * One of the App's recent webhook deliveries, as GitHub's list of them gives
+ * it (#774): enough to tell one that failed and was never sent again. The
+ * list carries no payload, so a redelivery is asked for by `id` alone, and
+ * the dispatcher's own route decides it when it arrives.
+ */
+export interface WebhookDelivery {
+  /** The id a redelivery is asked for by. */
+  readonly id: number;
+  /** The event's id, which every attempt at it shares, and which arrives as `X-GitHub-Delivery`. */
+  readonly guid: string;
+  readonly deliveredAt: Date;
+  /** Whether this attempt is a redelivery of an earlier one. */
+  readonly redelivery: boolean;
+  /** The HTTP status the dispatcher's door answered with, `0` where none came in time. */
+  readonly statusCode: number;
+  readonly event: string;
+  readonly action: string | undefined;
+}
+
 /** What the dispatcher asks of GitHub, as its App. */
 export interface AppGitHub {
   /** The App's own record. */
@@ -145,6 +165,15 @@ export interface AppGitHub {
   pullsAt(repo: string, sha: string): Promise<readonly HeadPull[]>;
   /** Posts `body` as a comment on `repo`'s issue or pull request `number`, with `token`. */
   comment(repo: string, number: number, body: string, token: string): Promise<void>;
+  /** The labels on `repo`'s issue or pull request `number` now, read with the scan's reader (#774). */
+  labels(repo: string, number: number): Promise<readonly string[]>;
+  /**
+   * The App's most recent webhook deliveries, newest first, one page of
+   * GitHub's list (#774), read with the App's own JWT.
+   */
+  deliveries(): Promise<readonly WebhookDelivery[]>;
+  /** Asks GitHub to send delivery `id` again, with the App's own JWT (#774). */
+  redeliver(id: number): Promise<void>;
 }
 
 /** Where a job goes: posts the signed body, and answers with the HTTP status the worker gave. */
@@ -186,6 +215,11 @@ export interface DispatcherEdges {
    * `agent:follow-ups` (#603). At least `1`.
    */
   readonly mergedWindowDays: number;
+  /**
+   * How many minutes back a failed delivery is redelivered (#774): one older
+   * is left lost. At least `1`.
+   */
+  readonly redeliveryWindowMinutes: number;
   readonly now?: () => Date;
   readonly newId?: () => string;
   /**
@@ -468,7 +502,8 @@ const answer = (status: number, body: unknown): DoorResponse => ({ status, body:
 /** A held-door question the worker answered with a refusal, which asking again meets too. */
 class Refused extends Error {}
 
-const DAY_MS = 24 * 60 * 60 * 1000;
+const MINUTE_MS = 60 * 1000;
+const DAY_MS = 24 * 60 * MINUTE_MS;
 
 const message = (error: unknown): string => (error instanceof Error ? error.message : String(error));
 
@@ -511,9 +546,13 @@ interface ScanOrigin {
 
 /**
  * Who a dispatch is for: a scan, or a delivery, with the reservations made
- * before it arrived.
+ * before it arrived, and whether it is one the dispatcher asked GitHub to
+ * send again (#774).
  */
-type Origin = ScanOrigin | { readonly arrived: number };
+type Origin = ScanOrigin | { readonly arrived: number; readonly redelivered?: true };
+
+/** Whether `origin` is a delivery the dispatcher asked GitHub to send again. */
+const isRedelivery = (origin: Origin): boolean => "arrived" in origin && origin.redelivered === true;
 
 /** A scan's origin, counting toward `label` where there is one. */
 const scanOf = (label: string | undefined): ScanOrigin => ({ counts: label, counted: false });
@@ -702,6 +741,19 @@ export const createDispatcher = (edges: DispatcherEdges) => {
    * again is asked for again.
    */
   const dispatch = async (fields: Dispatchable, login: string, where: string, at: string, origin: Origin): Promise<string> => {
+    const number = "issue" in fields ? fields.issue : fields.pr;
+    // A redelivery (#774) carries an event that may be old, and whose first
+    // delivery may have arrived after all: skipped, as a scan's dispatch is,
+    // where anything holds a job of its kind for the item.
+    const redelivered = isRedelivery(origin);
+    let holding: readonly HeldJob[] = [];
+    if (redelivered) {
+      try {
+        holding = await askWorker();
+      } catch (error) {
+        return `failed on ${where}: a redelivery, and the worker could not say which jobs it holds: ${message(error)}`;
+      }
+    }
     const variables = Object.fromEntries(
       await Promise.all(REPOSITORY_VARIABLES.map(async (name) => [name, (await edges.github.variable(fields.repo, name)) ?? ""] as const)),
     ) as Record<RepositoryVariable, string>;
@@ -709,9 +761,13 @@ export const createDispatcher = (edges: DispatcherEdges) => {
     const deadline = new Date(now().getTime() + minutes * 60_000);
     const job = { ...fields, id: newId(), version: edges.version, instance, deadline: deadline.toISOString(), appLogin: login, variables } as Job;
 
+    if (redelivered) {
+      const skip = heldFor(fields.repo, number, [fields.workflow], holding);
+      if (skip !== undefined) return `skipped on ${where}${at}: a redelivery, and ${skip}`;
+    }
     prune();
     const scanned = "counts" in origin;
-    const answers = (held: Dispatched): boolean => scanned || (held.scanned && (!held.posted || held.order > origin.arrived));
+    const answers = (held: Dispatched): boolean => scanned || redelivered || (held.scanned && (!held.posted || held.order > origin.arrived));
     const same = [...jobs.values()].find(
       (held) => held.repo === job.repo && held.number === ("issue" in job ? job.issue : job.pr) && held.workflow === job.workflow && answers(held),
     );
@@ -764,6 +820,18 @@ export const createDispatcher = (edges: DispatcherEdges) => {
       if (state !== "closed") return `the pull request is ${state}, and \`${FOLLOW_UPS_LABEL}\` is answered on a closed one`;
     } else if (state !== "open") return `the pull request is ${state}, not open`;
     return undefined;
+  };
+
+  /**
+   * Why a redelivered label is not answered (#774), or `undefined` where it
+   * is, or the delivery is a fresh one: the label has since been taken off,
+   * read now, since the event a redelivery carries says what was true when
+   * it was first sent.
+   */
+  const removed = async (origin: Origin, repo: string, number: number, label: string, where: string): Promise<string | undefined> => {
+    if (!isRedelivery(origin)) return undefined;
+    if ((await edges.github.labels(repo, number)).includes(label)) return undefined;
+    return `skipped on ${where}: a redelivery, and \`${label}\` has since been removed`;
   };
 
   /** Dispatches a job of each kind an issue's label starts, in turn; the line is each dispatch's. */
@@ -886,6 +954,8 @@ export const createDispatcher = (edges: DispatcherEdges) => {
     const login = appLogin((await edges.github.app()).slug);
     const distrust = await untrusted(repo, sender, login);
     if (distrust !== undefined) return `refused on ${where}: ${distrust}`;
+    const gone = await removed(origin, repo, pr, label, where);
+    if (gone !== undefined) return gone;
     // A fresh ask, so the scan answers the label again up to its limit (#596).
     if (asks.delete(askedKey(repo, pr, label))) changed();
     if (kind === "follow-ups") return dispatch({ workflow: kind, repo, pr }, login, where, " on its label", origin);
@@ -990,6 +1060,8 @@ export const createDispatcher = (edges: DispatcherEdges) => {
     const login = appLogin((await edges.github.app()).slug);
     const distrust = await untrusted(repo, sender, login);
     if (distrust !== undefined) return `refused on ${where}: ${distrust}`;
+    const gone = await removed(origin, repo, number, label, where);
+    if (gone !== undefined) return gone;
     if (asks.delete(askedKey(repo, number, label))) changed();
     return dispatchIssue(kinds, { repo, issue: number, title, state, baseRef }, login, where, origin);
   };
@@ -1014,13 +1086,96 @@ export const createDispatcher = (edges: DispatcherEdges) => {
     }
     const event = text(request.headers, "x-github-event");
     const payload = json(request.body);
-    const outcome =
-      payload === undefined
-        ? Promise.resolve("refused: the body is not JSON")
-        : decide(event, payload, { arrived: reservations }).catch(
-            (error: unknown) => `failed: ${error instanceof Error ? error.message : String(error)}`,
-          );
+    const guid = text(request.headers, "x-github-delivery");
+    const redelivered = guid !== undefined && redelivering.has(guid);
+    const origin: Origin = redelivered ? { arrived: reservations, redelivered: true } : { arrived: reservations };
+    const decided = (): Promise<string> =>
+      decide(event, payload, origin).catch((error: unknown) => `failed: ${error instanceof Error ? error.message : String(error)}`);
+    let outcome: Promise<string>;
+    if (payload === undefined) outcome = Promise.resolve("refused: the body is not JSON");
+    else if (redelivered) {
+      // One at a time, in the order they arrive, so a poll after an outage
+      // that redelivers many starts no storm of jobs (#774).
+      outcome = redeliveries.then(decided);
+      redeliveries = outcome.then(() => undefined);
+    } else outcome = decided();
     return { response: answer(202, { accepted: true }), outcome };
+  };
+
+  /**
+   * The guid of each delivery the dispatcher has asked GitHub to send again
+   * (#774), to when it asked, in milliseconds: how its arrival is told from a
+   * fresh delivery, and, with GitHub's own list, what keeps it to one ask.
+   * Held in memory only; one is forgotten once it is older than the window.
+   */
+  const redelivering = new Map<string, number>();
+  /** The last redelivery's decision, which the next one waits on. */
+  let redeliveries: Promise<unknown> = Promise.resolve();
+  let polling = false;
+
+  /**
+   * **The redelivery poll** (#774). GitHub tries a delivery once, and one
+   * the dispatcher's door did not answer in time, or answered with an error,
+   * is otherwise lost until a person sends it again. So the App's recent
+   * deliveries are listed, one call, and each that failed inside the window,
+   * of an event the service answers, and was never sent again, by the
+   * dispatcher or by a person (an attempt shares its guid), is asked for
+   * again, oldest first. Its arrival is decided as a fresh delivery is, but
+   * skipped where its label has since been removed or anything holds a job
+   * of its kind for the item. Quiet where nothing failed: a line only where
+   * it asks for one, or the list could not be read. Nothing here throws.
+   */
+  const redeliver = async (): Promise<void> => {
+    if (polling) return;
+    polling = true;
+    try {
+      await pollOnce();
+    } finally {
+      polling = false;
+    }
+  };
+
+  const pollOnce = async (): Promise<void> => {
+    const since = now().getTime() - edges.redeliveryWindowMinutes * MINUTE_MS;
+    for (const [guid, at] of redelivering) if (at < since) redelivering.delete(guid);
+    let listed: readonly WebhookDelivery[];
+    try {
+      listed = await edges.github.deliveries();
+    } catch (error) {
+      return edges.log(`redelivery: skipped: the App's recent deliveries could not be listed: ${message(error)}. The next poll tries again`);
+    }
+    const attempts = new Map<string, number>();
+    for (const { guid } of listed) attempts.set(guid, (attempts.get(guid) ?? 0) + 1);
+    const failed = listed
+      .filter(
+        (d) =>
+          !d.redelivery &&
+          (d.statusCode < 200 || d.statusCode >= 300) &&
+          d.deliveredAt.getTime() >= since &&
+          SERVICE_APP_EVENTS.includes(d.event) &&
+          attempts.get(d.guid) === 1 &&
+          !redelivering.has(d.guid),
+      )
+      .sort((a, b) => a.deliveredAt.getTime() - b.deliveredAt.getTime());
+    if (failed.length === 0) return;
+    const asked: string[] = [];
+    const refused: string[] = [];
+    for (const d of failed) {
+      const what = `${d.id} (${d.event}${d.action === undefined ? "" : `.${d.action}`}, delivered at ${d.deliveredAt.toISOString()})`;
+      // Marked first, so neither its arrival nor a failed ask is asked for again.
+      redelivering.set(d.guid, now().getTime());
+      try {
+        await edges.github.redeliver(d.id);
+        asked.push(what);
+      } catch (error) {
+        refused.push(`${what}: ${message(error)}`);
+      }
+    }
+    const lines = [
+      ...(asked.length === 0 ? [] : [`asked GitHub to redeliver ${asked.length} failed ${asked.length === 1 ? "delivery" : "deliveries"}: ${asked.join(", ")}`]),
+      ...(refused.length === 0 ? [] : [`could not ask GitHub to redeliver, and does not ask again: ${refused.join(", ")}`]),
+    ];
+    edges.log(`redelivery: ${lines.join("; ")}`);
   };
 
   /**
@@ -1436,7 +1591,7 @@ export const createDispatcher = (edges: DispatcherEdges) => {
     return { response: answer(202, { accepted: true }), scanned: scan() };
   };
 
-  return { delivery, token, scan, started, instance };
+  return { delivery, token, scan, started, redeliver, instance };
 };
 
 export type Dispatcher = ReturnType<typeof createDispatcher>;

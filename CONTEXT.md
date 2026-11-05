@@ -754,6 +754,11 @@ is not scanned; on a pull request merged within `SCAN_MERGED_WINDOW_DAYS` it is 
 `follow-ups:file` takes it off last, so one still on is a filing owed, and the scan dispatches the
 merge's follow-ups job, as the merge's delivery would have. A merge carrying no label says nothing
 is owed, so its post-merge checklist is lost with its delivery.
+A delivery GitHub sent while the dispatcher was up but which its door did not answer in time is
+**redelivered** (#774): GitHub tries once, so the dispatcher lists the App's recent deliveries
+every `REDELIVERY_INTERVAL_MINUTES`, and asks again, once, for each that failed within
+`REDELIVERY_WINDOW_MINUTES`. Its arrival is decided as a fresh delivery's, but skipped where its
+label has since come off or anything holds a job of its kind for the item, as a scan's is.
 `agent:merge` is not a run's label either, but a standing decision: it is scanned, so a dropped gate
 is started again, and never counted against the limit below.
 A job carries its dispatcher's **instance**, an id fresh at each start (#597), which the scan's

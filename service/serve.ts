@@ -98,6 +98,11 @@ export const serveDispatcher = async (
   if (mergedWindowDays === 0) {
     throw new Error("`SCAN_MERGED_WINDOW_DAYS` is `0`, a window no merge is inside. It must be at least 1.");
   }
+  const redeliveryInterval = wholeNumber("REDELIVERY_INTERVAL_MINUTES", settings.REDELIVERY_INTERVAL_MINUTES);
+  const redeliveryWindow = wholeNumber("REDELIVERY_WINDOW_MINUTES", settings.REDELIVERY_WINDOW_MINUTES);
+  if (redeliveryWindow === 0) {
+    throw new Error("`REDELIVERY_WINDOW_MINUTES` is `0`, a window no failed delivery is inside. It must be at least 1; `REDELIVERY_INTERVAL_MINUTES=0` turns the poll off.");
+  }
   // Opened before anything else is read, so a path that cannot be written is
   // refused at once (#618); unset, the dispatcher keeps its state in memory.
   const state = settings.STATE_FILE === "" ? undefined : openState("STATE_FILE", settings.STATE_FILE, liveStateFiles, log);
@@ -141,6 +146,7 @@ export const serveDispatcher = async (
     deadlineMarginMinutes: margin,
     scanLimit,
     mergedWindowDays,
+    redeliveryWindowMinutes: redeliveryWindow,
     version: VERSION,
     ...(state === undefined ? {} : { state }),
   });
@@ -184,6 +190,15 @@ export const serveDispatcher = async (
   // A restart strands no labelled work (#581): what nothing holds a job for is dispatched again.
   log("scanning for labelled work nothing holds a job for");
   void dispatcher.scan();
+  // A delivery GitHub tried once and the door did not answer in time is sent
+  // again (#774): at start, then every interval, unless the interval is 0.
+  if (redeliveryInterval === 0) {
+    log("redelivery: off, REDELIVERY_INTERVAL_MINUTES is 0: a delivery that fails is lost until a person sends it again");
+    return;
+  }
+  log(`redelivery: every ${redeliveryInterval} minutes, each failed delivery of the last ${redeliveryWindow} minutes is asked for again`);
+  void dispatcher.redeliver();
+  setInterval(() => void dispatcher.redeliver(), redeliveryInterval * 60_000);
 };
 
 /**

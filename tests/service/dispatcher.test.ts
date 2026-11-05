@@ -14,6 +14,7 @@ import {
   TOKEN_PERMISSIONS,
   type AppGitHub,
   type Labelled,
+  type WebhookDelivery,
 } from "../../service/dispatcher.js";
 import {
   DEFAULT_FIX_MINUTES,
@@ -148,6 +149,8 @@ const setup = (
     holdPermission?: boolean;
     scanLimit?: number;
     mergedWindowDays?: number;
+    /** How many minutes back the dispatcher redelivers a failed delivery (#774). */
+    redeliveryWindowMinutes?: number;
     /** Whether the worker is the real queue behind its real doors, each job's work held until a test ends it (#597). */
     queue?: boolean;
     /** How many minutes the worker's clock runs ahead of the dispatcher's, behind where negative (#601). */
@@ -182,6 +185,12 @@ const setup = (
   const commenting = { fails: false };
   /** Each commit whose pull requests were read, for a check suite's or a status's delivery. */
   const pullsRead: string[] = [];
+  /**
+   * The App's recent webhook deliveries as GitHub lists them, newest first
+   * (#774): each delivery a test put there, each redelivery the dispatcher
+   * asked for, how many times the list was read, and whether reading it fails.
+   */
+  const hook = { deliveries: [] as WebhookDelivery[], redelivered: [] as number[], listed: 0, listFails: false };
   let clock = START;
   let ids = 0;
   let starts = 0;
@@ -263,6 +272,15 @@ const setup = (
       if (commenting.fails) throw new Error("GitHub answered 502");
       comments.push({ repo, number, body, token });
     },
+    labels: async (repo, number) => (repo === REPO ? (repository.items.find((item) => item.number === number)?.labels ?? []) : []),
+    deliveries: async () => {
+      hook.listed += 1;
+      if (hook.listFails) throw new Error("reading the App's webhook deliveries answered 502");
+      return hook.deliveries;
+    },
+    redeliver: async (id) => {
+      hook.redelivered.push(id);
+    },
   };
   const start = (workerSecret = WORKER_SECRET) =>
     createDispatcher({
@@ -289,6 +307,7 @@ const setup = (
       deadlineMarginMinutes: MARGIN,
       scanLimit: options.scanLimit ?? 2,
       mergedWindowDays: options.mergedWindowDays ?? 7,
+      redeliveryWindowMinutes: options.redeliveryWindowMinutes ?? 30,
       version: "9.9.9",
       instance: `dispatcher-${(starts += 1)}`,
       now: () => clock,
@@ -322,6 +341,7 @@ const setup = (
     comments,
     commenting,
     pullsRead,
+    hook,
     advance: (minutes: number) => {
       clock = new Date(clock.getTime() + minutes * MINUTE_MS);
     },
@@ -2838,5 +2858,173 @@ describe("the dispatcher's state file", () => {
     expect(Object.keys(held)).toEqual(["version", "asks", "jobs"]);
     for (const ask of held.asks) expect(Object.keys(ask).sort()).toEqual(["at", "dispatches", "label", "number", "repo", "told"]);
     for (const job of held.jobs) expect(Object.keys(job).sort()).toEqual(["deadline", "id", "number", "order", "posted", "repo", "scanned", "workflow"]);
+  });
+});
+
+/** A delivery as the App's list of recent ones gives it (#774): failed, a timeout, unless `change` says otherwise. */
+const hookDelivery = (change: Partial<WebhookDelivery> & { minutesAgo?: number } = {}): WebhookDelivery => {
+  const { minutesAgo = 5, ...rest } = change;
+  return {
+    id: 1,
+    guid: "guid-1",
+    deliveredAt: new Date(START.getTime() - minutesAgo * MINUTE_MS),
+    redelivery: false,
+    statusCode: 0,
+    event: "issues",
+    action: "labeled",
+    ...rest,
+  };
+};
+
+/** A delivery GitHub sends again, carrying its first's guid, answered and worked through. */
+const redeliverIt = async (s: ReturnType<typeof setup>, payload: unknown, guid = "guid-1", event = "issues") => {
+  const { headers, body } = signed(payload, WEBHOOK_SECRET, event);
+  const { response, outcome } = s.dispatcher.delivery({ headers: { ...headers, "x-github-delivery": guid }, body });
+  return { status: response.status, outcome: await outcome };
+};
+
+describe("redelivering a failed delivery (#774)", () => {
+  it("asks GitHub to redeliver a delivery that failed inside the window, and the redelivery starts its job", async () => {
+    const s = setup();
+    s.repository.items.push(issueItem([IMPLEMENT_LABEL]));
+    s.hook.deliveries = [hookDelivery({ id: 41, guid: "guid-1" })];
+
+    await s.dispatcher.redeliver();
+
+    expect(s.hook.redelivered).toEqual([41]);
+    expect(s.lines).toEqual([expect.stringMatching(/^redelivery: asked GitHub to redeliver 1 failed delivery: 41 \(issues\.labeled, delivered at /)]);
+    const result = await redeliverIt(s, issueLabelled());
+    expect(result.outcome).toMatch(/^dispatched owner\/repo#12 to implement as job job-1.*; dispatched owner\/repo#12 to implement-prd as job job-2/);
+    expect(jobsPosted(s).map((job) => job.workflow)).toEqual(["implement", "implement-prd"]);
+  });
+
+  it("redelivers a delivery the dispatcher answered with an error, and none it answered with a 2xx", async () => {
+    const s = setup();
+    s.hook.deliveries = [hookDelivery({ id: 43, guid: "guid-3", statusCode: 202 }), hookDelivery({ id: 42, guid: "guid-2", statusCode: 502 })];
+
+    await s.dispatcher.redeliver();
+
+    expect(s.hook.redelivered).toEqual([42]);
+  });
+
+  it("redelivers each failed delivery once, oldest first, however often it polls", async () => {
+    const s = setup();
+    s.hook.deliveries = [hookDelivery({ id: 52, guid: "guid-b", minutesAgo: 2 }), hookDelivery({ id: 51, guid: "guid-a", minutesAgo: 20 })];
+
+    await s.dispatcher.redeliver();
+    s.advance(5);
+    await s.dispatcher.redeliver();
+
+    expect(s.hook.redelivered).toEqual([51, 52]);
+    expect(s.hook.listed).toBe(2);
+  });
+
+  it("does not redeliver one already redelivered, by a person or a dispatcher before its restart, even where that one failed too", async () => {
+    const s = setup();
+    s.hook.deliveries = [hookDelivery({ id: 62, guid: "guid-1", redelivery: true, statusCode: 0, minutesAgo: 1 }), hookDelivery({ id: 61, guid: "guid-1" })];
+
+    await s.dispatcher.redeliver();
+
+    expect(s.hook.redelivered).toEqual([]);
+    expect(s.lines).toEqual([]);
+  });
+
+  it("never redelivers a delivery older than the window, nor one of an event the service does not answer", async () => {
+    const s = setup({ redeliveryWindowMinutes: 30 });
+    s.hook.deliveries = [
+      hookDelivery({ id: 71, guid: "guid-old", minutesAgo: 31 }),
+      hookDelivery({ id: 72, guid: "guid-install", event: "installation", action: "created" }),
+      hookDelivery({ id: 73, guid: "guid-edge", minutesAgo: 30 }),
+    ];
+
+    await s.dispatcher.redeliver();
+
+    expect(s.hook.redelivered).toEqual([73]);
+  });
+
+  it("is quiet where nothing failed: one list call, and no line", async () => {
+    const s = setup();
+    s.hook.deliveries = [hookDelivery({ statusCode: 202 })];
+
+    await s.dispatcher.redeliver();
+
+    expect(s.hook.listed).toBe(1);
+    expect(s.lines).toEqual([]);
+  });
+
+  it("logs a list call that fails, throws nothing, and the next poll redelivers", async () => {
+    const s = setup();
+    s.hook.deliveries = [hookDelivery({ id: 81 })];
+    s.hook.listFails = true;
+
+    await expect(s.dispatcher.redeliver()).resolves.toBeUndefined();
+    expect(s.lines).toEqual([expect.stringMatching(/^redelivery: skipped: the App's recent deliveries could not be listed: .*answered 502/)]);
+    s.hook.listFails = false;
+    await s.dispatcher.redeliver();
+
+    expect(s.hook.redelivered).toEqual([81]);
+  });
+
+  it("starts no job for a redelivered label since removed, and says so", async () => {
+    const s = setup();
+    s.repository.items.push(issueItem([]));
+    s.hook.deliveries = [hookDelivery()];
+    await s.dispatcher.redeliver();
+
+    const result = await redeliverIt(s, issueLabelled());
+
+    expect(result.outcome).toBe("skipped on owner/repo#12: a redelivery, and `agent:implement` has since been removed");
+    expect(s.posted).toEqual([]);
+  });
+
+  it("starts no job for a redelivered pull request label since removed", async () => {
+    const s = setup();
+    s.repository.items.push(pullItem([FIX_LABEL]));
+    s.hook.deliveries = [hookDelivery({ event: "pull_request" })];
+    await s.dispatcher.redeliver();
+
+    const result = await redeliverIt(s, labelled(), "guid-1", "pull_request");
+
+    expect(result.outcome).toBe("skipped on owner/repo#7: a redelivery, and `agent:review` has since been removed");
+    expect(s.posted).toEqual([]);
+  });
+
+  it("skips a redelivery for an item the worker holds a job for, and says so", async () => {
+    const s = setup();
+    s.repository.items.push(pullItem([REVIEW_LABEL]));
+    await deliver(s, labelled());
+    s.restart();
+    s.hook.deliveries = [hookDelivery({ event: "pull_request" })];
+    await s.dispatcher.redeliver();
+
+    const result = await redeliverIt(s, labelled(), "guid-1", "pull_request");
+
+    expect(result.outcome).toMatch(/^skipped on owner\/repo#7 at a+: a redelivery, and the worker holds a job for it$/);
+    expect(s.posted).toHaveLength(1);
+  });
+
+  it("skips a redelivery for an item the dispatcher has dispatched a job for, as where the first delivery did arrive", async () => {
+    const s = setup({ holdPosts: true });
+    s.repository.items.push(pullItem([REVIEW_LABEL]));
+    const first = s.dispatcher.delivery(signed(labelled()));
+    while (s.heldPosts.length === 0) await new Promise((resolve) => setImmediate(resolve));
+    s.hook.deliveries = [hookDelivery({ event: "pull_request" })];
+    await s.dispatcher.redeliver();
+
+    const result = await redeliverIt(s, labelled(), "guid-1", "pull_request");
+    s.heldPosts.shift()?.();
+    await first.outcome;
+
+    expect(result.outcome).toMatch(/^skipped on owner\/repo#7 at a+: a redelivery, and the dispatcher has dispatched a job for it$/);
+    expect(s.posted).toHaveLength(1);
+  });
+
+  it("decides a fresh delivery as before: the label it carries is not read again", async () => {
+    const s = setup();
+    s.repository.items.push(pullItem([]));
+
+    const result = await deliver(s, labelled());
+
+    expect(result.outcome).toMatch(/^dispatched owner\/repo#7/);
   });
 });

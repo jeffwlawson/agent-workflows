@@ -45,14 +45,14 @@ const REQUIRED = { required: true } as const;
  * - `SCAN_DISPATCH_LIMIT`: how many times a scan's job for an item's label
  *   that stays on across scans may start, at its first token request (#600),
  *   before the scan leaves the item for a person and says so on it once (#596): a job that ends the worker's process keeps
- *   its label, and every restart's scan would dispatch it again. At least `1`:
+ *   its label, and every scan would dispatch it again. At least `1`:
  *   `0` is refused at start, since it would not turn the scan off, only make
  *   it comment on every labelled item it finds. Not applied to `agent:merge`
  *   (#591), a standing decision whose gate ends with the label on.
  * - `SCAN_MERGED_WINDOW_DAYS`: how many days back the scan lists merged pull
  *   requests still carrying `agent:follow-ups`, a filing that never ran or
  *   stopped partway (#603), so one someone left the label on for months is
- *   not dispatched at every restart. At least `1`.
+ *   not dispatched at every scan. At least `1`.
  * - `SCAN_INTERVAL_MINUTES`: how many minutes apart the dispatcher scans
  *   again, after its start scan (#790), so an item a reset's announcement
  *   did not reach, or found still held by its stopped job, is dispatched

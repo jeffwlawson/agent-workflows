@@ -582,11 +582,11 @@ const times = (limit: number): string => (limit === 1 ? "once" : `${limit} times
  */
 const stoppedComment = (label: string, limit: number): string =>
   label === FOLLOW_UPS_LABEL
-    ? `**The service has stopped dispatching \`${label}\` here.** Its scan, which runs at each restart, has started this merged pull request's ` +
+    ? `**The service has stopped dispatching \`${label}\` here.** Its scan, which runs at each restart and on a timer, has started this merged pull request's ` +
       `follow-ups job ${times(limit)}, and each time \`${label}\` was still on at the next scan: the filing refused or failed, which leaves the label on ` +
       `by design and says why in the run's own comment where it got that far, or the job ended before its run did. The scan will not dispatch it again. ` +
       `To try once more, remove \`${label}\` and add it again by hand.`
-    : `**The service has stopped dispatching \`${label}\` here.** Its scan, which runs at each restart, has started this item's job for ` +
+    : `**The service has stopped dispatching \`${label}\` here.** Its scan, which runs at each restart and on a timer, has started this item's job for ` +
       `\`${label}\` ${times(limit)}, and each time the label was still on at the next scan: the job ended before its run did, ` +
       `most likely by ending the worker's process. The scan will not dispatch it again. To try once more, remove \`${label}\` and add it again by hand.`;
 
@@ -1501,10 +1501,12 @@ export const createDispatcher = (edges: DispatcherEdges) => {
   /**
    * One pass of the scan: the worker asked what it holds, then each
    * repository of each installation served. A worker that cannot be reached
-   * skips the pass, since nothing could say what it holds, and its own start
-   * announcement scans again. One that refuses the question skips it too,
-   * naming the refusal, and nothing scans again until a person mends the cause
-   * (#601): a skewed clock or a wrong secret refuses every question alike.
+   * skips the pass, since nothing could say what it holds, and the next scan
+   * retries: its own start announcement, or the timed scan (#790). One that
+   * refuses the question skips it too, naming the refusal, and each later
+   * scan, the timed one every interval included, meets and logs the same
+   * refusal until a person mends the cause (#601), and then recovers on its
+   * own: a skewed clock or a wrong secret refuses every question alike.
    * Nothing here throws: each failure is logged,
    * and the rest of the pass goes on.
    */
@@ -1525,7 +1527,7 @@ export const createDispatcher = (edges: DispatcherEdges) => {
       held = await askWorker();
     } catch (error) {
       if (error instanceof Refused) return edges.log(`scan: skipped: the worker refused to say which jobs it holds: ${error.message}`);
-      return edges.log(`scan: skipped: the worker could not say which jobs it holds: ${message(error)}. Its start scans again`);
+      return edges.log(`scan: skipped: the worker could not say which jobs it holds: ${message(error)}. The next scan retries`);
     }
     let accounts: readonly string[];
     let login: string;

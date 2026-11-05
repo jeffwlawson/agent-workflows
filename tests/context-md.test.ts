@@ -76,6 +76,27 @@ describe("CONTEXT.md opens with a glossary", () => {
     expect(links.filter((link) => !targets.has(link))).toEqual([]);
   });
 
+  /**
+   * A link saves reading only if what it lands on is short: the one ~480-line
+   * `What this is` section, with no subheadings, took 25 rows to half the file
+   * (#696). What a heading holds is read up to the next heading of any level.
+   */
+  it("links only to headings whose own text, up to the next heading, is short enough to read alone", () => {
+    const MAX_LINES = 150;
+    const below = lines.slice(end);
+    const headings = below.flatMap((line, i) => (/^#{1,6} /.test(line) ? [i] : []));
+    /** A heading's anchor is the last one `anchors` adds for the headings up to it, which numbers a repeat. */
+    const sizes = new Map(
+      headings.map((at, k) => [
+        [...anchors(headings.slice(0, k + 1).map((i) => below[i] ?? ""))].at(-1) ?? "",
+        (headings[k + 1] ?? below.length) - at,
+      ]),
+    );
+    const links = new Set([...glossary.join("\n").matchAll(/\]\(#([^)]+)\)/g)].map((match) => match[1] ?? ""));
+    const long = [...links].filter((link) => (sizes.get(link) ?? 0) > MAX_LINES).map((link) => `${link}: ${sizes.get(link)} lines`);
+    expect(long).toEqual([]);
+  });
+
   it("links to every section below it, so none is reachable only by reading the whole file", () => {
     const sections = lines.slice(end).filter((line) => /^## /.test(line));
     const linked = new Set([...glossary.join("\n").matchAll(/\]\(#([^)]+)\)/g)].map((match) => match[1] ?? ""));

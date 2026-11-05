@@ -24,30 +24,30 @@ meaning, the words not to use for it, and the section that holds it in full.
 | Term | Means | Avoid | Section |
 |---|---|---|---|
 | Agent loop | A labelled issue becomes a reviewed pull request with no human in the middle; the human decides the merge at the end. | | [What this is](#what-this-is) |
-| Trigger label | An `agent:*` label that starts a run; it stays on while its run works and comes off in the run's last step. | `agent:in-progress` (retired) | [What this is](#what-this-is) |
-| Issue shape | What `agent:implement` partitions on: a parent with sub-issues goes to `implement-prd`, anything else to `implement`. | | [What this is](#what-this-is) |
-| PRD branch, PRD PR | The one branch every slice of a PRD is built on, and the one pull request from it into the default branch. | a branch or a pull request per slice; a stack | [What this is](#what-this-is) |
-| Slice range | A sub-issue's commits on the PRD branch, derived from `Agent-Slice` trailers in its first-parent log. | reading the next slice off which issues are closed | [What this is](#what-this-is) |
-| Slice round | An ordinary review round on the PRD PR, scoped to one slice range and its sub-issue's criteria. | | [What this is](#what-this-is) |
-| Finishing run, final review | The build run that finds every sub-issue built and runs no model; the full review of the PRD PR it asks for when more than one slice landed. | | [What this is](#what-this-is) |
-| Progress list | The PRD PR body's table of each sub-issue's state, re-rendered from live state; it carries the final review's mark. | | [What this is](#what-this-is) |
-| Round header | The line opening every top-level review and fix comment, numbered off the pull request's own record. | | [What this is](#what-this-is) |
-| Advance, park | Review's `advance` job re-adds `agent:implement` to the parent when a slice round ends on an approval, and otherwise parks the chain with a comment naming the ways on. | | [What this is](#what-this-is) |
-| Fix-round budget | `AGENT_MAX_FIX_ROUNDS`, default 3: the automatic fix rounds a pull request (or one round of a PRD PR) may spend, counted from `agent-fix-round` statuses. | `auto-fix` (removed); a marker label | [What this is](#what-this-is) |
-| Early stop | No further automatic round after a fix round that closed none of the findings it was given. | the round rule (retired) | [What this is](#what-this-is) |
-| Verdict history | The verdicts on a pull request, which say whether a review follows a fix round. | reading that off who authored the commits | [What this is](#what-this-is) |
-| Severity | `high`, `medium` or `low` on every finding; it orders the list and decides one thing, through the fix threshold. | | [What this is](#what-this-is) |
-| Fix threshold | `AGENT_FIX_MIN_SEVERITY`, default `medium`: whether a review's open findings are threads (mixed) or minor findings (all below). | | [What this is](#what-this-is) |
-| Minor finding | A finding in the pull request's own code recorded rather than threaded, since every open finding was below the threshold; filed at merge as one issue per pull request. | | [What this is](#what-this-is) |
-| Follow-up | A problem the pull request is not going to fix, recorded by the review and filed at merge; out of scope or minor, by its `kind`. | | [What this is](#what-this-is) |
-| Out-of-scope note | A fix run's structured note of something outside the pull request, which the next review promotes or drops. | | [What this is](#what-this-is) |
-| Finding | A review's entry, anchored at something the pull request changed, with a severity and an id; a reviewer closes it, the fixer never does, and a maintainer's decline outranks both. | | [What this is](#what-this-is) |
-| Clean merge, conflict resolution | An `update-branch` merge that changed nothing reviewed, which carries the verdict and the arm on; and one the loop wrote code for, which copies nothing and asks for a review. | | [What this is](#what-this-is) |
-| Arm, disarm | A human adding `agent:merge` arms the head it was added at; anything but a clean merge of the base on that head disarms it. | the loop arming | [What this is](#what-this-is) |
-| Frame, summary block | The pull request body the opening run writes once; a review rewrites only the title and the summary block, and only when something was pushed since. | a description of the change in the review comment | [What this is](#what-this-is) |
-| Evidence, test-first check | The summary's Before (failing-first tests from the red check) and After (CI at the head); the body alone calls the red check the test-first check. | "test-first check" anywhere but the body | [What this is](#what-this-is) |
-| Merge Danger | The summary's door (`one-way` or `two-way`), blast radius, *Breaking:* lines and known issues. | | [What this is](#what-this-is) |
-| Post-merge checklist | The *After merge, by a human* items of the linked briefs, posted by `follow-ups` on every merge. | | [What this is](#what-this-is) |
+| Trigger label | An `agent:*` label that starts a run; it stays on while its run works and comes off in the run's last step. | `agent:in-progress` (retired) | [Trigger labels](#trigger-labels-and-the-order-a-run-ends-in) |
+| Issue shape | What `agent:implement` partitions on: a parent with sub-issues goes to `implement-prd`, anything else to `implement`. | | [The PRD chain](#the-prd-chain) |
+| PRD branch, PRD PR | The one branch every slice of a PRD is built on, and the one pull request from it into the default branch. | a branch or a pull request per slice; a stack | [The PRD chain](#the-prd-chain) |
+| Slice range | A sub-issue's commits on the PRD branch, derived from `Agent-Slice` trailers in its first-parent log. | reading the next slice off which issues are closed | [The PRD chain](#the-prd-chain) |
+| Slice round | An ordinary review round on the PRD PR, scoped to one slice range and its sub-issue's criteria. | | [The PRD chain](#the-prd-chain) |
+| Finishing run, final review | The build run that finds every sub-issue built and runs no model; the full review of the PRD PR it asks for when more than one slice landed. | | [The PRD chain](#the-prd-chain) |
+| Progress list | The PRD PR body's table of each sub-issue's state, re-rendered from live state; it carries the final review's mark. | | [The PRD chain](#the-prd-chain), [the pull request body](#the-pull-request-body) |
+| Round header | The line opening every top-level review and fix comment, numbered off the pull request's own record. | | [Round headers](#round-headers) |
+| Advance, park | Review's `advance` job re-adds `agent:implement` to the parent when a slice round ends on an approval, and otherwise parks the chain with a comment naming the ways on. | | [The advance, and parking the chain](#the-advance-and-parking-the-chain) |
+| Fix-round budget | `AGENT_MAX_FIX_ROUNDS`, default 3: the automatic fix rounds a pull request (or one round of a PRD PR) may spend, counted from `agent-fix-round` statuses. | `auto-fix` (removed); a marker label | [The fix-round budget and the early stop](#the-fix-round-budget-and-the-early-stop) |
+| Early stop | No further automatic round after a fix round that closed none of the findings it was given. | the round rule (retired) | [The fix-round budget and the early stop](#the-fix-round-budget-and-the-early-stop) |
+| Verdict history | The verdicts on a pull request, which say whether a review follows a fix round. | reading that off who authored the commits | [The review a push asks for](#the-review-a-push-asks-for) |
+| Severity | `high`, `medium` or `low` on every finding; it orders the list and decides one thing, through the fix threshold. | | [The review body, and severity](#the-review-body-and-severity) |
+| Fix threshold | `AGENT_FIX_MIN_SEVERITY`, default `medium`: whether a review's open findings are threads (mixed) or minor findings (all below). | | [The fix threshold and minor findings](#the-fix-threshold-and-minor-findings) |
+| Minor finding | A finding in the pull request's own code recorded rather than threaded, since every open finding was below the threshold; filed at merge as one issue per pull request. | | [The fix threshold and minor findings](#the-fix-threshold-and-minor-findings), [follow-up kinds](#follow-ups-and-the-post-merge-checklist) |
+| Follow-up | A problem the pull request is not going to fix, recorded by the review and filed at merge; out of scope or minor, by its `kind`. | | [Follow-ups](#follow-ups-and-the-post-merge-checklist) |
+| Out-of-scope note | A fix run's structured note of something outside the pull request, which the next review promotes or drops. | | [Out-of-scope notes](#out-of-scope-notes) |
+| Finding | A review's entry, anchored at something the pull request changed, with a severity and an id; a reviewer closes it, the fixer never does, and a maintainer's decline outranks both. | | [Who closes a finding](#who-closes-a-finding), [where it is anchored](#where-a-finding-is-anchored) |
+| Clean merge, conflict resolution | An `update-branch` merge that changed nothing reviewed, which carries the verdict and the arm on; and one the loop wrote code for, which copies nothing and asks for a review. | | [Clean merges and conflict resolutions](#clean-merges-and-conflict-resolutions) |
+| Arm, disarm | A human adding `agent:merge` arms the head it was added at; anything but a clean merge of the base on that head disarms it. | the loop arming | [The merge: arm and disarm](#the-merge-arm-and-disarm) |
+| Frame, summary block | The pull request body the opening run writes once; a review rewrites only the title and the summary block, and only when something was pushed since. | a description of the change in the review comment | [The pull request body](#the-pull-request-body) |
+| Evidence, test-first check | The summary's Before (failing-first tests from the red check) and After (CI at the head); the body alone calls the red check the test-first check. | "test-first check" anywhere but the body | [The pull request body](#the-pull-request-body) |
+| Merge Danger | The summary's door (`one-way` or `two-way`), blast radius, *Breaking:* lines and known issues. | | [The pull request body](#the-pull-request-body) |
+| Post-merge checklist | The *After merge, by a human* items of the linked briefs, posted by `follow-ups` on every merge. | | [Follow-ups and the post-merge checklist](#follow-ups-and-the-post-merge-checklist) |
 | Part | One of the caller, the reusable workflow and the package; which one a change belongs in is the distinction to get right. | layer (a pull request in a GitHub stack) | [The three parts](#the-three-parts-and-what-belongs-in-each) |
 | Caller, caller file | One calling job an adopter owns (a `uses:`, its grant and its secrets), and the workflow file holding one or more. | "the workflow" (say which part) | [The three parts](#the-three-parts-and-what-belongs-in-each) |
 | Reusable workflow | The part that keeps only what Actions can do: the job graph, the fork guard, the permissions ceiling, secrets, concurrency and timeouts. | a composite action | [The three parts](#the-three-parts-and-what-belongs-in-each), [why not a composite action](#why-reusable-workflows-and-not-a-composite-action) |
@@ -87,6 +87,8 @@ transition, near enough:
 | `agent:update-branch` on a **PR** | `update-branch` | merge the base branch in, resolve conflicts, carry the verdict over or ask for a re-review |
 | `agent:merge` on a **PR** | `merge` | the maintainer's merge decision for the head it was added at (the **arm**): merge it once that head is current with its base, green and approved; ask for `agent:update-branch` where it is behind; disarm where the head gained anything but a clean merge of the base ([ADR 0009](./docs/adr/0009-agent-merge-executes-the-human-decision.md)) |
 | `agent:follow-ups` on a **merged PR** | `follow-ups` | file the out-of-scope findings and the minor findings its review recorded, as `needs-triage` issues (a stub each out of scope, and one issue for the minor findings); on **every** merge, labelled or not, post the linked briefs' *After merge, by a human* checklist |
+
+### The PRD chain
 
 `implement` and `implement-prd` share one label and partition on **issue shape**: a parent with
 sub-issues goes to the PRD chain, everything else to the single-issue run. The chain works one
@@ -144,6 +146,8 @@ failure comments are the two that carry a link elsewhere, since no sub-issue hol
 run after an approval says on the slice's sub-issue which commit was approved and which criteria
 changed. No loop-written text puts an issue's title beside its `#N`: GitHub renders it already.
 
+### Round headers
+
 Every top-level review and fix comment opens with a **round header** (#298): *Slice k of n · #sub ·
 review r* (or *fix f*), *Final review · review r* on the final review, *Review r* or *Fix f* on a
 regular pull request. `shared/round-header.ts` numbers them off the pull request's own record,
@@ -154,6 +158,8 @@ a fix round added by hand past the budget.
 
 Rules marked *Pre-upgrade compatibility* in the code serve a chain an older release started
 (#248).
+
+### Trigger labels, and the order a run ends in
 
 **A trigger label is on while its run works** (#236). The run leaves it on as it starts and takes
 it off in its last step, however it ends: success, failure, refusal, timeout or cancel. So the
@@ -183,6 +189,8 @@ review that found the head moved hands off one way only, and says so as `moved`:
 advance hand-offs stand down, since its verdict is about a commit the pull request has left, and
 `update-branch` asks for itself again only where it did not just ask for a review.
 
+### Review's two jobs
+
 **Review is the one run whose work and whose posting are two jobs** (#257). The review job runs the
 model and writes nothing at all: no comment, label, status or review, and no write scope to make
 one with. One **posting job** that runs no model then writes everything, in the order above:
@@ -196,6 +204,8 @@ commands (#417, #419): `review:publish` posts the results, and `review:conclude`
 job went, ends the run. Conclude is told how the review job and each step before it ended, and
 works out the ending from that, so a hand-off that fails after the review posted is said as a
 failed hand-off, never as a review that did not finish.
+
+### The review a push asks for
 
 `fix` and `update-branch` are the two rows that add `agent:review` **after a push to an existing
 PR** — the `implement` pair adds it too, on the PR it has just opened, which is the table's own
@@ -228,6 +238,8 @@ for the pull request to show the pushed commit before it labels, and labels anyw
 if it never does. And the review does not trust its payload: `review:gate` reads the branch tip
 from the repository's refs, reviews the tip where it descends from the labelled commit, refuses by
 name where it does not, and checks out, waits on CI for and posts every status on that one commit.
+
+### The fix-round budget and the early stop
 
 Review adds a trigger label in two cases. The first is on the pull request (#102): the posting
 job's last step adds `agent:fix` when the verdict is *Changes recommended* and the pull request has
@@ -263,6 +275,8 @@ automatic fix is about to start also stays a **draft**: draft means the loop is 
 working, and what marks it ready is whichever end the round comes to — the re-review, where the fix
 pushed or left a note, and the fix run itself where it did neither and so asked for none.
 
+### The advance, and parking the chain
+
 The second is the **advance**, a second arrow, and it lands on an issue rather than a pull
 request (#176). It is one job, `advance` in `review`, and it fires only on a PRD PR (head under
 `agent/prd-`, same repository). When a slice round ends on an **approval**, it re-adds
@@ -282,11 +296,15 @@ like the runner (no checkout, no model, and the loop's App or `AGENT_PAT` for th
 nothing there). The review hands it the round, the park reason, the open findings and what the
 progress list is rendered from, as data, and it writes every string itself.
 
+### Clean merges and conflict resolutions
+
 `update-branch` asks only on the half of its work an agent wrote. A **clean** merge changed nothing
 the last review read, so it carries that review's verdict on to the merge commit instead — a
 commit status belongs to a commit, so without the copy every merge into a base branch would wipe
 the verdict off every open PR that refreshes against it. A **conflict resolution** is the loop
 writing code no review has seen, so it copies nothing and asks.
+
+### The merge: arm and disarm
 
 **The merge is decided by a human and carried out by the loop** (PRD #585, [ADR
 0009](./docs/adr/0009-agent-merge-executes-the-human-decision.md)). Adding `agent:merge` to a pull
@@ -302,6 +320,8 @@ else on the head (a resolved conflict, a fix round, a human's push, GitHub's *Up
 button, a force-push) leaves it unarmed, and the next gate **disarms**: it takes `agent:merge` off
 and asks the human who armed it, by name, for a fresh merge-check. The label is a standing
 authorisation rather than a run's label, armed until merged or disarmed.
+
+### Who closes a finding
 
 **The reviewer closes a finding; the fixer never does** (#109). A `fix` run replies in
 every thread it is asked about — every open one bar a thread whose close failed, which already
@@ -331,6 +351,8 @@ inside this change's scope, because the bound on expanding a pull request is a b
 terms it may decline any comment, and says why. What it may not do is weigh a maintainer's ask as
 one more finding.
 
+### Outcomes on conversation comments
+
 **An outcome is owed on a comment that has no thread** (#104). A
 `fix` run reported one outcome per review thread and nothing for a top-level **conversation**
 comment — it read them, acted on them, and never said so, which made a *declined* one invisible:
@@ -348,6 +370,8 @@ because a status note asks for nothing (#159). The record carries a
 marker of its own rather than the top-level one, because the top-level one is what dedupes that
 channel across runs, and a record is correct to repeat.
 
+### Out-of-scope notes
+
 **A fix run's out-of-scope note ends as an issue or as a decision not to file one** (#213). The
 fix agent often reads furthest past the diff, and what it noticed there used to be a top-level
 comment that nothing read: `follow-ups` files only from the newest review body, and the fetch keeps
@@ -360,6 +384,8 @@ in its own follow-ups (ahead of its own, inside the same cap) and filed on merge
 **dropped**, listed in the body with the reason. A note it says nothing about is promoted, the
 direction that cannot lose one. The fix agent never writes the follow-ups record itself: two
 writers of it would break "the newest record wins".
+
+### The review body, and severity
 
 **The review body is where the rounds are kept** (#109). It is a findings
 record, not a rendering of the latest pass: the round header, `## Agent review`, the assessment, one sentence the
@@ -385,6 +411,8 @@ would be handed a settled finding to rule on again. A carried entry also carries
 thread, which sits under an older review; a fresh one cannot, because its thread is opened by the
 same call that posts the body.
 
+### The fix threshold and minor findings
+
 **The fix threshold places the open findings, once per review** (#616). The repository variable
 `AGENT_FIX_MIN_SEVERITY` is `low`, `medium` or `high`, `medium` where unset, and `review:gate` refuses
 any other value by name. After the review has verified what was carried and before it writes
@@ -407,6 +435,8 @@ a pull request whose only work is minor findings is not one with nothing to do. 
 merge. The approval's fixed line says nothing blocks the merge, never that nothing is left (#105,
 #124).
 
+### Where a finding is anchored
+
 Since #127 no finding the review raises is thread-less. **Every fix-before-merge finding is anchored
 at something the pull request changed** — a line the diff covers, or the changed file where it
 covers no such line — because GitHub opens a thread against nothing else, and a finding with no
@@ -424,6 +454,8 @@ The prose beside the record is capped by the schema rather than asked for in the
 **restates no finding**: the findings are above it with their severities, and the one 250-word
 paragraph that mixed *what the change is* with *what the reviewer verified* is what made a body
 long enough to bury the record in it.
+
+### Acceptance criteria, and what changed since the brief
 
 **Every review checks the linked issue's acceptance criteria one by one** (#214). The workflow
 reads them off the issue (its acceptance section, or where triage posted a brief as a trusted
@@ -455,6 +487,8 @@ or path not found at the read-at commit, and on a slice round where the PRD bran
 before it could not be listed; where the check could not run (no such section, no read-at commit,
 one that does not resolve or is not on the base, no named file at it, or git failing to read it) it
 says why in one line there instead.
+
+### The pull request body
 
 **What the change is lives in the pull request's body, not the review** (#218). The run that opens
 a pull request writes its **frame** once and never again, in the order #298 settled: a note saying
@@ -495,6 +529,8 @@ this review's follow-ups, filed when the pull request merges. Each optional part
 there is none. So the review comment
 carries no description of the change, and the description exists in one place.
 
+### The PRD PR's summary
+
 On a PRD PR of more than one slice the summary is the final review's alone (#298): a slice round
 writes neither the title nor the block, which holds a placeholder until then. A PRD PR's **final
 review** writes both however little was pushed (#247). Its summary is the whole PRD's, in the same
@@ -511,6 +547,8 @@ so each slice's tests run on code holding every earlier slice; the final review 
 each slice's changes to that slice round's record. The same write removes the frame's
 **draft-only** note, between its own markers, so a PRD PR marked ready says nothing about being a
 draft.
+
+### Follow-ups and the post-merge checklist
 
 `follow-ups` is the row that is not quite a label transition. The **merge** is what fires it and
 the label is a marker it reads — re-adding that label to a closed PR is a manual entry point rather

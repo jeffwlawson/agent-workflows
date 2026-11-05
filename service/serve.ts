@@ -104,6 +104,11 @@ export const serveDispatcher = async (
   if (redeliveryInterval > 1440) {
     throw new Error(`\`REDELIVERY_INTERVAL_MINUTES\` is \`${redeliveryInterval}\`, more than a day. It must be at most 1440; \`0\` turns the poll off.`);
   }
+  const scanInterval = wholeNumber("SCAN_INTERVAL_MINUTES", settings.SCAN_INTERVAL_MINUTES);
+  // A day at most, for the same reason as the redelivery poll's bound.
+  if (scanInterval > 1440) {
+    throw new Error(`\`SCAN_INTERVAL_MINUTES\` is \`${scanInterval}\`, more than a day. It must be at most 1440; \`0\` turns the timed scan off.`);
+  }
   const redeliveryWindow = wholeNumber("REDELIVERY_WINDOW_MINUTES", settings.REDELIVERY_WINDOW_MINUTES);
   if (redeliveryWindow === 0) {
     throw new Error("`REDELIVERY_WINDOW_MINUTES` is `0`, a window no failed delivery is inside. It must be at least 1; `REDELIVERY_INTERVAL_MINUTES=0` turns the poll off.");
@@ -194,7 +199,25 @@ export const serveDispatcher = async (
   );
   // A restart strands no labelled work (#581): what nothing holds a job for is dispatched again.
   log("scanning for labelled work nothing holds a job for");
-  void dispatcher.scan();
+  const scan = (): Promise<void> =>
+    dispatcher.scan().catch((error: unknown) => log(`scan: failed: ${error instanceof Error ? error.message : String(error)}`));
+  void scan();
+  // The same scan on a timer (#790), so an item a reset's announcement did not
+  // reach (#660), or found still held (#659), is dispatched without a restart.
+  // A tick while the timer's last scan has not ended starts nothing; one while
+  // another scan runs is queued behind it by `scan` itself, never beside it.
+  if (scanInterval === 0) {
+    log("timed scan: off, SCAN_INTERVAL_MINUTES is 0: labelled work nothing holds a job for waits for a start or a reset's announcement");
+  } else {
+    log(`timed scan: every ${scanInterval} minutes, labelled work nothing holds a job for is dispatched again`);
+    let timed: Promise<void> | undefined;
+    setInterval(() => {
+      if (timed !== undefined) return;
+      timed = scan().finally(() => {
+        timed = undefined;
+      });
+    }, scanInterval * 60_000);
+  }
   // A delivery GitHub tried once and the door did not answer in time is sent
   // again (#774): at start, then every interval, unless the interval is 0.
   if (redeliveryInterval === 0) {

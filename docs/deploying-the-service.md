@@ -286,7 +286,8 @@ so does an App whose own record cannot be read, since that is where the App's ow
 | `JOB_DEADLINE_MARGIN_MINUTES` | optional | `60` | added to a job's own time limit for its deadline, review's (its CI wait and `AGENT_REVIEW_TIMEOUT_MINUTES`) or fix's, update-branch's and implement's (`AGENT_TIMEOUT_MINUTES`), or implement-prd's (35 minutes and `AGENT_TIMEOUT_MINUTES`), or follow-ups' (10 minutes), or merge's (20 minutes), covering the phases around the runner's and the time a job waits in the worker's queue: in its lane, behind an earlier job for its item, and, for an update-branch whose merge conflicted, for the agent lane, a hold on the plan's usage limit included (*The worker*, below) |
 | `EXTRA_OWNERS` | optional | `""` | accounts, comma-separated, whose installations the dispatcher serves besides the App owner's; empty is none. An installation on any other account is refused |
 | `SCAN_DISPATCH_LIMIT` | optional | `2` | how many times a scan's job for an item's label that stays on across scans may start (ask for its first token) before the scan leaves the item for a person, and comments once to say so (*The scan's limit*, below), never applied to `agent:merge`. At least `1`: `0` is refused at start, since it would not turn the scan off |
-| `SCAN_MERGED_WINDOW_DAYS` | optional | `7` | how many days back the scan lists merged pull requests still carrying `agent:follow-ups` (*What a restart recovers*, below), so one someone left the label on for months is not dispatched at every restart. A positive whole number: `0` is refused at start |
+| `SCAN_MERGED_WINDOW_DAYS` | optional | `7` | how many days back the scan lists merged pull requests still carrying `agent:follow-ups` (*What a restart recovers*, below), so one someone left the label on for months is not dispatched at every scan. A positive whole number: `0` is refused at start |
+| `SCAN_INTERVAL_MINUTES` | optional | `60` | how many minutes apart the dispatcher scans for labelled work nothing holds a job for (*What a restart recovers*, below), after the scan at its start, so an item a reset's announcement did not reach, or found still held, is dispatched without a restart. A tick while the timer's last scan still runs starts nothing; one while another scan runs waits behind it. Each scan costs about four calls per repository served that has not opted in, and a few more per one that has; a scan that finds nothing to do logs only what any scan logs. At most `1440`, a day: more is refused at start, naming the setting. `0` turns the timer off |
 | `REDELIVERY_INTERVAL_MINUTES` | optional | `5` | how many minutes apart the dispatcher lists the App's recent webhook deliveries and asks GitHub to send again each that failed (*What it does not keep*, below); it also does so at start. One list call each time, and a line only when it asks for a redelivery or the list cannot be read. At most `1440`, a day: more is refused at start, naming the setting. `0` turns the poll off |
 | `REDELIVERY_WINDOW_MINUTES` | optional | `30` | how many minutes back a failed delivery is redelivered; one older is left lost, so an event long past is never sent again. A positive whole number: `0` is refused at start |
 | `STATE_FILE` | optional | `""` | the path of the file the dispatcher keeps its dispatched jobs and the scan's counts in, so a restart keeps them (*What it does not keep*, below). Empty is none: both are held in memory only. A path it cannot write to is refused at start, naming the setting. One dispatcher per file |
@@ -358,11 +359,20 @@ dispatcher per file: two sharing one are not supported, and nothing locks it.
   restart lists it. A scan before the reset reads the newest resume note and skips the item, so a
   restart does not dispatch it into the limit again; a scan after the reset dispatches it. What
   asks for that scan is the worker's announcement at the reset, which a restarted worker no longer
-  makes (*Restarts and outages*, below).
+  makes (*Restarts and outages*, below), and, failing that, the timed scan every
+  `SCAN_INTERVAL_MINUTES` (default `60`).
 
-**What a restart recovers: the scan.** At its start, and again whenever the worker announces its
-own start, the dispatcher scans for labelled work nothing holds a job for, one pass at a time (a
-request while one waits is folded into it). For each installation it serves, each repository that
+**What a restart recovers: the scan.** At its start, again whenever the worker announces its
+own start or a usage limit's reset, and every `SCAN_INTERVAL_MINUTES` (default `60`; `0` turns the
+timer off, with one line at start), the dispatcher scans for labelled work nothing holds a job
+for, one pass at a time (a request while one waits is folded into it, and a timer tick while the
+timer's last scan has not ended starts nothing). The timed scan is the same scan: it skips an item
+the worker holds a job for or the dispatcher has dispatched, and counts toward `SCAN_DISPATCH_LIMIT`
+only a job that starts. It recovers what no announcement asks for: an item whose reset
+announcement was lost, the dispatcher unreachable at the reset (#660), and one the reset's scan
+skipped because its stopped job was still concluding in the worker (#659), each dispatched by the
+next timed scan once nothing holds a job for it. A timed scan that fails is logged, and the timer
+goes on. For each installation it serves, each repository that
 opts in, it lists the open issues and pull requests carrying `agent:implement`, `agent:review`,
 `agent:fix`, `agent:update-branch` or `agent:merge`, and decides each one as that label's delivery would be
 decided: the same installation, owner and opt-in checks, a head in the same repository, an open
@@ -382,7 +392,7 @@ on who merged, as none runs on a merge's delivery, but the label is held to the 
 the actor of its latest `labeled` event is the App or someone who can write now, or the item is
 skipped and logged. A filing that refuses leaves the label on by design, an edited review being the
 standing case, and nothing on the record tells that from a run that never happened, so a refused
-filing is dispatched again at each restart within the window, up to the scan's limit below, and
+filing is dispatched again at each scan within the window, a restart's or the timed one's, up to the scan's limit below, and
 then left for a person. Each of those runs posts its refusal comment again. With `STATE_FILE`
 unset, the scan's count starts again at each dispatcher restart (*What it does not keep*, above),
 so the limit bounds one dispatcher's lifetime, not the total: each restart within the window can
@@ -413,8 +423,9 @@ carries the time it was `asked`, and the worker refuses one more than 5 minutes 
 a minute ahead of its own clock, so a captured question cannot be replayed later to drop jobs;
 keep both hosts' clocks synchronised. A refused question skips the scan, and both logs name the
 refusal (`scan: skipped: the worker refused to say which jobs it holds: …` in the dispatcher's).
-Asking again meets the same refusal, so nothing scans again, the worker's start included, until
-the clock or the secret is mended. The same answer lets the dispatcher forget
+Asking again meets the same refusal, so every scan, the worker's start and the timed scan every
+`SCAN_INTERVAL_MINUTES` included, is skipped and logs the refusal again until the clock or the
+secret is mended; the next scan after that recovers on its own. The same answer lets the dispatcher forget
 every job it dispatched that the worker no longer holds, which after a worker's restart is every
 job it held before.
 
@@ -422,7 +433,7 @@ A label still on an item with nothing held for it is a run that never reached it
 the loop's commands take the trigger label off however a decided run ends. Two limits follow:
 
 - a run that ended because the dispatcher **granted no token** leaves its label on by design
-  (adding it again is the retry), so a scan after it dispatches it once more, once per start, up
+  (adding it again is the retry), so a scan after it dispatches it once more, once per scan, up
   to the scan's limit;
 - a job **running in the worker when only the dispatcher restarted** is skipped, since the worker
   still holds it, and, without `STATE_FILE`, dies at its next token request, as above; with it,
@@ -557,7 +568,10 @@ logging each, since such a job would end at its first token request with nothing
 label still on. The agent lane runs the rest in arrival order, as before, and the worker announces
 to the dispatcher as it does at its start, so the dispatcher's scan lists the stopped item and each
 dropped job's, their labels still on, finds nothing held for them, and dispatches them with fresh
-deadlines, decided as any label's delivery is. The margin should cover a hold, a few hours for a
+deadlines, decided as any label's delivery is. Where that announcement is lost, the dispatcher
+unreachable at the reset (#660), or its scan finds the stopped job still held, its conclude still
+running (#659), the next timed scan (`SCAN_INTERVAL_MINUTES`, *What a restart recovers*, above)
+dispatches the item instead. The margin should cover a hold, a few hours for a
 session limit, so the jobs behind a stop keep their place in the queue rather than being dropped and
 dispatched again behind newer ones; a job that was not dropped but runs past its deadline still ends
 at its first token request, as any late job does. Only the CLI's message in that shape counts: an API rate limit, a billing stop, or a zone other
@@ -850,7 +864,8 @@ The job door also answers `GET /health` with `200`.
   it would have made at the reset: both are in its memory only. Its start announcement makes the
   dispatcher scan, which still skips an item whose resume note names a reset still ahead, so
   nothing is dispatched into the limit. But nothing then asks for a scan at the reset, so a
-  waiting item waits for the next scan after it: either process's next start. And a labelled item
+  waiting item waits for the next scan after it: the next timed scan, within
+  `SCAN_INTERVAL_MINUTES`, or with the timer off, either process's next start. And a labelled item
   a job is not held for that has no note, such as one queued behind the stop, is dispatched at
   that start, before the reset, hits the limit, and takes the usage-limit ending itself.
 - **A dispatcher restarted while an item waits** reads the item's resume note at its start scan

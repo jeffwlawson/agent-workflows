@@ -93,6 +93,16 @@ export interface PullRequestContext {
 }
 
 /**
+ * How the review reads the note `unreadableNote` writes, printed only where a
+ * feedback selection was refused (#780, audit #704 H4), ahead of the feedback
+ * the note sits with. Moved out of `review/prompt.md` as it was.
+ */
+export const UNREADABLE_FEEDBACK_RULE = [
+  "A note headed *Feedback that could not be read* below says what the API refused and what that",
+  "leaves unknown, which can change a conclusion (`howChecked` records where it does)."
+].join("\n");
+
+/**
  * Gather everything the review agent needs, read here rather than by the agent
  * so it has no reason to reach for `gh` itself (see the token-boundary note in
  * implement.ts). This is the *lite* context: PR metadata, the linked issue, and
@@ -184,6 +194,7 @@ export const fetchPullRequestContext = (
   // spans a section it has no bearing on is one the agent has to guess the
   // scope of.
   const discussion = [
+    feedback.unreadable.length === 0 ? "" : UNREADABLE_FEEDBACK_RULE,
     feedback.allForReview,
     unreadableNote(feedback.unreadable),
     issueComments && `### On the linked issue\n\n${issueComments}`,

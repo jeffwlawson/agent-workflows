@@ -22,8 +22,9 @@
 # typecheck does. The pull request is clean-full-ref-names's (#719): nothing
 # merged since fixed it, so the part the round got right draws no finding.
 #
-# Rendered as the runner renders a verification pass: HISTORY is the line
-# `describeHistory` returns for one; OPEN_FINDINGS and DISCUSSION are Review
+# Rendered as the runner renders a verification pass: HISTORY is what
+# `describeHistory` returns for one, its line and the verification pass's
+# rules (#780); OPEN_FINDINGS and DISCUSSION are Review
 # 1's two threads, each with the fix run's reply, read through
 # `fetchPullRequestFeedback` and `renderCarriedFindings` over the threads'
 # real comments (only the reply's commit, 4319d18, is this round's, 7cfe705);
@@ -46,4 +47,3 @@ inputs:
   PR_TITLE: "fix(service): name every ref in full so a tag cannot shadow a branch (#569)"
   ISSUE_NUMBER: "569"
   ISSUE_TITLE: "A tag named like a branch is read as that branch by the service's checkout and update-branch's merge"
-  HISTORY: "This review **follows a fix round**: an earlier review of this pull request started one, and commits have landed since."

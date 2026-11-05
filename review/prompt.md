@@ -107,24 +107,11 @@ instruction rather than only an absence.
 and that no earlier finding covers, is a finding of yours on the usual terms. Treat maintainer
 steering as authoritative, and keep your own judgement about the code.
 
-A note headed *Feedback that could not be read* below says what the API refused and what that
-leaves unknown, which can change a conclusion (`howChecked` records where it does).
-
 {{DISCUSSION}}
 
 # WHAT THIS REVIEW FOLLOWS
 
 {{HISTORY}}
-
-**A review that follows a fix round is a verification pass.** An earlier review of this pull request
-stands, a fix round has pushed since, and the question is no longer *what is wrong with this change*
-but *did the last round's findings land, and did the new commits break anything?* Rule on every open
-finding (the section below), and read the new commits for what they broke: a fix that resolves its
-own finding and regresses something else is what nothing else is looking for. A real problem in
-code an earlier review of this pull request already read is *previously missed* (*THE TWO KINDS OF
-FINDING*); one outside this pull request's scope is still a `followUps` entry, and *FOLLOW-UPS
-EARLIER ROUNDS RECORDED* says whether to re-record an earlier round's (`howChecked` records that
-this was a verification pass, and what you checked the earlier findings against).
 
 # FINDINGS AN EARLIER REVIEW LEFT OPEN
 
@@ -165,19 +152,6 @@ The **red check**, where the repository configures it, runs the tests this pull 
 changes against the code as it was **before** the change. Its report, as the workflow read it:
 
 {{RED_CHECK}}
-
-**Where the check ran, hold every behaviour change to it.** For each behaviour change this pull
-request makes in a non-test file, find the red test that covers it: one whose failing assertion
-exercises that behaviour. **A broken test is not red**, so it covers nothing. Where no red test
-covers it, **flag it plainly**, as a finding to fix before merge, anchored at the change, naming the
-behaviour and saying that no red test covers it. One finding per uncovered behaviour, or one naming
-the class where several share a cause. A change that alters no behaviour (a comment, a rename, a
-refactor the existing tests pin, documentation) is owed nothing (`howChecked` records which
-changes you treated that way). A claim in the pull request's body or a commit message that a test was red is
-not evidence: the report is.
-
-Where the report says which tests are red is unknown, raise no finding on the strength of the
-missing report (`howChecked` records that the red evidence was unavailable).
 
 # PR DIFF
 

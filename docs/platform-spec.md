@@ -4139,7 +4139,7 @@ none.
 | `PR_MERGED` | optional | `""` | `true` where the event saw it merged. |
 | `PR_DRAFT` | optional | `"false"` | Accepts `true` or `false`: whether the event saw it a draft. |
 | `CHECK_WAIT_SECONDS` | optional | `"900"` | How long it waits while anything on the head is pending: the review's CI wait, which a test holds it equal to. |
-| `CHECK_POLL_SECONDS` | optional | `"20"` | How often it reads the head meanwhile. |
+| `CHECK_POLL_SECONDS` | optional | `"10"` | How often it reads the head meanwhile. |
 
 #### Outputs
 

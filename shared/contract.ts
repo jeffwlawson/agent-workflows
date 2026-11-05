@@ -861,7 +861,7 @@ const MERGE_GATE = {
     PR_MERGED: EMPTY,
     PR_DRAFT: { required: false, default: "false", accepts: ["true", "false"] },
     CHECK_WAIT_SECONDS: { required: false, default: "900" },
-    CHECK_POLL_SECONDS: { required: false, default: "20" },
+    CHECK_POLL_SECONDS: { required: false, default: "10" },
   },
   outputs: [...EVERY_SUBCOMMAND_OUTPUTS, "gate.json", WRITE_LOG],
 } as const satisfies CommandContract;

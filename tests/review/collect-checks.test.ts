@@ -215,6 +215,16 @@ describe("review:collect-checks hands the agent the other checks", () => {
     expect(reads.filter((r) => r.method === "checkRuns").length).toBeGreaterThan(CI_WAIT_SECONDS / POLL_SECONDS);
   });
 
+  /**
+   * The review starts when CI finishes plus up to one interval (#273), so the
+   * interval is pinned here: 10 s, against an API budget the source states.
+   */
+  it("looks every 10 s, within the ceiling and the grace period", () => {
+    expect(POLL_SECONDS).toBe(10);
+    expect(CI_WAIT_SECONDS % POLL_SECONDS).toBe(0);
+    expect(GRACE_SECONDS % POLL_SECONDS).toBe(0);
+  });
+
   /** And ends as soon as it finishes, rather than at the ceiling. */
   it("stops waiting the moment the check finishes", async () => {
     set({});

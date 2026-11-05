@@ -261,7 +261,7 @@ request is a draft, whether it was started by `agent:merge`'s own delivery, the 
 and its sender. The deadline is the job's own time limit, review's, or
 fix's, update-branch's and implement's, or implement-prd's, the sum of its jobs' limits, or
 follow-ups', 10 minutes, or merge's, 20 (below), plus `JOB_DEADLINE_MARGIN_MINUTES`.
-It carries no token: the worker asks for one per phase, `read`, `write`, `resolve` or `push`, and the dispatcher mints
+It carries no token: the worker asks for one per phase, `read`, `ci`, `write`, `resolve` or `push`, and the dispatcher mints
 one only for a job it dispatched, before that job's deadline, for that job's repository alone, while
 the installation is still on an account it serves, and after reading `AGENT_ORCHESTRATOR` again. Deleting the variable stops a job in flight at its next
 phase.
@@ -651,7 +651,8 @@ then flows into review. `implement:conclude` ends every run, in the same checkou
 run's commits to `agent/rescue/issue-<n>` for the next run to resume from. The service
 has no run page, so the link the implement commands give where Actions links its workflow run (the
 start comment, the pull request's frame, the link on the issue and the failure comment) is the
-App's own page, `https://github.com/apps/<slug>`. Review's, fix's and update-branch's failure
+App's own page with the job's id in its fragment, `https://github.com/apps/<slug>#job-<id>`
+(below). Review's, fix's and update-branch's failure
 comments, which build their link from the Actions run, give none on the service.
 
 An implement-prd job runs `implement-prd:gate`, and ends there where it refused the PRD or deferred

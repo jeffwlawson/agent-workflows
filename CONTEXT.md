@@ -741,7 +741,7 @@ with no head, and the repository's default branch as its base. A job's deadline 
 answers, `SERVICE_LABELS`, are that map's keys, on either event. The label's sender must be able to write to the
 repository, unless it is the App itself, whose labels the loop's commands add
 ([ADR 0008](./docs/adr/0008-service-job-kinds-and-own-app-sender.md)). A job carries no token. The worker
-asks for one at the other door at the start of each phase, `read`, `write`, `resolve` or `push`, and the dispatcher
+asks for one at the other door at the start of each phase, `read`, `ci`, `write`, `resolve` or `push`, and the dispatcher
 mints one for that job's repository alone, before its deadline, after reading the opt-in again, so
 deleting the variable stops a job in flight at its next phase. The job's format is one module,
 `service/job.ts`, which both processes import, so it only has to hold within one release.
@@ -792,7 +792,7 @@ reusable's glue steps read, copied across as it is; a phase it did not start get
 written where the next command reads that phase's, as Actions would have it written there. Each subcommand's environment is built by one
 function from its declaration in the contract, and holds nothing else of the worker's but `PATH`,
 `HOME` and `LANG`, so a token reaches a subcommand only where its phase was handed it: the runner
-gets the `read` token, never the `write`, `resolve` or `push` one. A run function checks out what each of
+gets the `read` token, never the `ci`, `write`, `resolve` or `push` one. A run function checks out what each of
 its reusable's jobs checks out, a checkout per job, whether or not the job before left its checkout
 changed (#530): `fix`'s publish job checks the head out again as `update-branch`'s does. It differs
 only where a command needs it, and that workflow's *Service orchestrator* block in

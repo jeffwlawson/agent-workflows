@@ -222,7 +222,10 @@ else
 fi
 # Where STATE_FILE keeps the dispatcher's jobs and the scan's counts (#618): a
 # warning, not a failure, since without it the dispatcher runs, memory-only.
-if docker inspect -f '{{range .Mounts}}{{println .Destination .RW}}{{end}}' "$CONTAINER" 2>/dev/null | grep -qx "/state true"; then
+# Read whole before it is searched: under pipefail, grep -q quitting at its
+# match can end docker inspect with SIGPIPE and fail the pipe, reading as none.
+mounts=$(docker inspect -f '{{range .Mounts}}{{println .Destination .RW}}{{end}}' "$CONTAINER" 2>/dev/null)
+if grep -qx "/state true" <<<"$mounts"; then
   pass "the container has a writable /state, for STATE_FILE"
 else
   warn "the container has no writable /state: the dispatcher keeps its jobs and scan counts in memory only (the next upgrade, or install-unraid.sh, recreates it with one)"

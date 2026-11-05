@@ -300,6 +300,20 @@ describe("implement:gate claims an issue it goes ahead on", () => {
     ]);
   });
 
+  /** The pre-flight's shape already holds the labels (#273): no block, no call to take one off. */
+  it("takes off no block the issue does not carry", async () => {
+    github.issueLabels.set(ISSUE, [IMPLEMENT_LABEL]);
+
+    await run();
+
+    expect(writes()).toEqual([
+      `workflow addLabel ${IMPLEMENT_LABEL}`,
+      `workflow comment **\`agent:implement\` started:** [Workflow run](${RUN_URL})`,
+    ]);
+    expect(labels()).toEqual([IMPLEMENT_LABEL]);
+    expect(decided).toEqual({ proceed: "true", branch: BRANCH, base: BASE, tip: "" });
+  });
+
   it("hands on the tip an earlier run left on the branch", async () => {
     github.branches.set(BRANCH, TIP);
 

@@ -84,8 +84,9 @@ export const gate = async (inputs: Inputs, io: Io): Promise<void> => {
     // The trigger label stays on while this run works and comes off in its
     // last step (#236), so the one label to take off here is a block an
     // earlier run left. Re-adding `agent:implement` is the retry, and this
-    // clears it.
-    await tolerated(undefined, () => workflow.removeLabel(issue, BLOCKED_LABEL));
+    // clears it. Only where the shape the pre-flight read carries it (#273):
+    // a removal with nothing to remove costs a call and a 404.
+    if (outcome.blocked) await tolerated(undefined, () => workflow.removeLabel(issue, BLOCKED_LABEL));
     // The run links itself on the issue (#205), so a run in progress can be
     // found from the issue rather than by matching timestamps in Actions. A
     // warning where it cannot be posted, never a failure: nothing has been
@@ -107,7 +108,7 @@ export const gate = async (inputs: Inputs, io: Io): Promise<void> => {
 
 /** What the pre-flight came to: go ahead, defer to `implement-prd` silently, or refuse on the issue. */
 type Preflight =
-  | { readonly kind: "proceed" }
+  | { readonly kind: "proceed"; readonly blocked: boolean }
   | { readonly kind: "defer"; readonly line: string }
   | ({ readonly kind: "refuse" } & Refusal);
 
@@ -203,7 +204,7 @@ const preflight = async (issue: number, state: string, github: GitHubReader): Pr
       blocked: false,
     };
   }
-  return { kind: "proceed" };
+  return { kind: "proceed", blocked: shape.labels.includes(BLOCKED_LABEL) };
 };
 
 /**

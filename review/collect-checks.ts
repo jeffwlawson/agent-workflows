@@ -24,8 +24,13 @@ export const CI_WAIT_SECONDS = 900;
  */
 export const GRACE_SECONDS = 60;
 
-/** How long it sleeps between looks. */
-export const POLL_SECONDS = 20;
+/**
+ * How long it sleeps between looks. The review starts when CI finishes plus
+ * up to this much (#273), so it is short. Each look is about 3 API calls, so
+ * the worst case, a wait that runs to the 900 s ceiling, is about 270 calls,
+ * against the roughly 1,000 an hour `GITHUB_TOKEN` has per repository.
+ */
+export const POLL_SECONDS = 10;
 
 /**
  * What a read of the Actions API refused with 403 means, in the evidence

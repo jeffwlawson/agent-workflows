@@ -193,6 +193,32 @@ export interface PostedNote extends OutOfScopeNote {
 const NO_NOTES = "(the fix run has left no out-of-scope notes since the last review.)";
 
 /**
+ * What the notes are, said above them, and how to rule on them, said below:
+ * printed only where there is one (#749, audit #704 H4), so a review with
+ * none is handed `NO_NOTES` alone. Moved from `review/prompt.md` as they were
+ * written there.
+ */
+const NOTES_INTRO = [
+  "Things `agent:fix` noticed while fixing this pull request that are **outside its scope**, posted",
+  "on the conversation since the last review. Each carries the id the workflow read it under. They are",
+  "not findings against this pull request, and they do not count toward its verdict.",
+].join("\n");
+
+const NOTES_RULES = [
+  "**Rule on every one of them, by id, in `noteRulings`.** Read the code each one points at, then",
+  "either:",
+  "",
+  "- **promote** it: it is real, it is not this pull request's to fix, and it is worth an issue. Give",
+  "  it a `severity`, and a `location` where you can name a better one than the note did. The workflow",
+  "  records it as a follow-up, filed when this pull request merges like any other. A promoted note",
+  "  takes one of the three follow-up places, ahead of your own, so promoting it is the whole of",
+  "  recording it.",
+  "- **drop** it, with a `reason` the body shows: it is not real, it is already tracked, it is this",
+  "  pull request's to fix after all (then it is a finding of your own, on the usual terms), or it is",
+  "  not worth an issue.",
+].join("\n");
+
+/**
  * The notes as the review agent is shown them, each under the id a ruling on
  * it names. Said where there are none, as `renderCarriedFindings` says it: an
  * empty section reads as a template that failed to fill.
@@ -200,15 +226,21 @@ const NO_NOTES = "(the fix run has left no out-of-scope notes since the last rev
 export const renderNotesForReview = (notes: readonly PostedNote[]): string =>
   notes.length === 0
     ? NO_NOTES
-    : notes
-        .map((note) =>
-          [
-            `- note \`${note.noteId}\`: **${note.title}**` +
-              (note.location === undefined ? "" : ` · \`${note.location}\``),
-            ...note.body.split("\n").map((line) => (line === "" ? "" : `  ${line}`)),
-          ].join("\n"),
-        )
-        .join("\n\n");
+    : [
+        NOTES_INTRO,
+        "",
+        notes
+          .map((note) =>
+            [
+              `- note \`${note.noteId}\`: **${note.title}**` +
+                (note.location === undefined ? "" : ` · \`${note.location}\``),
+              ...note.body.split("\n").map((line) => (line === "" ? "" : `  ${line}`)),
+            ].join("\n"),
+          )
+          .join("\n\n"),
+        "",
+        NOTES_RULES,
+      ].join("\n");
 
 /**
  * Where a promoted note says it came from, so whoever triages the filed issue

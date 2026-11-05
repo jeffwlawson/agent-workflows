@@ -27,6 +27,7 @@ import {
   stageControls,
   CONTROL_FILE,
   SCOPE_PLACEHOLDERS,
+  type Arm,
   type EvalResult,
   type RunRecord,
   type StageMeta,
@@ -450,13 +451,18 @@ describe("the review cases that replay a fix round", () => {
     });
 
     it("hands over the findings the round was started on, as renderCarriedFindings renders them", () => {
+      // The list lines; the rules around them are the renderer's own (#749).
       const open = c.inputs["OPEN_FINDINGS"] ?? "";
-      const carried = open.split("\n").map((line) => {
-        const match = /^- `([^`]+)`: (.*)$/.exec(line);
-        expect(match, line).not.toBeNull();
-        return { id: match?.[1] ?? "", threadId: "", text: match?.[2] ?? "", title: "", anchor: "" };
-      });
+      const carried = open
+        .split("\n")
+        .filter((line) => line.startsWith("- `"))
+        .map((line) => {
+          const match = /^- `([^`]+)`: (.*)$/.exec(line);
+          expect(match, line).not.toBeNull();
+          return { id: match?.[1] ?? "", threadId: "", text: match?.[2] ?? "", title: "", anchor: "" };
+        });
 
+      expect(carried.length).toBeGreaterThan(0);
       expect(open).not.toBe(suite.inputs["OPEN_FINDINGS"]);
       expect(open).toBe(renderCarriedFindings(carried));
       // Each is on a thread the review is shown, as the runner shows it.
@@ -561,6 +567,88 @@ describe("a fix-round case's stage", { timeout: 12 * SUBPROCESS_TIMEOUT }, () =>
       run(checkout, "bash", [path.join(out, "evals", "round", "place-files.sh")]);
       expect(git(checkout, "rev-parse", "HEAD")).toBe(head);
       expect(run(checkout, "git", ["diff", reviewed.slice(0, 7), "HEAD"])).toContain("+export const touched = 3;");
+    } finally {
+      fs.rmSync(scratch, { recursive: true, force: true });
+    }
+  });
+});
+
+/**
+ * The before arm of `ab` is what the runner produced at its ref (#783): its
+ * prompt and the inputs that prompt was written for. A case input reshaped
+ * alongside the prompt is read at the arm's ref, so the before arm does not
+ * render the old prompt over the new input; an input the ref does not have
+ * is the working tree's.
+ */
+describe("a two-arm stage's before arm", { timeout: 8 * SUBPROCESS_TIMEOUT }, () => {
+  const git = (cwd: string, ...args: string[]): string =>
+    execFileSync("git", ["-c", "user.name=t", "-c", "user.email=t@example.invalid", "-c", "commit.gpgSign=false", ...args], {
+      cwd,
+      encoding: "utf8",
+      timeout: SUBPROCESS_TIMEOUT,
+    }).trim();
+  const write = (file: string, text: string): void => {
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    fs.writeFileSync(file, text);
+  };
+
+  it("reads each case's inputs at the arm's ref, and a case the ref lacks from the working tree", () => {
+    const scratch = fs.mkdtempSync(path.join(os.tmpdir(), "ab-stage-"));
+    try {
+      const root = path.join(scratch, "repo");
+      fs.mkdirSync(root);
+      git(root, "init", "--quiet", "--initial-branch=main");
+      write(path.join(root, "code.ts"), "export const x = 1;\n");
+      git(root, "add", ".");
+      git(root, "commit", "--quiet", "-m", "base");
+      const base = git(root, "rev-parse", "HEAD");
+      write(path.join(root, "code.ts"), "export const x = 2;\n");
+      git(root, "commit", "--quiet", "-am", "the pull request");
+      const head = git(root, "rev-parse", "HEAD");
+      const addCase = (name: string, open: string, history: string): void => {
+        const dir = path.join(root, "evals", "review", name);
+        write(path.join(dir, "case.yaml"), `name: ${name}\n`);
+        write(path.join(dir, "brief.md"), "The brief.\n");
+        write(path.join(dir, "graders", "01.md"), "---\ntype: llm\nfocus: last_message\n---\n\nIt says so.\n");
+        write(path.join(dir, "replay.yaml"), `pr: 1\nrepository: ${root}\nbase_ref: main\nbase: ${base}\nhead: ${head}\nbrief: brief.md\ninputs:\n  HISTORY: ${history}\n`);
+        write(path.join(dir, "inputs", "OPEN.md"), open);
+      };
+      fs.mkdirSync(path.join(root, "evals"));
+      fs.copyFileSync(path.join("evals", "checkout.sh"), path.join(root, "evals", "checkout.sh"));
+      write(path.join(root, "review", "prompt.md"), "# OPEN\n\nThe rules, in the prompt.\n\n{{OPEN}}\n\n{{HISTORY}} {{MODE}}\n");
+      const suiteYaml = (mode: string): string =>
+        `execution: { max_turns: 1, timeout_seconds: 60, allowed_tools: [Read] }\ninputs:\n  MODE: ${mode}\nnote: "At {{HEAD}}."\n`;
+      write(path.join(root, "evals", "review", "suite.yaml"), suiteYaml("suite input at the ref"));
+      write(path.join(root, "evals", "review", "sections.yaml"), "always: [OPEN]\n");
+      addCase("old", "- the findings, alone\n", "replay input at the ref");
+      git(root, "add", ".");
+      git(root, "commit", "--quiet", "-m", "the prompt before");
+      const before = git(root, "rev-parse", "HEAD");
+      const afterTemplate = "# OPEN\n\n{{OPEN}}\n\n{{HISTORY}} {{MODE}}\n";
+      write(path.join(root, "evals", "review", "suite.yaml"), suiteYaml("suite input reshaped"));
+      write(path.join(root, "review", "prompt.md"), afterTemplate);
+      addCase("old", "- the findings, alone\n\nThe rules, in the input.\n", "replay input reshaped");
+      addCase("fresh", "- a case new since the ref\n", "replay input of a new case");
+      fs.mkdirSync(path.join(root, "node_modules"));
+
+      const revision = { file: "review/prompt.md", head: before, lastChange: before, blob: "", uncommitted: true };
+      const arms: Arm[] = [
+        { name: "before", template: git(root, "show", `${before}:review/prompt.md`), revision, ref: before },
+        { name: "after", template: afterTemplate, revision },
+      ];
+      const out = path.join(scratch, "stage");
+      stage(root, "review", out, undefined, arms);
+      const read = (name: string): string => fs.readFileSync(path.join(out, "evals", name, "prompt.md"), "utf8");
+
+      expect(read("old.before")).toContain("The rules, in the prompt.");
+      expect(read("old.before")).not.toContain("The rules, in the input.");
+      expect(read("old.after")).toContain("The rules, in the input.");
+      expect(read("old.after")).not.toContain("The rules, in the prompt.");
+      expect(read("old.before")).toContain("replay input at the ref suite input at the ref");
+      expect(read("old.after")).toContain("replay input reshaped suite input reshaped");
+      expect(read("fresh.before")).toContain("replay input of a new case suite input at the ref");
+      expect(read("fresh.before")).toContain("- a case new since the ref");
+      expect(read("fresh.after")).toContain("- a case new since the ref");
     } finally {
       fs.rmSync(scratch, { recursive: true, force: true });
     }

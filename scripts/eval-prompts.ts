@@ -563,7 +563,50 @@ export interface Arm {
   readonly name: string;
   readonly template: string;
   readonly revision: PromptRevision;
+  /**
+   * The commit the arm's inputs are read at, where they are not the working
+   * tree's: `ab`'s before arm, whose prompt is the ref's and was written for
+   * the inputs the ref holds (`inputsAt`).
+   */
+  readonly ref?: string;
 }
+
+/**
+ * A suite's and a case's inputs as a commit holds them: `suite.yaml`'s
+ * `inputs`, and the case's `replay.yaml` `inputs` and `inputs/*.md`. An input
+ * reshaped alongside its prompt (a rule moved from the prompt into the text the
+ * runner renders, #749) is the ref's shape there, so an arm rendering the ref's
+ * prompt renders it over the inputs it was written for. Where the commit has
+ * no `suite.yaml`, or no `replay.yaml` for the case (a case added since), that
+ * part is the working tree's. The pins and graders are always the working
+ * tree's: they say what is replayed and judged, the same for both arms.
+ */
+export const inputsAt = (root: string, prompt: PromptName, ref: string, suite: Suite, c: Case): { suite: Suite; case: Case } => {
+  const rel = (file: string): string => path.relative(root, file).split(path.sep).join("/");
+  const suiteFile = rel(path.join(suiteDir(root, prompt), "suite.yaml"));
+  const caseDir = rel(c.dir);
+  const present = new Set(
+    git(root, ["ls-tree", "-r", "--name-only", ref, "--", suiteFile, caseDir])
+      .split("\n")
+      .filter((line) => line !== ""),
+  );
+  const show = (file: string): string => git(root, ["show", `${ref}:${file}`]);
+  const yamlInputs = (file: string): Record<string, string> => {
+    const data: unknown = parse(show(file));
+    const inputs = typeof data === "object" && data !== null && !Array.isArray(data) ? (data as Record<string, unknown>)["inputs"] : undefined;
+    return strings(inputs, `${file} inputs at ${ref}`);
+  };
+  const atRefSuite = present.has(suiteFile) ? { ...suite, inputs: yamlInputs(suiteFile) } : suite;
+  const replay = `${caseDir}/replay.yaml`;
+  if (!present.has(replay)) return { suite: atRefSuite, case: c };
+  const inputsDir = `${caseDir}/inputs/`;
+  const fromFiles = Object.fromEntries(
+    [...present]
+      .filter((file) => file.startsWith(inputsDir) && file.endsWith(".md") && !file.slice(inputsDir.length).includes("/"))
+      .map((file) => [file.slice(inputsDir.length, -".md".length), show(file).trimEnd()]),
+  );
+  return { suite: atRefSuite, case: { ...c, inputs: { ...yamlInputs(replay), ...fromFiles } } };
+};
 
 const quote = (value: string): string => `'${value.replaceAll("'", "'\\''")}'`;
 
@@ -606,10 +649,12 @@ export const stage = (
     );
     for (const arm of armList) {
       const what = arm.name === "" ? `${prompt}/prompt.md` : `${prompt}/prompt.md (${arm.name})`;
-      const unused = Object.keys(c.inputs).filter((key) => !placeholders(arm.template).includes(key) && !placeholders(suite.note).includes(key));
+      const own = arm.ref === undefined ? { suite, case: c } : inputsAt(root, prompt, arm.ref, suite, c);
+      const armInputs = arm.ref === undefined ? inputs : { ...caseInputs(own.suite, own.case), ...diffInputs };
+      const unused = Object.keys(own.case.inputs).filter((key) => !placeholders(arm.template).includes(key) && !placeholders(suite.note).includes(key));
       for (const key of unused) console.log(`::warning::${c.name}: input ${key} is not in ${what} any more.`);
-      const body = render(arm.template, inputs, what);
-      const note = render(suite.note, inputs, `evals/${prompt}/suite.yaml's note`);
+      const body = render(arm.template, armInputs, what);
+      const note = render(suite.note, armInputs, `evals/${prompt}/suite.yaml's note`);
       const name = arm.name === "" ? c.name : `${c.name}.${arm.name}`;
       const dir = path.join(out, "evals", name);
       fs.mkdirSync(dir, { recursive: true });
@@ -1598,7 +1643,7 @@ if (process.argv[1] && fs.realpathSync(process.argv[1]) === fileURLToPath(import
     try {
       const before = revisionAt(root, prompt, ref as string);
       arms = [
-        { name: "before", template: git(root, ["show", `${before.head}:${before.file}`]), revision: before },
+        { name: "before", template: git(root, ["show", `${before.head}:${before.file}`]), revision: before, ref: before.head },
         { name: "after", template: fs.readFileSync(path.join(root, prompt, "prompt.md"), "utf8"), revision: promptRevision(root, prompt) },
       ];
     } catch (error) {

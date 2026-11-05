@@ -164,6 +164,12 @@ describe("the notes the review is handed", () => {
   it("says there are none rather than rendering an empty section", () => {
     expect(renderNotesForReview([])).toMatch(/no out-of-scope notes/);
   });
+
+  /** Its ruling rules ride with the notes, printed only beside one (#749, audit #704 H4). */
+  it("prints the ruling rules beside a note, and only there", () => {
+    expect(renderNotesForReview([posted(IGNORED_FIELDS, "IC_one")])).toContain("**Rule on every one of them, by id, in `noteRulings`.**");
+    expect(renderNotesForReview([])).not.toContain("\n");
+  });
 });
 
 describe("reviewOutputSchema noteRulings", () => {

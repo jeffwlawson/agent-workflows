@@ -33,11 +33,12 @@ export const GRACE_SECONDS = 60;
 export const POLL_SECONDS = 10;
 
 /**
- * What a read of the Actions API refused with 403 means, in the evidence
- * (#632). On Actions the job declares `actions: read`, so its token holds it;
- * on the service the token is the App's, and holds it only where the App asks
- * for Actions: read and the installation has accepted it. The same words for
- * the runs listing and for a log, so a person reads one cause for both.
+ * What a read of the Actions API refused with 403 means, in the evidence,
+ * where the 403 is not a rate limit or an abuse limit (#632, #763). On
+ * Actions the job declares `actions: read`, so its token holds it; on the
+ * service the token is the App's, and holds it only where the App asks for
+ * Actions: read and the installation has accepted it. The same words for the
+ * runs listing and for a log, so a person reads one cause for both.
  */
 export const ACTIONS_REFUSED =
   "GitHub refused the read, 403, so the token it was read with has no Actions: read. On the service, that is the App's Actions permission, missing from the App or not accepted on this installation: add Actions: read to the App and accept it on the installation, and read the run at its link meanwhile";
@@ -62,10 +63,13 @@ const LIMITED = /rate limit|abuse/i;
  * What a 403 from the Actions API means, in the evidence's words, or
  * `undefined` for anything that is not a 403. A limit is read first: GitHub
  * marks it by message or header, and a limit is never a permission to fix.
+ * Only GitHub's answer is read, never the request.
  */
 const refusedWords = (error: unknown): string | undefined => {
   if (!answered(error, 403) || !(error instanceof GitHubError)) return undefined;
-  const words = `${error.reason} ${error.message}`;
+  // GitHub's own message only: the error's message also holds the request
+  // path, whose owner or repository name may read as "abuse".
+  const words = error.reason;
   if (LIMITED.test(words) || error.rateLimitRemaining === "0" || error.retryAfter !== undefined) return ACTIONS_RATE_LIMITED;
   return PERMISSION_REFUSED.test(words) ? ACTIONS_REFUSED : ACTIONS_REFUSED_OR_LIMITED;
 };

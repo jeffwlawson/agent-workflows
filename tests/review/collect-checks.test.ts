@@ -102,16 +102,21 @@ const set = (state: { checks?: readonly CheckRun[]; statuses?: readonly [string,
  * A failure of the read `method`, as GitHub answering 403, another status or not at all, on
  * its calls from the `from`th to the `to`th (1-based), every one by default.
  */
-type How = "403" | "403 admin" | "403 rate limit" | "403 remaining 0" | "403 retry-after" | "403 bare" | "unreachable" | number;
+type How = "403" | "403 abuse-named repo" | "403 admin" | "403 rate limit" | "403 remaining 0" | "403 retry-after" | "403 bare" | "unreachable" | number;
 type Failure = { readonly method: keyof GitHubReader; readonly how: How; readonly from?: number; readonly to?: number };
 
-/** A 403 with GitHub's `message`, and its rate-limit headers where given. */
-const forbidden = (message: string, headers: { readonly rateLimitRemaining?: string; readonly retryAfter?: string } = {}): GitHubError =>
-  new GitHubError(`GET /repos/acme/widgets/…: 403 {"message":"${message}"}`, 403, { reason: message, ...headers });
+/** A 403 with GitHub's `message`, from `repo`, and its rate-limit headers where given. */
+const forbidden = (
+  message: string,
+  headers: { readonly rateLimitRemaining?: string; readonly retryAfter?: string } = {},
+  repo = "acme/widgets",
+): GitHubError => new GitHubError(`GET /repos/${repo}/actions/runs?head_sha=abc: 403 {"message":"${message}"}`, 403, { reason: message, ...headers });
 
 const refusal = (how: How): GitHubError =>
   how === "403"
     ? forbidden("Resource not accessible by integration")
+    : how === "403 abuse-named repo"
+      ? forbidden("Resource not accessible by integration", {}, "owner/abuse-tracker")
     : how === "403 admin"
       ? forbidden("Must have admin rights to Repository.")
       : how === "403 rate limit"
@@ -613,6 +618,7 @@ describe("review:collect-checks says what it could not read", () => {
    */
   it.each([
     ["403", ACTIONS_REFUSED],
+    ["403 abuse-named repo", ACTIONS_REFUSED],
     ["403 admin", ACTIONS_REFUSED],
     ["403 rate limit", ACTIONS_RATE_LIMITED],
     ["403 remaining 0", ACTIONS_RATE_LIMITED],
@@ -694,6 +700,7 @@ describe("review:collect-checks tails the failed runs' logs", () => {
    */
   it.each([
     ["403", `(could not read the failure log for run 101: ${ACTIONS_REFUSED})`],
+    ["403 abuse-named repo", `(could not read the failure log for run 101: ${ACTIONS_REFUSED})`],
     ["403 admin", `(could not read the failure log for run 101: ${ACTIONS_REFUSED})`],
     ["403 rate limit", `(could not read the failure log for run 101: ${ACTIONS_RATE_LIMITED})`],
     ["403 remaining 0", `(could not read the failure log for run 101: ${ACTIONS_RATE_LIMITED})`],

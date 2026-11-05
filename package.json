@@ -21,7 +21,7 @@
     "build": "tsc -p tsconfig.build.json && node dist/scripts/copy-assets.js",
     "prepack": "npm run build",
     "test": "vitest run",
-    "typecheck": "tsc --noEmit",
+    "typecheck": "tsc --noEmit --incremental --tsBuildInfoFile node_modules/.cache/typecheck.tsbuildinfo",
     "version": "node scripts/sync-version.ts",
     "verify": "npm run typecheck && npm run test"
   },

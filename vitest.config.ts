@@ -1,8 +1,8 @@
 import { defineConfig } from "vitest/config";
 
 /**
- * How long one test may take, and how long any one synchronous spawn inside it
- * may run. Two roles, one figure — every test that spawns imports this rather
+ * How long one test may take, and how long any one spawn inside it may run,
+ * synchronous or not. Two roles, one figure — every test that spawns imports this rather
  * than repeating it (`tests/red-check.test.ts`, `tests/sync-version.test.ts`),
  * so the ceiling and the bound cannot drift apart.
  *
@@ -16,9 +16,19 @@ import { defineConfig } from "vitest/config";
  * put the real-`gh` tests past vitest's 5-second default (#139) and left the
  * replay-based ones at 14–29x headroom against it (#144).
  *
+ * An asynchronous spawn (`execFile`) does not block the loop, so vitest's timer
+ * can fire on it; it passes the same bound all the same, so that the child is
+ * killed rather than left running past a failed test. A slow file that spawns
+ * once per test can spawn this way, in `{ concurrent: true }` blocks, because a
+ * blocked worker runs a file's tests strictly one after another (#271,
+ * `tests/deploy/upgrade.test.ts`).
+ *
  * Held *equal* to a spawn's bound rather than over it, so that one bounded spawn
- * is exactly covered and a report of this limit means a test accumulated several
- * spawns, never that one of them hung. A test that does accumulate several
+ * is exactly covered. For a synchronous spawn, a report of this limit means a
+ * test accumulated several spawns, never that one of them hung. For an
+ * asynchronous one it can mean either: the test's timer starts before the
+ * child's (at the test's setup, not at the spawn), so one hung child is reported
+ * as this limit before its own bound fires. A test that does accumulate several
  * raises its own ceiling to a multiple of this same figure, because a ceiling
  * under the sum of its children's bounds fails while every one of them is still
  * inside its own (`tests/sync-version.test.ts`'s `ceiling`). The raise hides

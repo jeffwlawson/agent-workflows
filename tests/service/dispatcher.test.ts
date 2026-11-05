@@ -33,7 +33,7 @@ import {
   verifySignature,
   type Job,
 } from "../../service/job.js";
-import { openState, type StateFiles } from "../../service/dispatcher-state.js";
+import { openState, serialiseState, type StateFiles } from "../../service/dispatcher-state.js";
 import { admit, heldDoor, jobDoor, lanes } from "../../service/worker.js";
 import { STUB_LABELS } from "../../shared/follow-up-plan.js";
 import {
@@ -102,9 +102,11 @@ const STATE_PATH = "/state/dispatcher.json";
  * A fake disk for the dispatcher's state file (#618): what each path holds,
  * how many writes reached the file, and the faults a test can turn on.
  */
+const WRITE_FAULTS = { EACCES: "permission denied", ENOSPC: "no space left on device", EROFS: "read-only file system", ENOENT: "no such file or directory" } as const;
+
 const fakeFiles = () => {
   const disk = new Map<string, string>();
-  const faults = { unreadable: false, write: false, rename: false };
+  const faults = { unreadable: false, write: false as false | "EACCES" | "ENOSPC" | "EROFS" | "ENOENT", rename: false };
   const f = {
     disk,
     faults,
@@ -118,7 +120,7 @@ const fakeFiles = () => {
         return disk.get(path);
       },
       write: (path, text) => {
-        if (faults.write) throw new Error("EACCES: permission denied");
+        if (faults.write !== false) throw Object.assign(new Error(`${faults.write}: ${WRITE_FAULTS[faults.write]}`), { code: faults.write });
         disk.set(path, text);
       },
       rename: (from, to) => {
@@ -2774,11 +2776,36 @@ describe("the dispatcher's state file", () => {
     expect(files.held().jobs.map((job) => job.id)).toEqual(["job-1"]);
   });
 
-  it("refuses at start a path that cannot be written, naming the setting", () => {
+  it("refuses at start a path that cannot name a file, naming the setting", () => {
     const files = fakeFiles();
-    files.faults.write = true;
+    files.faults.write = "ENOENT";
 
-    expect(() => setup({ files })).toThrow(`\`STATE_FILE\` names ${STATE_PATH}, which cannot be written: EACCES: permission denied`);
+    expect(() => setup({ files })).toThrow(`\`STATE_FILE\` names ${STATE_PATH}, which cannot be written: ENOENT: no such file or directory`);
+  });
+
+  // #806: a full disk at start does not loop the container in a restart.
+  it.each(["ENOSPC", "EROFS", "EACCES"] as const)("starts in memory with one warning where the file cannot be written at start (%s), and logs the first write that succeeds once", async (code) => {
+    const files = fakeFiles();
+    files.disk.set(STATE_PATH, serialiseState({ jobs: [], asks: [{ repo: "owner/repo", number: 99, label: REVIEW_LABEL, dispatches: 1, told: false }] }));
+    files.faults.write = code;
+    const s = setup({ files });
+
+    const warnings = s.lines.filter((line) => line.startsWith("warning:"));
+    expect(warnings).toEqual([
+      `warning: \`STATE_FILE\` names ${STATE_PATH}, which cannot be written: ${code}: ${WRITE_FAULTS[code]}. Starting with the state in memory only, as with \`STATE_FILE\` unset; each change tries the file again`,
+    ]);
+
+    expect((await deliver(s, labelled())).outcome).toMatch(/^dispatched owner\/repo#7/);
+    expect(s.lines).toContain(`state: the state file ${STATE_PATH} could not be written: ${code}: ${WRITE_FAULTS[code]}. The dispatcher goes on, and the next change tries again`);
+    expect(files.written).toBe(0);
+
+    files.faults.write = false;
+    await deliver(s, issueLabelled(), undefined, "issues");
+    await deliver(s, labelled({ label: FIX_LABEL }));
+    const recovered = `state: wrote ${STATE_PATH}, which could not be written at start; the dispatcher's state is kept in it from here`;
+    expect(s.lines.filter((line) => line === recovered)).toHaveLength(1);
+    expect(files.held().jobs.map((job) => job.id)).toEqual(["job-1", "job-2", "job-3", "job-4"]);
+    expect(files.held().asks).toEqual([expect.objectContaining({ number: 99, dispatches: 1 })]);
   });
 
   it("leaves the previous file whole where a write fails before its rename, logs it and goes on, and the next change writes it", async () => {

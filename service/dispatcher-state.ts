@@ -209,15 +209,23 @@ export interface StateStore {
   readonly save: (state: DispatcherState) => void;
 }
 
+/** The errors of a path that cannot name a file, which a start refuses as a mistake in the setting rather than a disk that is full, read-only or not permitted for now (#806). */
+const NOT_A_PATH: ReadonlySet<string> = new Set(["ENOENT", "ENOTDIR", "EISDIR", "ENAMETOOLONG", "ELOOP", "ERR_INVALID_ARG_VALUE"]);
+
 const message = (error: unknown): string => (error instanceof Error ? error.message : String(error));
 
 /**
  * Opens the state file `setting` names at `path`, at the dispatcher's start.
  * A file that cannot be read, is not valid, or has an unknown `version` is
  * logged, naming it and the reason, and the dispatcher starts empty. The file
- * is then written once, so a bad one is replaced, and a path that cannot be
- * written to is refused, naming the setting: a state file that silently does
- * not persist is what it is there to end.
+ * is then written once, so a bad one is replaced. A path that cannot name a
+ * file (no such directory, or a directory itself) is refused, naming the
+ * setting: that is a mistake in it. A file that cannot be written for now (a
+ * full disk, a read-only mount, no permission) is warned of once, naming the
+ * setting and the cause, and the dispatcher starts with its state in memory,
+ * as with the setting unset, so a full disk does not loop the container in a
+ * restart (#806); each change tries the file again, and the first that is
+ * written is logged once.
  */
 export const openState = (setting: string, path: string, files: StateFiles, log: (line: string) => void): StateStore => {
   const temporary = `${path}.tmp`;
@@ -235,11 +243,17 @@ export const openState = (setting: string, path: string, files: StateFiles, log:
       throw error;
     }
   };
+  /** Whether the file could not be written at start and has not been since. */
+  let unwritable = false;
   const save = (state: DispatcherState): void => {
     try {
       write(state);
     } catch (error) {
       throw new Error(`the state file ${path} could not be written: ${message(error)}`);
+    }
+    if (unwritable) {
+      unwritable = false;
+      log(`state: wrote ${path}, which could not be written at start; the dispatcher's state is kept in it from here`);
     }
   };
 
@@ -264,7 +278,11 @@ export const openState = (setting: string, path: string, files: StateFiles, log:
   try {
     write(initial);
   } catch (error) {
-    throw new Error(`\`${setting}\` names ${path}, which cannot be written: ${message(error)}`);
+    if (NOT_A_PATH.has((error as NodeJS.ErrnoException).code ?? "")) throw new Error(`\`${setting}\` names ${path}, which cannot be written: ${message(error)}`);
+    unwritable = true;
+    log(
+      `warning: \`${setting}\` names ${path}, which cannot be written: ${message(error)}. Starting with the state in memory only, as with \`${setting}\` unset; each change tries the file again`,
+    );
   }
   return { initial, save };
 };

@@ -699,6 +699,20 @@ describe("implement-prd:conclude says a rescue was set aside", () => {
       );
     }, CEILING);
 
+    it("names the side branch where the set-aside commits were kept but the run's own push was then refused (#773)", async () => {
+      const hook = path.join(origin, "hooks", "pre-receive");
+      fs.writeFileSync(hook, `#!/bin/sh\nwhile read old new ref; do [ "$ref" = "refs/heads/${RESCUE}" ] && exit 1; done\nexit 0\n`, { mode: 0o755 });
+
+      await run(AGENT_FAILED());
+
+      expect(remoteTip(side)).toBe(earlier);
+      expect(remoteTip(RESCUE)).toBe(earlier);
+      expect(comment()).toContain(
+        `· To try again, add \`agent:implement\`. Its commits were not saved on \`${RESCUE}\`: GitHub refused the push, and the workflow run's log says why. ` +
+          `The earlier commits this run set aside there are kept on \`${side}\`; delete it once you are done with them.\n`,
+      );
+    }, CEILING);
+
     it("leaves the rescue as it was where it moved since the runner set it aside", async () => {
       const moved = commit(seed, "feat: moved since");
       git(seed, "push", "--quiet", origin, `HEAD:refs/heads/${RESCUE}`);

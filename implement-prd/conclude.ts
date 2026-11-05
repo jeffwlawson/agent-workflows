@@ -14,7 +14,7 @@ import { renderPrdStatus, renderProgressList, spliceProgressList, spliceStatus, 
 import { BLOCKED_LABEL, FIX_LABEL, IMPLEMENT_LABEL, PROGRESS_END, PROGRESS_START, REVIEW_LABEL, USAGE_LIMIT } from "../shared/record.js";
 import { roundCounts, type RoundCounts } from "../shared/round-header.js";
 import { sliceRanges } from "../shared/slice-ranges.js";
-import { keepSetAside } from "../shared/rescue.js";
+import { keepSetAside, unpushedButKept } from "../shared/rescue.js";
 import { limitEnding, type LimitEnding } from "../shared/usage-limit.js";
 import { present, rescueIgnored, setAsideNote, SNAPSHOT } from "./hand-over.js";
 
@@ -327,7 +327,8 @@ const rescueCommits = async (inputs: Inputs, io: Io, loop: Writer, bundled: bool
   } catch (error) {
     if (!(error instanceof WriteFailed)) throw error;
     console.log(`::warning::${inWriteLog(`Could not push the agent's commits to ${rescue}, so nothing was rescued.`)}`);
-    return { kind: "none" };
+    // A kept side branch is named, so its commits are not taken for lost (#773).
+    return kept === undefined ? { kind: "none" } : { kind: "unsaved", why: unpushedButKept(kept) };
   }
   console.log(`Rescued the agent's commits, up to ${tip}, to ${rescue}.`);
   return kept === undefined ? { kind: "rescued" } : { kind: "rescued", kept };

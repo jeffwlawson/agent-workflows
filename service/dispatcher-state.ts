@@ -1,4 +1,5 @@
 import * as fs from "node:fs";
+import { dirname } from "node:path";
 import { JOB_KINDS, type JobKind } from "./job.js";
 
 /**
@@ -12,8 +13,9 @@ import { JOB_KINDS, type JobKind } from "./job.js";
  * It holds no secret: identifiers, counts, flags and dates only. No token, no
  * key, no signature, and no instance id, which is fresh at each start (#597).
  *
- * Written atomically: to a temporary file beside it, flushed, then renamed
- * over it, so a crash leaves the old file or the new one, never half of one.
+ * Written atomically: to a temporary file beside it, whole and flushed, then
+ * renamed over it and the directory flushed, so a crash leaves the old file or
+ * the new one, never half of one (#675).
  * Read once, at start. One dispatcher per file: two sharing one are not
  * supported, and nothing locks it.
  */
@@ -152,9 +154,9 @@ export const parseState = (text: string): DispatcherState | string => {
 export interface StateFiles {
   /** The file's text, or `undefined` where there is no file. Throws where it could not be read. */
   readonly read: (path: string) => string | undefined;
-  /** Writes `text` to `path`, replacing it, and flushes it to the disk before answering. */
+  /** Writes all of `text` to `path`, replacing it, and flushes it to the disk before answering; throws where any of it was not written. */
   readonly write: (path: string, text: string) => void;
-  /** Renames `from` over `to`, in one step. */
+  /** Renames `from` over `to`, in one step, and flushes the directory to the disk before answering. */
   readonly rename: (from: string, to: string) => void;
   /** Removes `path`, where it is there. */
   readonly remove: (path: string) => void;
@@ -172,13 +174,28 @@ export const liveStateFiles: StateFiles = {
   write: (path, text) => {
     const fd = fs.openSync(path, "w", 0o600);
     try {
-      fs.writeSync(fd, text);
+      const bytes = Buffer.from(text, "utf8");
+      // A write can answer with fewer bytes than asked, a full disk or a file-size limit, without throwing (#675).
+      const written = fs.writeSync(fd, bytes);
+      if (written !== bytes.length) throw new Error(`only ${written} of its ${bytes.length} bytes were written`);
       fs.fsyncSync(fd);
     } finally {
       fs.closeSync(fd);
     }
   },
-  rename: (from, to) => fs.renameSync(from, to),
+  rename: (from, to) => {
+    fs.renameSync(from, to);
+    // The rename is in the directory, which is flushed too, so a crash right after it keeps it (#675).
+    const fd = fs.openSync(dirname(to), "r");
+    try {
+      fs.fsyncSync(fd);
+    } catch (error) {
+      // A file system that does not flush a directory refuses it, and the rename stands.
+      if ((error as NodeJS.ErrnoException).code !== "EINVAL") throw error;
+    } finally {
+      fs.closeSync(fd);
+    }
+  },
   remove: (path) => fs.rmSync(path, { force: true }),
 };
 

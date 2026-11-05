@@ -11,7 +11,7 @@ import type { InputValues } from "../shared/env.js";
 import { choice, json, matching, object, optional, readDirectory, text } from "../shared/hand-over.js";
 import { loopAccounts } from "../shared/loop-accounts.js";
 import { BLOCKED_LABEL, FIX_LABEL, REVIEW_LABEL, USAGE_LIMIT } from "../shared/record.js";
-import { keepSetAside } from "../shared/rescue.js";
+import { keepSetAside, unpushedButKept } from "../shared/rescue.js";
 import { limitEnding } from "../shared/usage-limit.js";
 import { present, rescueIgnored, setAsideNote } from "./hand-over.js";
 
@@ -327,7 +327,8 @@ const rescueCommits = async (
   } catch (error) {
     if (!(error instanceof WriteFailed)) throw error;
     console.log(`::warning::Could not push the agent's commits to ${rescue}, so nothing was rescued. Git's reply is in the write log.`);
-    return { kind: "none" };
+    // A kept side branch is named, so its commits are not taken for lost (#773).
+    return kept === undefined ? { kind: "none" } : { kind: "unsaved", why: unpushedButKept(kept) };
   }
   console.log(`Rescued the agent's commits, up to ${tip}, to ${rescue}.`);
   return kept === undefined ? { kind: "rescued" } : { kind: "rescued", kept };

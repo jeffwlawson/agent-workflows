@@ -163,8 +163,15 @@ describe("extractCriteria", () => {
       "**Acceptance criteria:**",
       "**Test seam:**\nThe import command's output: its recipe count and its error list.\n\n**Acceptance criteria:**",
     ).concat("\n\n## Test seam\n\n- The import command's output, read by its caller.");
+    /** A *Test seam* part after the last criterion, before *Out of scope*, ends the criteria (#686). */
+    const seamAfter = TRIAGED.replace(
+      "\n\n**Out of scope:**",
+      "\n\n**Test seam:**\nThe import command's output.\n\n**Out of scope:**",
+    );
 
     expect(withSeam).toContain("Test seam");
+    expect(seamAfter).toContain("path.\n\n**Test seam:**\nThe import command's output.\n\n**Out of scope:**");
+    expect(extractCriteria(seamAfter)).toEqual(extractCriteria(without));
     expect(extractCriteria(withSeam)).toEqual(extractCriteria(without));
     expect(extractCriteria("A comment.", [withSeam])).toEqual(extractCriteria("A comment.", [without]));
   });

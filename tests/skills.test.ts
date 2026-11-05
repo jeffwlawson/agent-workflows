@@ -171,6 +171,23 @@ describe("the checks over a fixture", () => {
       ]);
     });
 
+    /** A link title may be double-quoted, single-quoted or parenthesised (#680); each form is checked. */
+    it.each([
+      ["a double-quoted", '"The guide"'],
+      ["a single-quoted", "'The guide'"],
+      ["a parenthesised", "(The guide)"],
+    ])("fails a dead link with %s title", (_form, title) => {
+      const root = fixture({ "alpha/SKILL.md": `${MODEL}And [gone](references/gone.md ${title}).\n` });
+      expect(linkProblems(root)).toEqual(["skills/alpha/SKILL.md links to references/gone.md, which does not exist."]);
+    });
+
+    it("passes a live link with each form of title", () => {
+      const root = fixture({
+        "alpha/SKILL.md": `${MODEL}[a](references/guide.md "A") [b](references/guide.md 'B') [c](references/guide.md (C))\n`,
+      });
+      expect(linkProblems(root)).toEqual([]);
+    });
+
     it("does not check inline code, a fenced block, a URL or a bare anchor", () => {
       const root = fixture({
         "beta/SKILL.md": `${USER}\`[x](nowhere.md)\` and [y](https://example.com/nowhere.md) and [z](#nowhere)\n\n\`\`\`md\n[w](nowhere.md)\n\`\`\`\n`,

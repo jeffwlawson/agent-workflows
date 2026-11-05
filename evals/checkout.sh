@@ -9,7 +9,9 @@
 # commits into. Fetched by SHA, which a local upload-pack serves only when told
 # it may, so no ref is added to that clone. The branch is checked out at the
 # head, `origin/<branch>` points at the head and `origin/<base-ref>` at the
-# base, the refs a runner's checkout has. The dependencies are a copy of the
+# base, the refs a runner's checkout has, and a local <base-ref> branch at the
+# base as well, so `git diff <base-ref>...HEAD`, which the review prompt
+# prints, runs in a replay (#760). The dependencies are a copy of the
 # clone's own where the lockfile matches, so a run that installs something
 # cannot change the clone's, and are installed from the lockfile where it does
 # not.
@@ -24,6 +26,7 @@ git -c protocol.file.allow=always fetch -q --no-tags \
 git update-ref "refs/remotes/origin/$base_ref" "$base"
 git update-ref "refs/remotes/origin/$branch" "$head"
 git checkout -q -b "$branch" "$head"
+git branch "$base_ref" "$base"
 git config user.name "eval"
 git config user.email "eval@example.invalid"
 

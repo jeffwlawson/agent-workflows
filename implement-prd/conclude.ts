@@ -257,7 +257,11 @@ type Saved =
   | { readonly kind: "none" }
   /** `kept` is the side branch a set-aside rescue was kept on before the push (#578). */
   | { readonly kind: "rescued"; readonly kept?: string }
-  /** A set-aside rescue that could not be kept, so nothing was pushed over it (#578); `why` as the comment says it. */
+  /**
+   * A set-aside rescue that could not be kept, so nothing was pushed over it (#578), or one kept on its
+   * side branch before GitHub refused the run's own push, which `why` names beside the refusal (#773);
+   * `why` as the comment says it.
+   */
   | { readonly kind: "unsaved"; readonly why: string };
 
 /**
@@ -360,7 +364,9 @@ const UNKEPT = (side: string, why: string): string =>
  * A rescue is named whatever else the retry says, and is the retry where
  * nothing else was: adding the label resumes from it. A set-aside rescue kept
  * on a branch of its own (#578) is named after it, and one that could not be
- * kept is why the run's commits went unsaved.
+ * kept is why the run's commits went unsaved. Where it was kept but the run's
+ * own push was then refused, the refusal is why, with the kept side branch
+ * named beside it (#773).
  */
 const retryOf = (inputs: Inputs, undecided: boolean, pushed: boolean, pr: number | undefined, saved: Saved): string => {
   const plain = `To try again, add \`${IMPLEMENT_LABEL}\`.`;

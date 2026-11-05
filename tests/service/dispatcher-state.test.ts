@@ -30,7 +30,7 @@ describe("the state file on disk (#675)", () => {
   afterEach(() => {
     vi.mocked(fs.writeSync).mockImplementation(actual.writeSync);
     vi.mocked(fs.fsyncSync).mockImplementation(actual.fsyncSync);
-    vi.mocked(fs.openSync).mockClear();
+    vi.mocked(fs.openSync).mockImplementation(actual.openSync);
     fs.rmSync(scratch, { recursive: true, force: true });
   });
 
@@ -75,5 +75,31 @@ describe("the state file on disk (#675)", () => {
 
     expect(() => store.save(EMPTY_STATE)).not.toThrow();
     expect(JSON.parse(fs.readFileSync(file, "utf8"))).toEqual({ version: 1, asks: [], jobs: [] });
+  });
+
+
+  it("keeps a save that renamed but could not open its directory to flush it", () => {
+    const store = openState("STATE_FILE", file, liveStateFiles, (line) => lines.push(line));
+    vi.mocked(fs.openSync).mockImplementation(((target: fs.PathLike, ...rest: never[]) => {
+      if (target === scratch) throw Object.assign(new Error(`EACCES: permission denied, open '${scratch}'`), { code: "EACCES" });
+      return (actual.openSync as (...args: unknown[]) => number)(target, ...rest);
+    }) as typeof fs.openSync);
+
+    expect(() => store.save(EMPTY_STATE)).not.toThrow();
+    expect(JSON.parse(fs.readFileSync(file, "utf8"))).toEqual({ version: 1, asks: [], jobs: [] });
+    expect(fs.readdirSync(scratch)).toEqual(["state.json"]);
+  });
+
+  it("starts where its directory has write and search permission but not read", () => {
+    fs.chmodSync(scratch, 0o300);
+    try {
+      const store = openState("STATE_FILE", file, liveStateFiles, (line) => lines.push(line));
+
+      expect(store.initial.asks).toEqual([expect.objectContaining({ number: 7 })]);
+      expect(() => store.save(EMPTY_STATE)).not.toThrow();
+      expect(JSON.parse(fs.readFileSync(file, "utf8"))).toEqual({ version: 1, asks: [], jobs: [] });
+    } finally {
+      fs.chmodSync(scratch, 0o700);
+    }
   });
 });

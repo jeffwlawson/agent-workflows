@@ -246,7 +246,11 @@ type Saved =
   /** `kept` is the side branch a set-aside rescue was kept on before the push (#578). */
   | { readonly kind: "rescued"; readonly kept?: string }
   | { readonly kind: "no token" }
-  /** A set-aside rescue that could not be kept, so nothing was pushed over it (#578); `why` as the comment says it. */
+  /**
+   * A set-aside rescue that could not be kept, so nothing was pushed over it (#578), or one kept on its
+   * side branch before GitHub refused the run's own push, which `why` names beside the refusal (#773);
+   * `why` as the comment says it.
+   */
   | { readonly kind: "unsaved"; readonly why: string };
 
 /**

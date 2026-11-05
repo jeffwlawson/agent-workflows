@@ -1089,7 +1089,11 @@ warning, and the comment says the commits were not saved on `<RESCUE_BRANCH>` be
 earlier commits this run set aside there could not be kept on `<side>` first, so the branch was
 left as it was rather than lose them. `` and why. Where it was kept, the retry is followed by
 `` The earlier commits it set aside are kept on `<side>`, which nothing resumes from; delete it once
-you are done with them. `` A person deletes the side branch.
+you are done with them. `` Where it was kept but GitHub then refused the rescue's own push (#773), the
+commits were not saved on `<RESCUE_BRANCH>` because `` GitHub refused the push, and the workflow run's
+log says why. The earlier commits this run set aside there are kept on `<side>`; delete it once you
+are done with them. ``, so the comment names the kept side branch beside the refused push. A person
+deletes the side branch.
 
 - **A gate that did not decide** (`REFUSED` is empty): the same comment and `agent:blocked`, and
   `agent:implement` is **left on**: that run may have been the event `implement-prd` answers, which
@@ -1113,7 +1117,8 @@ them. ``; where they went unsaved, the retry is followed by `` Its commits were 
 them with. ``, `` they could not be checked against `<BASE_REF>` before the push, and the workflow
 run's log says why. ``, `` GitHub would not say whether the branch already holds commits, so
 pushing could have overwritten them. ``, `` GitHub refused the push, and the workflow run's log
-says why. ``, `` the agent's job could not bundle them, and the workflow run's log says why. ``,
+says why. `` (with the kept side branch named after it where a set-aside rescue was kept first, as
+below), `` the agent's job could not bundle them, and the workflow run's log says why. ``,
 `` the agent's job was stopped before it finished bundling them, and the workflow run's log says
 why. `` or
 `` what the agent's job handed over could not be fetched, so there were none to push. ``
@@ -1847,7 +1852,11 @@ warning, and the comment says the commits were not saved on `<RESCUE_BRANCH>` be
 earlier commits this run set aside there could not be kept on `<side>` first, so the branch was
 left as it was rather than lose them. `` and why. Where it was kept, the retry is followed by
 `` The earlier commits it set aside are kept on `<side>`, which nothing resumes from; delete it once
-you are done with them. `` A person deletes the side branch.
+you are done with them. `` Where it was kept but GitHub then refused the rescue's own push (#773), the
+commits were not saved on `<RESCUE_BRANCH>` because `` GitHub refused the push, and the workflow run's
+log says why. The earlier commits this run set aside there are kept on `<side>`; delete it once you
+are done with them. ``, so the comment names the kept side branch beside the refused push. A person
+deletes the side branch.
 
 **The stopped slice's row** (#246, #325), on a build that did not finish, where the gate decided,
 into the PRD PR `published.json` names or `PRD_PR`: `BASE_REF` and `PRD_BRANCH` fetched with
@@ -3088,7 +3097,8 @@ where there is a `branch.bundle`. The bundle is checked as `fix:publish` checks 
 `CHECKOUT`, holds exactly `refs/heads/<BRANCH>`, and builds on `HEAD_SHA`. Its tip is pushed to
 `refs/heads/<RESCUE_BRANCH>` with the loop's token, leased on the rescue's tip as read, or on there
 being none. A bundle that fails a check, a rescue that cannot be read and a push GitHub refuses
-are each a warning, and nothing is rescued. With no loop token (`LOOP_TOKEN` empty, or
+are each a warning, and nothing is rescued; where a set-aside rescue was kept on its side branch
+first, the refused push is said in the comment with that side branch named (below). With no loop token (`LOOP_TOKEN` empty, or
 `MINT_OUTCOME` not `success`) it pushes nothing, and the comment says the commits were not saved.
 
 **A rescue the runner set aside** (#757, #767), at the tip `rescue_ignored.json` names as `movedPast`,
@@ -3102,7 +3112,11 @@ warning, and the comment says the commits were not saved on `<RESCUE_BRANCH>` be
 earlier commits this run set aside there could not be kept on `<side>` first, so the branch was
 left as it was rather than lose them. `` and why. Where it was kept, the retry is followed by
 `` The earlier commits it set aside are kept on `<side>`, which nothing resumes from; delete it once
-you are done with them. `` A person deletes the side branch.
+you are done with them. `` Where it was kept but GitHub then refused the rescue's own push (#773), the
+commits were not saved on `<RESCUE_BRANCH>` because `` GitHub refused the push, and the workflow run's
+log says why. The earlier commits this run set aside there are kept on `<side>`; delete it once you
+are done with them. ``, so the comment names the kept side branch beside the refused push. A person
+deletes the side branch.
 
 Before any of these, the rescue-set-aside note, where the runner set a rescue aside and
 `published.json` does not say `fix:publish` posted it: it did not run, or stopped before it got

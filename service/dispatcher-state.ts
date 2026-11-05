@@ -156,7 +156,7 @@ export interface StateFiles {
   readonly read: (path: string) => string | undefined;
   /** Writes all of `text` to `path`, replacing it, and flushes it to the disk before answering; throws where any of it was not written. */
   readonly write: (path: string, text: string) => void;
-  /** Renames `from` over `to`, in one step, and flushes the directory to the disk before answering. */
+  /** Renames `from` over `to`, in one step, and flushes the directory to the disk before answering where the directory can be opened and flushed. */
   readonly rename: (from: string, to: string) => void;
   /** Removes `path`, where it is there. */
   readonly remove: (path: string) => void;
@@ -186,14 +186,17 @@ export const liveStateFiles: StateFiles = {
   rename: (from, to) => {
     fs.renameSync(from, to);
     // The rename is in the directory, which is flushed too, so a crash right after it keeps it (#675).
-    const fd = fs.openSync(dirname(to), "r");
+    // It already stands, so a directory that cannot be opened or flushed (no read permission, or a file
+    // system that does not flush one) leaves the save done rather than reported as failed.
     try {
-      fs.fsyncSync(fd);
-    } catch (error) {
-      // A file system that does not flush a directory refuses it, and the rename stands.
-      if ((error as NodeJS.ErrnoException).code !== "EINVAL") throw error;
-    } finally {
-      fs.closeSync(fd);
+      const fd = fs.openSync(dirname(to), "r");
+      try {
+        fs.fsyncSync(fd);
+      } finally {
+        fs.closeSync(fd);
+      }
+    } catch {
+      // Nothing to do: only the flush is lost, not the write.
     }
   },
   remove: (path) => fs.rmSync(path, { force: true }),

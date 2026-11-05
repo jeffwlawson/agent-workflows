@@ -376,13 +376,17 @@ export const STUB_KEY_VERSION = 2;
  * run. Never the prose: a stub may be reworded freely, and a matcher that read
  * the prose would break on the first person who tidied one up.
  *
- * It answers **two** questions with different authority (#82), which is why
- * `location` is written verbatim and `seq` is written at all:
+ * It answers **three** questions with different authority (#82, #606), which
+ * is why `location` is written verbatim and `seq` is written at all:
  *
  * | | Question | Fields | Authority |
  * |---|---|---|---|
  * | Identity | did this run already file this finding? | `pr` + `location` + `seq` | binding |
+ * | Match | does an open stub from another pull request already record it? | `location`, normalised, + the issue's title | binding |
  * | Relatedness | is there an issue a triager should see? | `location`, normalised | advisory |
+ *
+ * The normalised path alone never decides anything: a match needs the title
+ * too (#606), and a path that matches without it only earns a link.
  *
  * One key served both until #82 and could not: it was the normalised path, so
  * two findings in one file were one finding, and the loser of that was skipped

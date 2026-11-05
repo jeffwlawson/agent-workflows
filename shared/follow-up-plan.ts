@@ -191,8 +191,8 @@ const oneLine = (text: string): string => text.replace(/\s+/g, " ").trim();
 const PATH_SHAPED = /[/.]/;
 
 /**
- * A `location` reduced to the key **relatedness** runs on — and nothing else
- * since #82.
+ * A `location` reduced to the path **relatedness** runs on, and that **the
+ * match** (#606) compares beside the title.
  *
  * The trailing line number is **stripped and discarded**. Line numbers drift,
  * so two reviews of the same chronic problem nearly always disagree on the
@@ -204,9 +204,11 @@ const PATH_SHAPED = /[/.]/;
  * #41 gave this one key: it also decided whether anything was filed, and a
  * whole-file match deciding that lost a real finding in production — two
  * findings 358 lines apart in one 658-line workflow, the second dropped in
- * silence. Identity is keyed on the unnormalised location instead, and what is
- * left here is advisory: a path match produces a link on the filed stub and
- * never a verdict, so the coarseness costs a triager one glance.
+ * silence. Identity is keyed on the unnormalised location instead. The path
+ * alone is advisory: a path match produces a link on the filed stub and never
+ * a verdict, so the coarseness costs a triager one glance. What is binding is
+ * the path **and** the title (#606): only both together put the finding onto an
+ * open stub as a comment in place of a stub of its own (`matchOpen`).
  *
  * A multi-file location matches on its first path-shaped token and the rest is
  * ignored. Multi-file is the agent freelancing on a single-value field, "any

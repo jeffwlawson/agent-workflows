@@ -227,9 +227,10 @@ export interface PullRequestFeedback {
   readonly changedFiles: readonly string[];
   /**
    * False when nothing trusted was rendered **that a fix run could act on** —
-   * a review summary, a thread in `threadIds` or a comment in
-   * `conversationComments` (#160). A thread awaiting its close and this loop's
-   * own status notes are rendered and do not count. Deliberately not the whole
+   * a trusted human's review summary (`humanSummaries`), a thread in
+   * `threadIds`, a comment in `conversationComments` (#160) or a minor finding
+   * (#616). A thread awaiting its close, this loop's own status notes and the
+   * review bodies this loop posted are rendered and do not count. Deliberately not the whole
    * question any more: it cannot tell "every surface answered and had nothing"
    * from "a surface was refused", and those two want opposite actions. Read it
    * alongside `status` and `unreadable` — or through `refusalReason`, which
@@ -837,9 +838,12 @@ export const refusalReason = (feedback: PullRequestFeedback): string | undefined
  *
  * Not counted: resolved threads, comments from outside the repository's
  * collaborators, a thread already carrying this workflow's closing reply (it
- * waits on the review to close it), and this loop's own status notes. The last
- * two are shown to a fix run as evidence, not as asks. Counted: a minor
- * finding the newest review recorded (#616), which is work with no thread.
+ * waits on the review to close it), this loop's own status notes, and the
+ * review bodies this loop posted (only `humanSummaries` counts, #642). The
+ * closing reply and the status notes are shown to a fix run as evidence, not
+ * as asks; what an earlier round's body records is already in front of it as
+ * a thread or a minor finding. Counted: a minor finding the newest review
+ * recorded (#616), which is work with no thread.
  *
  * Asked only after `refusalReason` came back empty, so a feedback set that is
  * empty because something could not be read never reaches it: that is a

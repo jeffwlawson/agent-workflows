@@ -194,7 +194,9 @@ In the App's settings, under *Webhook*:
 
 GitHub's *Recent Deliveries* page shows each delivery and the dispatcher's answer: `202` for every
 delivery whose signature verified, whatever became of it, and `401` for one that did not. What
-became of it is in the dispatcher's log.
+became of it is in the dispatcher's log. One that failed, a timeout above all, the dispatcher
+reads off the same list and asks for again itself (*What it does not keep*, below). That takes the
+App's own JWT, so no permission beyond those in *Permissions*, above.
 
 ## The dispatcher
 
@@ -285,15 +287,32 @@ so does an App whose own record cannot be read, since that is where the App's ow
 | `EXTRA_OWNERS` | optional | `""` | accounts, comma-separated, whose installations the dispatcher serves besides the App owner's; empty is none. An installation on any other account is refused |
 | `SCAN_DISPATCH_LIMIT` | optional | `2` | how many times a scan's job for an item's label that stays on across scans may start (ask for its first token) before the scan leaves the item for a person, and comments once to say so (*The scan's limit*, below), never applied to `agent:merge`. At least `1`: `0` is refused at start, since it would not turn the scan off |
 | `SCAN_MERGED_WINDOW_DAYS` | optional | `7` | how many days back the scan lists merged pull requests still carrying `agent:follow-ups` (*What a restart recovers*, below), so one someone left the label on for months is not dispatched at every restart. A positive whole number: `0` is refused at start |
+| `REDELIVERY_INTERVAL_MINUTES` | optional | `5` | how many minutes apart the dispatcher lists the App's recent webhook deliveries and asks GitHub to send again each that failed (*What it does not keep*, below); it also does so at start. One list call each time, and a line only when it asks for a redelivery or the list cannot be read. At most `1440`, a day: more is refused at start, naming the setting. `0` turns the poll off |
+| `REDELIVERY_WINDOW_MINUTES` | optional | `30` | how many minutes back a failed delivery is redelivered; one older is left lost, so an event long past is never sent again. A positive whole number: `0` is refused at start |
 | `STATE_FILE` | optional | `""` | the path of the file the dispatcher keeps its dispatched jobs and the scan's counts in, so a restart keeps them (*What it does not keep*, below). Empty is none: both are held in memory only. A path it cannot write to is refused at start, naming the setting. One dispatcher per file |
 
 Each door also answers `GET /health` with `200`.
 
 ### What it does not keep
 
-- **A delivery that arrives while the dispatcher is down is lost.** GitHub does not redeliver on
-  its own; redeliver it from the App's *Recent Deliveries*, or remove the label and add it again.
-  The scan below recovers what a label still says is owed: a trigger label on an open item, and
+- **A delivery GitHub could not deliver is redelivered by the dispatcher, within a window.** GitHub
+  tries a delivery once: one the door did not answer within GitHub's ten seconds (a slow path in
+  front of it, a dispatcher down or restarting), or answered with an error, is marked failed and
+  not sent again. So every `REDELIVERY_INTERVAL_MINUTES` (default `5`), and at its start, the
+  dispatcher lists the App's recent deliveries, one call with the App's own JWT, and asks GitHub
+  to send again each one that failed within `REDELIVERY_WINDOW_MINUTES` (default `30`), of an
+  event the service answers, and never sent again before, oldest first. It asks once: a
+  redelivery that fails too is an attempt of the same delivery, which the next poll sees and
+  leaves alone, and so is one a person sent from *Recent Deliveries*. The redeliveries it asked
+  for are decided one at a time as they arrive, as a fresh delivery is, except that a label since
+  taken off starts nothing, and an item the worker holds a job of its kind for, or the dispatcher
+  has dispatched one for, is skipped, each with a line saying so. Which redeliveries it asked for
+  is held in memory only: GitHub's list is what keeps a restart from asking twice, so only a
+  redelivery GitHub refused to start can be asked for once more after a restart.
+- **What it does not redeliver is lost**: a delivery older than the window (an outage longer than
+  it, above all), every failed delivery with `REDELIVERY_INTERVAL_MINUTES=0`, and one past the
+  newest hundred, the one page the poll reads. Redeliver it from the App's *Recent Deliveries*,
+  or remove the label and add it again. The scan below recovers what a label still says is owed: a trigger label on an open item, and
   `agent:follow-ups` on a pull request merged within `SCAN_MERGED_WINDOW_DAYS`. A merge whose pull
   request carried no label says nothing is owed, so its post-merge checklist stays lost.
 - **The jobs it dispatched, and only the started ones are lost to a restart without
@@ -803,9 +822,11 @@ The job door also answers `GET /health` with `200`.
 
 ## Restarts and outages
 
-- **A delivery that arrives while the dispatcher is down is lost**, since GitHub does not
-  redeliver on its own (*What it does not keep*, above): after an outage, redeliver from the App's
-  *Recent Deliveries*, or remove the label and add it again. A label a lost delivery added
+- **A delivery that arrives while the dispatcher is down is redelivered by it** once it is back,
+  where it failed within `REDELIVERY_WINDOW_MINUTES` (default `30`) and the poll is on (*What it
+  does not keep*, above): its first poll is at its start. After a longer outage, or with
+  `REDELIVERY_INTERVAL_MINUTES=0`, it is lost: redeliver from the App's *Recent Deliveries*, or
+  remove the label and add it again. A label a lost delivery added
   to an open item is picked up by the scan at the dispatcher's start (*What it does not keep*,
   above), and so is `agent:follow-ups` on a pull request merged within `SCAN_MERGED_WINDOW_DAYS`,
   whose filing the lost merge never started. What a scan does not list stays lost: the post-merge
@@ -1040,7 +1061,9 @@ starts, `agentnet-firewall` puts the rules in and starts the VM, the VM's units 
 (its egress rules, tinyproxy, the worker), the dispatcher's container comes back, and the Funnel
 stays public. About 11 minutes from *Reboot* to a review. Restarting the VM service alone does
 **not** bring it back (Unraid cannot remount `libvirt.img` until a reboot), so reboot the server
-instead of turning VM Manager off and on. Deliveries made while it was down are lost, as above,
-but a label they added to an open item is dispatched by the dispatcher's start scan, and so is a
-recent merge's filing where `agent:follow-ups` is still on; only what a scan does not list, the
-post-merge checklist of a merge carrying no label above all, needs a hand.
+instead of turning VM Manager off and on. Deliveries made while it was down or restarting are
+redelivered by the dispatcher within `REDELIVERY_WINDOW_MINUTES`, as above, and lost only past the
+window or with the poll off. A label a lost one added to an open item is dispatched by the
+dispatcher's start scan, and so is a recent merge's filing where `agent:follow-ups` is still on;
+only what a scan does not list, the post-merge checklist of a merge carrying no label above all,
+needs a hand.

@@ -100,6 +100,8 @@ describe("the dispatcher's start", () => {
     JOB_DEADLINE_MARGIN_MINUTES: "60",
     EXTRA_OWNERS: "",
     SCAN_MERGED_WINDOW_DAYS: "7",
+    REDELIVERY_INTERVAL_MINUTES: "5",
+    REDELIVERY_WINDOW_MINUTES: "30",
     STATE_FILE: "",
   } as const;
 
@@ -132,6 +134,33 @@ describe("the dispatcher's start", () => {
     ).rejects.toThrow(refusal);
 
     expect(lines).toEqual([]);
+  });
+
+  // #774: a window of 0 minutes would redeliver nothing; an interval of 0 is the way to turn it off.
+  it.each([
+    ["REDELIVERY_WINDOW_MINUTES", "0", /`REDELIVERY_WINDOW_MINUTES` is `0`.*at least 1; `REDELIVERY_INTERVAL_MINUTES=0` turns the poll off/],
+    ["REDELIVERY_WINDOW_MINUTES", "half an hour", /`REDELIVERY_WINDOW_MINUTES` is `half an hour`, which is not a whole number/],
+    ["REDELIVERY_INTERVAL_MINUTES", "-5", /`REDELIVERY_INTERVAL_MINUTES` is `-5`, which is not a whole number/],
+    // An interval past setInterval's 2^31-1 ms would fire every millisecond.
+    ["REDELIVERY_INTERVAL_MINUTES", "1441", /`REDELIVERY_INTERVAL_MINUTES` is `1441`, more than a day.*at most 1440; `0` turns the poll off/],
+    ["REDELIVERY_INTERVAL_MINUTES", "35792", /`REDELIVERY_INTERVAL_MINUTES` is `35792`, more than a day.*at most 1440/],
+  ])("refuses a %s of %s, naming the setting, before it reads the App's key", async (name, value, refusal) => {
+    const lines: string[] = [];
+    const key = path.join(scratch, "no-such-key.pem");
+
+    await expect(
+      serveDispatcher({ ...DISPATCHER_SETTINGS, GITHUB_APP_PRIVATE_KEY_FILE: key, SCAN_DISPATCH_LIMIT: "2", [name]: value }, (text) => lines.push(text)),
+    ).rejects.toThrow(refusal);
+
+    expect(lines).toEqual([]);
+  });
+
+  it("starts past a REDELIVERY_INTERVAL_MINUTES of 0, the poll off, as far as reading the App's key", async () => {
+    const key = path.join(scratch, "no-such-key.pem");
+
+    await expect(
+      serveDispatcher({ ...DISPATCHER_SETTINGS, GITHUB_APP_PRIVATE_KEY_FILE: key, SCAN_DISPATCH_LIMIT: "2", REDELIVERY_INTERVAL_MINUTES: "0" }, () => {}),
+    ).rejects.toThrow(/`GITHUB_APP_PRIVATE_KEY_FILE` names/);
   });
 
   it("starts past a SCAN_MERGED_WINDOW_DAYS of 1, as far as reading the App's key", async () => {

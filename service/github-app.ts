@@ -1,5 +1,14 @@
 import { createSign } from "node:crypto";
-import { READER_PERMISSIONS, SCAN_PERMISSIONS, type AppGitHub, type AppRecord, type HeadPull, type Labelled, type MergedPull } from "./dispatcher.js";
+import {
+  READER_PERMISSIONS,
+  SCAN_PERMISSIONS,
+  type AppGitHub,
+  type AppRecord,
+  type HeadPull,
+  type Labelled,
+  type MergedPull,
+  type WebhookDelivery,
+} from "./dispatcher.js";
 import type { TokenGrant } from "./job.js";
 
 /**
@@ -13,7 +22,9 @@ import type { TokenGrant } from "./job.js";
  * minted and reused the same way, but for listing an installation's
  * repositories, which needs a token for the whole installation that reads
  * metadata alone. The one comment it writes, where a scan stops dispatching
- * an item (#596), goes through a token minted for it alone.
+ * an item (#596), goes through a token minted for it alone. The App's own
+ * webhook deliveries, listed and asked for again (#774), take the App's JWT
+ * alone, and no installation's permission.
  */
 
 const API = "https://api.github.com";
@@ -324,6 +335,37 @@ export const liveAppGitHub = (appId: string, privateKey: string): AppGitHub => {
     comment: async (repo, number, body, token) => {
       const reply = await api(`/repos/${repo}/issues/${number}/comments`, token, { method: "POST", body: { body } });
       if (reply.status !== 201) throw new Error(`commenting on ${repo}#${number} answered ${reply.status}`);
+    },
+    labels: async (repo, number) => {
+      const listed = await pages(`/repos/${repo}/issues/${number}/labels`, () => scanner(repo), (reply) => reply.json, `${repo}#${number}'s labels`);
+      return listed.map((entry) => record(entry)["name"]).filter((name): name is string => typeof name === "string");
+    },
+    deliveries: async () => {
+      // One page, the newest: the poll is one call (#774), and a window of
+      // minutes is far fewer deliveries than a page holds.
+      const reply = await api(`/app/hook/deliveries?per_page=${PAGE}`, jwt());
+      if (reply.status !== 200 || !Array.isArray(reply.json)) throw new Error(`reading the App's webhook deliveries answered ${reply.status}`);
+      return (reply.json as unknown[]).flatMap((entry): WebhookDelivery[] => {
+        const { id, guid, delivered_at: deliveredAt, redelivery, status_code: statusCode, event, action } = record(entry);
+        if (typeof id !== "number" || typeof guid !== "string" || typeof deliveredAt !== "string" || typeof event !== "string") return [];
+        const at = new Date(deliveredAt);
+        if (Number.isNaN(at.getTime())) return [];
+        return [
+          {
+            id,
+            guid,
+            deliveredAt: at,
+            redelivery: redelivery === true,
+            statusCode: typeof statusCode === "number" ? statusCode : 0,
+            event,
+            action: typeof action === "string" ? action : undefined,
+          },
+        ];
+      });
+    },
+    redeliver: async (id) => {
+      const reply = await api(`/app/hook/deliveries/${id}/attempts`, jwt(), { method: "POST" });
+      if (reply.status !== 202) throw new Error(`redelivering delivery ${id} answered ${reply.status}`);
     },
   };
 };

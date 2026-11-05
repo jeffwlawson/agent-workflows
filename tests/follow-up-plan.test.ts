@@ -1426,6 +1426,19 @@ describe("planFollowUps: a finding an open stub already records", () => {
     expect(result.comments.map((c) => c.issue)).toEqual([71]);
   });
 
+  it.each([
+    ["double spaces", "a very  long title about the guard ".repeat(4)],
+    ["a CRLF line break", "a very long title\r\nabout the guard ".repeat(4)],
+    ["leading whitespace", `   ${"a very long title about the guard ".repeat(4)}`],
+  ])("compares a long title with %s as it was filed, cut after whitespace collapses", (_, long) => {
+    const filed = plan([followUp({ title: long })]).issues[0]?.title ?? "";
+    expect(filed.length).toBe(MAX_STUB_TITLE);
+
+    const result = plan([followUp({ title: long })], [stub({ title: filed })]);
+
+    expect(result.comments.map((c) => c.issue)).toEqual([71]);
+  });
+
   it("files a finding at the same file under another title, with the related link, open or wontfix", () => {
     const open = plan([followUp({ title: "another problem" })], [stub({ title: TITLE })]);
     expect(open.comments).toEqual([]);

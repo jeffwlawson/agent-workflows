@@ -467,7 +467,7 @@ const comparableTitle = (title: string): string =>
  * for **another** pull request, since this one's own are identity's. Its key
  * is readable, so a hand-written issue is never a target. Its path, normalised
  * as relatedness normalises it, equals this finding's. And its title equals
- * this finding's after `comparableTitle`, the planned one held to
+ * this finding's after `comparableTitle`, the planned one made one line and held to
  * `MAX_STUB_TITLE` first so a long title compares as it was filed.
  *
  * The title is what keeps #82's loss out. A path alone is the whole file, and
@@ -781,7 +781,7 @@ export const planFollowUps = (input: FilingInput, accounts: LoopAccounts): Filin
     // Second, after identity: an open issue another pull request filed for
     // this same finding, by file and title. Written onto that issue as a
     // comment carrying the whole finding, and nothing filed.
-    const open = matchOpen(input.stubs, path, followUp.title, input.prNumber);
+    const open = matchOpen(input.stubs, path, title, input.prNumber);
     if (open) {
       comments.push({ issue: open.number, body: matchedCommentBody(followUp, review, input.prNumber, seq), path });
       lines.push(`- **Matched** · \`${path}\` · #${open.number}`);

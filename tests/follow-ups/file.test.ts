@@ -248,11 +248,6 @@ describe("follow-ups:file with the marker", () => {
 });
 
 /**
- * GitHub can open an issue and still answer the create with a server error,
- * so one is read back (#510): the `pr-follow-up` issues are listed, and the
- * one whose key is this finding's identity is the one this run filed.
- */
-/**
  * A finding an open `pr-follow-up` issue from another pull request already
  * records, by file and title (#606), is written onto that issue as a comment,
  * and a retry finds its own comment by its key and posts it once.
@@ -336,6 +331,11 @@ describe("follow-ups:file on a finding an open stub already records", () => {
   });
 });
 
+/**
+ * GitHub can open an issue and still answer the create with a server error,
+ * so one is read back (#510): the `pr-follow-up` issues are listed, and the
+ * one whose key is this finding's identity is the one this run filed.
+ */
 describe("follow-ups:file on a server error filing a stub", () => {
   const erroring = (landed: boolean, readBack: false | "fails" = false): void => {
     github.fails = (write, call) => {

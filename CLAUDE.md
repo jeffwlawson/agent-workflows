@@ -64,7 +64,7 @@ are what fail when one is skipped.
   legally contain `` ` ``, `$()`, `;`, `|` and `&`.
 - **A test that spawns bounds the spawn** at `SUBPROCESS_TIMEOUT`, synchronous or not, imported
   from `vitest.config.ts` and never written out (`tests/vitest-config.test.ts` fails on a copy; the
-  config's comment has the reasoning). A file that spawns once per test spawns asynchronously
+  config's comment has the reasoning). A slow file that spawns once per test can spawn asynchronously
   (`execFile`) in `{ concurrent: true }` blocks, so its tests do not run one after another
   (`tests/deploy/upgrade.test.ts`, #271). A test that runs a subcommand does it through
   `tests/cli-inputs.ts` and writes `process.env` nowhere else.

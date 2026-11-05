@@ -18,14 +18,17 @@ import { defineConfig } from "vitest/config";
  *
  * An asynchronous spawn (`execFile`) does not block the loop, so vitest's timer
  * can fire on it; it passes the same bound all the same, so that the child is
- * killed rather than left running past a failed test. A file that spawns once
- * per test spawns this way, in `{ concurrent: true }` blocks, because a blocked
- * worker runs a file's tests strictly one after another (#271,
+ * killed rather than left running past a failed test. A slow file that spawns
+ * once per test can spawn this way, in `{ concurrent: true }` blocks, because a
+ * blocked worker runs a file's tests strictly one after another (#271,
  * `tests/deploy/upgrade.test.ts`).
  *
  * Held *equal* to a spawn's bound rather than over it, so that one bounded spawn
- * is exactly covered and a report of this limit means a test accumulated several
- * spawns, never that one of them hung. A test that does accumulate several
+ * is exactly covered. For a synchronous spawn, a report of this limit means a
+ * test accumulated several spawns, never that one of them hung. For an
+ * asynchronous one it can mean either: the test's timer starts before the
+ * child's (at the test's setup, not at the spawn), so one hung child is reported
+ * as this limit before its own bound fires. A test that does accumulate several
  * raises its own ceiling to a multiple of this same figure, because a ceiling
  * under the sum of its children's bounds fails while every one of them is still
  * inside its own (`tests/sync-version.test.ts`'s `ceiling`). The raise hides

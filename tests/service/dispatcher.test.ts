@@ -103,10 +103,11 @@ const STATE_PATH = "/state/dispatcher.json";
  * how many writes reached the file, and the faults a test can turn on.
  */
 const WRITE_FAULTS = { EACCES: "permission denied", ENOSPC: "no space left on device", EROFS: "read-only file system", ENOENT: "no such file or directory" } as const;
+const RENAME_FAULTS = { EIO: "i/o error", EBUSY: "resource busy or locked" } as const;
 
 const fakeFiles = () => {
   const disk = new Map<string, string>();
-  const faults = { unreadable: false, write: false as false | "EACCES" | "ENOSPC" | "EROFS" | "ENOENT", rename: false };
+  const faults = { unreadable: false, write: false as false | "EACCES" | "ENOSPC" | "EROFS" | "ENOENT", rename: false as false | keyof typeof RENAME_FAULTS };
   const f = {
     disk,
     faults,
@@ -124,7 +125,7 @@ const fakeFiles = () => {
         disk.set(path, text);
       },
       rename: (from, to) => {
-        if (faults.rename) throw new Error("EIO: i/o error");
+        if (faults.rename !== false) throw Object.assign(new Error(`${faults.rename}: ${RENAME_FAULTS[faults.rename]}`), { code: faults.rename });
         const text = disk.get(from);
         if (text === undefined) throw new Error("ENOENT: no such file");
         disk.delete(from);
@@ -2783,6 +2784,14 @@ describe("the dispatcher's state file", () => {
     expect(() => setup({ files })).toThrow(`\`STATE_FILE\` names ${STATE_PATH}, which cannot be written: ENOENT: no such file or directory`);
   });
 
+  // #806: only a full disk, a read-only mount or no permission runs from memory; any other error, as a single file bind-mounted over the path gives, is refused.
+  it.each(["EBUSY", "EIO"] as const)("refuses at start a file whose rename fails with %s, naming the setting", (code) => {
+    const files = fakeFiles();
+    files.faults.rename = code;
+
+    expect(() => setup({ files })).toThrow(`\`STATE_FILE\` names ${STATE_PATH}, which cannot be written: ${code}: ${RENAME_FAULTS[code]}`);
+  });
+
   // #806: a full disk at start does not loop the container in a restart.
   it.each(["ENOSPC", "EROFS", "EACCES"] as const)("starts in memory with one warning where the file cannot be written at start (%s), and logs the first write that succeeds once", async (code) => {
     const files = fakeFiles();
@@ -2814,7 +2823,7 @@ describe("the dispatcher's state file", () => {
     await deliver(s, labelled());
     const before = files.disk.get(STATE_PATH);
 
-    files.faults.rename = true;
+    files.faults.rename = "EIO";
     expect((await deliver(s, issueLabelled(), undefined, "issues")).outcome).toMatch(/^dispatched owner\/repo#12 to implement/);
 
     expect(files.disk.get(STATE_PATH)).toBe(before);

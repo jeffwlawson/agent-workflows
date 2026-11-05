@@ -177,7 +177,8 @@ export const liveStateFiles: StateFiles = {
       const bytes = Buffer.from(text, "utf8");
       // A write can answer with fewer bytes than asked, a full disk or a file-size limit, without throwing (#675).
       const written = fs.writeSync(fd, bytes);
-      if (written !== bytes.length) throw new Error(`only ${written} of its ${bytes.length} bytes were written`);
+      // It has no code of its own, so it is given a full disk's, which a start runs from memory past (#806).
+      if (written !== bytes.length) throw Object.assign(new Error(`only ${written} of its ${bytes.length} bytes were written`), { code: "ENOSPC" });
       fs.fsyncSync(fd);
     } finally {
       fs.closeSync(fd);
@@ -209,8 +210,12 @@ export interface StateStore {
   readonly save: (state: DispatcherState) => void;
 }
 
-/** The errors of a path that cannot name a file, which a start refuses as a mistake in the setting rather than a disk that is full, read-only or not permitted for now (#806). */
-const NOT_A_PATH: ReadonlySet<string> = new Set(["ENOENT", "ENOTDIR", "EISDIR", "ENAMETOOLONG", "ELOOP", "ERR_INVALID_ARG_VALUE"]);
+/**
+ * The errors of a disk that is full, read-only or not permitted for now, which a start warns of and runs
+ * from memory past (#806). The list fails closed: any other error (no such directory, a single file
+ * bind-mounted over the path, EIO, one not foreseen) is refused at start, naming the setting.
+ */
+const FOR_NOW: ReadonlySet<string> = new Set(["ENOSPC", "EDQUOT", "EROFS", "EACCES", "EPERM"]);
 
 const message = (error: unknown): string => (error instanceof Error ? error.message : String(error));
 
@@ -218,14 +223,14 @@ const message = (error: unknown): string => (error instanceof Error ? error.mess
  * Opens the state file `setting` names at `path`, at the dispatcher's start.
  * A file that cannot be read, is not valid, or has an unknown `version` is
  * logged, naming it and the reason, and the dispatcher starts empty. The file
- * is then written once, so a bad one is replaced. A path that cannot name a
- * file (no such directory, or a directory itself) is refused, naming the
- * setting: that is a mistake in it. A file that cannot be written for now (a
- * full disk, a read-only mount, no permission) is warned of once, naming the
- * setting and the cause, and the dispatcher starts with its state in memory,
- * as with the setting unset, so a full disk does not loop the container in a
- * restart (#806); each change tries the file again, and the first that is
- * written is logged once.
+ * is then written once, so a bad one is replaced. A file that cannot be
+ * written for now (a full disk, a read-only mount, no permission: `FOR_NOW`)
+ * is warned of once, naming the setting and the cause, and the dispatcher
+ * starts with its state in memory, as with the setting unset, so a full disk
+ * does not loop the container in a restart (#806); each change tries the file
+ * again, and the first that is written is logged once. Any other error is
+ * refused, naming the setting: a state file that silently does not persist is
+ * what it is there to end.
  */
 export const openState = (setting: string, path: string, files: StateFiles, log: (line: string) => void): StateStore => {
   const temporary = `${path}.tmp`;
@@ -278,7 +283,7 @@ export const openState = (setting: string, path: string, files: StateFiles, log:
   try {
     write(initial);
   } catch (error) {
-    if (NOT_A_PATH.has((error as NodeJS.ErrnoException).code ?? "")) throw new Error(`\`${setting}\` names ${path}, which cannot be written: ${message(error)}`);
+    if (!FOR_NOW.has((error as NodeJS.ErrnoException).code ?? "")) throw new Error(`\`${setting}\` names ${path}, which cannot be written: ${message(error)}`);
     unwritable = true;
     log(
       `warning: \`${setting}\` names ${path}, which cannot be written: ${message(error)}. Starting with the state in memory only, as with \`${setting}\` unset; each change tries the file again`,

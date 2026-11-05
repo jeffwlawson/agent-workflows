@@ -69,10 +69,10 @@ const REQUIRED = { required: true } as const;
  * - `STATE_FILE`: the path of the file the dispatcher keeps its dispatched
  *   jobs and the scan's counts in across a restart (#618,
  *   `dispatcher-state.ts`). Empty is none: both are held in memory only, and
- *   a restart forgets them. A path that cannot name a file is refused at
- *   start; one that cannot be written for now (a full disk) warns, and the
- *   state is held in memory until a write succeeds (#806). One dispatcher
- *   per file.
+ *   a restart forgets them. A file that cannot be written for now at start
+ *   (a full disk, a read-only mount, no permission) warns, and the state is
+ *   held in memory until a write succeeds (#806); any other error is refused
+ *   at start. One dispatcher per file.
  */
 export const DISPATCHER = {
   GITHUB_APP_ID: REQUIRED,

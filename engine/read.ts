@@ -61,6 +61,8 @@ export interface ReviewHistoryEntry {
 export interface LabelledIssue {
   readonly number: number;
   readonly url: string;
+  /** What `follow-ups:file` matches a planned stub's title against (#606). */
+  readonly title: string;
   readonly state: string;
   readonly stateReason: string | null;
   readonly body: string;
@@ -449,7 +451,7 @@ export const LABELLED_ISSUES_LIMIT = 500;
 const LABELLED_ISSUES = `query($owner:String!,$name:String!,$label:String!,$after:String){
   repository(owner:$owner,name:$name){
     issues(labels:[$label],states:[OPEN,CLOSED],first:100,after:$after,orderBy:{field:CREATED_AT,direction:DESC}){
-      nodes{number url state stateReason body} pageInfo{hasNextPage endCursor}
+      nodes{number url title state stateReason body} pageInfo{hasNextPage endCursor}
     }
   }
 }`;
@@ -457,7 +459,7 @@ const LABELLED_ISSUES = `query($owner:String!,$name:String!,$label:String!,$afte
 interface LabelledIssuePage {
   readonly repository: {
     readonly issues: {
-      readonly nodes: readonly { readonly number: number; readonly url: string; readonly state: string; readonly stateReason: string | null; readonly body: string | null }[];
+      readonly nodes: readonly { readonly number: number; readonly url: string; readonly title: string | null; readonly state: string; readonly stateReason: string | null; readonly body: string | null }[];
       readonly pageInfo: { readonly hasNextPage: boolean; readonly endCursor: string | null };
     };
   } | null;
@@ -752,7 +754,7 @@ export const githubReader = (repo: string, transport: Transport): GitHubReader =
         const page = data?.repository?.issues;
         if (page === undefined) throw new Error(`The issues labelled ${label} came back empty.`);
         issues.push(
-          ...page.nodes.map((node) => ({ number: node.number, url: node.url, state: node.state, stateReason: node.stateReason, body: node.body ?? "" })),
+          ...page.nodes.map((node) => ({ number: node.number, url: node.url, title: node.title ?? "", state: node.state, stateReason: node.stateReason, body: node.body ?? "" })),
         );
         if (issues.length >= LABELLED_ISSUES_LIMIT) return issues.slice(0, LABELLED_ISSUES_LIMIT);
         if (!page.pageInfo.hasNextPage || page.pageInfo.endCursor === null) return issues;

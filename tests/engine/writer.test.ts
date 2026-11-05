@@ -287,7 +287,7 @@ describe("the fake reader's follow-ups reads", () => {
     const created = await writers.workflow.createIssue({ title: "t", body: "b", labels: ["x"], readBack: { label: "x", matches: () => true } });
 
     expect(created).toEqual({ outcome: "applied", number: 8, url: "https://github.com/o/r/issues/8" });
-    expect(await reader.labelledIssues("x")).toEqual([{ number: 8, url: created.url, state: "OPEN", stateReason: null, body: "b" }]);
+    expect(await reader.labelledIssues("x")).toEqual([{ number: 8, url: created.url, title: "t", state: "OPEN", stateReason: null, body: "b" }]);
   });
 });
 

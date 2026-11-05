@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { planFollowUps } from "../shared/follow-up-plan.js";
 import { loopAccounts } from "../shared/loop-accounts.js";
-import { branchIssue, issueBranch, minorFindingsMarker, prdBranch, stubMarker } from "../shared/record.js";
+import { branchIssue, issueBranch, matchedCommentMarker, minorFindingsMarker, prdBranch, stubMarker } from "../shared/record.js";
 import { renderFollowUpsBlock } from "../shared/review-output.js";
 
 /**
@@ -74,5 +74,16 @@ describe("the issue a branch is built for", () => {
 describe("the minor-findings issue's key", () => {
   it("is spelled in exactly its bytes", () => {
     expect(minorFindingsMarker(32)).toBe(`<!--{"version":2,"kind":"minor","pr":32}-->`);
+  });
+});
+
+/**
+ * The key on a finding written as a comment on the open issue that records it
+ * (#606): the stub's fields with a kind of its own, under the same version.
+ * Pinned because a retry reads every such comment back by it.
+ */
+describe("the matched comment's key", () => {
+  it("is spelled in exactly its bytes", () => {
+    expect(matchedCommentMarker("src/a.ts:12", 32, 1)).toBe(`<!--{"version":2,"kind":"comment","location":"src/a.ts:12","pr":32,"seq":1}-->`);
   });
 });

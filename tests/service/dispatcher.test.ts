@@ -2478,7 +2478,7 @@ describe("the merge route", () => {
 
 /**
  * Coalescing (#591): per pull request, at most one merge job runs and at most
- * one waits, so merge jobs cannot pile up in the worker's one serial queue.
+ * one waits, so merge jobs cannot pile up in the worker's queue.
  * The worker's door holds the rule; driven here over the real queue and doors.
  */
 describe("merge jobs coalesced in the worker's queue", () => {

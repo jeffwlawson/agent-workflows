@@ -361,12 +361,13 @@ round.
 | CVM PRD tier (ours, §2a) | sub-issue creation order | sequential, one branch | avoided by serialising | GitHub Actions |
 | `/to-tickets` flat (upstream skill) | native `blocked_by` | *(no executor)* | — | — |
 
-**Why it is worth recording.** It needs no native relations, so it sidesteps the `/to-tickets`
-prose-vs-native defect (mattpocock/skills#513, mattpocock/skills#262) entirely — the defect that
-cost jeffwlawson/winget-manifest-lint#109 three review rounds and that the *Verify natively* section
-of `docs/agents/ticket-shape.md` exists to catch by hand. If publishing real batches keeps hitting
-it, this is the escape hatch, and reaching for a model that already exists upstream beats inventing
-one.
+**Why it is worth recording.** It needs no native relations, so it would have sidestepped the
+`/to-tickets` prose-vs-native defect (mattpocock/skills#513, mattpocock/skills#262) entirely: the
+defect that cost jeffwlawson/winget-manifest-lint#109 three review rounds. Upstream fixed that
+defect on 2026-10-06 (mattpocock/skills `cffab50`) and the issues are closed; the *Verify natively*
+section of `docs/agents/ticket-shape.md` still checks by hand for prose edges from a batch created
+some other way. If publishing real batches ever hits it again, this is the escape hatch, and
+reaching for a model that already exists upstream beats inventing one.
 
 **Why it is not adopted.** The PRD tier is built, proven end to end
 (jeffwlawson/winget-manifest-lint#87), and matches CVM, which is the actively-maintained reference.
@@ -891,19 +892,18 @@ expensive to rediscover.
   on the draft PRD PR mid-chain would hit it. Accepted knowingly rather than fixed; if it ever
   bites, the fix is a preflight refusal in review when the linked issue has an active PRD chain —
   not a concurrency change.
-- **Review is requested once per slice PR, plus one integration review.** Until PRD #171 this read
+- **Review is requested once per slice round, plus one final review.** Until PRD #171 this read
   "once per PR, never once per slice", and the PR was the unit of review because it was the unit of
-  merge. The two are now different pull requests. The **slice PR** is the unit of review:
-  `agent-implement-prd` adds `agent:review` to each one it opens, and the chain builds nothing
-  further until that round ends. The **PRD PR** is the unit of merge: the finishing run asks for its
-  one **integration review** when more than one slice was merged, and that review looks only at
-  what spans slices. What still holds is the half that was the point: there is **no per-slice
-  review workflow**, and a pull request is still reviewed as a whole — nothing reviews a slice while
+  merge. The two are now different things. Since PRD #222 there are no slice PRs: the **slice
+  round** is the unit of review, a round on the PRD PR that `agent-implement-prd` requests for each
+  slice it builds, and the chain builds nothing further until that round ends on an approval. The
+  **PRD PR** is the unit of merge: the finishing run asks for its one **final review** when more
+  than one slice landed, and that review looks for what spans slices. What still holds is the half
+  that was the point: there is **no per-slice review workflow**, and nothing reviews a slice while
   code is still being added under it, so the stale-anchor problem #102/#105 spent two rounds fixing
-  does not return. The automatic fix stays **bounded per pull request** (above), so a slice PR and
-  the PRD PR each get the budget, and nothing gets more. (Since PRD #222 there are no slice PRs, and
-  since #331 a PRD PR's budget is each round's: every slice round, and the final review.) The reasoning, and the cost this
-  replaced, are in
+  does not return. The automatic fix is bounded per round on a PRD PR (since #331: every slice
+  round, and the final review, has its own budget) and per pull request elsewhere (above). The
+  reasoning, and the cost this replaced, are in
   [§2a's trade](#the-trade-the-slice-round-is-the-unit-of-review-the-prd-pr-the-unit-of-merge).
 - **Two workflows may share a trigger label only if exactly one of them speaks.** `agent-implement`
   and `agent-implement-prd` both fire on `agent:implement`, and partition by issue shape. Whichever

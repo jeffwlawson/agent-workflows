@@ -1077,6 +1077,20 @@ a bundle that fails a check, a rescue's tip that cannot be read, a push that fai
 bundle, a `failure_reason.txt` in `BUNDLE_DIR`, a `DOWNLOAD_OUTCOME` of `failure`, or a
 `BUNDLE_OUTCOME` of `failure` or `cancelled` (a bundle step ended before it wrote anything), each
 rescue nothing, with a warning, and the comment says the commits were not saved, and why.
+
+**A rescue the runner set aside** (#578, #765), at the tip `rescue_ignored.json` names as `movedPast`,
+is one this run's commits do not hold, so before the push it is kept on a branch of its own,
+`<RESCUE_BRANCH>-set-aside-<tip>`, `<tip>` that tip's first 7 (`keepSetAside` in
+`shared/rescue.ts`, which all three conclude commands share): `RESCUE_BRANCH` is fetched, is kept
+only where it is still at that tip, then the side branch is pushed with the loop's token, leased on its not
+existing. The rescue's push is then leased on the set-aside tip. Where it cannot be kept (the fetch
+fails, the branch moved since, or GitHub refuses the push) nothing is pushed over the rescue, with a
+warning, and the comment says the commits were not saved on `<RESCUE_BRANCH>` because `` the
+earlier commits this run set aside there could not be kept on `<side>` first, so the branch was
+left as it was rather than lose them. `` and why. Where it was kept, the retry is followed by
+`` The earlier commits it set aside are kept on `<side>`, which nothing resumes from; delete it once
+you are done with them. `` A person deletes the side branch.
+
 - **A gate that did not decide** (`REFUSED` is empty): the same comment and `agent:blocked`, and
   `agent:implement` is **left on**: that run may have been the event `implement-prd` answers, which
   holds the label while it works.
@@ -1152,6 +1166,7 @@ comment still takes its label off. Every write but the rescue is made with `GH_T
 #### What it reads from the record
 
 - `RESCUE_BRANCH`'s tip, for the rescue's lease; a 404 is none.
+- `RESCUE_BRANCH`, fetched, where the runner set it aside, and compared with the tip it set aside.
 
 **`doctor` cannot check this.** The record is written by the orchestrator's posting code, for the reason §4.3 gives.
 
@@ -1821,6 +1836,19 @@ branch's merge has no review yet and to add `agent:review` to it; and where the 
 that it won't be built again, and to add `agent:review` to the PRD PR, or `agent:implement` where
 there is none. A rescue is named beside any of those, and is the retry where the plain one was.
 
+**A rescue the runner set aside** (#758, #770), at the tip `rescue_ignored.json` names as `movedPast`,
+is one this run's commits do not hold, so before the push it is kept on a branch of its own,
+`<RESCUE_BRANCH>-set-aside-<tip>`, `<tip>` that tip's first 7 (`keepSetAside` in
+`shared/rescue.ts`, which all three conclude commands share): `RESCUE_BRANCH` is fetched, is kept
+only where it is still at that tip, then the side branch is pushed with the loop's token, leased on its not
+existing. The rescue's push is then leased on the set-aside tip. Where it cannot be kept (the fetch
+fails, the branch moved since, or GitHub refuses the push) nothing is pushed over the rescue, with a
+warning, and the comment says the commits were not saved on `<RESCUE_BRANCH>` because `` the
+earlier commits this run set aside there could not be kept on `<side>` first, so the branch was
+left as it was rather than lose them. `` and why. Where it was kept, the retry is followed by
+`` The earlier commits it set aside are kept on `<side>`, which nothing resumes from; delete it once
+you are done with them. `` A person deletes the side branch.
+
 **The stopped slice's row** (#246, #325), on a build that did not finish, where the gate decided,
 into the PRD PR `published.json` names or `PRD_PR`: `BASE_REF` and `PRD_BRANCH` fetched with
 `GH_TOKEN`, and the progress list and status line rendered from the slices read off the PRD
@@ -1888,6 +1916,7 @@ one GitHub refuses is a warning. The note, the comment and the labels are made w
 #### What it reads from the record
 
 - `RESCUE_BRANCH`'s tip, for the rescue's lease; a 404 is none.
+- `RESCUE_BRANCH`, fetched, where the runner set it aside, and compared with the tip it set aside.
 - `BASE_REF` and `PRD_BRANCH`, fetched, and the PRD branch's `Agent-Slice` and `Agent-Catch-Up`
   trailers (§4.3), for the stopped slice's row.
 - The PRD PR's reviews headed `## Agent review` by the loop's identity, and each time `agent:fix`
@@ -3062,6 +3091,19 @@ being none. A bundle that fails a check, a rescue that cannot be read and a push
 are each a warning, and nothing is rescued. With no loop token (`LOOP_TOKEN` empty, or
 `MINT_OUTCOME` not `success`) it pushes nothing, and the comment says the commits were not saved.
 
+**A rescue the runner set aside** (#757, #767), at the tip `rescue_ignored.json` names as `movedPast`,
+is one this run's commits do not hold, so before the push it is kept on a branch of its own,
+`<RESCUE_BRANCH>-set-aside-<tip>`, `<tip>` that tip's first 7 (`keepSetAside` in
+`shared/rescue.ts`, which all three conclude commands share): `RESCUE_BRANCH` is fetched, is kept
+only where it is still at that tip, then the side branch is pushed with the loop's token, leased on its not
+existing. The rescue's push is then leased on the set-aside tip. Where it cannot be kept (the fetch
+fails, the branch moved since, or GitHub refuses the push) nothing is pushed over the rescue, with a
+warning, and the comment says the commits were not saved on `<RESCUE_BRANCH>` because `` the
+earlier commits this run set aside there could not be kept on `<side>` first, so the branch was
+left as it was rather than lose them. `` and why. Where it was kept, the retry is followed by
+`` The earlier commits it set aside are kept on `<side>`, which nothing resumes from; delete it once
+you are done with them. `` A person deletes the side branch.
+
 Before any of these, the rescue-set-aside note, where the runner set a rescue aside and
 `published.json` does not say `fix:publish` posted it: it did not run, or stopped before it got
 that far, reading the pull request or checking the hand-over. Every write is
@@ -3111,6 +3153,7 @@ off. The rescue is made with `LOOP_TOKEN`; everything else with `GH_TOKEN`.
 #### What it reads from the record
 
 - `RESCUE_BRANCH`'s tip, where it rescues, which the push is leased on; a 404 is no rescue yet.
+- `RESCUE_BRANCH`, fetched, where the runner set it aside, and compared with the tip it set aside.
 
 **`doctor` cannot check this.** The record is written by the orchestrator's posting code, for the reason §4.3 gives.
 
@@ -4053,8 +4096,8 @@ no fresh merge-check, since the head is the armed commit plus clean merges of th
 > strand it; it never counts that dispatch and never comments that the label was left for a person.
 >
 > **Concurrency relies on one worker**, as for follow-ups (§11): Actions holds the job in the pull
-> request's own group, and the service's one serial queue is what keeps two gates on one pull
-> request from racing to the merge.
+> request's own group, and the worker's queue, which runs one job at a time for each pull request
+> whatever lane each runs in, is what keeps two gates on one pull request from racing to the merge.
 
 ### `merge:gate`
 

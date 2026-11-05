@@ -3087,3 +3087,71 @@ describe("the minor findings a fix run is handed", () => {
     expect(renderMinorFindingsForFix([])).toBe("(none)");
   });
 });
+
+describe("a conversation past the first page of comments", () => {
+  const feedbackFor = (pageInfo?: unknown) => {
+    ghAnswers(() =>
+      response(
+        pullRequest({
+          comments: {
+            nodes: [CONVERSATION_COMMENT],
+            ...(pageInfo === undefined ? {} : { pageInfo }),
+          },
+        }),
+      ),
+    );
+    return fetchPullRequestFeedback("o/r", "12", "main", ACCOUNTS);
+  };
+
+  let logged: MockInstance<typeof console.log>;
+  beforeEach(() => {
+    logged = vi.spyOn(console, "log").mockImplementation(() => undefined);
+  });
+  afterEach(() => {
+    logged.mockRestore();
+  });
+
+  const TRUNCATED =
+    "_(this pull request has more conversation comments than the first 100 this run read, the oldest: any posted after them, an out-of-scope note included, was not read and is not in this feedback. Nothing here says what those later comments asked for.)_";
+
+  it("tells the review and the fix run that comments past the first 100 were not read", () => {
+    const feedback = feedbackFor({ hasNextPage: true });
+
+    expect(feedback.conversation).toContain("Please rename this");
+    expect(feedback.conversation).toContain(TRUNCATED);
+    expect(surfaceText(feedback, "conversation")).toContain(TRUNCATED);
+    expect(feedback.allForReview).toContain(`### Conversation\n\n`);
+    expect(feedback.allForReview).toContain(TRUNCATED);
+    expect(feedback.all).toContain(TRUNCATED);
+  });
+
+  it("logs a warning saying so", () => {
+    feedbackFor({ hasNextPage: true });
+
+    expect(logged).toHaveBeenCalledWith(
+      "::warning::Pull request #12 has more than 100 conversation comments; only the first 100 were read, so a comment or out-of-scope note posted after them is not in this run's feedback.",
+    );
+  });
+
+  it("still says so where none of the first 100 is rendered", () => {
+    ghAnswers(() =>
+      response(pullRequest({ comments: { nodes: [], pageInfo: { hasNextPage: true } } })),
+    );
+    const feedback = fetchPullRequestFeedback("o/r", "12", "main", ACCOUNTS);
+
+    expect(feedback.conversation).toBe(TRUNCATED);
+    expect(feedback.allForReview).toContain(`### Conversation\n\n${TRUNCATED}`);
+    // A note about what was not read is nothing a fix run can act on.
+    expect(feedback.conversationComments).toEqual([]);
+  });
+
+  it("says nothing where the page is the whole conversation", () => {
+    for (const pageInfo of [{ hasNextPage: false }, undefined, null]) {
+      const feedback = feedbackFor(pageInfo);
+
+      expect(feedback.conversation).not.toContain("first 100");
+      expect(feedback.all).not.toContain("first 100");
+    }
+    expect(logged).not.toHaveBeenCalledWith(expect.stringContaining("first 100"));
+  });
+});

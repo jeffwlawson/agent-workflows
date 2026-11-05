@@ -95,3 +95,125 @@ export const currentSummary = (body: string): string => {
  */
 export const summaryBlock = (text: string, headSha: string, final: boolean): string =>
   `${SUMMARY_START}\n${summaryHeadMark(headSha)}\n${final ? `${FINAL_SUMMARY_MARK}\n` : ""}${text}\n${SUMMARY_END}`;
+
+/**
+ * Which of the four ways a review stands to the title and the summary (#218,
+ * #247, #298): a slice round of a PRD of more than one slice leaves them for
+ * the final review; a review with nothing pushed since the summary was last
+ * written leaves them as they are; the final review writes the whole PRD's;
+ * and any other review writes them.
+ */
+export type SummaryRound = "slice" | "unchanged" | "final" | "writes";
+
+/** What the brief says of the title and the summary, for each of the four. */
+export const SUMMARY_RULES: Readonly<Record<SummaryRound, string>> = {
+  slice:
+    "**This review leaves them as they are.** This is a slice round, and the final review writes the pull request's title and summary for the whole PRD, so the workflow writes neither; omit both fields.",
+  unchanged:
+    "**This review leaves them as they are.** Nothing was pushed since the summary was last written, so the workflow writes neither; omit both fields.",
+  final:
+    "**This review writes them.** It is the final review, so the workflow replaces the title and the summary block with yours, laid out as the section below says.",
+  writes:
+    "**This review writes them.** Something was pushed since the summary was last written, so the workflow replaces the title and the summary block with yours.",
+};
+
+/**
+ * The final review's summary shape (#247, #356). The review writes the
+ * outcome, and the Merge Danger's fields as every summary write does; the
+ * workflow adds the *Differs from the PRD* lines and the Evidence from the
+ * slice rounds' records, and the known issues from this review's follow-ups.
+ */
+export const FINAL_SUMMARY_SHAPE = [
+  "**This is the final review of a PRD PR, so the summary is the whole PRD's**, in the layout the summary section above describes. Write:",
+  "",
+  "- **`summary`**: the **outcome**, what the PRD delivered as a whole. Open it as the summary section above asks, with the **smallest view that makes the point**: zero, one or two sketches of the whole change, drawn from the diff as it stands and never from the PRD, each beside the short text it supports. Then a few sentences, brief and with no preamble, and a bullet per behaviour the PRD changes, cut to what the sketches do not already show; sketches do not count against the word budget, which stays for the prose. Nothing about the review, and no list of slices: the body already shows them.",
+  "- **`door`**, **`blastRadius`**, their notes and **`breaking`**: as the summary section above asks, of the whole PRD. A breaking change goes in `breaking`, never in a bullet.",
+  "",
+  "A **Differs from the PRD:** line for each slice that changed or dropped one of its criteria, and the Evidence (each slice's failing-first tests, where the red check is configured, beside CI's result), are added from each slice round's record, and the known issues from the follow-ups this review records, so write none of them. The title is the whole PRD's, never the PRD issue's title copied. Nothing in what you write may say the pull request is a draft or that slices are still to come: every slice is built.",
+].join("\n");
+
+/**
+ * The brief's *THE TITLE AND THE SUMMARY* section, below its heading (#781,
+ * audit #704 H4, stage 2). A review that writes the title and the summary is
+ * handed every rule for them, the Merge Danger's included, with what the block
+ * says now; one that omits them is handed the one line saying so, since each
+ * rule is about fields it does not write. `current` is `currentSummary`'s.
+ */
+export const renderSummarySection = (round: SummaryRound, current: string): string => {
+  if (round === "slice" || round === "unchanged") return SUMMARY_RULES[round];
+  const rules = `The pull request's body carries a **summary block**, the one part of it the workflow lets a review
+write. The block says, now:
+
+${current}
+
+The title, now, is the one at the top of this brief.
+
+${SUMMARY_RULES[round]}
+
+**\`summary\`** is about **what was built, not what was asked**.
+
+It opens with the **smallest view that makes the point**: zero, one or two sketches, each beside the
+short text it supports. A sketch is one of:
+
+- a \`diff\` of a call tree, a file tree, a state or a control flow;
+- pseudocode;
+- a call tree;
+- a component tree;
+- a Mermaid diagram.
+
+Prefer a \`diff\` when the surrounding shape already exists: its added and removed lines are the
+change, and its unchanged ones say where it sits. Most changes need one sketch; some need none, and
+a change one sentence explains is one of them. Draw each sketch **from the diff as it stands, never
+from the issue**: the issue is what was asked, and a sketch of it can show a change the reader is
+not merging. Keep only the calls, files and states the point needs. Put each in a fenced code block
+(\`mermaid\` for a Mermaid diagram).
+
+The prose beside the sketches covers:
+
+- what the change does;
+- the behaviour it changes, cut to what the sketches do not already show.
+
+A breaking change is not marked in the prose: it goes in \`breaking\`, under **Merge Danger** below.
+
+Where the change does something other than what the linked issue asked, add one line led by
+**Differs from the issue:**, with the reason. Say it plainly even where the reason is good: a reader
+deciding whether to merge needs to know the change is not the one the issue describes. Leave the
+line out when nothing differs.
+
+Keep the prose brief, in Markdown, with no preamble, under about 150 words. Sketches do not count
+against those words. Where the project's own docs define a domain term for
+something, use that term rather than a word of your own. Describe the pull request as it
+stands now, all of it, and not only the commits since the last summary. Where the block already
+says something (an earlier review's summary, or a maintainer's edit to it), treat it as **input**:
+keep what is still true, in its words where they still fit, and correct whatever the code now
+contradicts.
+
+\`summary\` ends before \`## Evidence\`: the workflow lays out the Evidence and the Merge Danger after
+it. The **Evidence** is what the red check's report found failing before this change, beside CI's
+result now. Where the report lists tests as red, you may sketch what up to three of them check in
+\`testSketches\`, as the extraction step describes; a sketch of any other test is dropped.
+
+The **Merge Danger**, at a \`## Merge Danger\` heading, is laid out from fields you write beside
+\`summary\`, and its **known issues** from your \`followUps\`, which are filed when it merges. Write:
+
+- **\`door\`**: \`one-way\` or \`two-way\`. A **one-way door is one a revert cannot undo**: a published
+  release, deleted data, a migration. Anything a revert restores is two-way, however many it reaches
+  and however soon. Keep the two questions apart: a change cheap to revert whose danger is *when* it
+  takes effect, live the moment it merges, is a two-way door with a wide blast radius.
+- **\`doorNote\`**: only for a one-way door, saying what a revert leaves behind, or a two-way door
+  with a catch.
+- **\`blastRadius\`**: **one word** for who or what the change reaches, in the project's own terms.
+- **\`blastRadiusNote\`**: who is reached, and **from when**: on merge, or at the next release. Name
+  what is reached on merge only where something is (a file read from the default branch, rather
+  than from a release, is live the moment it merges).
+- **\`breaking\`**: one line per change a caller or a user has to act on, saying what they must do.
+  An empty list where there is none.
+
+**\`title\`** is one line, true of the change as it now stands. Use the commit convention \`CLAUDE.md\`
+names, if it names one; otherwise conventional-commit style, \`type(scope): subject\`, with the scope
+optional. The **type comes from what the diff does**, not from the issue's title: a change the issue
+called a fix that adds a capability is \`feat\`. It is not the issue's title copied, and a title a
+maintainer edited is input in the same way the block is. A squash merge may land this line as the
+commit subject, so write it as one.`;
+  return round === "final" ? `${rules}\n\n${FINAL_SUMMARY_SHAPE}` : rules;
+};

@@ -21,8 +21,10 @@
 #
 # Run on the box, as root (WORK_DIR is the worker user's alone):
 #   sudo bash runs.sh [<count>] [<job-id>]
-# <count> is how many runs to list, 20 by default. Exits 1 where no run has
-# the job id asked for, and 2 where it cannot read the runs at all.
+# <count> is how many runs to list, 20 by default; one count at most. A
+# leading 'job-' on <job-id> is dropped, so the link's whole fragment can be
+# pasted. Exits 1 where no run has the job id asked for, and 2 where it cannot
+# read the runs at all or is given an argument it does not take.
 set -uo pipefail
 
 # Settings that differ from the defaults below go in agent-service.conf, beside
@@ -35,20 +37,29 @@ WORK_DIR=${WORK_DIR:-/var/lib/agent-worker}
 NODE=${NODE:-/usr/local/bin/node}
 RUNS="$WORK_DIR/runs"
 
-count=20 id=
+count=20 counted='' id=''
+usage="Usage: sudo bash $0 [<count>] [<job-id>]"
 for arg in "$@"; do
   case "$arg" in
     -h | --help)
       sed -n '2,/^set /{/^set /d;s/^# \{0,1\}//;p}' "$0"
       exit 0
       ;;
+    '') echo "An empty argument was given. $usage" >&2; exit 2 ;;
     -*)
-      echo "Unknown option '$arg'. Usage: sudo bash $0 [<count>] [<job-id>]" >&2
+      echo "Unknown option '$arg'. $usage" >&2
       exit 2
       ;;
-    *[!0-9]*) if [ -n "$id" ]; then echo "One job id at a time: '$id' and '$arg' were given." >&2; exit 2; fi; id=$arg ;;
+    *[!0-9]*)
+      if [ -n "$id" ]; then echo "One job id at a time: '$id' and '$arg' were given. $usage" >&2; exit 2; fi
+      id=${arg#job-}
+      if [ -z "$id" ]; then echo "'$arg' names no job id. $usage" >&2; exit 2; fi
+      ;;
     0) echo "The count must be at least 1." >&2; exit 2 ;;
-    *) count=$arg ;;
+    *)
+      if [ -n "$counted" ]; then echo "One count at a time: '$count' and '$arg' were given. $usage" >&2; exit 2; fi
+      count=$arg counted=1
+      ;;
   esac
 done
 

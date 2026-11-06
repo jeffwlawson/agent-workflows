@@ -600,9 +600,13 @@ Jobs run in two lanes, each one job at a time, beneath a chain per pull request 
 - **The agent lane** runs every job that can start an agent: review, fix, implement and
   implement-prd, and an update-branch job's agent part. It runs them strictly in the order they
   arrived, so two agent jobs never run at once, and a gate that refuses ends its job in this lane.
-- **The light lane** runs, beside it, what starts no agent: follow-ups, and an update-branch job up
-  to its merge. A clean merge's job ends there, publish and conclude included, so a refresh or a
-  filing that takes seconds no longer waits behind a build that takes up to an hour. It takes the
+  A setup check (#821) runs here too, for its whole run, though it starts no agent: its setup and
+  verify command run for as long as an agent's job may, so it waits its turn as an implement job
+  does, and the plan's usage limit holds it with the rest ([*The setup check*](#the-setup-check)).
+- **The light lane** runs, beside it, what starts no agent and takes minutes: follow-ups, merge,
+  and an update-branch job up to its merge. A clean merge's job ends there, publish and conclude
+  included, so a refresh, a merge or a filing that takes seconds never waits behind a build, a
+  setup check's included, that takes up to an hour. It takes the
   first job that arrived whose item is free.
 - **An update-branch job whose merge conflicts is handed off** at the point it would start its
   agent: it leaves the light lane, and its agent's job, publish and conclude run in the agent lane,
@@ -925,8 +929,11 @@ and stops the check after the setup); not run, since a step before it did not pa
 The comment names the commit checked, and the label then comes off, so it is on exactly while the
 check runs. A comment GitHub refuses still takes the label off. The three steps share the agent's
 job's time limit, `AGENT_TIMEOUT_MINUTES`, since they are what that job runs before its agent; the
-report gets 5 minutes of its own. It runs in the worker's light lane, since it starts no agent, so
-a long setup there holds a merge or a follow-ups job queued behind it.
+report gets 5 minutes of its own. It runs in the worker's agent lane for its whole run, as an
+implement job does, though it starts no agent: a setup and a verify command can take as long as an
+agent's job, and in the light lane they would hold a merge, a filing or a refresh queued behind
+them ([*The worker*](#the-worker)). So it waits for an agent job that arrived before
+it, and while the plan's usage limit holds the agent lane.
 
 **On a new repository**, set `AGENT_SETUP` and `AGENT_VERIFY`, then label any open issue
 `agent:setup-check` and read the report before labelling the first real one. After an upgrade of

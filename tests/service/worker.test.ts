@@ -3609,7 +3609,7 @@ describe("the worker's queue", () => {
     });
   });
 
-  it("classes each kind by what it can do: follow-ups, merge and a setup check are light, update-branch hands off, and every other kind starts an agent", () => {
+  it("classes each kind by what it can do: follow-ups and merge are light, update-branch hands off, and every other kind, a setup check's included, runs in the agent lane", () => {
     expect(LANES).toEqual({
       review: "agent",
       fix: "agent",
@@ -3618,8 +3618,27 @@ describe("the worker's queue", () => {
       "implement-prd": "agent",
       "follow-ups": "light",
       merge: "light",
-      "setup-check": "light",
+      "setup-check": "agent",
     });
+  });
+
+  // #821: a setup check's setup and verify can run for an agent's job's
+  // limit, so it holds the agent lane, not the light one, and a merge job
+  // queued after it does not wait behind its build.
+  it("runs a setup check in the agent lane, behind an agent job, and lets a merge job queued after it start at once", async () => {
+    const w = queued();
+    w.queue.add(implement("build", 12));
+    w.queue.add({ ...SETUP_CHECK_JOB, id: "check", issue: 40 });
+    w.queue.add({ ...MERGE_JOB, id: "merge", pr: 50, branch: "agent/issue-50-a-thing" });
+    await settle();
+
+    expect(w.running).toEqual(new Set(["build", "merge"]));
+    await w.end("merge");
+    expect(w.running).toEqual(new Set(["build"]));
+    await w.end("build");
+    expect(w.running).toEqual(new Set(["check"]));
+    await w.end("check");
+    expect(w.mostAgentParts()).toBe(1);
   });
 
   it("starts a follow-ups job and a clean update-branch queued behind a long agent job at once, and ends both before it", async () => {

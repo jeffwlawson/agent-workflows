@@ -2670,8 +2670,10 @@ export interface Queue<T> {
  * kind *can* do, since whether a job starts an agent is often known only once
  * its gate or merge has run. `light` starts no agent: follow-ups. `agent` can
  * start one, and a gate that refuses ends it early in the same lane. A setup
- * check (#821) starts none, so it is `light`, though its setup can hold the
- * lane for as long as an agent's job's limit.
+ * check (#821) starts none, but is `agent` all the same: its setup and verify
+ * run for as long as an agent's job's limit, which in the light lane would
+ * hold a merge or a follow-ups job, and a hand-off keeping the agent lane's
+ * front, behind a build.
  * `hand-off` runs in the light lane until it would start an agent, then waits
  * for the agent lane: update-branch, whose clean merge needs no agent.
  */
@@ -2683,7 +2685,7 @@ export const LANES: Readonly<Record<JobKind, "light" | "agent" | "hand-off">> = 
   "implement-prd": "agent",
   "follow-ups": "light",
   merge: "light",
-  "setup-check": "light",
+  "setup-check": "agent",
 };
 
 /**

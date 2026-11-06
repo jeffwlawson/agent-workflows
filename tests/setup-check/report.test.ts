@@ -191,7 +191,7 @@ describe("setup-check:report says how each step of a setup check ended", () => {
 
     const body = posted();
     expect(body).toMatch(/^\*\*`agent:setup-check` failed:\*\* `main` could not be checked out, so neither the setup nor the verify command ran\./);
-    expect(body).toContain("- **Checkout** of `main`: failed: `main` could not be checked out: remote: Repository not found.");
+    expect(body).toContain("- **Checkout** of `main`: failed. Why:\n\n  ```\n  `main` could not be checked out: remote: Repository not found.\n  ```");
     expect(body).toContain("- **Setup** (`AGENT_SETUP`): not run, since the checkout did not finish.");
     expect(body).toContain("- **Verify** (`AGENT_VERIFY`): not run, since the checkout did not finish.");
     expect(github.issueLabels.get(ISSUE)).toEqual([]);
@@ -221,6 +221,40 @@ describe("setup-check:report says how each step of a setup check ended", () => {
     const body = posted();
     expect(body).not.toContain("<!--");
     expect(body).toContain("  ````\n  ```\n  @someone\n  ````");
+  });
+
+  it("caps a run of backticks in a step's output at 200, says it was shortened, and keeps the fence under 256", async () => {
+    const long = "`".repeat(300);
+    await run(INPUTS({ VERIFY_RESULT: "failed", VERIFY_EXIT: "1", VERIFY_OUTPUT: `before\n${long}\n@someone [x](https://example.com)` }));
+
+    const body = posted();
+    const runs = [...body.matchAll(/`+/g)].map(([found]) => found.length);
+    expect(Math.max(...runs)).toBeLessThan(256);
+    expect(body).not.toContain(long);
+    const fence = "`".repeat(201);
+    expect(body).toContain(`  ${fence}\n  before\n  ${"`".repeat(200)} (100 more backticks removed)\n  @someone [x](https://example.com)\n  ${fence}`);
+  });
+
+  it("fences the checkout's failure reason, so a mention or a link in it does not render", async () => {
+    await run(
+      INPUTS({
+        CHECKOUT: "",
+        CHECKOUT_RESULT: "failed",
+        CHECKOUT_REASON: "`main` could not be checked out: <!-- x -->fatal: ask @someone at https://example.com/x ```",
+        SETUP_RESULT: "not-run",
+        VERIFY_RESULT: "not-run",
+      }),
+    );
+
+    const body = posted();
+    expect(body).not.toContain("<!--");
+    expect(body).toContain("- **Checkout** of `main`: failed. Why:\n\n  ````\n  `main` could not be checked out: fatal: ask @someone at https://example.com/x ```\n  ````");
+  });
+
+  it("says a checkout that failed with no reason gave none", async () => {
+    await run(INPUTS({ CHECKOUT: "", CHECKOUT_RESULT: "failed", SETUP_RESULT: "not-run", VERIFY_RESULT: "not-run" }));
+
+    expect(posted()).toContain("- **Checkout** of `main`: failed: it gave no reason.");
   });
 
   it("names no commit, and still reports, where the checkout's head cannot be read", async () => {

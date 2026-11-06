@@ -4420,8 +4420,10 @@ after the setup. **`doctor` cannot check this.** It does not read `AGENT_VERIFY`
 > and on a pull request's delivery the label is answered by nothing. The scan answers it as it
 > answers the other trigger labels, so a label left on through a restart is run again. The job's
 > time limit is the agent's job's, `AGENT_TIMEOUT_MINUTES`, since setup and verify are what that job
-> runs before its agent, and `setup-check:report`'s 5 minutes past it. It runs in the worker's light
-> lane, since it starts no agent.
+> runs before its agent, and `setup-check:report`'s 5 minutes past it. It runs in the worker's agent
+> lane for its whole run, as an implement job does, though it starts no agent, since its setup and
+> verify can hold a lane as long as an agent's job, and in the light lane a merge or a follow-ups
+> job would wait behind them.
 >
 > The worker asks for a `read` token and checks the default branch out at its head, by its name, as
 > implement's agent's job does; runs `AGENT_SETUP` in the bwrap sandbox, in the checkout, with no
@@ -4444,7 +4446,9 @@ hands it as data (ADR 0006):
   and that no agent was started;
 - one line for each of the checkout, the setup and the verify command, each `passed`; `failed`,
   with its exit code and the end of its output, at most its last 20 lines, redacted as setup's
-  failure reason is, fenced so nothing in it renders, and every HTML comment removed; `failed`
+  failure reason is, fenced so nothing in it renders, and every HTML comment removed, every run of
+  backticks in it cut to 200 and saying so, so its fence, one longer, stays below the 256 GitHub's
+  renderer mishandles; the checkout `failed`, with its reason fenced the same way; `failed`
   because it could not be started in the sandbox, with why; `skipped`, where its variable is unset,
   naming it, and for `AGENT_VERIFY` how to set it; `not run`, since a step before it did not pass;
   or `timed out`, naming the limit;

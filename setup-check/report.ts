@@ -83,7 +83,7 @@ const setupCheckReport = (inputs: Inputs, sha: string | undefined): string => {
       ? `- **Checkout** of ${base}: passed${sha === undefined ? "" : `, at ${sha}`}.`
       : inputs.CHECKOUT_RESULT === "timed-out"
         ? `- **Checkout** of ${base}: timed out: it did not finish within ${limit}.`
-        : `- **Checkout** of ${base}: failed: ${sentence(inputs.CHECKOUT_REASON === "" ? "it gave no reason" : clean(inputs.CHECKOUT_REASON))}`;
+        : checkoutFailed(base, inputs.CHECKOUT_REASON);
 
   const steps = [checkoutLine, stepLine(setup, inputs, limit), stepLine(verify, inputs, limit)];
   return [`${headline(inputs, setup, verify, at)}`, "", ...steps, "", `[Run](${inputs.RUN_URL}) · To check again, add \`${SETUP_CHECK_LABEL}\` again.`, ""].join("\n");
@@ -132,20 +132,41 @@ const notRunBecause = (step: Step, inputs: Inputs): string => {
   return "the checkout did not finish";
 };
 
+/**
+ * The checkout's failed line: its reason, git's stderr and the branch's name,
+ * fenced as a step's output is, so a mention or a link in it does not render.
+ */
+const checkoutFailed = (base: string, reason: string): string => {
+  const text = clean(reason).trim();
+  return text === "" ? `- **Checkout** of ${base}: failed: it gave no reason.` : `- **Checkout** of ${base}: failed. Why:\n\n${fenced(text)}`;
+};
+
 /** The end of a step's output, fenced so nothing in it renders, or that it wrote none. */
 const quoted = (output: string): string => {
   const text = clean(output).trimEnd();
-  if (text === "") return "It wrote no output.";
-  const longest = Math.max(2, ...[...text.matchAll(/`+/g)].map(([run]) => run.length));
+  return text === "" ? "It wrote no output." : `The end of its output:\n\n${fenced(text)}`;
+};
+
+/**
+ * The longest run of backticks a fenced text keeps. Its fence is one longer,
+ * and GitHub's renderer mishandles a fence of 256 or more, so a longer run in
+ * the text would otherwise close the block and let the rest render.
+ */
+const MAX_BACKTICK_RUN = 200;
+
+/**
+ * `text`, cleaned already, in a fence indented under its list item: every run
+ * of backticks capped at `MAX_BACKTICK_RUN`, with what was removed said after
+ * it, and the fence one backtick longer than the longest run left.
+ */
+const fenced = (text: string): string => {
+  const capped = text.replace(/`+/g, (run) =>
+    run.length <= MAX_BACKTICK_RUN ? run : `${"`".repeat(MAX_BACKTICK_RUN)} (${run.length - MAX_BACKTICK_RUN} more backticks removed)`,
+  );
+  const longest = Math.max(2, ...[...capped.matchAll(/`+/g)].map(([run]) => run.length));
   const fence = "`".repeat(longest + 1);
-  return `The end of its output:\n\n  ${fence}\n${text
+  return `  ${fence}\n${capped
     .split("\n")
     .map((line) => `  ${line}`)
     .join("\n")}\n  ${fence}`;
-};
-
-/** A reason as the end of a sentence: closed with a full stop where it has no closing punctuation of its own. */
-const sentence = (reason: string): string => {
-  const trimmed = reason.trim();
-  return /[.!?]$/.test(trimmed) ? trimmed : `${trimmed}.`;
 };

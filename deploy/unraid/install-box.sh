@@ -107,8 +107,8 @@ ask_secret() {
 echo "== Packages"
 export DEBIAN_FRONTEND=noninteractive
 apt-get update -qq
-apt-get install -y -qq bubblewrap tinyproxy nftables git curl ca-certificates xz-utils >/dev/null
-echo "  ensured    bubblewrap tinyproxy nftables git curl are installed"
+apt-get install -y -qq bubblewrap tinyproxy nftables git curl ca-certificates xz-utils python3-venv >/dev/null
+echo "  ensured    bubblewrap tinyproxy nftables git curl ca-certificates xz-utils python3-venv are installed"
 
 echo "== Node $NODE_VERSION"
 node_have=$(/usr/local/bin/node --version 2>/dev/null | sed 's/^v//' || true)

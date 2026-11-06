@@ -76,6 +76,13 @@ fi
 for tool in git npm bwrap curl; do
   if command -v "$tool" >/dev/null; then pass "$tool is installed"; else fail "$tool is missing"; fi
 done
+# A Python repository's setup builds a virtualenv in the checkout, and
+# `python3 -m venv` needs ensurepip, which Debian and Ubuntu ship in python3-venv.
+if python3 -c 'import ensurepip' >/dev/null 2>&1; then
+  pass "python3 can build a virtualenv (ensurepip is installed)"
+else
+  fail "python3 cannot build a virtualenv, so a Python repository's setup fails: install python3-venv with: sudo apt-get install -y python3-venv"
+fi
 if runuser -u "$WORKER_USER" -- bwrap --unshare-all --share-net --die-with-parent --ro-bind / / --dev /dev --proc /proc /bin/true 2>/dev/null; then
   pass "$WORKER_USER can start a bwrap sandbox"
 else

@@ -54,6 +54,18 @@ Whatever the machine, the service needs:
   published to is needed only for the registry route, or for `npm exec`.
 - **The GitHub App**, below.
 
+**The box's packages serve every repository on it.** One box runs every repository's setup and
+agent, so what is installed on it is one set, installed once, not one per repository. The base
+`deploy/unraid/install-box.sh` installs includes `python3-venv`, so a Python repository's setup can
+build a virtualenv in the checkout (`python3 -m venv .venv`; the system Python refuses installs, and
+has no `pip`); `check-box.sh` fails on a box without it. A repository's runtime versions, extra
+system packages and registry hosts are not the base: [`docs/multi-repo.md`](./multi-repo.md) and
+[ADR 0012](./adr/0012-the-box-is-the-version-a-repository-holds-configuration.md) say where they go,
+and #820 adds the operator's settings for them. Until #820, a Python repository's packages also need
+`^pypi\.org$` and `^files\.pythonhosted\.org$` in the proxy's allowlist, which on the agent box is
+`/etc/tinyproxy/allowlist` (restart `tinyproxy` after editing it). `install-box.sh` writes that file
+whole, so a re-run of it drops lines added by hand: add them again after one.
+
 ### Installing the package
 
 Each release's GitHub Release carries the packed tarball, the same file the registry serves, with

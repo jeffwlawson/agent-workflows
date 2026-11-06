@@ -52,6 +52,9 @@ interface first; there is no issue for it and this ADR builds nothing toward it.
 depends on any of these: the service
 installs from the release tarball, which needs no token.
 
+*2026-11-06:* [ADR 0012](./0012-the-box-is-the-version-a-repository-holds-configuration.md) unparks
+#344 and #346, for a box that serves many repositories. The rest of this list stays parked.
+
 ## What is not decided
 
 `docs/installability.md`, section 5, lists ten decisions (D1 to D10). This ADR settles none of

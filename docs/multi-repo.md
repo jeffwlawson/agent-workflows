@@ -97,9 +97,14 @@ breaks all twenty at once. What there is: `upgrade.sh <earlier>` rolls back
    the toolchain manager below. It changes with a release of `deploy/`, not with a repository.
 2. **The repository's toolchain.** Which Node, Python, Go or Rust, at which version. Declared in the
    repository in a standard file that also works on a laptop and in CI, and installed **inside the
-   sandbox**, in user space, into the job's own home, which is thrown away when the job ends, as
-   everything setup makes is today (section 3.3). No root, no change to the box, and two
-   repositories wanting different versions of Python never meet.
+   sandbox**, in user space, into an untracked folder in the job's checkout (mise's data directory
+   pointed there), which is thrown away with the checkout when the job ends (section 3.3). Not into
+   a home: setup's sandbox gets a fresh home that is removed when setup ends
+   (`service/worker-live.ts`, `liveSandbox`), and the agent's sandbox gets another
+   (`engine/bwrap.ts`, `bwrap-job-`), so only the checkout carries over, its untracked paths copied
+   in. Setup binds the checkout at the path the agent works at, so the install's own paths hold in
+   both. The agent's sandbox then needs that folder on its `PATH`, which is #822's to do. No root,
+   no change to the box, and two repositories wanting different versions of Python never meet.
 3. **The repository's packages.** `AGENT_SETUP`, as now: `npm ci`, `uv sync`,
    `pip install -r` into a virtual environment in the checkout.
 
@@ -173,7 +178,7 @@ the operator rather than by any job. `agent-service.conf` lists the versions (`B
 node@22"`), `install-box.sh` installs them with `mise install --system` (into
 `/usr/local/share/mise/installs`, per mise's `directories` page), and every sandbox binds that folder
 read-only. A job whose versions are there downloads nothing; one asking for another version
-downloads it into its own throwaway home, as above. No job can write to it, so nothing is left
+downloads it into the checkout's throwaway folder, as above. No job can write to it, so nothing is left
 behind for another, and no repository's file decides what is in it. **UNVERIFIED**: whether mise run
 as an ordinary user picks up system installs on its own, or needs a setting to.
 

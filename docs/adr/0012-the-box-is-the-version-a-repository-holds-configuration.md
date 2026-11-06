@@ -37,8 +37,12 @@ repository.
    git, Node, what every language's own tools assume (`python3-venv`, a C toolchain), and the
    toolchain manager. It changes with a release of `deploy/`.
 2. **The repository's toolchain**, declared in the repository in a standard file (`mise.toml`) and
-   installed inside the sandbox, in user space, into the job's own home, which is thrown away with
-   the job. The same file drives the Actions side, which answers #346.
+   installed inside setup's sandbox, in user space, into an untracked folder in the checkout
+   (mise's data directory pointed there). The checkout is the one thing setup hands on to the
+   agent: setup's home is removed when setup ends and the agent's sandbox has a fresh one, so a
+   toolchain in a home would be gone before the agent runs verify. Setup binds the checkout at the
+   path the agent works at, so the install's own paths still hold there, and the folder is thrown
+   away with the job's checkout. The same file drives the Actions side, which answers #346.
 3. **The repository's packages**, `AGENT_SETUP` as now.
 
 What no layer covers is the operator's, in the operator's file (`agent-service.conf`): extra system

@@ -29,6 +29,7 @@ import {
   JOB_KINDS,
   MERGE_MINUTES,
   parseJob,
+  SETUP_CHECK_REPORT_MINUTES,
   sign,
   SIGNATURE_HEADER,
   TOKEN_KINDS,
@@ -43,6 +44,7 @@ import {
   FIX_LABEL,
   FOLLOW_UPS_LABEL,
   IMPLEMENT_LABEL,
+  SETUP_CHECK_LABEL,
   MERGE_LABEL,
   ORCHESTRATOR_VARIABLE,
   REVIEW_LABEL,
@@ -529,6 +531,7 @@ describe("the webhook door", () => {
         AGENT_MAX_FIX_ROUNDS: "2",
         AGENT_FIX_MIN_SEVERITY: "low",
         AGENT_SETUP: "",
+        AGENT_VERIFY: "",
       },
     });
   });
@@ -539,6 +542,14 @@ describe("the webhook door", () => {
     const job = await dispatched(s);
 
     expect(job.variables.AGENT_SETUP).toBe("npm ci && echo \"$HOME\" `id` $(whoami); exit 3");
+  });
+
+  it("carries the repository's verify command as the repository set it, unevaluated (#821)", async () => {
+    const s = setup();
+    s.repository.variables["AGENT_VERIFY"] = "npm test -- $(cat list); echo done";
+    const job = await dispatched(s);
+
+    expect(job.variables.AGENT_VERIFY).toBe("npm test -- $(cat list); echo done");
   });
 
   it("works the App's login out of the App's own record, as its REST spelling", async () => {
@@ -588,7 +599,7 @@ describe("the labels the dispatcher routes", () => {
   });
 
   it("answers agent:implement on an issue's event, with both implement and implement-prd, and every other label on a pull request's", () => {
-    expect(LABEL_KINDS.issues).toEqual({ [IMPLEMENT_LABEL]: ["implement", "implement-prd"] });
+    expect(LABEL_KINDS.issues).toEqual({ [IMPLEMENT_LABEL]: ["implement", "implement-prd"], [SETUP_CHECK_LABEL]: ["setup-check"] });
     expect(Object.keys(LABEL_KINDS.pull_request)).toEqual([REVIEW_LABEL, FIX_LABEL, UPDATE_BRANCH_LABEL, FOLLOW_UPS_LABEL, MERGE_LABEL]);
     expect(SERVICE_LABELS).toContain(IMPLEMENT_LABEL);
   });
@@ -978,6 +989,7 @@ describe("the issue route", () => {
           AGENT_MAX_FIX_ROUNDS: "2",
           AGENT_FIX_MIN_SEVERITY: "low",
           AGENT_SETUP: "",
+          AGENT_VERIFY: "",
         },
       };
       expect(s.posted.map(({ body }) => parseJob(JSON.parse(body))), sender).toEqual([
@@ -1093,6 +1105,69 @@ describe("the issue route", () => {
 
     expect(result.outcome).toBe("refused on owner/repo#12: AGENT_ORCHESTRATOR is unset, not `service`");
     expect(s.looked).toEqual([]);
+  });
+
+  /**
+   * The setup check (#821): `agent:setup-check` on an open issue, from a
+   * writer, is one `setup-check` job on the default branch, behind the same
+   * checks as any issue's label; on a pull request, from a sender who cannot
+   * write, or on a closed issue it is none.
+   */
+  it("dispatches one setup-check job for agent:setup-check on an open issue, from a person who can write, on the default branch", async () => {
+    const s = setup();
+    s.repository.variables["AGENT_SETUP"] = "npm ci";
+    s.repository.variables["AGENT_VERIFY"] = "npm test";
+    s.repository.variables["AGENT_TIMEOUT_MINUTES"] = "40";
+    const result = await deliver(s, issueLabelled({ label: SETUP_CHECK_LABEL, defaultBranch: "trunk" }), undefined, "issues");
+
+    expect(result.outcome).toMatch(/^dispatched owner\/repo#12 to setup-check as job job-1, deadline [^;]+$/);
+    const jobs = s.posted.map(({ body }) => parseJob(JSON.parse(body)));
+    expect(jobs).toHaveLength(1);
+    expect(jobs[0]).toMatchObject({
+      workflow: "setup-check",
+      issue: 12,
+      state: "open",
+      baseRef: "trunk",
+      variables: { AGENT_SETUP: "npm ci", AGENT_VERIFY: "npm test" },
+      // The agent's job's limit, and the report's own beside it.
+      deadline: new Date(START.getTime() + (40 + SETUP_CHECK_REPORT_MINUTES + MARGIN) * MINUTE_MS).toISOString(),
+    });
+    expect(s.looked).toEqual(["maintainer"]);
+  });
+
+  it.each<[string, () => { readonly payload: unknown; readonly event: string }, string]>([
+    [
+      "agent:setup-check on a pull request",
+      () => ({ payload: labelled({ label: SETUP_CHECK_LABEL }), event: "pull_request" }),
+      "ignored on owner/repo#7: `agent:setup-check` is not a label this release's service answers on a pull request",
+    ],
+    [
+      "agent:setup-check on a pull request's issues event",
+      () => ({ payload: issueLabelled({ label: SETUP_CHECK_LABEL, pullRequest: true }), event: "issues" }),
+      "ignored on owner/repo#12: the issue is a pull request, whose labels are answered on its `pull_request` event",
+    ],
+    [
+      "agent:setup-check from a sender who can only triage",
+      () => ({ payload: issueLabelled({ label: SETUP_CHECK_LABEL, sender: "triager" }), event: "issues" }),
+      "refused on owner/repo#12: triager cannot write to owner/repo",
+    ],
+    [
+      "agent:setup-check from a sender with no access",
+      () => ({ payload: issueLabelled({ label: SETUP_CHECK_LABEL, sender: "stranger" }), event: "issues" }),
+      "refused on owner/repo#12: stranger cannot write to owner/repo",
+    ],
+    [
+      "agent:setup-check on a closed issue",
+      () => ({ payload: issueLabelled({ label: SETUP_CHECK_LABEL, state: "closed" }), event: "issues" }),
+      "ignored on owner/repo#12: the issue is closed, and `agent:setup-check` is answered on an open one",
+    ],
+  ])("starts no setup check for %s", async (_name, arrange, reason) => {
+    const s = setup();
+    const { payload, event } = arrange();
+    const result = await deliver(s, payload, undefined, event);
+
+    expect(result.outcome).toBe(reason);
+    expect(s.posted).toEqual([]);
   });
 
   it("answers agent:implement on a pull request's event with nothing, and agent:review on an issue's with nothing", async () => {
@@ -1425,6 +1500,18 @@ describe("the scan after a restart", () => {
     expect(jobsPosted(s).map(unnamed)).toEqual(expected.map(unnamed));
   });
 
+  it("dispatches an open issue's agent:setup-check left on through a restart as the setup-check job its delivery makes (#821)", async () => {
+    const delivered = setup();
+    const expected = await dispatchedIssue(delivered, issueLabelled({ label: SETUP_CHECK_LABEL }));
+    const s = setup();
+    s.repository.items = [issueItem([SETUP_CHECK_LABEL])];
+
+    await s.dispatcher.scan();
+
+    expect(jobsPosted(s).map((job) => job.workflow)).toEqual(["setup-check"]);
+    expect(jobsPosted(s).map(unnamed)).toEqual(expected.map(unnamed));
+  });
+
   it("takes a label the App added last as the App's, and looks no permission up for it", async () => {
     const s = setup();
     s.repository.items = [pullItem([REVIEW_LABEL], {}, "loop-app[bot]")];
@@ -1631,7 +1718,7 @@ describe("the scan after a restart", () => {
     expect(s.posted).toEqual([]);
     expect(s.installations.labels).not.toContain(FOLLOW_UPS_LABEL);
     expect(s.installations.merged.map(({ label }) => label)).toEqual([FOLLOW_UPS_LABEL]);
-    expect([...s.installations.labels].sort()).toEqual([REVIEW_LABEL, FIX_LABEL, UPDATE_BRANCH_LABEL, MERGE_LABEL, IMPLEMENT_LABEL].sort());
+    expect([...s.installations.labels].sort()).toEqual([REVIEW_LABEL, FIX_LABEL, UPDATE_BRANCH_LABEL, MERGE_LABEL, IMPLEMENT_LABEL, SETUP_CHECK_LABEL].sort());
   });
 
   it("dispatches nothing for an item with no trigger label on it, a run's ending having taken it off or left agent:blocked", async () => {
@@ -1671,7 +1758,7 @@ describe("the scan after a restart", () => {
 
     await s.dispatcher.scan();
 
-    expect(s.lines.filter((line) => line.startsWith("scan: failed on owner/repo: its "))).toHaveLength(6);
+    expect(s.lines.filter((line) => line.startsWith("scan: failed on owner/repo: its "))).toHaveLength(7);
     expect(s.lines).toContain("scan: failed on owner/repo: its merged pull requests carrying `agent:follow-ups` could not be listed: GitHub answered 502");
     expect(s.lines.at(-1)).toBe("scan: done");
   });
@@ -3121,6 +3208,7 @@ describe("the scan's labels (#823)", () => {
       FIX_LABEL,
       UPDATE_BRANCH_LABEL,
       MERGE_LABEL,
+      SETUP_CHECK_LABEL,
       "agent:blocked",
       FOLLOW_UPS_LABEL,
       "pr-follow-up",

@@ -1,4 +1,4 @@
-import { MERGE_LABEL } from "./record.js";
+import { MERGE_LABEL, SETUP_CHECK_LABEL } from "./record.js";
 
 /**
  * The loop's own labels, and the one definition of them (#823): `init`
@@ -42,6 +42,11 @@ export const STATE_LABELS: readonly LabelSpec[] = [
  * merge decision, **armed until merged or disarmed**, and its description says
  * that instead. It is a trigger label all the same, demanded only where its
  * caller is installed, since the `merge` caller is opt-in by its job.
+ *
+ * `agent:setup-check` (#821) is on while its check runs, as the first four
+ * are, but has no caller: the service alone answers it, so `init`, which
+ * derives its trigger labels from the callers, never writes it, and `doctor`
+ * demands it of a service repository only. Grey, a check rather than a stage.
  */
 export const TRIGGER_LABELS: readonly LabelSpec[] = [
   {
@@ -60,6 +65,11 @@ export const TRIGGER_LABELS: readonly LabelSpec[] = [
     name: MERGE_LABEL,
     color: "1A7F37",
     description: "Merge this PR once current, green and approved. Armed until merged or disarmed.",
+  },
+  {
+    name: SETUP_CHECK_LABEL,
+    color: "57606A",
+    description: "Run this repository's setup and verify on the service, with no agent. On while it runs.",
   },
 ];
 

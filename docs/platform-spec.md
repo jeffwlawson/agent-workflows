@@ -24,7 +24,8 @@ sentence. How one orchestrator does a thing is description, and sits in a quoted
 > has: `agent:review`, `agent:fix`, `agent:update-branch`, `agent:follow-ups` and `agent:merge` on a
 > pull request, `agent:implement` on an issue, a regular one or a PRD, and every merge, for
 > `follow-ups`. `agent:merge` it answers from #591, with a `merge` job started besides by a push, a
-> check suite's completion and a final status on an armed head (§12). A block for it appears only where it differs from the Actions orchestrator in a way a
+> check suite's completion and a final status on an armed head (§12). It answers one label of its
+> own besides, `agent:setup-check` on an issue (§13), which no Actions workflow answers. A block for it appears only where it differs from the Actions orchestrator in a way a
 > reader would trip on.
 
 Neither block binds anyone. Where they disagree with a bold sentence, the bold sentence is right.
@@ -430,7 +431,8 @@ falls back to the orchestrator the repository already had rather than to two. A 
 orchestrator answers only the labels `SERVICE_LABELS` in `service/dispatcher.ts` lists, the keys
 of its map from trigger label to job kind, per event type: `agent:review`, `agent:fix`,
 `agent:update-branch`, `agent:follow-ups` and `agent:merge` on a pull request's delivery and
-`agent:implement` on an issue's, which is every trigger label the loop has. A label is answered on
+`agent:implement` on an issue's, which is every trigger label the loop has, and `agent:setup-check`
+on an issue's (§13), the one label only the service answers. A label is answered on
 its own event type only, and on a service-served repository every other label is answered by
 nothing. A merge is the one trigger that is not a label: a `follow-ups` job is started as well on
 the `closed` delivery of every pull request merged, whatever its labels (§11). And a `merge` job is
@@ -4392,3 +4394,99 @@ off: one comment, `agent:merge` off and `agent:blocked` on.
 > reads is never its own. The three commands' write logs are uploaded `always()`, as one artifact.
 > A failure before the package installs, the Node setup's own, posts nothing: the run never got as
 > far as the command.
+
+## 13. `setup-check`
+
+Trigger label: `agent:setup-check`, added to an open issue by someone who can write to the
+repository, on a repository the service orchestrator serves. `doctor` demands the label of a service
+repository, and the dispatcher creates it on every one it serves; `init` writes it nowhere, since no
+caller wants it.
+
+A workflow with no runner, and the one with **no Actions workflow behind it** (#821): on Actions a
+caller's `setup:` already runs in every agent's job, so a box missing what a repository needs is a
+failed run there, where on the service it was a box nobody had checked. A setup check runs what an
+agent's job runs before its agent, the checkout of the default branch, the repository's setup
+`AGENT_SETUP` and its verify command `AGENT_VERIFY`, in the sandbox a real job gets, starts no agent,
+and reports on the issue. It costs no usage.
+
+`AGENT_VERIFY` is a repository variable, optional, read and carried as `AGENT_SETUP` is: a shell
+script an admin sets, handed to the sandbox's shell through its environment, unevaluated, and never
+spliced into a command line. It is not read out of `CLAUDE.md`. Unset, the check says so and stops
+after the setup. **`doctor` cannot check this.** It does not read `AGENT_VERIFY`.
+
+> **Service orchestrator:** the dispatcher starts a `setup-check` job for `agent:setup-check` on an
+> open issue's `issues` delivery, after the opt-in and the author gate every label has, and with the
+> repository's default branch as its base; on a closed issue it starts none, with its reason logged,
+> and on a pull request's delivery the label is answered by nothing. The scan answers it as it
+> answers the other trigger labels, so a label left on through a restart is run again. The job's
+> time limit is the agent's job's, `AGENT_TIMEOUT_MINUTES`, since setup and verify are what that job
+> runs before its agent, and `setup-check:report`'s 5 minutes past it. It runs in the worker's light
+> lane, since it starts no agent.
+>
+> The worker asks for a `read` token and checks the default branch out at its head, by its name, as
+> implement's agent's job does; runs `AGENT_SETUP` in the bwrap sandbox, in the checkout, with no
+> token, the sandbox's proxy its only way out, as every kind's setup runs (§6); and where the setup
+> passed or was skipped, runs `AGENT_VERIFY` the same way, as a phase of its own, reaching the shell
+> as `AGENT_VERIFY` rather than `AGENT_SETUP`. A step after one that did not pass is not run. The
+> three share the time limit, and one still running at it is ended. Then it asks for a `write` token
+> and runs `setup-check:report`, however the steps ended, handed how each did. **No runner is
+> started.** Where no `write` token is granted, the report does not run, the label stays on, and the
+> worker's log says why, so the next scan runs the check again.
+
+### `setup-check:report`
+
+Ends every setup check. It runs no model, and reads the checkout only for the commit at its head.
+It writes one comment on the issue, every string of it its own (ADR 0007), from what the worker
+hands it as data (ADR 0006):
+
+- a first line, `` **`agent:setup-check` passed:** ``, `incomplete:` (the verify command unset),
+  `failed:` or `timed out:`, saying which step did not pass, on which branch and at which commit,
+  and that no agent was started;
+- one line for each of the checkout, the setup and the verify command, each `passed`; `failed`,
+  with its exit code and the end of its output, at most its last 20 lines, redacted as setup's
+  failure reason is, fenced so nothing in it renders, and every HTML comment removed; `failed`
+  because it could not be started in the sandbox, with why; `skipped`, where its variable is unset,
+  naming it, and for `AGENT_VERIFY` how to set it; `not run`, since a step before it did not pass;
+  or `timed out`, naming the limit;
+- the run's link, and that adding `agent:setup-check` again checks again.
+
+Then it takes `agent:setup-check` off, so the label is on exactly while the check runs. Both writes
+are made with `GH_TOKEN` and tolerated: a report GitHub refuses is a warning, and the label still
+comes off. It adds no `agent:blocked`: a check that fails has found what it was asked to find. A
+failure of the command itself writes `failure_reason.txt`, as every subcommand does.
+
+#### Inputs
+
+| Input | Kind | Default | What it is |
+|---|---|---|---|
+| `ISSUE_NUMBER` | required | | The issue the check was asked for on. |
+| `BASE_REF` | required | | The default branch checked. |
+| `RUN_URL` | required | | The run's page, which the report links. |
+| `CHECKOUT` | optional | `""` | The checkout, whose head is the commit named. Empty where the checkout did not pass. |
+| `TIMEOUT_MINUTES` | optional | `""` | The check's time limit, for a step that ran out of it. |
+| `CHECKOUT_RESULT` | required | | How the checkout ended: `passed`, `failed` or `timed-out`. |
+| `CHECKOUT_REASON` | optional | `""` | Why the checkout failed. |
+| `SETUP_RESULT` | required | | How `AGENT_SETUP` ended: `passed`, `failed`, `timed-out`, `unset` or `not-run`. |
+| `SETUP_EXIT` | optional | `""` | Its exit code, where it failed. Empty where it could not be started. |
+| `SETUP_OUTPUT` | optional | `""` | The end of its output, raw and redacted, or why it could not be started. |
+| `VERIFY_RESULT` | required | | How `AGENT_VERIFY` ended, as `SETUP_RESULT`. |
+| `VERIFY_EXIT` | optional | `""` | As `SETUP_EXIT`, for the verify command. |
+| `VERIFY_OUTPUT` | optional | `""` | As `SETUP_OUTPUT`, for the verify command. |
+
+#### Outputs
+
+| Output | When it is written |
+|---|---|
+| `write_log.jsonl` | Every write as it lands, one JSON line each, and a last line for how the command ended, as `review:conclude`'s. Not written where it wrote nothing. |
+
+**`doctor` cannot check this.** These tables are the command's, for the reason §6 gives.
+
+#### What it reads from the record
+
+Nothing: what it says comes from its inputs and the checkout's head.
+
+**`doctor` cannot check this.** The record is written by the orchestrator's posting code, for the reason §4.3 gives.
+
+> **Actions orchestrator:** none. No reusable runs this command, and no caller asks for it: on
+> Actions a caller's `setup:` runs in every agent's job, which is the check this one makes on the
+> service before the first run.

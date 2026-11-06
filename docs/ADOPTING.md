@@ -562,7 +562,7 @@ so they cost a run per label and carry a pin to keep fresh (§4). Keep them wher
 
 - it answers every trigger label: `agent:review`, `agent:fix`, `agent:update-branch`,
   `agent:follow-ups` and `agent:merge` on a pull request, `agent:implement` on an issue, a regular
-  one or a PRD, and every merge, which posts the post-merge checklist and, where `agent:follow-ups`
+  one or a PRD, `agent:setup-check` on an open issue (the setup check, below), and every merge, which posts the post-merge checklist and, where `agent:follow-ups`
   is on, files the review's follow-ups, as on Actions. `agent:merge` (§3, *The merge decision*) is
   answered on every service-served repository, with no caller job to leave out, so `doctor` checks
   the label exists;
@@ -580,6 +580,26 @@ so they cost a run per label and carry a pin to keep fresh (§4). Keep them wher
 - whether the service's App is installed on the repository: **`doctor` cannot check this.** The App
   is the service's, not the loop's, and nothing in the repository names it.
 
+**Before the first real issue, run a setup check** (#821). The service runs `AGENT_SETUP` with the
+proxy as its only way out and nothing of your CI's environment, so a setup that passes on Actions
+can fail there, and `doctor` cannot see the box it runs on. A setup check finds that before a run
+does, and costs no usage, since it starts no agent:
+
+1. Set the repository variable `AGENT_SETUP` to the repository's install, and `AGENT_VERIFY` to
+   the command that checks it, the one your `CLAUDE.md` names (`gh variable set AGENT_VERIFY --body
+   "npm run verify"`). Both are shell scripts handed to the sandbox's shell as you wrote them.
+2. Add `agent:setup-check` to any open issue
+   ([deploying-the-service.md](./deploying-the-service.md#the-setup-check)). On the repository's default branch, in the sandbox a
+   real run gets, the service checks the branch out, runs `AGENT_SETUP`, then `AGENT_VERIFY`, and
+   posts one comment on the issue saying how each step ended, passed, failed (with its exit code
+   and the end of its output), skipped (and why) or timed out, and the commit it checked. Then it
+   takes the label off. With `AGENT_VERIFY` unset it says so and stops after the setup.
+3. Add the label again after changing either variable, or after the box is upgraded.
+
+It is the service's alone: on Actions a caller's `setup:` already runs in every agent's job, so
+there is no caller for it, and the label does nothing there. Its time limit is the agent's job's,
+`AGENT_TIMEOUT_MINUTES` (§2c).
+
 **Switching back.** Delete the variable. The next label is answered by Actions, through the callers
 you kept, or the ones `init` installs again if you removed them. Nothing else changes, so a bad
 service release costs you one setting.
@@ -588,8 +608,10 @@ service release costs you one setting.
 
 ## 3. Labels
 
-All of these must exist, `agent:merge` where its caller is installed (*The merge decision*, below).
-A missing label makes its transition a no-op, and the state machine drifts without erroring.
+All of these must exist, `agent:merge` where its caller is installed (*The merge decision*, below),
+and `agent:setup-check` on a repository the service orchestrator serves (§2e), which no caller
+answers. A missing label makes its transition a no-op, and the state machine drifts without
+erroring.
 
 ```bash
 gh label create "agent:implement"   --color 8250DF --description "Build this issue, or the next slice of this PRD. On while the run works."
@@ -597,13 +619,16 @@ gh label create "agent:review"      --color 0969DA --description "Review this PR
 gh label create "agent:fix"         --color D4A72C --description "Act on review findings. On while the fix runs."
 gh label create "agent:update-branch" --color 1B7C83 --description "Merge the base branch into this PR. On while it runs."
 gh label create "agent:merge"       --color 1A7F37 --description "Merge this PR once current, green and approved. Armed until merged or disarmed."
+gh label create "agent:setup-check" --color 57606A --description "Run this repository's setup and verify on the service, with no agent. On while it runs."
 gh label create "agent:blocked"     --color CF222E --description "A run failed or was refused. Needs you."
 ```
 
 `init` creates these, and recolours any whose colour or description differs, so an install made
 before a release changed them catches up on its next run; the block is what to run where it could
-not. Each colour is a **stage**: purple is building, blue reviewing, yellow fixing, teal refreshing,
-green merging, grey a marker, red a run that needs you.
+not. `agent:setup-check` is the exception: no caller wants it, so `init` writes it nowhere, and the
+service's dispatcher creates it on every repository it serves (§2e). Each colour is a **stage**:
+purple is building, blue reviewing, yellow fixing, teal refreshing, green merging, grey a marker,
+dark grey a setup check, red a run that needs you.
 
 **A trigger label is on while its run works.** The run leaves it on as it starts and takes it off
 when it ends, whether it succeeded, failed, was refused, timed out or was cancelled, so the label on
@@ -620,6 +645,7 @@ has is a **column**:
 |---|---|---|
 | `agent:review`, `agent:fix`, `agent:update-branch` | **on while its run works** | the run, as it ends |
 | `agent:implement` on an ordinary issue | **on while its run works** | the run, as it ends |
+| `agent:setup-check` on an issue | **on while its run works** | the check's report, as it ends, however the check went |
 | `agent:implement` on a PRD parent | **cursor** | each run, as it ends, and put back by review's advance when a slice round on the PRD PR ends on an approval, which never happens after the final review |
 | `agent:follow-ups` on a pull request | **marker, removed on success** | the filing run, on any run that reached a verdict — or you, to opt out |
 | `agent:merge` on a pull request | **armed until merged or disarmed** | the merge; a disarm, where the head gained anything but a clean merge of its base; a refusal or a stopped run; or you, to take the decision back |

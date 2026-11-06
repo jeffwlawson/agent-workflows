@@ -10,6 +10,7 @@ import {
   ORCHESTRATOR_VARIABLE,
   REVIEW_LABEL,
   SERVICE_ORCHESTRATOR,
+  SETUP_CHECK_LABEL,
   UPDATE_BRANCH_LABEL,
 } from "../shared/record.js";
 import { ADVISORY_LABELS, labelWrites, STATE_LABELS, TRIGGER_LABELS, type LabelSpec } from "../shared/loop-labels.js";
@@ -344,6 +345,9 @@ export const SERVICE_APP_PERMISSIONS: Readonly<Record<string, string>> = MINTS.r
   return needed;
 }, {});
 
+/** The kinds a label on an issue starts: each carries the issue, and the repository's default branch as its base. */
+type IssueKind = "implement" | "implement-prd" | "setup-check";
+
 /**
  * The job kind each trigger label the service answers starts (ADR 0008), by
  * the event it is answered on: a label is answered on the event type it
@@ -360,10 +364,12 @@ export const SERVICE_APP_PERMISSIONS: Readonly<Record<string, string>> = MINTS.r
  * `implement` and `implement-prd`, as Actions starts both workflows on it.
  * Each one's gate partitions on the issue's shape and defers the other's
  * without a word, so the dispatcher reads nothing of the shape itself.
+ * `agent:setup-check` (#821) starts a `setup-check` job, on an open issue
+ * alone, and has no workflow on Actions behind it.
  */
 export const LABEL_KINDS: {
-  readonly pull_request: Readonly<Record<string, Exclude<JobKind, "implement" | "implement-prd">>>;
-  readonly issues: Readonly<Record<string, readonly ("implement" | "implement-prd")[]>>;
+  readonly pull_request: Readonly<Record<string, Exclude<JobKind, IssueKind>>>;
+  readonly issues: Readonly<Record<string, readonly IssueKind[]>>;
 } = {
   pull_request: {
     [REVIEW_LABEL]: "review",
@@ -374,6 +380,7 @@ export const LABEL_KINDS: {
   },
   issues: {
     [IMPLEMENT_LABEL]: ["implement", "implement-prd"],
+    [SETUP_CHECK_LABEL]: ["setup-check"],
   },
 };
 
@@ -871,7 +878,7 @@ export const createDispatcher = (edges: DispatcherEdges) => {
 
   /** Dispatches a job of each kind an issue's label starts, in turn; the line is each dispatch's. */
   const dispatchIssue = async (
-    kinds: readonly ("implement" | "implement-prd")[],
+    kinds: readonly IssueKind[],
     fields: { readonly repo: string; readonly issue: number; readonly title: string; readonly state: string; readonly baseRef: string },
     login: string,
     where: string,
@@ -1095,6 +1102,9 @@ export const createDispatcher = (edges: DispatcherEdges) => {
     const login = appLogin((await edges.github.app()).slug);
     const distrust = await untrusted(repo, sender, login);
     if (distrust !== undefined) return `refused on ${where}: ${distrust}`;
+    // The one issue kind with no gate to say so (#821): a check of a closed
+    // issue's repository reports on nothing anyone is reading.
+    if (kinds.includes("setup-check") && state !== "open") return `ignored on ${where}: the issue is ${state}, and \`${label}\` is answered on an open one`;
     const gone = await removed(origin, repo, number, label, where);
     if (gone !== undefined) return gone;
     if (asks.delete(askedKey(repo, number, label))) changed();

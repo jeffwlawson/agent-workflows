@@ -245,7 +245,8 @@ when all of these hold:
   fix job, `agent:update-branch` to an update-branch job, `agent:follow-ups` to a follow-ups
   job and `agent:merge` to a merge job, and on an `issues` delivery
   `agent:implement` to two jobs, an implement job and an implement-prd job, as Actions starts both
-  workflows on it). A label is answered on its own event only, and an `issues` delivery about a
+  workflows on it, and `agent:setup-check` to a setup-check job, the one kind no Actions workflow
+  runs ([*The setup check*](#the-setup-check))). A label is answered on its own event only, and an `issues` delivery about a
   pull request is ignored. The dispatcher reads nothing of an issue's shape: each job's gate does,
   and the one whose shape it is not ends without a word. Or it is a merge: a `pull_request`
   `closed` delivery with `merged` `true`, whatever its labels, which becomes a follow-ups job, as
@@ -266,7 +267,8 @@ when all of these hold:
 - on a pull request, the head is in the same repository, not a fork; an issue has no head;
 - a pull request is open, but for `agent:follow-ups`, which is answered on a closed one, merged or
   not, as `follow-ups.yml` answers it. An issue's state is not checked here: a closed issue becomes
-  a job, and `implement:gate` refuses it on the issue and takes the label off, as on Actions;
+  a job, and `implement:gate` refuses it on the issue and takes the label off, as on Actions. The
+  one exception is `agent:setup-check`, answered on an open issue alone, since nothing gates it;
 - the label's sender can write to the repository, or is the App itself (`<slug>[bot]`), whose
   labels the loop's own commands add (ADR 0008). A merge has no such check: whoever merged could
   write, and a merge queue or auto-merge can send it as a bot that would be refused, which would
@@ -276,16 +278,17 @@ Every other delivery is logged with its reason. A job carries what the label's e
 repository variables the service reads (`AGENT_MODEL`, `AGENT_MODEL_REVIEW`, `AGENT_MODEL_FIX`,
 `AGENT_MODEL_UPDATE_BRANCH`, `AGENT_MODEL_IMPLEMENT`, `AGENT_MODEL_IMPLEMENT_PRD`, `AGENT_EFFORT`,
 `AGENT_EFFORT_REVIEW`, `AGENT_EFFORT_FIX`, `AGENT_EFFORT_UPDATE_BRANCH`, `AGENT_EFFORT_IMPLEMENT`,
-`AGENT_EFFORT_IMPLEMENT_PRD`, `AGENT_PROMPT_CACHE_TTL`, `AGENT_REVIEW_TIMEOUT_MINUTES`, `AGENT_TIMEOUT_MINUTES`, `AGENT_MAX_FIX_ROUNDS`, `AGENT_FIX_MIN_SEVERITY` and `AGENT_SETUP`,
+`AGENT_EFFORT_IMPLEMENT_PRD`, `AGENT_PROMPT_CACHE_TTL`, `AGENT_REVIEW_TIMEOUT_MINUTES`, `AGENT_TIMEOUT_MINUTES`, `AGENT_MAX_FIX_ROUNDS`, `AGENT_FIX_MIN_SEVERITY`, `AGENT_SETUP` and `AGENT_VERIFY`,
 each unset as empty), the App's login, a job id, a deadline and the package's version. An
 implement job and an implement-prd job each carry the issue's number, title and state, and the
 repository's default branch as its base, which stands in for the `default-branch` a caller hands
-`implement.yml` and `implement-prd.yml`. A follow-ups job carries the pull request's number alone,
+`implement.yml` and `implement-prd.yml`; a setup-check job carries the same. A follow-ups job carries the pull request's number alone,
 since nothing is checked out. A merge job carries what a review job does, and whether the pull
 request is a draft, whether it was started by `agent:merge`'s own delivery, the one that may arm,
 and its sender. The deadline is the job's own time limit, review's, or
 fix's, update-branch's and implement's, or implement-prd's, the sum of its jobs' limits, or
-follow-ups', 10 minutes, or merge's, 20 (below), plus `JOB_DEADLINE_MARGIN_MINUTES`.
+follow-ups', 10 minutes, or merge's, 20, or a setup check's, the agent's job's limit and the
+report's 5 minutes (below), plus `JOB_DEADLINE_MARGIN_MINUTES`.
 It carries no token: the worker asks for one per phase, `read`, `ci`, `write`, `resolve` or `push`, and the dispatcher mints
 one only for a job it dispatched, before that job's deadline, for that job's repository alone, while
 the installation is still on an account it serves, and after reading `AGENT_ORCHESTRATOR` again. Deleting the variable stops a job in flight at its next
@@ -531,7 +534,8 @@ about it.
 
 ## The worker
 
-The process that runs review, fix, update-branch, implement, implement-prd and follow-ups. It holds no key: it asks the dispatcher for a token at the
+The process that runs review, fix, update-branch, implement, implement-prd, follow-ups, merge and
+the setup check. It holds no key: it asks the dispatcher for a token at the
 start of each phase. For review: `read` for the gate, the checkout and the budget, `ci` for the CI
 wait, which reads failed runs' logs (the gate's `read` instead where `ci` is refused, so the
 evidence says the logs were refused), a fresh `read` for the runner, so the token's hour starts as the agent does, `resolve` for
@@ -558,7 +562,10 @@ into the PRD branch, before any agent runs; `read` for the agent's checkout and
 for the checkout and conclude where `push` is refused. For follow-ups: one `write` token, for
 `follow-ups:file`, which files the stubs with it as the App, and `follow-ups:conclude`. For merge:
 `write` for `merge:gate`, `push` for `merge:publish` alone, asked for only where the gate decided
-`merge`, and a fresh `write` for `merge:conclude`, the gate's where that is refused. A gate that refuses ends any of these jobs
+`merge`, and a fresh `write` for `merge:conclude`, the gate's where that is refused. For a setup
+check: `read` for the checkout of the default branch, none for its setup and verify command, which
+run in the sandbox, and `write` for `setup-check:report`; it starts no runner, so it mints no token
+for one. A gate that refuses ends any of these jobs
 there, as it skips the jobs after it on Actions, and so does each deferral, implement's of a PRD
 and implement-prd's of a regular issue: no token is asked for after it, and nothing after the gate
 runs. A gate that failed before it decided is not a
@@ -856,7 +863,8 @@ worker hands it to the sandbox's shell through the environment, as written, and 
 into a command line. Unset or empty, the setup is skipped. A fix job runs it after `fix:prepare`
 and before its runner, an implement job after `implement:prepare`, an implement-prd job after
 `implement-prd:prepare`, and an update-branch job after `update-branch:prepare`, only where its merge
-conflicted; a review runs none, as `review.yml` runs none. A setup that fails starts no
+conflicted; a review runs none, as `review.yml` runs none; a setup check runs it after its
+checkout, and the verify command after it ([*The setup check*](#the-setup-check)). A setup that fails starts no
 runner, and the round's failure comment quotes the end of its output.
 
 It runs **in the bwrap sandbox, never on the worker's host**, whatever `AGENT_SANDBOX` says of the
@@ -889,6 +897,40 @@ works for the agent as `node_modules` does.
 **`node-version-file` is not supported.** The sandbox runs the agent box's own Node, the one
 `AGENT_SANDBOX_RO_BINDS` and `AGENT_SANDBOX_PATH` give it. A repository that needs another
 toolchain stays on Actions for now.
+
+### The setup check
+
+A **setup check** (#821) runs a repository's setup and its verify command on its default branch,
+in the sandbox a real job gets, with no agent, so a box missing what a repository needs is found
+before the first labelled issue rather than by its run. It is the service's alone: on Actions a
+caller's `setup:` already runs in every agent's job. It costs no usage.
+
+**Ask for one** by adding `agent:setup-check` to an open issue of the repository, as someone who
+can write to it. The dispatcher creates the label on every repository it serves
+([*The loop's labels*](#the-loops-labels)); `init` writes it nowhere. On a pull request, or added by
+someone who cannot write, it starts nothing. The scan answers it as it answers every trigger label,
+so one left on through a restart runs again.
+
+**The verify command** is the repository variable `AGENT_VERIFY`, beside `AGENT_SETUP`: a script,
+the command the repository's `CLAUDE.md` names as its gate, say `npm run verify`, set by an admin
+(`gh variable set AGENT_VERIFY --body "npm run verify"`) and handed to the sandbox's shell
+through the environment as written, exactly as `AGENT_SETUP` is. Only the setup check reads it.
+
+**What it does:** checks the default branch out at its head with a `read` token; runs `AGENT_SETUP`,
+skipped where unset; where that passed or was skipped, runs `AGENT_VERIFY` the same way, as a phase
+of its own, logged to the run's `logs/verify.log`; then posts **one comment on the issue** saying
+how each of the three ended: passed; failed, with its exit code and the end of its output; skipped,
+and why (`AGENT_SETUP` unset, or `AGENT_VERIFY` unset, which names the variable and how to set it,
+and stops the check after the setup); not run, since a step before it did not pass; or timed out.
+The comment names the commit checked, and the label then comes off, so it is on exactly while the
+check runs. A comment GitHub refuses still takes the label off. The three steps share the agent's
+job's time limit, `AGENT_TIMEOUT_MINUTES`, since they are what that job runs before its agent; the
+report gets 5 minutes of its own. It runs in the worker's light lane, since it starts no agent, so
+a long setup there holds a merge or a follow-ups job queued behind it.
+
+**On a new repository**, set `AGENT_SETUP` and `AGENT_VERIFY`, then label any open issue
+`agent:setup-check` and read the report before labelling the first real one. After an upgrade of
+the box, the same label is the smoke test.
 
 ### Settings
 

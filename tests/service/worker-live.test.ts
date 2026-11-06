@@ -7,7 +7,8 @@ import * as path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { SANDBOX_WORKTREE } from "../../engine/bwrap-args.js";
 import { RELAY_PORT } from "../../engine/proxy-relay.js";
-import { announceStart, installCli, liveGit, liveSandbox, liveTokens, routeThroughProxy, SETUP_SHELL } from "../../service/worker-live.js";
+import { announceStart, installCli, liveGit, liveSandbox, liveTokens, routeThroughProxy, sandboxShell, SETUP_SHELL } from "../../service/worker-live.js";
+import type { SandboxVariable } from "../../service/worker.js";
 import { sign, SIGNATURE_HEADER } from "../../service/job.js";
 import { gitEnvironment, hostEnvironment, PROXY_VARIABLES, type HostEnvironment } from "../../shared/env.js";
 import { SUBPROCESS_TIMEOUT } from "../../vitest.config.js";
@@ -210,9 +211,11 @@ describe("the sandbox the repository's setup runs in", () => {
     /** `null` is no proxy, as under `AGENT_SANDBOX=none` with none set. */
     proxy: string | null = SANDBOX_PROXY,
     env: HostEnvironment = host(),
+    variable: SandboxVariable = "AGENT_SETUP",
   ) =>
     liveSandbox(env)({
       script,
+      variable,
       dir: checkout,
       at,
       roBinds: ["/opt/node"],
@@ -238,6 +241,21 @@ describe("the sandbox the repository's setup runs in", () => {
     expect(words[words.indexOf(script) - 1]).toBe("AGENT_SETUP");
     expect(words[words.indexOf(script) - 2]).toBe("--setenv");
     expect(words.slice(-SETUP_SHELL.length)).toEqual([...SETUP_SHELL]);
+  });
+
+  it("runs AGENT_VERIFY as the script through its own variable, `$(…)` and `;` reaching the shell as written (#821)", async () => {
+    const script = `printf '%s\\n' "$(echo nested)"; echo 'a; b' > verified.txt; echo "$AGENT_VERIFY" >> verified.txt`;
+
+    expect(await run(script, undefined, undefined, undefined, undefined, "AGENT_VERIFY")).toBe(0);
+
+    expect(fs.readFileSync(path.join(checkout, "verified.txt"), "utf8")).toBe(`a; b\n${script}\n`);
+    expect(fs.readFileSync(log, "utf8")).toContain("nested");
+    const words = argv();
+    expect(words.filter((word) => word === script)).toHaveLength(1);
+    expect(words[words.indexOf(script) - 1]).toBe("AGENT_VERIFY");
+    expect(words[words.indexOf(script) - 2]).toBe("--setenv");
+    expect(words).not.toContain("AGENT_SETUP");
+    expect(words.slice(-SETUP_SHELL.length)).toEqual([...sandboxShell("AGENT_VERIFY")]);
   });
 
   it("hands the script the sandbox's environment and AGENT_SETUP, and nothing of the worker's", async () => {
@@ -444,6 +462,7 @@ describe.skipIf(!bwrapRuns())("setup's network, in a real sandbox (skipped where
 
     const code = await liveSandbox(host)({
       script,
+      variable: "AGENT_SETUP",
       dir: checkout,
       at: SANDBOX_WORKTREE,
       roBinds: [],

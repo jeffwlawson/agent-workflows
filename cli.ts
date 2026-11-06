@@ -505,6 +505,11 @@ export const SUBCOMMANDS: Readonly<Record<string, Subcommand>> = {
     async () => (await import("./review/advance.js")).advance,
     "Move a PRD PR's chain on after a review, or park it, and write its progress list (no model).",
   ),
+  "setup-check:report": writingCommand(
+    "setup-check:report",
+    async () => (await import("./setup-check/report.js")).report,
+    "Report on an issue how a setup check's checkout, setup and verify command ended, and take its label off (no model).",
+  ),
   "update-branch": runner("update-branch", () => import("./update-branch/update-branch.js")),
   "update-branch:gate": writingCommand(
     "update-branch:gate",

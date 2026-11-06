@@ -25,6 +25,9 @@ import { CI_WAIT_SECONDS } from "../review/collect-checks.js";
  * `AGENT_MODEL_IMPLEMENT` the implement runner's, which `implement.yml` reads
  * beside it too, and `AGENT_MODEL_IMPLEMENT_PRD` the implement-prd runner's,
  * which `implement-prd.yml` reads beside it.
+ * `AGENT_VERIFY` is the repository's verify command (#821), read and carried
+ * as `AGENT_SETUP` is: a shell script an admin sets, handed to the sandbox's
+ * shell unevaluated, which only a setup check runs, after the setup.
  * `AGENT_EFFORT` and `AGENT_PROMPT_CACHE_TTL`, with each runner's own
  * `AGENT_EFFORT_<WORKFLOW>`, are the effort and the prompt cache's TTL (#638),
  * read beside the model (#651). The worker hands a runner the lot, and the
@@ -50,6 +53,7 @@ export const REPOSITORY_VARIABLES = [
   "AGENT_MAX_FIX_ROUNDS",
   "AGENT_FIX_MIN_SEVERITY",
   "AGENT_SETUP",
+  "AGENT_VERIFY",
 ] as const;
 
 export type RepositoryVariable = (typeof REPOSITORY_VARIABLES)[number];
@@ -123,15 +127,26 @@ export const FOLLOW_UPS_MINUTES = 10;
 export const MERGE_MINUTES = 20;
 
 /**
+ * `setup-check:report`'s own time limit, in minutes (#821), past the check's,
+ * which is the agent's job's (`fixTimeLimit`): a check that ran out of time
+ * still leaves the report its time to say so.
+ */
+export const SETUP_CHECK_REPORT_MINUTES = 5;
+
+/**
  * The workflows the service runs, one job kind each (ADR 0008): the field a
  * job names its workflow in, and the worker's run function for it, follow
  * from the kind. The dispatcher routes a trigger label to one, or, for
  * `agent:implement`, to two, as Actions starts two workflows on it; a
  * merge, the one trigger that is not a label, to `follow-ups`; and a push,
  * a check suite's completion or a status on an armed head to `merge`, as
- * `agent:merge` itself is (#591).
+ * `agent:merge` itself is (#591). `setup-check` (#821), from
+ * `agent:setup-check` on an issue, is the one kind with no workflow behind it
+ * on Actions, where a caller's `setup:` already runs in every agent's job: it
+ * runs the repository's setup and verify command in the sandbox, starts no
+ * agent, and reports on the issue.
  */
-export const JOB_KINDS = ["review", "fix", "update-branch", "implement", "implement-prd", "follow-ups", "merge"] as const;
+export const JOB_KINDS = ["review", "fix", "update-branch", "implement", "implement-prd", "follow-ups", "merge", "setup-check"] as const;
 
 export type JobKind = (typeof JOB_KINDS)[number];
 
@@ -223,6 +238,15 @@ export interface ImplementPrdJob extends Omit<ImplementJob, "workflow"> {
 }
 
 /**
+ * One `agent:setup-check` delivery on an issue (#821), as a job for the
+ * worker: what an implement job carries, for the same event. Its base is the
+ * repository's default branch, the commit the check checks out at its head.
+ */
+export interface SetupCheckJob extends Omit<ImplementJob, "workflow"> {
+  readonly workflow: "setup-check";
+}
+
+/**
  * One merge, or one `agent:follow-ups` on a closed pull request, as a job for
  * the worker: the pull request alone, which is all `follow-ups:file` and
  * `follow-ups:conclude` are told of it. Nothing is checked out, so it carries
@@ -261,7 +285,7 @@ export interface MergeJob extends PullRequestJob {
 }
 
 /** A job the dispatcher posts and the worker runs: one member per workflow the service serves. */
-export type Job = ReviewJob | FixJob | UpdateBranchJob | ImplementJob | ImplementPrdJob | FollowUpsJob | MergeJob;
+export type Job = ReviewJob | FixJob | UpdateBranchJob | ImplementJob | ImplementPrdJob | FollowUpsJob | MergeJob | SetupCheckJob;
 
 /**
  * Each kind's time limit, in minutes, from the repository's variables: the
@@ -275,6 +299,9 @@ export const TIME_LIMITS: Readonly<Record<JobKind, (variables: Readonly<Record<R
   "implement-prd": (variables) => implementPrdTimeLimit(variables.AGENT_TIMEOUT_MINUTES),
   "follow-ups": () => FOLLOW_UPS_MINUTES,
   merge: () => MERGE_MINUTES,
+  // Setup and verify are what an agent's job runs before its agent, so the
+  // check gets that job's limit (#821), and the report its own beside it.
+  "setup-check": (variables) => fixTimeLimit(variables.AGENT_TIMEOUT_MINUTES) + SETUP_CHECK_REPORT_MINUTES,
 };
 
 /**
@@ -359,7 +386,7 @@ const parsePullRequest = <K extends JobKind>(
 };
 
 /** An issue job's own fields, past the common ones, or the reason they are not. */
-const parseIssue = <K extends "implement" | "implement-prd">(
+const parseIssue = <K extends "implement" | "implement-prd" | "setup-check">(
   workflow: K,
   base: Omit<JobBase, "workflow">,
   value: Fields,
@@ -403,6 +430,7 @@ const PARSERS: Readonly<Record<JobKind, (base: Omit<JobBase, "workflow">, value:
   "implement-prd": (base, value) => parseIssue("implement-prd", base, value),
   "follow-ups": parseFollowUps,
   merge: parseMerge,
+  "setup-check": (base, value) => parseIssue("setup-check", base, value),
 };
 
 /**

@@ -319,6 +319,13 @@ export const UPDATE_BRANCH_LABEL = "agent:update-branch";
  */
 export const MERGE_LABEL = "agent:merge";
 
+/**
+ * The setup check's trigger label (#821): on an issue, on while the check
+ * runs, answered by the service orchestrator alone, which converges it on
+ * every repository it serves. No caller wants it, so `init` writes it nowhere.
+ */
+export const SETUP_CHECK_LABEL = "agent:setup-check";
+
 /** The state label: a run failed or was refused, and a human is needed. */
 export const BLOCKED_LABEL = "agent:blocked";
 

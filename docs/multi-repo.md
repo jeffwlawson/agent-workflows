@@ -199,17 +199,21 @@ fleet that grows needs the plan to grow with it.
 ## 6. Order
 
 1. **Now:** #818 (`python3-venv`, and the deployment guide saying the base is box-wide), plus
-   `BOX_EXTRA_PACKAGES` and `EGRESS_PRESETS` in `agent-service.conf`. Small, `deploy/` only, and
-   it unblocks `unraid-stacks`.
-2. **The setup check** (section 4).
+   `BOX_EXTRA_PACKAGES` and `EGRESS_PRESETS` in `agent-service.conf` (#820). Small, `deploy/`
+   only, and it unblocks `unraid-stacks`.
+2. **The setup check** (section 4): #821.
 3. **The toolchain layer:** mise on the box, run in the sandbox with nothing kept between jobs,
-   and the Actions step reading the same file. Answers #346 part 2 and the `node-version-file` gap.
-4. **The service keeps repositories current:** labels converged by the dispatcher, fleet defaults
-   for settings, the fleet check, and `init` writing no callers for a service-only repository if
-   none are needed.
+   and the Actions step reading the same file (#822). Answers #346 part 2 and the
+   `node-version-file` gap.
+4. **The service keeps repositories current:** labels converged by the dispatcher, and `init`
+   writing no callers for a service-only repository if none are needed (#823); fleet defaults for
+   settings (#824); the fleet check and upgrade routine (#825).
 5. **An ADR** recording "the box is the version; a repository holds configuration", the three
    layers, and the refusal in 3.2: [ADR 0012](./adr/0012-the-box-is-the-version-a-repository-holds-configuration.md),
    filed with this document. ADR 0011 parked #346 and #344 (a second repository); 0012 unparks them.
+
+Beside these, an `/adopt` skill that walks a repository through adoption and runs `init` and
+`doctor` (#826), shipped in #605's plugin.
 
 Later, on evidence: a container image's `/usr` for system libraries, a per-repository allowlist in
 the relay, a fair queue.

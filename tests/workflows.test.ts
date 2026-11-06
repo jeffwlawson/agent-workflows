@@ -2246,6 +2246,9 @@ describe("agent-review starts fix rounds itself, within the fix-round budget", (
       ...fs.readdirSync(CALLER_DIR).map((f) => path.join(CALLER_DIR, f)),
       ...fs.readdirSync("setup").filter((f) => f.endsWith(".ts")).map((f) => path.join("setup", f)),
       "review/review.ts",
+      // Where the one list of the loop's labels moved (#823), and the dispatcher that converges them.
+      "shared/loop-labels.ts",
+      "service/dispatcher.ts",
     ];
     // `init` deletes it by name (#236), from the one list of retired labels,
     // which is the only place it may still be written.

@@ -546,9 +546,19 @@ error, naming its file and pin, and `init` moves the pin in your own text and to
 caller pinned to a SHA cannot be ordered against a release, so `doctor` notes it for you to check.
 
 **Switching to the service.** Set the variable to `service` once the service is running and its
-GitHub App is installed on the repository. The callers can stay: each label still starts a caller
-run, and every job in it skips. `doctor` then checks what the service needs instead of what Actions
-needs, and the domain model's name (§0) as on either. What differs on the service:
+GitHub App is installed on the repository. `doctor` then checks what the service needs instead of
+what Actions needs, and the domain model's name (§0) as on either.
+
+**A repository on the service needs no callers**, and neither `init` nor a `gh label` command for
+its labels: the service's dispatcher creates and recolours, on every repository it serves, at each
+scan and when the App is installed there, every trigger label it answers, `agent:blocked`, and the
+follow-ups labels `agent:follow-ups`, `pr-follow-up` and `needs-triage` (§3), matching a name
+without regard to case, and never deletes or renames one
+([deploying-the-service.md](./deploying-the-service.md#the-loops-labels)). Callers you keep are a
+fallback, not part of the service: each label still starts a caller run, and every job in it skips,
+so they cost a run per label and carry a pin to keep fresh (§4). Keep them where you want deleting
+`AGENT_ORCHESTRATOR` to hand the repository back to Actions at once (*Switching back*, below);
+`init` still writes them wherever it is run. What differs on the service:
 
 - it answers every trigger label: `agent:review`, `agent:fix`, `agent:update-branch`,
   `agent:follow-ups` and `agent:merge` on a pull request, `agent:implement` on an issue, a regular

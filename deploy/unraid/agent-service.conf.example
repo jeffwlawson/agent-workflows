@@ -90,3 +90,22 @@
 
 # tinyproxy's port on the box's loopback.
 #PROXY_PORT=3128
+
+# What the box holds for the repositories it serves. One box runs every
+# repository's setup and agent, so these serve every repository on it, not one
+# (ADR 0012). Each is a space-separated list; unset or empty, the box is the
+# base install-box.sh sets up. To apply a change, edit it here and re-run
+# install-box.sh, which refuses an unknown preset or a value that is not a plain
+# package or host name before it changes anything, and restarts tinyproxy only
+# when its list changed. upgrade-box.sh touches neither. check-box.sh fails for
+# a package or host asked for here that the box lacks.
+#
+# apt packages installed after the base, such as a system library a
+# repository's packages build against.
+#BOX_EXTRA_PACKAGES="libpq-dev"
+# Presets, each letting a language's registry hosts through the proxy:
+#   python  pypi.org files.pythonhosted.org
+#EGRESS_PRESETS="python"
+# Host names let through the proxy as exact matches, for what no preset covers:
+# no scheme, port, path or wildcard.
+#EGRESS_EXTRA_HOSTS="example.org"

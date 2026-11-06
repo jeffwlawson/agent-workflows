@@ -13,6 +13,8 @@ import { SUBPROCESS_TIMEOUT } from "../../vitest.config.js";
  * (`id`, `runuser`, `find`, `nft`, `systemctl`, `journalctl`, `curl`) answers
  * from a stub. `python3` is a stub too: it answers the ensurepip probe from
  * `FAKE_ENSUREPIP`, standing for a box with or without python3-venv (#818).
+ * `dpkg-query` answers that a package is installed where it is named in
+ * `FAKE_INSTALLED`, for the operator's BOX_EXTRA_PACKAGES (#820).
  */
 
 const DEPLOY = path.join(import.meta.dirname, "..", "..", "deploy", "unraid");
@@ -31,6 +33,9 @@ if [ "$1" = -c ] && [ "$2" = "import ensurepip" ]; then
   echo "ModuleNotFoundError: No module named 'ensurepip'" >&2; exit 1
 fi
 echo "python3: unexpected $*" >&2; exit 2`,
+  "dpkg-query": `
+package=\${*: -1}
+case " \${FAKE_INSTALLED:-} " in *" $package "*) printf 'install ok installed' ;; *) echo "dpkg-query: no packages found matching $package" >&2; exit 1 ;; esac`,
 };
 
 const scratches: string[] = [];
@@ -38,14 +43,14 @@ afterEach(() => {
   for (const dir of scratches.splice(0)) fs.rmSync(dir, { recursive: true, force: true });
 });
 
-const setUp = (): string => {
+const setUp = (conf: readonly string[] = []): string => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "deploy-check-box-"));
   scratches.push(root);
   for (const dir of ["unraid", "bin", "work"]) fs.mkdirSync(path.join(root, dir));
   fs.copyFileSync(path.join(DEPLOY, "check-box.sh"), path.join(root, "unraid", "check-box.sh"));
   fs.writeFileSync(
     path.join(root, "unraid", "agent-service.conf"),
-    [`NODE=${process.execPath}`, `ENV_FILE=${root}/worker.env`, `WORK_DIR=${root}/work`, `PREFIX=${root}/opt`, `TINYPROXY_CONF=${root}/tinyproxy.conf`, ""].join("\n"),
+    [`NODE=${process.execPath}`, `ENV_FILE=${root}/worker.env`, `WORK_DIR=${root}/work`, `PREFIX=${root}/opt`, `TINYPROXY_CONF=${root}/tinyproxy.conf`, ...conf, ""].join("\n"),
   );
   for (const [name, body] of Object.entries(STUBS)) {
     const stub = path.join(root, "bin", name);
@@ -90,5 +95,56 @@ describe("the box's packages", () => {
 
     expect(install).toMatch(/^apt-get install -y -qq [^\n]*\bpython3-venv\b/m);
     expect(upgrade).not.toMatch(/\bapt(-get)?\b|\bdpkg\b/);
+  });
+});
+
+describe("check-box.sh, against the operator's settings for every repository (#820)", () => {
+  const BASE = ["api.anthropic.com", "github.com", "api.github.com", "codeload.github.com", "objects.githubusercontent.com", "raw.githubusercontent.com", "release-assets.githubusercontent.com", "registry.npmjs.org", "192.168.250.1"];
+  const line = (host: string) => `^${host.replaceAll(".", "\\.")}$`;
+  /** A box whose tinyproxy filters through a list holding `hosts`. */
+  const withAllowlist = (conf: readonly string[], hosts: readonly string[]): string => {
+    const root = setUp(conf);
+    fs.writeFileSync(path.join(root, "tinyproxy.conf"), `Filter "${root}/allowlist"\n`);
+    fs.writeFileSync(path.join(root, "allowlist"), `${hosts.map(line).join("\n")}\n`);
+    return root;
+  };
+
+  it("fails for a package BOX_EXTRA_PACKAGES names that is not installed, naming it, and passes for one that is", () => {
+    const { status, output } = checkBox(setUp(['BOX_EXTRA_PACKAGES="libpq-dev libssl-dev"']), { FAKE_INSTALLED: "libssl-dev" });
+
+    expect(status).toBe(1);
+    expect(output).toContain("  FAIL  libpq-dev, which BOX_EXTRA_PACKAGES names, is not installed: re-run install-box.sh\n");
+    expect(output).toContain("  PASS  libssl-dev is installed (BOX_EXTRA_PACKAGES)\n");
+  });
+
+  it("passes where every package BOX_EXTRA_PACKAGES names is installed", () => {
+    const { output } = checkBox(setUp(['BOX_EXTRA_PACKAGES="libpq-dev"']), { FAKE_INSTALLED: "libpq-dev" });
+
+    expect(output).toContain("  PASS  libpq-dev is installed (BOX_EXTRA_PACKAGES)\n");
+    expect(output).not.toMatch(/FAIL .*BOX_EXTRA_PACKAGES/);
+  });
+
+  it("fails for each host EGRESS_PRESETS and EGRESS_EXTRA_HOSTS ask for that the live list lacks, naming it", () => {
+    const root = withAllowlist(['EGRESS_PRESETS="python"', 'EGRESS_EXTRA_HOSTS="example.org"'], [...BASE, "pypi.org"]);
+    const { status, output } = checkBox(root);
+
+    expect(status).toBe(1);
+    expect(output).toContain(`  PASS  it allows ^pypi\\.org$\n`);
+    expect(output).toContain(`  FAIL  its list in ${root}/allowlist lacks ^files\\.pythonhosted\\.org$: re-run install-box.sh\n`);
+    expect(output).toContain(`  FAIL  its list in ${root}/allowlist lacks ^example\\.org$: re-run install-box.sh\n`);
+  });
+
+  it("passes where the live list holds every host they ask for", () => {
+    const root = withAllowlist(['EGRESS_PRESETS="python"', 'EGRESS_EXTRA_HOSTS="example.org"'], [...BASE, "pypi.org", "files.pythonhosted.org", "example.org"]);
+    const { output } = checkBox(root);
+
+    for (const host of [...BASE, "pypi.org", "files.pythonhosted.org", "example.org"]) expect(output).toContain(`  PASS  it allows ${line(host)}\n`);
+    expect(output).not.toContain("lacks");
+  });
+
+  it("fails for an unknown preset, naming it", () => {
+    const { output } = checkBox(withAllowlist(['EGRESS_PRESETS="pyhton"'], BASE));
+
+    expect(output).toContain("  FAIL  EGRESS_PRESETS names 'pyhton', which is no preset (the presets are: python): install-box.sh refuses it\n");
   });
 });

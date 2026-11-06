@@ -41,6 +41,29 @@ REQUIRED_SETTINGS="WORKER_SECRET DISPATCHER_TOKEN_URL CLAUDE_CODE_VERSION CLAUDE
 # What tinyproxy must let through: the model's API, GitHub, the npm registry, the
 # token door. Each as the line the Filter file holds, a regex anchored at both ends.
 ALLOWED_HOSTS="^api\\.anthropic\\.com\$ ^github\\.com\$ ^api\\.github\\.com\$ ^codeload\\.github\\.com\$ ^objects\\.githubusercontent\\.com\$ ^raw\\.githubusercontent\\.com\$ ^release-assets\\.githubusercontent\\.com\$ ^registry\\.npmjs\\.org\$ ^${HOST_IP//./\\.}\$"
+# And the hosts the operator's settings ask for (agent-service.conf.example):
+# EGRESS_PRESETS' and EGRESS_EXTRA_HOSTS'. The presets are install-box.sh's,
+# repeated here; tests/deploy/install-box.test.ts holds the two equal.
+declare -A EGRESS_PRESET_HOSTS=(
+  [python]="pypi.org files.pythonhosted.org"
+)
+unknown_presets=()
+read -ra requested_hosts <<<"${EGRESS_EXTRA_HOSTS:-}"
+read -ra presets <<<"${EGRESS_PRESETS:-}"
+for name in "${presets[@]}"; do
+  if [ -n "${EGRESS_PRESET_HOSTS[$name]+set}" ]; then
+    read -ra hosts <<<"${EGRESS_PRESET_HOSTS[$name]}"
+    requested_hosts+=("${hosts[@]}")
+  else
+    unknown_presets+=("$name")
+  fi
+done
+for host in "${requested_hosts[@]}"; do
+  line="^${host//./\\.}\$"
+  case " $ALLOWED_HOSTS " in *" $line "*) ;; *) ALLOWED_HOSTS="$ALLOWED_HOSTS $line" ;; esac
+done
+# The apt packages the operator's BOX_EXTRA_PACKAGES asks for, beside the base.
+read -ra extra_packages <<<"${BOX_EXTRA_PACKAGES:-}"
 
 passed=0 warned=0 failed=0
 pass() { printf '  PASS  %s\n' "$*"; passed=$((passed + 1)); }
@@ -83,6 +106,13 @@ if python3 -c 'import ensurepip' >/dev/null 2>&1; then
 else
   fail "python3 cannot build a virtualenv, so a Python repository's setup fails: install python3-venv with: sudo apt-get install -y python3-venv"
 fi
+for package in "${extra_packages[@]}"; do
+  if dpkg-query -W -f='${Status}' "$package" 2>/dev/null | grep -q 'install ok installed'; then
+    pass "$package is installed (BOX_EXTRA_PACKAGES)"
+  else
+    fail "$package, which BOX_EXTRA_PACKAGES names, is not installed: re-run install-box.sh"
+  fi
+done
 if runuser -u "$WORKER_USER" -- bwrap --unshare-all --share-net --die-with-parent --ro-bind / / --dev /dev --proc /proc /bin/true 2>/dev/null; then
   pass "$WORKER_USER can start a bwrap sandbox"
 else
@@ -141,9 +171,12 @@ if [ -z "$filter" ] || [ ! -f "$filter" ]; then
   fail "its Filter file, '${filter:-unset}', is missing"
 else
   for host in $ALLOWED_HOSTS; do
-    if grep -qxF "$host" "$filter"; then pass "it allows $host"; else fail "its list in $filter lacks $host"; fi
+    if grep -qxF "$host" "$filter"; then pass "it allows $host"; else fail "its list in $filter lacks $host: re-run install-box.sh"; fi
   done
 fi
+for name in "${unknown_presets[@]}"; do
+  fail "EGRESS_PRESETS names '$name', which is no preset (the presets are: ${!EGRESS_PRESET_HOSTS[*]}): install-box.sh refuses it"
+done
 
 section "The worker"
 installed=$(grep -m1 '"version"' "$PKG_JSON" 2>/dev/null | sed 's/.*"version": *"\([^"]*\)".*/\1/')

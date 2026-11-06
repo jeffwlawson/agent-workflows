@@ -9,7 +9,10 @@
 # Node from nodejs.org with root owning every file, the `worker` user (no
 # sudo), the AppArmor profile that lets bwrap make user namespaces, the egress
 # rule limiting `worker` to loopback (and so to tinyproxy), tinyproxy and its
-# list, the package in /opt, the worker's settings and its systemd unit.
+# list, the package in /opt, the worker's settings and its systemd unit. To
+# those agent-service.conf may add, for every repository on the box, apt
+# packages (BOX_EXTRA_PACKAGES) and hosts on tinyproxy's list (EGRESS_PRESETS,
+# EGRESS_EXTRA_HOSTS); a change to them is applied by running this again.
 #
 # Asks, at prompts that do not show what is typed, for what it cannot make:
 #   - the shared secret, WORKER_SECRET, from Unraid's service.env (install-unraid.sh makes it);
@@ -61,6 +64,52 @@ if [ ! -f "$check_script" ]; then
   echo "check-box.sh is not beside this script ($check_script): copy it here first. Nothing was changed." >&2
   exit 2
 fi
+# The operator's settings for every repository on the box (ADR 0012), checked
+# before anything is changed. Each is a space-separated list; unset or empty,
+# the box is the base alone.
+#   BOX_EXTRA_PACKAGES  apt packages installed after the base
+#   EGRESS_PRESETS      presets below, each letting a fixed set of hosts through the proxy
+#   EGRESS_EXTRA_HOSTS  host names let through the proxy as exact matches
+# The presets, by name: the hosts each adds to tinyproxy's list. check-box.sh
+# repeats this list, which tests/deploy/install-box.test.ts holds equal.
+declare -A EGRESS_PRESET_HOSTS=(
+  [python]="pypi.org files.pythonhosted.org"
+)
+read -ra extra_packages <<<"${BOX_EXTRA_PACKAGES:-}"
+read -ra presets <<<"${EGRESS_PRESETS:-}"
+read -ra extra_hosts <<<"${EGRESS_EXTRA_HOSTS:-}"
+for name in "${extra_packages[@]}"; do
+  if ! [[ $name =~ ^[a-z0-9][a-z0-9+.-]+$ ]]; then
+    echo "BOX_EXTRA_PACKAGES names '$name', which is not an apt package name. Nothing was changed." >&2
+    exit 2
+  fi
+done
+for name in "${presets[@]}"; do
+  if [ -z "${EGRESS_PRESET_HOSTS[$name]+set}" ]; then
+    echo "EGRESS_PRESETS names '$name', which is no preset; the presets are: $(printf '%s\n' "${!EGRESS_PRESET_HOSTS[@]}" | sort | tr '\n' ' ' | sed 's/ $//'). Nothing was changed." >&2
+    exit 2
+  fi
+done
+host_name='[A-Za-z0-9]([A-Za-z0-9-]*[A-Za-z0-9])?'
+for host in "${extra_hosts[@]}"; do
+  if ! [[ $host =~ ^$host_name(\.$host_name)*$ ]]; then
+    echo "EGRESS_EXTRA_HOSTS names '$host', which is not a plain host name (no scheme, port, path or wildcard). Nothing was changed." >&2
+    exit 2
+  fi
+done
+# tinyproxy's list: the model's API, GitHub, the npm registry and the token
+# door, then the presets' hosts and the extra hosts, once each, every one a
+# regex anchored at both ends.
+allowed=(api.anthropic.com github.com api.github.com codeload.github.com objects.githubusercontent.com
+  raw.githubusercontent.com release-assets.githubusercontent.com registry.npmjs.org "$HOST_IP")
+for name in "${presets[@]}"; do
+  read -ra hosts <<<"${EGRESS_PRESET_HOSTS[$name]}"
+  extra_hosts+=("${hosts[@]}")
+done
+for host in "${extra_hosts[@]}"; do
+  case " ${allowed[*]} " in *" $host "*) ;; *) allowed+=("$host") ;; esac
+done
+allowlist=$(for host in "${allowed[@]}"; do printf '^%s$\n' "${host//./\\.}"; done)
 installed() { grep -m1 '"version"' "$PKG_JSON" 2>/dev/null | sed 's/.*"version": *"\([^"]*\)".*/\1/' || true; }
 if [ "$(installed)" != "$version" ] && ! [[ $PACKAGE_SOURCE =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]]; then
   echo "The package is not at $version, and its release is downloaded from the repository PACKAGE_SOURCE names: set PACKAGE_SOURCE=<owner>/<repo> in $conf. Nothing was changed." >&2
@@ -109,6 +158,10 @@ export DEBIAN_FRONTEND=noninteractive
 apt-get update -qq
 apt-get install -y -qq bubblewrap tinyproxy nftables git curl ca-certificates xz-utils python3-venv >/dev/null
 echo "  ensured    bubblewrap tinyproxy nftables git curl ca-certificates xz-utils python3-venv are installed"
+if [ "${#extra_packages[@]}" -gt 0 ]; then
+  apt-get install -y -qq "${extra_packages[@]}" >/dev/null
+  echo "  ensured    ${extra_packages[*]} are installed (BOX_EXTRA_PACKAGES)"
+fi
 
 echo "== Node $NODE_VERSION"
 node_have=$(/usr/local/bin/node --version 2>/dev/null | sed 's/^v//' || true)
@@ -221,18 +274,7 @@ Filter "/etc/tinyproxy/allowlist"
 FilterDefaultDeny Yes
 EOF
 )" && proxy_changed=1
-put /etc/tinyproxy/allowlist 644 "$(cat <<EOF
-^api\.anthropic\.com\$
-^github\.com\$
-^api\.github\.com\$
-^codeload\.github\.com\$
-^objects\.githubusercontent\.com\$
-^raw\.githubusercontent\.com\$
-^release-assets\.githubusercontent\.com\$
-^registry\.npmjs\.org\$
-^${HOST_IP//./\\.}\$
-EOF
-)" && proxy_changed=1
+put /etc/tinyproxy/allowlist 644 "$allowlist" && proxy_changed=1
 systemctl enable -q tinyproxy
 if [ -n "$proxy_changed" ]; then systemctl restart tinyproxy; else systemctl start tinyproxy; fi
 

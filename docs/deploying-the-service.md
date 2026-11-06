@@ -61,10 +61,23 @@ build a virtualenv in the checkout (`python3 -m venv .venv`; the system Python r
 has no `pip`); `check-box.sh` fails on a box without it. A repository's runtime versions, extra
 system packages and registry hosts are not the base: [`docs/multi-repo.md`](./multi-repo.md) and
 [ADR 0012](./adr/0012-the-box-is-the-version-a-repository-holds-configuration.md) say where they go,
-and #820 adds the operator's settings for them. Until #820, a Python repository's packages also need
-`^pypi\.org$` and `^files\.pythonhosted\.org$` in the proxy's allowlist, which on the agent box is
-`/etc/tinyproxy/allowlist` (restart `tinyproxy` after editing it). `install-box.sh` writes that file
-whole, so a re-run of it drops lines added by hand: add them again after one.
+and three settings in `agent-service.conf`, the operator's, hold what the box adds for them, each
+serving every repository on the box:
+
+- **`BOX_EXTRA_PACKAGES`**: apt packages installed after the base, such as `libpq-dev` for a
+  repository whose packages build against it.
+- **`EGRESS_PRESETS`**: named sets of hosts let through the proxy, so a language is turned on and
+  not a list of hosts. `EGRESS_PRESETS="python"` lets a Python repository's packages through
+  (`pypi.org` and `files.pythonhosted.org`). An unknown name is refused.
+- **`EGRESS_EXTRA_HOSTS`**: host names let through as exact matches, for what no preset covers. A
+  value that is not a plain host name (a scheme, a port, a path, a wildcard) is refused.
+
+To apply a change, edit `agent-service.conf` and re-run `install-box.sh`: it refuses a bad value
+before it changes anything, writes the proxy's allowlist (`/etc/tinyproxy/allowlist`) whole as
+the base plus what the settings ask for, and restarts `tinyproxy` only when the list changed.
+`upgrade-box.sh` touches neither packages nor the proxy. `check-box.sh` fails for a package or
+host the settings ask for that the box lacks. A line added to the allowlist by hand is dropped by
+the next `install-box.sh`: set it in `agent-service.conf` instead.
 
 ### Installing the package
 

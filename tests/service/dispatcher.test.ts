@@ -5,11 +5,13 @@ import {
   COMMENT_PERMISSIONS,
   createDispatcher,
   LABEL_KINDS,
+  LABEL_PERMISSIONS,
   parseOwners,
   READER_PERMISSIONS,
   SCAN_PERMISSIONS,
   SERVICE_APP_EVENTS,
   SERVICE_APP_PERMISSIONS,
+  SERVICE_LABEL_SPECS,
   SERVICE_LABELS,
   TOKEN_PERMISSIONS,
   type AppGitHub,
@@ -36,6 +38,7 @@ import {
 import { openState, serialiseState, type StateFiles } from "../../service/dispatcher-state.js";
 import { admit, heldDoor, jobDoor, lanes } from "../../service/worker.js";
 import { STUB_LABELS } from "../../shared/follow-up-plan.js";
+import type { LabelSpec } from "../../shared/loop-labels.js";
 import {
   FIX_LABEL,
   FOLLOW_UPS_LABEL,
@@ -186,6 +189,15 @@ const setup = (
   /** Each comment posted, and whether posting one fails, as a GitHub outage does. */
   const comments: { repo: string; number: number; body: string; token: string }[] = [];
   const commenting = { fails: false };
+  /**
+   * Each repository's labels (#823), every one the dispatcher converges
+   * unless a test says otherwise; each label write made, with its token;
+   * the repositories whose labels cannot be listed; and the labels whose
+   * writes GitHub refuses.
+   */
+  const repoLabels: Record<string, LabelSpec[]> = {};
+  const labelsOf = (repo: string): LabelSpec[] => (repoLabels[repo] ??= SERVICE_LABEL_SPECS.map((label) => ({ ...label })));
+  const labelling = { unlistable: [] as string[], refused: [] as string[], writes: [] as { repo: string; write: "create" | "edit"; label: LabelSpec; token: string }[] };
   /** Each commit whose pull requests were read, for a check suite's or a status's delivery. */
   const pullsRead: string[] = [];
   /**
@@ -275,6 +287,20 @@ const setup = (
       if (commenting.fails) throw new Error("GitHub answered 502");
       comments.push({ repo, number, body, token });
     },
+    repoLabels: async (repo) => {
+      if (labelling.unlistable.includes(repo)) throw new Error(`reading ${repo}'s labels answered 502`);
+      return labelsOf(repo).map((label) => ({ ...label }));
+    },
+    createLabel: async (repo, label, token) => {
+      if (labelling.refused.includes(label.name)) throw new Error(`creating the label \`${label.name}\` on ${repo} answered 403`);
+      labelling.writes.push({ repo, write: "create", label, token });
+      labelsOf(repo).push({ ...label });
+    },
+    editLabel: async (repo, label, token) => {
+      if (labelling.refused.includes(label.name)) throw new Error(`editing the label \`${label.name}\` on ${repo} answered 403`);
+      labelling.writes.push({ repo, write: "edit", label, token });
+      repoLabels[repo] = labelsOf(repo).map((held) => (held.name === label.name ? { ...label } : held));
+    },
     labels: async (repo, number) => (repo === REPO ? (repository.items.find((item) => item.number === number)?.labels ?? []) : []),
     deliveries: async () => {
       hook.listed += 1;
@@ -343,6 +369,8 @@ const setup = (
     looked,
     comments,
     commenting,
+    repoLabels,
+    labelling,
     pullsRead,
     hook,
     advance: (minutes: number) => {
@@ -3062,5 +3090,160 @@ describe("redelivering a failed delivery (#774)", () => {
     const result = await deliver(s, labelled());
 
     expect(result.outcome).toMatch(/^dispatched owner\/repo#7/);
+  });
+});
+
+/** An `installation_repositories` delivery adding `repos`, as GitHub sends it. */
+const repositoriesAdded = (repos: readonly string[], action = "added") => ({
+  action,
+  installation: { id: 1, account: { login: APP_OWNER } },
+  repositories_added: action === "added" ? repos.map((full_name) => ({ full_name })) : [],
+  repositories_removed: action === "removed" ? repos.map((full_name) => ({ full_name })) : [],
+});
+
+describe("the scan's labels (#823)", () => {
+  const spec = (name: string): LabelSpec => {
+    const found = SERVICE_LABEL_SPECS.find((label) => label.name === name);
+    if (found === undefined) throw new Error(`${name} is not a label the dispatcher converges`);
+    return found;
+  };
+
+  it("converges every trigger label the service answers and the state labels, from the one list", () => {
+    expect(SERVICE_LABEL_SPECS.map((label) => label.name)).toEqual([IMPLEMENT_LABEL, REVIEW_LABEL, FIX_LABEL, UPDATE_BRANCH_LABEL, MERGE_LABEL, "agent:blocked"]);
+  });
+
+  it("creates a wanted label a served repository is missing, with the list's colour and description, through a token minted for label writes", async () => {
+    const s = setup();
+    s.repoLabels[REPO] = SERVICE_LABEL_SPECS.filter((label) => label.name !== "agent:blocked").map((label) => ({ ...label }));
+
+    await s.dispatcher.scan();
+
+    expect(s.labelling.writes).toEqual([{ repo: REPO, write: "create", label: spec("agent:blocked"), token: "minted-token-1" }]);
+    expect(s.minted).toEqual([{ repo: REPO, permissions: LABEL_PERMISSIONS }]);
+    expect(LABEL_PERMISSIONS).toEqual({ issues: "write" });
+    expect(s.lines).toContain("scan: labels on owner/repo: created `agent:blocked`");
+  });
+
+  it("edits a wanted label whose colour or description differs, and leaves one differing only in the colour's case", async () => {
+    const s = setup();
+    s.repoLabels[REPO] = SERVICE_LABEL_SPECS.map((label) => {
+      if (label.name === REVIEW_LABEL) return { ...label, color: "FFFFFF" };
+      if (label.name === FIX_LABEL) return { ...label, description: "an old description" };
+      return { ...label, color: label.color.toLowerCase() };
+    });
+
+    await s.dispatcher.scan();
+
+    expect(s.labelling.writes.map(({ write, label }) => [write, label])).toEqual([
+      ["edit", spec(REVIEW_LABEL)],
+      ["edit", spec(FIX_LABEL)],
+    ]);
+    // One token for the repository's writes.
+    expect(s.minted).toEqual([{ repo: REPO, permissions: LABEL_PERMISSIONS }]);
+  });
+
+  it("writes nothing, and mints nothing, where every wanted label matches", async () => {
+    const s = setup();
+
+    await s.dispatcher.scan();
+
+    expect(s.labelling.writes).toEqual([]);
+    expect(s.minted).toEqual([]);
+    expect(s.lines.filter((line) => line.includes("labels on"))).toEqual([]);
+  });
+
+  it("never deletes, renames or edits a retired label or one it does not know", async () => {
+    const s = setup();
+    const retired = { name: "agent:queued", color: "000000", description: "retired" };
+    const unknown = { name: "a-label-of-the-adopters", color: "123456", description: "theirs" };
+    s.repoLabels[REPO] = [retired, unknown];
+
+    await s.dispatcher.scan();
+
+    expect(s.labelling.writes.every(({ write }) => write === "create")).toBe(true);
+    expect(s.labelling.writes.map(({ label }) => label.name)).toEqual(SERVICE_LABEL_SPECS.map((label) => label.name));
+    expect(s.repoLabels[REPO]?.slice(0, 2)).toEqual([retired, unknown]);
+  });
+
+  it("writes no label on a repository it refuses, nor reads its labels", async () => {
+    const s = setup();
+    s.repoLabels[REPO] = [];
+    s.repository.variables[ORCHESTRATOR_VARIABLE] = "actions";
+
+    await s.dispatcher.scan();
+
+    expect(s.labelling.writes).toEqual([]);
+    expect(s.minted).toEqual([]);
+    expect(s.repoLabels[REPO]).toEqual([]);
+  });
+
+  it("logs a refused label write naming the repository and the label, and still dispatches the repository's labelled items", async () => {
+    const s = setup();
+    s.repoLabels[REPO] = SERVICE_LABEL_SPECS.filter((label) => label.name !== "agent:blocked" && label.name !== REVIEW_LABEL).map((label) => ({ ...label }));
+    s.labelling.refused = ["agent:blocked"];
+    s.repository.items = [pullItem([REVIEW_LABEL])];
+
+    await s.dispatcher.scan();
+
+    expect(s.lines).toContain("scan: labels on owner/repo: `agent:blocked` could not be created, and the next scan tries again: creating the label `agent:blocked` on owner/repo answered 403");
+    expect(s.labelling.writes.map(({ label }) => label.name)).toEqual([REVIEW_LABEL]);
+    expect(jobsPosted(s).map((job) => job.workflow)).toEqual(["review"]);
+    expect(s.comments).toEqual([]);
+
+    // The next pass tries again, and this time GitHub takes it.
+    s.labelling.refused = [];
+    s.worker.holds = [];
+    await s.dispatcher.scan();
+    expect(s.labelling.writes.map(({ label }) => label.name)).toEqual([REVIEW_LABEL, "agent:blocked"]);
+  });
+
+  it("logs labels that cannot be listed, and goes on to the repository's items", async () => {
+    const s = setup();
+    s.labelling.unlistable = [REPO];
+    s.repository.items = [pullItem([REVIEW_LABEL])];
+
+    await s.dispatcher.scan();
+
+    expect(s.lines).toContain(
+      "scan: labels on owner/repo: could not be listed, so none was created or edited, and the next scan tries again: reading owner/repo's labels answered 502",
+    );
+    expect(jobsPosted(s).map((job) => job.workflow)).toEqual(["review"]);
+  });
+
+  it("reads no label of a repository an `installation_repositories` event adds that has not opted in", async () => {
+    const s = setup();
+    s.installations.accounts[APP_OWNER] = [REPO, "owner/new"];
+    s.repoLabels["owner/new"] = [];
+
+    const result = await deliver(s, repositoriesAdded(["owner/new"]), undefined, "installation_repositories");
+
+    expect(result.status).toBe(202);
+    expect(result.outcome).toBe("scanned: `installation_repositories` `added` added repositories");
+    expect(s.repoLabels["owner/new"]).toEqual([]);
+    expect(s.lines).toContain(`scan: refused on owner/new: ${ORCHESTRATOR_VARIABLE} is unset, not \`${SERVICE_ORCHESTRATOR}\``);
+  });
+
+  it("converges the labels of a served repository an `installation_repositories` event adds, without waiting for the interval", async () => {
+    const s = setup();
+    s.repoLabels[REPO] = [];
+
+    const result = await deliver(s, repositoriesAdded([REPO]), undefined, "installation_repositories");
+
+    expect(result.outcome).toMatch(/^scanned: /);
+    expect(s.labelling.writes.map(({ repo, write, label }) => [repo, write, label.name])).toEqual(SERVICE_LABEL_SPECS.map((label) => [REPO, "create", label.name]));
+  });
+
+  it("scans on the App's installation, and on nothing that removes a repository", async () => {
+    const s = setup();
+    s.repoLabels[REPO] = [];
+
+    expect((await deliver(s, repositoriesAdded([REPO], "removed"), undefined, "installation_repositories")).outcome).toBe(
+      "ignored: `installation_repositories` `removed` adds no repository",
+    );
+    expect((await deliver(s, { action: "deleted" }, undefined, "installation")).outcome).toBe("ignored: `installation` `deleted` adds no repository");
+    expect(s.labelling.writes).toEqual([]);
+
+    expect((await deliver(s, { action: "created", repositories: [{ full_name: REPO }] }, undefined, "installation")).outcome).toMatch(/^scanned: /);
+    expect(s.labelling.writes).toHaveLength(SERVICE_LABEL_SPECS.length);
   });
 });

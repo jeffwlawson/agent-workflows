@@ -1,6 +1,6 @@
 import { generateKeyPairSync } from "node:crypto";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { COMMENT_PERMISSIONS, SCAN_PERMISSIONS, TOKEN_PERMISSIONS } from "../../service/dispatcher.js";
+import { COMMENT_PERMISSIONS, LABEL_PERMISSIONS, SCAN_PERMISSIONS, TOKEN_PERMISSIONS } from "../../service/dispatcher.js";
 import { liveAppGitHub } from "../../service/github-app.js";
 
 /**
@@ -32,6 +32,8 @@ interface World {
   comments?: Record<number, unknown[]>;
   /** The App's recent webhook deliveries, as GitHub's list of them gives them (#774). */
   deliveries?: unknown[];
+  /** The repository's labels, as its labels list gives them (#823). */
+  labels?: unknown[];
 }
 
 /**
@@ -66,6 +68,8 @@ const mintedFor: (string[] | undefined)[] = [];
 const queried: string[] = [];
 /** Each comment posted: its path, its body and the token it was posted with. */
 const commented: { path: string; body: unknown; authorization: string | null }[] = [];
+/** Each label write (#823): its method, path, body and the token it was made with. */
+const labelWrites: { method: string; path: string; body: unknown; authorization: string | null }[] = [];
 /** Each request to the App's webhook deliveries (#774): its method and the authorization it carried. */
 const hooked: { method: string; authorization: string | null }[] = [];
 
@@ -108,6 +112,15 @@ const answer = (url: string, init?: RequestInit): Response => {
       .map(({ labels, pull, ...issue }) => ({ ...issue, labels: labels.map((name) => ({ name })), ...(pull === true ? { pull_request: { url: "…" } } : {}) }));
     return reply(200, paged(listed));
   }
+  if (pathname === `/repos/${REPO}/labels` && init?.method === "POST") {
+    labelWrites.push({ method: "POST", path: pathname, body: JSON.parse(typeof init.body === "string" ? init.body : "{}"), authorization: new Headers(init.headers).get("authorization") });
+    return reply(201, {});
+  }
+  if (pathname.startsWith(`/repos/${REPO}/labels/`) && init?.method === "PATCH") {
+    labelWrites.push({ method: "PATCH", path: pathname, body: JSON.parse(typeof init.body === "string" ? init.body : "{}"), authorization: new Headers(init.headers).get("authorization") });
+    return reply(200, {});
+  }
+  if (pathname === `/repos/${REPO}/labels`) return reply(200, paged(world.labels ?? []));
   const pull = /^\/repos\/owner\/repo\/pulls\/(\d+)$/.exec(pathname);
   if (pull !== null) {
     const record = world.pulls[Number(pull[1])];
@@ -150,6 +163,7 @@ beforeEach(() => {
   mintedFor.length = 0;
   queried.length = 0;
   commented.length = 0;
+  labelWrites.length = 0;
   hooked.length = 0;
   vi.stubGlobal("fetch", async (url: string, init?: RequestInit) => answer(url, init));
 });
@@ -417,6 +431,48 @@ describe("liveAppGitHub: what the scan reads (#581)", () => {
     world.failing = { path: /\/comments$/, status: 403 };
 
     await expect(liveAppGitHub("1", KEY).comment(REPO, 7, "a comment", "ghs_writer")).rejects.toThrow("commenting on owner/repo#7 answered 403");
+  });
+});
+
+describe("liveAppGitHub: a repository's labels (#823)", () => {
+  it("lists every label past the first page, with the scan's reader, read into a name, a colour and a description", async () => {
+    world.labels = [
+      { id: 1, name: "agent:review", color: "0969da", description: "Review this PR." },
+      { id: 2, name: "bare", color: "ffffff", description: null },
+      ...Array.from({ length: 120 }, (_, i) => ({ id: i + 3, name: `other-${i}`, color: "000000", description: "" })),
+    ];
+
+    const labels = await liveAppGitHub("1", KEY).repoLabels(REPO);
+
+    expect(labels).toHaveLength(122);
+    expect(labels.slice(0, 2)).toEqual([
+      { name: "agent:review", color: "0969da", description: "Review this PR." },
+      { name: "bare", color: "ffffff", description: "" },
+    ]);
+    expect(minted).toEqual([SCAN_PERMISSIONS]);
+  });
+
+  it("creates a label and edits one, with the token it is handed, one the installation can mint", async () => {
+    const github = liveAppGitHub("1", KEY);
+    const { token } = await github.mint(REPO, LABEL_PERMISSIONS);
+    const label = { name: "agent:update-branch", color: "1B7C83", description: "Merge the base branch into this PR." };
+
+    await github.createLabel(REPO, label, token);
+    await github.editLabel(REPO, label, token);
+
+    expect(labelWrites).toEqual([
+      { method: "POST", path: `/repos/${REPO}/labels`, body: label, authorization: `Bearer ${token}` },
+      { method: "PATCH", path: `/repos/${REPO}/labels/agent%3Aupdate-branch`, body: { color: label.color, description: label.description }, authorization: `Bearer ${token}` },
+    ]);
+  });
+
+  it("throws where a label write is refused, naming the label and the repository", async () => {
+    world.failing = { path: /\/labels/, status: 403 };
+    const github = liveAppGitHub("1", KEY);
+    const label = { name: "agent:blocked", color: "CF222E", description: "x" };
+
+    await expect(github.createLabel(REPO, label, "ghs_writer")).rejects.toThrow("creating the label `agent:blocked` on owner/repo answered 403");
+    await expect(github.editLabel(REPO, label, "ghs_writer")).rejects.toThrow("editing the label `agent:blocked` on owner/repo answered 403");
   });
 });
 

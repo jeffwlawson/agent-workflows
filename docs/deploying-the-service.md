@@ -154,7 +154,7 @@ Repository permissions:
 | Variables | `actions_variables` | read | `AGENT_ORCHESTRATOR`, re-read at every token, and the variables the service reads, `AGENT_SETUP` among them: the repository's own, else its organization's shared with it, as `vars` resolves them |
 | Contents | `contents` | write | the checkout and the pull request's history, read by every phase; resolving a review thread on a pull request the App did not open, by a `resolve` token; a push, and `agent:merge`'s merge, by a `push` token only |
 | Pull requests | `pull_requests` | write | the review, its threads, the title and summary, the ready mark, and `agent:merge`'s merge; a scan reads an open pull request's head and base, and those of a merged one carrying `agent:follow-ups`, and the dispatcher's reads the pull requests a check suite's or a status's commit belongs to, with their labels |
-| Issues | `issues` | write | comments and labels, the issue an implement job builds, and a PRD's parent; a scan reads the open items carrying a trigger label, and the merged pull requests carrying `agent:follow-ups`, and their `labeled` events, and comments on one it stops dispatching |
+| Issues | `issues` | write | comments and labels, the issue an implement job builds, and a PRD's parent; a scan reads the open items carrying a trigger label, and the merged pull requests carrying `agent:follow-ups`, and their `labeled` events, and comments on one it stops dispatching; it lists a served repository's labels, and creates and edits the loop's there (*The loop's labels*, below) |
 | Checks | `checks` | read | CI's result, which the review's verdict reads |
 | Commit statuses | `statuses` | write | the verdict and the fix-round statuses, and `agent:merge`'s arm, `agent-merge` |
 | Actions | `actions` | read | the commit's workflow runs and a failed run's log, which `review:collect-checks` hands the review, by a `ci` token only |
@@ -495,6 +495,34 @@ counted from zero; so is a merged pull request that has left the window.
 
 Every line a scan logs starts `scan:`, with the item and the reason it was dispatched, skipped or
 refused; a repository or a listing that cannot be read is logged and the scan goes on.
+
+### The loop's labels
+
+The dispatcher keeps the loop's labels present and current on every repository it serves (#823),
+so a release that adds or recolours one needs nothing done in any repository: no `init`, and no
+`gh label` command. **When:** in every scan's pass (at its start, the worker's, a reset's, and every
+`SCAN_INTERVAL_MINUTES`), for each repository the pass serves, before its labelled items are read;
+and at once when an `installation` event (the App installed) or an `installation_repositories`
+event (repositories added to an installation) arrives, which starts a scan. GitHub sends both
+events to every App, so there is nothing to subscribe to. A repository the dispatcher refuses (the
+App on an account it does not serve, or `AGENT_ORCHESTRATOR` not `service`) has none of its labels
+read or written.
+
+**What:** the labels `doctor` demands of a service repository, every trigger label the service
+answers and `agent:blocked`, with the colours and descriptions [`ADOPTING.md`](./ADOPTING.md#3-labels)
+§3 gives them, read from the one list `init` and `doctor` read. It lists the repository's labels
+once with the scan's reader, creates each that is missing, and edits each whose colour or
+description differs, the colour compared without regard to case, as `init` does. The writes go
+through a token minted for them alone, Issues: write on that one repository, and only where there
+is a write to make: a pass over a repository whose labels are current mints nothing and logs
+nothing about them. Each write it makes is logged, `scan: labels on <repo>: created \`<label>\``.
+
+**It never deletes or renames a label**, a retired one (§3's `agent:queued`, say) and one of your
+own included: deleting a label takes it off everything carrying it, so that stays `init`'s and
+`doctor`'s, which check what still carries one first. A list or a write GitHub refuses is logged,
+naming the repository and the label, and the pass goes on and dispatches that repository's labelled
+items as it would have; the next pass tries again. Nothing is posted to an issue or a pull request
+about it.
 
 ## The worker
 

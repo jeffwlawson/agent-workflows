@@ -10,7 +10,7 @@ import {
   ORCHESTRATOR_VARIABLE,
   SERVICE_ORCHESTRATOR,
 } from "../shared/record.js";
-import { SERVICE_LABELS } from "../service/dispatcher.js";
+import { SERVICE_LABEL_SPECS, SERVICE_LABELS } from "../service/dispatcher.js";
 import {
   passesSecret,
   readInstalledCallers,
@@ -20,15 +20,8 @@ import {
   selfCheckMatches,
   type InstalledCaller,
 } from "./callers.js";
-import {
-  type LabelSpec,
-  labelCommand,
-  labelDeleteCommand,
-  labelSpecsFor,
-  RETIRED_LABELS,
-  STATE_LABELS,
-  TRIGGER_LABELS,
-} from "./init.js";
+import { labelCommand, labelDeleteCommand, labelSpecsFor } from "./init.js";
+import { RETIRED_LABELS, TRIGGER_LABELS, type LabelSpec } from "../shared/loop-labels.js";
 import {
   asVisibility,
   policyBody,
@@ -1756,11 +1749,9 @@ const diagnoseService = (
     });
   }
 
-  const needed = [
-    ...TRIGGER_LABELS.filter((label) => SERVICE_LABELS.includes(label.name)),
-    ...STATE_LABELS,
-  ];
-  for (const finding of labelFindings(needed, facts.labels)) add(finding);
+  // The labels the dispatcher converges on every repository it serves (#823):
+  // missing here, the next scan's pass creates them.
+  for (const finding of labelFindings(SERVICE_LABEL_SPECS, facts.labels)) add(finding);
 
   return findings;
 };

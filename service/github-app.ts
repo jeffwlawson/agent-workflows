@@ -22,7 +22,8 @@ import type { TokenGrant } from "./job.js";
  * minted and reused the same way, but for listing an installation's
  * repositories, which needs a token for the whole installation that reads
  * metadata alone. The one comment it writes, where a scan stops dispatching
- * an item (#596), goes through a token minted for it alone. The App's own
+ * an item (#596), goes through a token minted for it alone, and a scan's
+ * label writes on a repository (#823) through one minted for them. The App's own
  * webhook deliveries, listed and asked for again (#774), take the App's JWT
  * alone, and no installation's permission.
  */
@@ -335,6 +336,23 @@ export const liveAppGitHub = (appId: string, privateKey: string): AppGitHub => {
     comment: async (repo, number, body, token) => {
       const reply = await api(`/repos/${repo}/issues/${number}/comments`, token, { method: "POST", body: { body } });
       if (reply.status !== 201) throw new Error(`commenting on ${repo}#${number} answered ${reply.status}`);
+    },
+    repoLabels: async (repo) => {
+      const listed = await pages(`/repos/${repo}/labels`, () => scanner(repo), (reply) => reply.json, `${repo}'s labels`);
+      return listed.flatMap((entry) => {
+        const { name, color, description } = record(entry);
+        return typeof name === "string"
+          ? [{ name, color: typeof color === "string" ? color : "", description: typeof description === "string" ? description : "" }]
+          : [];
+      });
+    },
+    createLabel: async (repo, { name, color, description }, token) => {
+      const reply = await api(`/repos/${repo}/labels`, token, { method: "POST", body: { name, color, description } });
+      if (reply.status !== 201) throw new Error(`creating the label \`${name}\` on ${repo} answered ${reply.status}`);
+    },
+    editLabel: async (repo, { name, color, description }, token) => {
+      const reply = await api(`/repos/${repo}/labels/${encodeURIComponent(name)}`, token, { method: "PATCH", body: { color, description } });
+      if (reply.status !== 200) throw new Error(`editing the label \`${name}\` on ${repo} answered ${reply.status}`);
     },
     labels: async (repo, number) => {
       const listed = await pages(`/repos/${repo}/issues/${number}/labels`, () => scanner(repo), (reply) => reply.json, `${repo}#${number}'s labels`);

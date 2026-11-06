@@ -9,7 +9,7 @@ import { SUBCOMMANDS, type CliIo } from "../cli.js";
 import { place as placeRedCheck } from "../review/red-check-place.js";
 import { gate } from "../review/gate.js";
 import { publish } from "../review/publish.js";
-import { SERVICE_APP_EVENTS, SERVICE_APP_PERMISSIONS, SERVICE_LABELS } from "../service/dispatcher.js";
+import { SERVICE_APP_EVENTS, SERVICE_APP_PERMISSIONS, SERVICE_LABEL_SPECS, SERVICE_LABELS } from "../service/dispatcher.js";
 import { serveDispatcher, serveWorker } from "../service/serve.js";
 import { SERVICE } from "../service/settings.js";
 import { COMMANDS, RUNNERS } from "../shared/contract.js";
@@ -4744,6 +4744,16 @@ describe("doctor names the failures that otherwise look like something else", ()
         "note service App",
         ...(unansweredLabels().length > 0 ? ["warning unanswered labels"] : []),
       ]);
+    });
+
+    // #823: the dispatcher converges, on every repository it serves, exactly
+    // the labels `doctor` demands of one, with the same colours and descriptions.
+    it("demands of a service-served repository the labels the dispatcher converges there, and no other", () => {
+      const unread = rule(empty(), service({ labels: undefined })).find((finding) => finding.check === "labels");
+      expect(unread?.fix).toBe(`Create them by hand:\n       ${SERVICE_LABEL_SPECS.map(labelCommand).join("\n       ")}`);
+
+      const absent = rule(empty(), service({ labels: [] })).find((finding) => finding.check === "labels");
+      expect(absent?.fix).toBe(SERVICE_LABEL_SPECS.map(labelCommand).join("\n       "));
     });
 
     /**

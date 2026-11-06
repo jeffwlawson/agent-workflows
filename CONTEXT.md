@@ -814,6 +814,16 @@ the dispatcher's own bookkeeping, kept in memory unless `STATE_FILE` names its *
 (#618, `service/dispatcher-state.ts`): one atomically written JSON file, read at start, holding no
 secret. With it a restarted dispatcher keeps its counts, and adopts each job the worker still holds
 once the queued ones are dropped, the ones that had started, so they end normally.
+The dispatcher also writes the record in one place beside its stopped comment: each scan's pass,
+and an `installation` or `installation_repositories` event that adds repositories, **converges the
+loop's labels** (#823) on each repository it serves, before that repository's labelled items are
+read: every trigger label the service answers and the state labels (`SERVICE_LABEL_SPECS`), from
+`shared/loop-labels.ts`, the one list `init` and `doctor` read too. A missing one is created and one
+whose colour or description differs edited, with a token minted for the writes alone; none is ever
+deleted or renamed, retired ones included, which stays `init`'s and `doctor`'s. A refused list or
+write is logged and tried again next pass, and stops nothing. So a release that adds or recolours a
+label needs nothing done per repository on the service, and a repository there needs neither `init`
+nor callers for its labels (ADR 0012).
 
 The **worker** (#457) runs each job the way its workflow's reusable runs it, `review.yml` for a
 `review` job, `fix.yml` for a `fix` job, `update-branch.yml` for an `update-branch` job and

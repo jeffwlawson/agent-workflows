@@ -12,6 +12,7 @@ import {
   SERVICE_ORCHESTRATOR,
   UPDATE_BRANCH_LABEL,
 } from "../shared/record.js";
+import { labelWrites, STATE_LABELS, TRIGGER_LABELS, type LabelSpec } from "../shared/loop-labels.js";
 import { newestResumeNote } from "../shared/usage-limit.js";
 import type { DispatcherState, StateStore } from "./dispatcher-state.js";
 import {
@@ -165,6 +166,12 @@ export interface AppGitHub {
   pullsAt(repo: string, sha: string): Promise<readonly HeadPull[]>;
   /** Posts `body` as a comment on `repo`'s issue or pull request `number`, with `token`. */
   comment(repo: string, number: number, body: string, token: string): Promise<void>;
+  /** Every label `repo` holds, read with the scan's reader (#823). */
+  repoLabels(repo: string): Promise<readonly LabelSpec[]>;
+  /** Creates `label` on `repo`, with `token`. */
+  createLabel(repo: string, label: LabelSpec, token: string): Promise<void>;
+  /** Sets the colour and description of `repo`'s label `label.name` to `label`'s, with `token`. */
+  editLabel(repo: string, label: LabelSpec, token: string): Promise<void>;
   /** The labels on `repo`'s issue or pull request `number` now, read with the scan's reader (#774). */
   labels(repo: string, number: number): Promise<readonly string[]>;
   /**
@@ -306,6 +313,13 @@ export const SCAN_PERMISSIONS: Readonly<Record<string, string>> = { ...READER_PE
  */
 export const COMMENT_PERMISSIONS: Readonly<Record<string, string>> = { issues: "write", pull_requests: "write" };
 
+/**
+ * The permissions the scan's label writes mint with (#823): a repository's
+ * labels created and edited, which GitHub grants with Issues: write, minted
+ * for the one repository's writes, so the scan's reads stay read-only.
+ */
+export const LABEL_PERMISSIONS: Readonly<Record<string, string>> = { issues: "write" };
+
 /** Access levels, lowest first: a grant at a later one covers a need at an earlier one. */
 const ACCESS = ["read", "write", "admin"];
 
@@ -316,6 +330,7 @@ const MINTS: readonly (readonly [string, Readonly<Record<string, string>>])[] = 
   ["the dispatcher's reads", READER_PERMISSIONS],
   ["the scan's reads", SCAN_PERMISSIONS],
   ["the scan's comment", COMMENT_PERMISSIONS],
+  ["the scan's label writes", LABEL_PERMISSIONS],
   ...Object.entries(TOKEN_PERMISSIONS).map(([kind, permissions]) => [`\`${kind}\` tokens`, permissions] as const),
 ];
 
@@ -369,6 +384,17 @@ export const LABEL_KINDS: {
  * labels nothing answers there.
  */
 export const SERVICE_LABELS: readonly string[] = Object.values(LABEL_KINDS).flatMap((kinds) => Object.keys(kinds));
+
+/**
+ * The labels the dispatcher converges on every repository it serves (#823),
+ * and the ones `doctor` demands of a repository on the service: every trigger
+ * label the service answers, and the state labels, from the one list `init`
+ * converges too.
+ */
+export const SERVICE_LABEL_SPECS: readonly LabelSpec[] = [
+  ...TRIGGER_LABELS.filter((label) => SERVICE_LABELS.includes(label.name)),
+  ...STATE_LABELS,
+];
 
 /**
  * The trigger labels a scan lists on open items (#581): every one but
@@ -1066,12 +1092,28 @@ export const createDispatcher = (edges: DispatcherEdges) => {
     return dispatchIssue(kinds, { repo, issue: number, title, state, baseRef }, login, where, origin);
   };
 
+  /**
+   * **An installation that adds repositories** (#823): the App installed, or
+   * repositories added to an installation. A scan follows at once, rather
+   * than at the interval, so each repository it serves has its labels
+   * converged, and any labelled item in it dispatched, before anyone adds a
+   * label there. GitHub sends both events to every App, subscribed or not.
+   */
+  const installed = async (event: string, payload: unknown): Promise<string> => {
+    const action = typeof payload === "object" && payload !== null ? (payload as Record<string, unknown>)["action"] : undefined;
+    const adds = event === "installation" ? action === "created" : action === "added";
+    if (!adds) return `ignored: \`${event}\` \`${typeof action === "string" ? action : "unnamed"}\` adds no repository`;
+    await scan();
+    return `scanned: \`${event}\` \`${String(action)}\` added repositories`;
+  };
+
   /** Whether a delivery is a job, routed by its event type; otherwise the reason it is not, which is logged. */
   const decide = async (event: string | undefined, payload: unknown, origin: Origin): Promise<string> => {
     if (event === "ping") return "ping: answered";
     if (event === "pull_request") return pullRequest(payload, origin);
     if (event === "issues") return issue(payload, origin);
     if (event === "check_suite" || event === "status") return head(event, payload, origin);
+    if (event === "installation" || event === "installation_repositories") return installed(event, payload);
     return `ignored: \`${event ?? "unnamed"}\` is not an event this release's service answers`;
   };
 
@@ -1461,13 +1503,45 @@ export const createDispatcher = (edges: DispatcherEdges) => {
   };
 
   /**
+   * **The loop's labels on `repo`** (#823), converged as `init` converges
+   * them: listed once, each of `SERVICE_LABEL_SPECS` missing created and each
+   * whose colour or description differs edited, with a token minted for the
+   * writes alone, and only where there is one to make. A label of any other
+   * name, a retired one included, is never touched: deleting one strips it off
+   * everything carrying it, which stays `init`'s and `doctor`'s. A list or a
+   * write that fails is logged, with the repository and the label, and the
+   * next pass tries again; nothing here throws, and nothing is posted.
+   */
+  const convergeLabels = async (repo: string): Promise<void> => {
+    let present: readonly LabelSpec[];
+    try {
+      present = await edges.github.repoLabels(repo);
+    } catch (error) {
+      return edges.log(`scan: labels on ${repo}: could not be listed, so none was created or edited, and the next scan tries again: ${message(error)}`);
+    }
+    let writer: Promise<string> | undefined;
+    const token = (): Promise<string> => (writer ??= edges.github.mint(repo, LABEL_PERMISSIONS).then((grant) => grant.token));
+    for (const { label, write } of labelWrites(SERVICE_LABEL_SPECS, present)) {
+      if (write === "unchanged") continue;
+      const verb = write === "create" ? "created" : "edited";
+      try {
+        await (write === "create" ? edges.github.createLabel(repo, label, await token()) : edges.github.editLabel(repo, label, await token()));
+        edges.log(`scan: labels on ${repo}: ${verb} \`${label.name}\``);
+      } catch (error) {
+        edges.log(`scan: labels on ${repo}: \`${label.name}\` could not be ${verb}, and the next scan tries again: ${message(error)}`);
+      }
+    }
+  };
+
+  /**
    * One repository's part of a scan: refused where it is not served, and
-   * otherwise each open labelled item decided, then each merged pull request
-   * still carrying `agent:follow-ups`.
+   * otherwise its labels converged, each open labelled item decided, then
+   * each merged pull request still carrying `agent:follow-ups`.
    */
   const scanRepository = async (repo: string, held: readonly HeldJob[], login: string): Promise<void> => {
     const why = await unserved(repo);
     if (why !== undefined) return edges.log(`scan: refused on ${repo}: ${why}`);
+    await convergeLabels(repo);
     let branch: Promise<string> | undefined;
     const baseRef = (): Promise<string> => (branch ??= edges.github.defaultBranch(repo));
     for (const label of SCAN_LABELS) {

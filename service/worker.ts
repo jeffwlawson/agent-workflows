@@ -11,6 +11,7 @@ import {
   FOLLOW_UPS_MINUTES,
   fixTimeLimit,
   MERGE_MINUTES,
+  SETUP_CHECK_REPORT_MINUTES,
   HELD_REQUEST_MAX_AGE_MINUTES,
   HELD_REQUEST_MAX_SKEW_MINUTES,
   heldOf,
@@ -27,6 +28,7 @@ import {
   type Job,
   type MergeJob,
   type ReviewJob,
+  type SetupCheckJob,
   type TokenKind,
   type UpdateBranchJob,
 } from "./job.js";
@@ -102,9 +104,15 @@ export interface Git {
 export interface SandboxRun {
   /**
    * The script, which reaches the sandbox's shell through its environment, as
-   * `AGENT_SETUP`, and is never spliced into a command line.
+   * `variable`, and is never spliced into a command line.
    */
   readonly script: string;
+  /**
+   * The repository variable the script is, and the environment variable it
+   * reaches the sandbox's shell as: `AGENT_SETUP`, the repository's setup, or
+   * `AGENT_VERIFY`, its verify command, which a setup check runs after it (#821).
+   */
+  readonly variable: SandboxVariable;
   /** The host directory bound read-write: the checkout. */
   readonly dir: string;
   /**
@@ -130,6 +138,9 @@ export interface SandboxRun {
   /** Aborted at its time limit, which ends the sandbox and everything in it. */
   readonly signal: AbortSignal;
 }
+
+/** The repository variables the worker runs in the sandbox, each as the script of its own phase. */
+export type SandboxVariable = "AGENT_SETUP" | "AGENT_VERIFY";
 
 /**
  * Runs a script in the bwrap sandbox, never on the worker's host, and answers
@@ -270,6 +281,22 @@ export const SERVICE_SELF_CHECK = "review";
 /** The setup phase's name, in the summary and the worker's log. */
 export const SETUP_PHASE = "setup";
 
+/** The verify phase's name (#821), in the summary and the worker's log: a setup check's, after its setup. */
+export const VERIFY_PHASE = "verify";
+
+/** Each sandboxed phase, by the variable it runs: its name, and what its reasons call it. */
+const SANDBOXED: Readonly<Record<SandboxVariable, { readonly phase: string; readonly what: string }>> = {
+  AGENT_SETUP: { phase: SETUP_PHASE, what: "The repository's setup (`AGENT_SETUP`)" },
+  AGENT_VERIFY: { phase: VERIFY_PHASE, what: "The repository's verify command (`AGENT_VERIFY`)" },
+};
+
+/**
+ * The most of a sandboxed step's output's end a setup check hands its report
+ * (#821), in characters, past its last lines: it travels in the command's
+ * environment, where one variable's size is bounded.
+ */
+const SANDBOXED_TAIL_CHARACTERS = 6000;
+
 /** How many of its output's last lines a failed setup's reason quotes. */
 const SETUP_TAIL_LINES = 20;
 
@@ -350,17 +377,19 @@ const reason = (dir: string, file: string): string | undefined => {
   }
 };
 
-/** The last lines of a log, as a sentence's continuation, or that it wrote nothing. */
-const tail = (log: string): string => {
+/** The last lines of a log, raw, or `""` where it wrote nothing. */
+const lastLines = (log: string): string => {
   let text = "";
   try {
     text = fs.readFileSync(log, "utf8").trimEnd();
   } catch {
     // Nothing was written.
   }
-  if (text === "") return "It wrote no output.";
-  return `The end of its output:\n\n\`\`\`\n${text.split("\n").slice(-SETUP_TAIL_LINES).join("\n")}\n\`\`\``;
+  return text === "" ? "" : text.split("\n").slice(-SETUP_TAIL_LINES).join("\n");
 };
+
+/** The last lines of a log, as a sentence's continuation, or that it wrote nothing. */
+const tail = (lines: string): string => (lines === "" ? "It wrote no output." : `The end of its output:\n\n\`\`\`\n${lines}\n\`\`\``);
 
 const message = (error: unknown): string => (error instanceof Error ? error.message : String(error));
 
@@ -376,6 +405,20 @@ export interface SetupRan {
   readonly ok: boolean;
   readonly timedOut: boolean;
   /** Where it failed, the sentence a person can act on: its exit status and the end of its output. */
+  readonly failureReason?: string;
+}
+
+/**
+ * How a script run in the sandbox ended, as a setup check reports it (#821):
+ * passed, failed, timed out, or skipped where its variable is unset. A failure
+ * carries its exit code where it ran, and `output`, the end of what it wrote,
+ * raw and redacted, or why it could not be started; `failureReason` is the
+ * sentence the other kinds hand on.
+ */
+export interface SandboxedRan {
+  readonly result: "passed" | "failed" | "timed-out" | "unset";
+  readonly exit?: number;
+  readonly output?: string;
   readonly failureReason?: string;
 }
 
@@ -421,6 +464,13 @@ export interface Run {
    */
   readonly setup: (script: string, signal: AbortSignal) => Promise<SetupRan>;
   /**
+   * Runs `script`, the job's `variable`, in the sandbox as `setup` runs the
+   * setup, and answers how it ended in full, for a setup check's report
+   * (#821): its exit code and the end of its output. `setup` is this, for
+   * `AGENT_SETUP`, told in brief.
+   */
+  readonly sandboxed: (variable: SandboxVariable, script: string, signal: AbortSignal) => Promise<SandboxedRan>;
+  /**
    * Records that `subcommand` was not started, and why, as the
    * `failure_reason.txt` it would have written, in the directory it would
    * have written it to: so a command reading that directory gives the reason.
@@ -446,7 +496,7 @@ export const startRun = (job: Job, edges: JobEdges): Run => {
   };
   /** What each subcommand, and the setup, was started with, for the run summary. */
   const started: {
-    readonly subcommand: Subcommand | typeof SETUP_PHASE;
+    readonly subcommand: Subcommand | typeof SETUP_PHASE | typeof VERIFY_PHASE;
     readonly env: Readonly<Record<string, string>>;
     readonly cwd: string;
     readonly log: string;
@@ -528,28 +578,30 @@ export const startRun = (job: Job, edges: JobEdges): Run => {
     }
   };
 
-  const setup = async (script: string, signal: AbortSignal): Promise<SetupRan> => {
+  const sandboxed = async (variable: SandboxVariable, script: string, signal: AbortSignal): Promise<SandboxedRan> => {
+    const { phase, what } = SANDBOXED[variable];
     if (script === "") {
-      note(SETUP_PHASE, "skipped: AGENT_SETUP is unset");
-      return { ok: true, timedOut: false };
+      note(phase, `skipped: ${variable} is unset`);
+      return { result: "unset" };
     }
-    const log = path.join(logs, `${SETUP_PHASE}.log`);
+    const log = path.join(logs, `${phase}.log`);
     const proxy = edges.agent["AGENT_SANDBOX_PROXY"] ?? "";
-    started.push({ subcommand: SETUP_PHASE, env: { AGENT_SETUP: script }, cwd: checkout, log });
+    started.push({ subcommand: phase as typeof SETUP_PHASE | typeof VERIFY_PHASE, env: { [variable]: script }, cwd: checkout, log });
     // A proxy is the sandbox's only way out (#537), so one the relay would not
     // take is refused here, by the rule the worker's start-up check reads
     // under `bwrap`: under `none` the worker starts with it, and a sandbox
     // started on it would reach nothing.
     const refused = proxy === "" ? undefined : sandboxRefusal("bwrap", proxy);
     if (refused !== undefined) {
-      const failureReason = `The repository's setup (\`AGENT_SETUP\`) could not be started in the sandbox: ${refused}`;
-      note(SETUP_PHASE, `failure: ${failureReason}`);
-      return { ok: false, timedOut: false, failureReason };
+      const failureReason = `${what} could not be started in the sandbox: ${refused}`;
+      note(phase, `failure: ${failureReason}`);
+      return { result: "failed", output: refused, failureReason };
     }
     let code: number;
     try {
       code = await edges.sandbox({
         script,
+        variable,
         dir: checkout,
         at: edges.agent["AGENT_SANDBOX"] === "bwrap" ? SANDBOX_WORKTREE : checkout,
         roBinds: (edges.agent["AGENT_SANDBOX_RO_BINDS"] ?? "").split(":").filter((dir) => dir !== ""),
@@ -559,21 +611,33 @@ export const startRun = (job: Job, edges: JobEdges): Run => {
         signal,
       });
     } catch (error) {
-      const failureReason = `The repository's setup (\`AGENT_SETUP\`) could not be started in the sandbox: ${message(error)}`;
-      note(SETUP_PHASE, `failure: ${failureReason}`);
-      return { ok: false, timedOut: false, failureReason };
+      const failureReason = `${what} could not be started in the sandbox: ${message(error)}`;
+      note(phase, `failure: ${failureReason}`);
+      return { result: "failed", output: message(error), failureReason };
     }
     if (signal.aborted) {
-      note(SETUP_PHASE, "timed out");
-      return { ok: false, timedOut: true };
+      note(phase, "timed out");
+      return { result: "timed-out" };
     }
     if (code === 0) {
-      note(SETUP_PHASE, "success");
-      return { ok: true, timedOut: false };
+      note(phase, "success");
+      return { result: "passed" };
     }
-    const failureReason = `The repository's setup (\`AGENT_SETUP\`) exited with status ${code}. ${tail(log)}`;
-    note(SETUP_PHASE, `failure (exit ${code})`);
-    return { ok: false, timedOut: false, failureReason: redact(failureReason) };
+    const lines = redact(lastLines(log));
+    note(phase, `failure (exit ${code})`);
+    return {
+      result: "failed",
+      exit: code,
+      output: lines.length > SANDBOXED_TAIL_CHARACTERS ? lines.slice(-SANDBOXED_TAIL_CHARACTERS) : lines,
+      failureReason: redact(`${what} exited with status ${code}. ${tail(lines)}`),
+    };
+  };
+
+  const setup = async (script: string, signal: AbortSignal): Promise<SetupRan> => {
+    const ran = await sandboxed("AGENT_SETUP", script, signal);
+    if (ran.result === "passed" || ran.result === "unset") return { ok: true, timedOut: false };
+    if (ran.result === "timed-out") return { ok: false, timedOut: true };
+    return { ok: false, timedOut: false, ...(ran.failureReason === undefined ? {} : { failureReason: ran.failureReason }) };
   };
 
   const notStarted = (subcommand: Subcommand, why: string): void => {
@@ -597,6 +661,7 @@ export const startRun = (job: Job, edges: JobEdges): Run => {
         PATH: [edges.cliBin, edges.host.PATH].filter((part) => part !== undefined && part !== "").join(":"),
       }),
     setup,
+    sandboxed,
     notStarted,
     done,
   };
@@ -606,8 +671,8 @@ export const startRun = (job: Job, edges: JobEdges): Run => {
  * **One job**: its kind's run function, which follows that workflow's
  * `Actions orchestrator:` blocks in the spec, §6 for implement, §7 for
  * implement-prd, §8 for
- * review, §9 for fix, §10 for update-branch, §11 for follow-ups and §12 for
- * merge.
+ * review, §9 for fix, §10 for update-branch, §11 for follow-ups, §12 for
+ * merge, and §13 for a setup check, which has no Actions orchestrator.
  * Never throws: how each phase ended is in what this returns, for the
  * worker's log.
  */
@@ -627,6 +692,8 @@ export const runJob = async (job: Job, edges: JobEdges): Promise<readonly Phase[
       return runFollowUps(job, edges);
     case "merge":
       return runMerge(job, edges);
+    case "setup-check":
+      return runSetupCheck(job, edges);
   }
 };
 
@@ -2394,6 +2461,100 @@ const runMerge = async (job: MergeJob, edges: JobEdges): Promise<readonly Phase[
   return done();
 };
 
+/**
+ * **A setup check** (#821): the repository's setup and its verify command,
+ * run on its default branch in the sandbox a real job gets, with no agent, and
+ * reported on the issue that asked. The one kind with no reusable behind it:
+ * on Actions a caller's `setup:` already runs in every agent's job. It follows
+ * the agent's job of `implement.yml` up to its runner, and stops there.
+ *
+ * 1. A `read` token, then the checkout of the default branch at its head, by
+ *    its name, as implement's agent's job checks it out.
+ * 2. `AGENT_SETUP`, through the setup primitive: in the sandbox, in the
+ *    checkout, with no token, the sandbox's proxy its only way out. Unset is
+ *    skipped, and the check goes on.
+ * 3. Where the setup passed or was skipped, `AGENT_VERIFY` the same way, as a
+ *    phase of its own. Unset is skipped.
+ * 4. A `write` token, then `setup-check:report`, however the steps before it
+ *    ended, handed how each did: the report and the label's removal are its.
+ *
+ * **No agent is started**, so no runner is, and no `read` token is minted for
+ * one. Steps 1 to 3 share the agent's job's limit, `AGENT_TIMEOUT_MINUTES`
+ * (`fixTimeLimit`), since they are what that job runs before its agent; the
+ * report gets `SETUP_CHECK_REPORT_MINUTES` of its own. Where no `write` token
+ * is granted the report cannot run, the label stays on, and the worker's log
+ * says why; the next scan runs the check again.
+ */
+const runSetupCheck = async (job: SetupCheckJob, edges: JobEdges): Promise<readonly Phase[]> => {
+  const { note, limit, checkout, ask, run, sandboxed, done } = startRun(job, edges);
+  const minutes = fixTimeLimit(job.variables.AGENT_TIMEOUT_MINUTES);
+  const checkLimit = limit(minutes);
+
+  let checkoutResult: "passed" | "failed" | "timed-out" = "failed";
+  let checkoutReason = "";
+  const read = await ask("read");
+  if (read === undefined) {
+    checkoutReason = "the service's dispatcher granted no token to read the repository with";
+    note("checkout", `not run: ${checkoutReason}`);
+  } else {
+    try {
+      await edges.git.checkout({ dir: checkout, repo: job.repo, branch: job.baseRef, sha: job.baseRef, baseRef: job.baseRef, token: read, committer: job.appLogin, signal: checkLimit.signal });
+      note("checkout", "success");
+      checkoutResult = "passed";
+    } catch (error) {
+      if (checkLimit.signal.aborted) {
+        note("checkout", "timed out");
+        checkoutResult = "timed-out";
+      } else {
+        note("checkout", `failure: ${message(error)}`);
+        checkoutReason = `\`${job.baseRef}\` could not be checked out: ${message(error)}`;
+      }
+    }
+  }
+
+  /** A step as the report is told it: how it ran, or that it was not run, since one before it did not pass. */
+  type Step = Omit<SandboxedRan, "result" | "failureReason"> & { readonly result: SandboxedRan["result"] | "not-run" };
+  const notRun: Step = { result: "not-run" };
+  const setup: Step = checkoutResult === "passed" ? await sandboxed("AGENT_SETUP", job.variables.AGENT_SETUP, checkLimit.signal) : notRun;
+  const setupPassed = setup.result === "passed" || setup.result === "unset";
+  const verify: Step = setupPassed ? await sandboxed("AGENT_VERIFY", job.variables.AGENT_VERIFY, checkLimit.signal) : notRun;
+  if (!setupPassed) note(VERIFY_PHASE, `not run: ${checkoutResult === "passed" ? "the setup did not pass" : "the checkout did not finish"}`);
+  checkLimit.clear();
+
+  const write = await ask("write");
+  if (write === undefined) {
+    // Nothing can say so on the issue, so the worker's log says it. The label
+    // stays on, so the next scan runs the check again.
+    note("setup-check:report", "not run: the dispatcher granted no token to report with, so nothing was written and the label stays on");
+    return done();
+  }
+  const reportLimit = limit(SETUP_CHECK_REPORT_MINUTES);
+  await run(
+    "setup-check:report",
+    {
+      GH_REPO: job.repo,
+      GH_TOKEN: write,
+      ISSUE_NUMBER: String(job.issue),
+      BASE_REF: job.baseRef,
+      RUN_URL: serviceRunUrl(job.appLogin, job.id),
+      CHECKOUT: checkoutResult === "passed" ? checkout : "",
+      TIMEOUT_MINUTES: String(minutes),
+      CHECKOUT_RESULT: checkoutResult,
+      CHECKOUT_REASON: checkoutReason,
+      SETUP_RESULT: setup.result,
+      SETUP_EXIT: setup.exit === undefined ? "" : String(setup.exit),
+      SETUP_OUTPUT: setup.output ?? "",
+      VERIFY_RESULT: verify.result,
+      VERIFY_EXIT: verify.exit === undefined ? "" : String(verify.exit),
+      VERIFY_OUTPUT: verify.output ?? "",
+    },
+    edges.runDir,
+    reportLimit.signal,
+  );
+  reportLimit.clear();
+  return done();
+};
+
 /** What the job door needs: the shared secret, the worker's own release, and where an accepted job goes. */
 export interface WorkerDoorEdges {
   readonly secret: string;
@@ -2508,7 +2669,11 @@ export interface Queue<T> {
  * Which of the worker's two lanes a kind runs in (#582), decided by what the
  * kind *can* do, since whether a job starts an agent is often known only once
  * its gate or merge has run. `light` starts no agent: follow-ups. `agent` can
- * start one, and a gate that refuses ends it early in the same lane.
+ * start one, and a gate that refuses ends it early in the same lane. A setup
+ * check (#821) starts none, but is `agent` all the same: its setup and verify
+ * run for as long as an agent's job's limit, which in the light lane would
+ * hold a merge or a follow-ups job, and a hand-off keeping the agent lane's
+ * front, behind a build.
  * `hand-off` runs in the light lane until it would start an agent, then waits
  * for the agent lane: update-branch, whose clean merge needs no agent.
  */
@@ -2520,6 +2685,7 @@ export const LANES: Readonly<Record<JobKind, "light" | "agent" | "hand-off">> = 
   "implement-prd": "agent",
   "follow-ups": "light",
   merge: "light",
+  "setup-check": "agent",
 };
 
 /**

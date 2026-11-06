@@ -17,6 +17,7 @@ import {
   FOLLOW_UPS_MINUTES,
   MERGE_MINUTES,
   REPOSITORY_VARIABLES,
+  SETUP_CHECK_REPORT_MINUTES,
   type FixJob,
   type FollowUpsJob,
   type ImplementJob,
@@ -24,6 +25,7 @@ import {
   type Job,
   type MergeJob,
   type ReviewJob,
+  type SetupCheckJob,
   type TokenKind,
   type UpdateBranchJob,
 } from "../../service/job.js";
@@ -45,11 +47,13 @@ import {
   serviceRunUrl,
   SETUP_PHASE,
   startRun,
+  VERIFY_PHASE,
   SUMMARY_FILE,
   type JobEdges,
   type Launch,
   type Phase,
   type SandboxRun,
+  type SandboxVariable,
   type Subcommand,
 } from "../../service/worker.js";
 import { COMMANDS, RUNNERS, SANDBOX, type Command, type Runner } from "../../shared/contract.js";
@@ -106,6 +110,7 @@ const JOB: ReviewJob = {
     AGENT_MAX_FIX_ROUNDS: "3",
     AGENT_FIX_MIN_SEVERITY: "high",
     AGENT_SETUP: "",
+    AGENT_VERIFY: "",
   },
 };
 
@@ -153,6 +158,10 @@ const setup = (
     readonly host?: HostEnvironment;
     /** How the repository's setup ends in the sandbox: its exit, the output it writes, or that it hangs or cannot start. */
     readonly setupRun?: { readonly exit?: number; readonly output?: string; readonly hangs?: boolean; readonly throws?: string };
+    /** The same, per variable the sandbox runs, where a job runs more than one script there: a setup check's (#821). */
+    readonly sandboxRuns?: Partial<Record<SandboxVariable, { readonly exit?: number; readonly output?: string; readonly hangs?: boolean; readonly throws?: string }>>;
+    /** Why the checkout fails, where it does. */
+    readonly checkoutFails?: string;
   } = {},
 ) => {
   const sandboxed: SandboxRun[] = [];
@@ -199,12 +208,13 @@ const setup = (
           await hang(signal, 0);
           throw new Error("The operation was aborted");
         }
+        if (options.checkoutFails !== undefined) throw new Error(options.checkoutFails);
       },
     },
     sandbox: async (run: SandboxRun) => {
       sandboxed.push(run);
       events.push("sandbox");
-      const { exit = 0, output, hangs = false, throws } = options.setupRun ?? {};
+      const { exit = 0, output, hangs = false, throws } = options.sandboxRuns?.[run.variable] ?? options.setupRun ?? {};
       if (throws !== undefined) throw new Error(throws);
       if (output !== undefined) fs.appendFileSync(run.log, output);
       return hangs ? hang(run.signal, 143) : exit;
@@ -806,6 +816,7 @@ describe("the repository's setup, as a phase primitive", () => {
     expect(s.sandboxed).toEqual([
       {
         script: "npm ci",
+        variable: "AGENT_SETUP",
         dir: path.join(s.runDir, "checkout"),
         at: SANDBOX_WORKTREE,
         roBinds: ["/opt/node", "/work/claude-code"],
@@ -1739,7 +1750,7 @@ describe("the job door", () => {
     const response = d.handle(request(job));
 
     expect(response.status).toBe(400);
-    expect(JSON.parse(response.body)).toEqual({ refusal: "`workflow` is not one of `review`, `fix`, `update-branch`, `implement`, `implement-prd`, `follow-ups`, `merge`" });
+    expect(JSON.parse(response.body)).toEqual({ refusal: "`workflow` is not one of `review`, `fix`, `update-branch`, `implement`, `implement-prd`, `follow-ups`, `merge`, `setup-check`" });
     expect(d.accepted).toEqual([]);
   });
 
@@ -2716,6 +2727,181 @@ describe("the worker's follow-ups job", () => {
   });
 });
 
+const SETUP_CHECK_JOB: SetupCheckJob = {
+  workflow: "setup-check",
+  id: "job-1",
+  version: "9.9.9",
+  instance: "dispatcher-1",
+  deadline: "2026-10-11T14:00:00.000Z",
+  repo: "owner/repo",
+  issue: 12,
+  title: "Check the setup",
+  state: "open",
+  baseRef: "main",
+  appLogin: "loop-app[bot]",
+  variables: { ...JOB.variables, AGENT_SETUP: "npm ci", AGENT_VERIFY: "npm test" },
+};
+
+/**
+ * A setup check (#821), which no reusable runs: a `read` token, the checkout
+ * of the default branch, `AGENT_SETUP` and then `AGENT_VERIFY` in the sandbox,
+ * and `setup-check:report` with a `write` token, handed how each step ended.
+ * No agent, so no runner.
+ */
+describe("the worker's setup-check job", () => {
+  /** What the report was handed of the steps, and nothing of the host's. */
+  const handed = (s: ReturnType<typeof setup>) => {
+    const env = s.env("setup-check:report");
+    return Object.fromEntries(Object.entries(env).filter(([name]) => /^(CHECKOUT|SETUP|VERIFY)/.test(name)));
+  };
+
+  it("checks out the default branch with a read token, runs AGENT_SETUP and then AGENT_VERIFY in the sandbox in the checkout, reports with a write token, and starts no agent", async () => {
+    const s = setup({});
+    const phases = await runJob(SETUP_CHECK_JOB, s.edges);
+
+    expect(s.events).toEqual(["read token", "checkout", "sandbox", "sandbox", "write token", "setup-check:report"]);
+    expect(s.asked).toEqual(["read", "write"]);
+    expect(s.checkouts).toEqual([
+      { dir: path.join(s.runDir, "checkout"), repo: "owner/repo", branch: "main", sha: "main", baseRef: "main", token: "read-token-1", committer: "loop-app[bot]" },
+    ]);
+    expect(s.sandboxed.map(({ variable, script, dir }) => ({ variable, script, dir }))).toEqual([
+      { variable: "AGENT_SETUP", script: "npm ci", dir: path.join(s.runDir, "checkout") },
+      { variable: "AGENT_VERIFY", script: "npm test", dir: path.join(s.runDir, "checkout") },
+    ]);
+    // No token in what either script is handed, and no runner started.
+    const sandboxed = JSON.stringify(s.sandboxed);
+    for (const token of ["read-token-1", "write-token-2", AGENT.CLAUDE_CODE_OAUTH_TOKEN]) expect(sandboxed).not.toContain(token);
+    expect(s.launched.map(({ subcommand }) => subcommand)).toEqual(["setup-check:report"]);
+    expect(s.launched.some(({ subcommand }) => subcommand in RUNNERS)).toBe(false);
+    expect(phases).toContainEqual({ name: VERIFY_PHASE, outcome: "success" });
+    expect(s.env("setup-check:report")).toEqual({
+      ...HOST,
+      OUTPUT_DIR: s.env("setup-check:report")["OUTPUT_DIR"],
+      GH_REPO: "owner/repo",
+      GH_TOKEN: "write-token-2",
+      ISSUE_NUMBER: "12",
+      BASE_REF: "main",
+      RUN_URL,
+      CHECKOUT: path.join(s.runDir, "checkout"),
+      TIMEOUT_MINUTES: String(DEFAULT_FIX_MINUTES),
+      CHECKOUT_RESULT: "passed",
+      SETUP_RESULT: "passed",
+      VERIFY_RESULT: "passed",
+    });
+  });
+
+  it("reports a failed setup's exit code and the end of its output, and does not start verify", async () => {
+    const s = setup({}, { sandboxRuns: { AGENT_SETUP: { exit: 2, output: "npm ERR! missing python3-venv\n" } } });
+    await runJob(SETUP_CHECK_JOB, s.edges);
+
+    expect(s.sandboxed.map(({ variable }) => variable)).toEqual(["AGENT_SETUP"]);
+    expect(handed(s)).toEqual({
+      CHECKOUT: path.join(s.runDir, "checkout"),
+      CHECKOUT_RESULT: "passed",
+      SETUP_RESULT: "failed",
+      SETUP_EXIT: "2",
+      SETUP_OUTPUT: "npm ERR! missing python3-venv",
+      VERIFY_RESULT: "not-run",
+    });
+  });
+
+  it("reports a failed verify's exit code and the end of its output", async () => {
+    const s = setup({}, { sandboxRuns: { AGENT_VERIFY: { exit: 1, output: "1 test failed\n" } } });
+    await runJob(SETUP_CHECK_JOB, s.edges);
+
+    expect(handed(s)).toMatchObject({ SETUP_RESULT: "passed", VERIFY_RESULT: "failed", VERIFY_EXIT: "1", VERIFY_OUTPUT: "1 test failed" });
+  });
+
+  it("skips verify where AGENT_VERIFY is unset, and still runs verify where AGENT_SETUP is unset", async () => {
+    const noVerify = setup({});
+    await runJob({ ...SETUP_CHECK_JOB, variables: { ...SETUP_CHECK_JOB.variables, AGENT_VERIFY: "" } }, noVerify.edges);
+    expect(noVerify.sandboxed.map(({ variable }) => variable)).toEqual(["AGENT_SETUP"]);
+    expect(handed(noVerify)).toMatchObject({ SETUP_RESULT: "passed", VERIFY_RESULT: "unset" });
+
+    const noSetup = setup({});
+    await runJob({ ...SETUP_CHECK_JOB, variables: { ...SETUP_CHECK_JOB.variables, AGENT_SETUP: "" } }, noSetup.edges);
+    expect(noSetup.sandboxed.map(({ variable }) => variable)).toEqual(["AGENT_VERIFY"]);
+    expect(handed(noSetup)).toMatchObject({ SETUP_RESULT: "unset", VERIFY_RESULT: "passed" });
+  });
+
+  it("hands AGENT_VERIFY to the sandbox as the repository set it, `$(…)` and `;` and all, never evaluated", async () => {
+    const script = "npm test -- $(cat suites.txt); echo `date` > ran.txt";
+    const s = setup({});
+    await runJob({ ...SETUP_CHECK_JOB, variables: { ...SETUP_CHECK_JOB.variables, AGENT_VERIFY: script } }, s.edges);
+
+    expect(s.sandboxed[1]).toMatchObject({ variable: "AGENT_VERIFY", script });
+    const summary = JSON.parse(fs.readFileSync(path.join(s.runDir, SUMMARY_FILE), "utf8")) as { subcommands: { subcommand: string; env: unknown }[] };
+    expect(summary.subcommands.find(({ subcommand }) => subcommand === VERIFY_PHASE)?.env).toEqual({ AGENT_VERIFY: script });
+  });
+
+  it("reports a checkout that failed, with its reason, runs neither script, and still reports", async () => {
+    const s = setup({}, { checkoutFails: "remote: Repository not found." });
+    await runJob(SETUP_CHECK_JOB, s.edges);
+
+    expect(s.sandboxed).toEqual([]);
+    expect(s.events.at(-1)).toBe("setup-check:report");
+    expect(handed(s)).toEqual({
+      CHECKOUT_RESULT: "failed",
+      CHECKOUT_REASON: "`main` could not be checked out: remote: Repository not found.",
+      SETUP_RESULT: "not-run",
+      VERIFY_RESULT: "not-run",
+    });
+  });
+
+  it("reports a checkout the dispatcher granted no read token for as failed, and still reports", async () => {
+    const s = setup({}, { refused: [1] });
+    await runJob(SETUP_CHECK_JOB, s.edges);
+
+    expect(s.checkouts).toEqual([]);
+    expect(handed(s)).toMatchObject({ CHECKOUT_RESULT: "failed", SETUP_RESULT: "not-run", VERIFY_RESULT: "not-run" });
+    expect(handed(s)["CHECKOUT_REASON"]).toMatch(/granted no token/);
+  });
+
+  it("ends a setup still running at the agent's job's time limit, and reports it timed out, with verify not run", async () => {
+    const s = setup({}, { minuteMs: 5, sandboxRuns: { AGENT_SETUP: { hangs: true } } });
+    await runJob(SETUP_CHECK_JOB, s.edges);
+
+    expect(s.sandboxed[0]?.signal.aborted).toBe(true);
+    expect(s.sandboxed).toHaveLength(1);
+    expect(s.events.at(-1)).toBe("setup-check:report");
+    expect(handed(s)).toMatchObject({ CHECKOUT_RESULT: "passed", SETUP_RESULT: "timed-out", VERIFY_RESULT: "not-run" });
+    expect(s.env("setup-check:report")["TIMEOUT_MINUTES"]).toBe(String(DEFAULT_FIX_MINUTES));
+  });
+
+  it("reports a checkout that ran out of time as timed out", async () => {
+    const s = setup({}, { minuteMs: 5, checkoutHangs: true });
+    await runJob(SETUP_CHECK_JOB, s.edges);
+
+    expect(handed(s)).toEqual({ CHECKOUT_RESULT: "timed-out", SETUP_RESULT: "not-run", VERIFY_RESULT: "not-run" });
+  });
+
+  it("gives the report a time limit of its own, past the check's", async () => {
+    const s = setup({ "setup-check:report": { hangs: true } }, { minuteMs: 5 });
+    const phases = await runJob(SETUP_CHECK_JOB, s.edges);
+
+    expect(SETUP_CHECK_REPORT_MINUTES).toBe(5);
+    expect(phases).toContainEqual({ name: "setup-check:report", outcome: "timed out" });
+  });
+
+  it("logs why nothing was reported where no write token was granted, and leaves the label for the next scan", async () => {
+    const s = setup({}, { refused: [2] });
+    const phases = await runJob(SETUP_CHECK_JOB, s.edges);
+
+    expect(s.launched).toEqual([]);
+    expect(phases.at(-1)).toEqual({
+      name: "setup-check:report",
+      outcome: "not run: the dispatcher granted no token to report with, so nothing was written and the label stays on",
+    });
+  });
+
+  it("hands the report only what it declares", async () => {
+    const s = setup({});
+    await runJob(SETUP_CHECK_JOB, s.edges);
+
+    for (const name of Object.keys(s.env("setup-check:report"))) expect([...Object.keys(declared("setup-check:report")), ...Object.keys(HOST)], name).toContain(name);
+  });
+});
+
 describe("the run's link, on the service (#604)", () => {
   /** An id shaped as the dispatcher mints one, `randomUUID`. */
   const ID = "3f2b8c1e-5d4a-4e6f-9a7b-0c1d2e3f4a5b";
@@ -3423,7 +3609,7 @@ describe("the worker's queue", () => {
     });
   });
 
-  it("classes each kind by what it can do: follow-ups is light, update-branch hands off, and every other kind starts an agent", () => {
+  it("classes each kind by what it can do: follow-ups and merge are light, update-branch hands off, and every other kind, a setup check's included, runs in the agent lane", () => {
     expect(LANES).toEqual({
       review: "agent",
       fix: "agent",
@@ -3432,7 +3618,27 @@ describe("the worker's queue", () => {
       "implement-prd": "agent",
       "follow-ups": "light",
       merge: "light",
+      "setup-check": "agent",
     });
+  });
+
+  // #821: a setup check's setup and verify can run for an agent's job's
+  // limit, so it holds the agent lane, not the light one, and a merge job
+  // queued after it does not wait behind its build.
+  it("runs a setup check in the agent lane, behind an agent job, and lets a merge job queued after it start at once", async () => {
+    const w = queued();
+    w.queue.add(implement("build", 12));
+    w.queue.add({ ...SETUP_CHECK_JOB, id: "check", issue: 40 });
+    w.queue.add({ ...MERGE_JOB, id: "merge", pr: 50, branch: "agent/issue-50-a-thing" });
+    await settle();
+
+    expect(w.running).toEqual(new Set(["build", "merge"]));
+    await w.end("merge");
+    expect(w.running).toEqual(new Set(["build"]));
+    await w.end("build");
+    expect(w.running).toEqual(new Set(["check"]));
+    await w.end("check");
+    expect(w.mostAgentParts()).toBe(1);
   });
 
   it("starts a follow-ups job and a clean update-branch queued behind a long agent job at once, and ends both before it", async () => {

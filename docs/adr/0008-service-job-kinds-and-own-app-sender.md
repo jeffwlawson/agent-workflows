@@ -69,3 +69,21 @@ the budget remains the limit on what the loop starts by itself, as it is on Acti
 - The only sender the dispatcher trusts without a lookup is its own App. A command that adds a
   trigger label when it should not now starts work on the service by itself, as it already does
   on Actions.
+
+## Note, 2026-11-06: a kind with no workflow behind it (#821)
+
+"One job kind per workflow" assumed every kind follows an Actions workflow's orchestrator blocks.
+`setup-check` is the first that does not. Started by `agent:setup-check` on an open issue, it
+checks the default branch out, runs the repository's setup (`AGENT_SETUP`) and its verify command
+(`AGENT_VERIFY`) in the sandbox, starts no agent, and reports on the issue through
+`setup-check:report`, a command in a `setup-check/` workflow folder with no reusable and no caller.
+
+It is a kind of its own, in `JOB_KINDS` with its parser, its entry in `LABEL_KINDS` and its run
+function, as the consequences above require, because it is the service's answer to a gap Actions
+does not have: there a caller's `setup:` runs in every agent's job, so a missing tool fails a run
+that was going to happen anyway, where on the service it fails the first run on a box nobody has
+checked against the repository (ADR 0012: the box is the version a repository holds). Its run
+function follows `implement.yml`'s agent's job up to its runner and stops there, and the spec's
+§13 says so in place of an `Actions orchestrator:` block. Its label is a trigger label the service
+alone answers, so the dispatcher converges it, `doctor` demands it of a service repository, and
+`init`, which derives its labels from the callers, writes it nowhere.

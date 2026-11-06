@@ -545,6 +545,14 @@ const FIX_PREPARE = {
   outputs: [...EVERY_SUBCOMMAND_OUTPUTS],
 } as const satisfies CommandContract;
 
+/**
+ * How one of a setup check's sandboxed steps ended (#821), as the worker hands
+ * it to `setup-check:report`: it passed, failed or ran out of time; its
+ * variable was `unset`, so it was skipped; or it was `not-run`, since a step
+ * before it did not pass.
+ */
+const SETUP_CHECK_STEP = { required: true, accepts: ["passed", "failed", "timed-out", "unset", "not-run"] } as const satisfies Input;
+
 /** How a job ended, as Actions' `needs.<job>.result` says it. */
 const RESULTS = ["success", "failure", "cancelled", "skipped"] as const satisfies Accepts;
 
@@ -1158,6 +1166,14 @@ const MERGE_PUBLISH = {
  *   (`MINT_OUTCOME`), or the reason `merge:publish` or `merge:gate` left in
  *   `PUBLISH_DIR` or `GATE_DIR`; then `agent:merge` off and `agent:blocked`.
  *   On a run that finished, nothing.
+ * - `setup-check:report` (#821) ends every setup check, the service's alone:
+ *   one comment on `ISSUE_NUMBER` saying how the checkout of `BASE_REF`, the
+ *   repository's setup and its verify command each ended, from what the
+ *   worker hands it (`CHECKOUT_RESULT`, `SETUP_RESULT`, `VERIFY_RESULT`, each
+ *   step's exit code and the end of its output, raw), naming the commit it
+ *   reads at `CHECKOUT`'s head; then `agent:setup-check` off. A write GitHub
+ *   refuses is a warning, so a report that could not be posted still takes the
+ *   label off.
  * - `update-branch:gate` refuses or claims the pull request before the
  *   checkout: a closed or merged one is refused on the pull request, and one
  *   it claims has the permission probe, `agent:blocked` off and the wait,
@@ -1530,6 +1546,25 @@ export const COMMANDS = {
         "failure_reason.txt": "sometimes",
       }),
       ...RUN_LINK,
+    },
+    outputs: [...EVERY_SUBCOMMAND_OUTPUTS, WRITE_LOG],
+  },
+  "setup-check:report": {
+    inputs: {
+      ...EVERY_SUBCOMMAND,
+      ISSUE_NUMBER: REQUIRED,
+      BASE_REF: REQUIRED,
+      RUN_URL: REQUIRED,
+      CHECKOUT: EMPTY,
+      TIMEOUT_MINUTES: EMPTY,
+      CHECKOUT_RESULT: { required: true, accepts: ["passed", "failed", "timed-out"] },
+      CHECKOUT_REASON: EMPTY,
+      SETUP_RESULT: SETUP_CHECK_STEP,
+      SETUP_EXIT: EMPTY,
+      SETUP_OUTPUT: EMPTY,
+      VERIFY_RESULT: SETUP_CHECK_STEP,
+      VERIFY_EXIT: EMPTY,
+      VERIFY_OUTPUT: EMPTY,
     },
     outputs: [...EVERY_SUBCOMMAND_OUTPUTS, WRITE_LOG],
   },

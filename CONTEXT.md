@@ -772,7 +772,12 @@ since the service's gate waits for nothing and those are what change its answer.
 most one merge job runs and one waits in the worker's queue: one more is absorbed by the one waiting,
 which reads the record when it starts, where that one's deadline is no earlier than its own, and
 otherwise replaces it (#645), as a person's `agent:merge` does whatever the deadline; one waiting
-that arms is never replaced by one that does not. Every trigger label the loop has is served.
+that arms is never replaced by one that does not. Every trigger label the loop has is served. And
+one kind is the service's alone: `setup-check` (`SetupCheckJob`, #821), from `agent:setup-check`
+on an open issue, runs the repository's setup, `AGENT_SETUP`, and its verify command,
+`AGENT_VERIFY`, on the default branch in the sandbox, starts no agent, and reports on the issue
+through `setup-check:report`; no Actions workflow is behind it, since a caller's `setup:` already
+runs in every agent's job there, so its label has no caller and `init` writes it nowhere.
 The map is keyed by event, so a label is answered on the event type it belongs to and on no other,
 and each event has a route of its own reading its own payload: an implement or implement-prd job carries an issue,
 with no head, and the repository's default branch as its base. A job's deadline is its kind's own time limit plus the dispatcher's margin. The labels the service
@@ -831,7 +836,8 @@ nor callers for its labels (ADR 0012).
 The **worker** (#457) runs each job the way its workflow's reusable runs it, `review.yml` for a
 `review` job, `fix.yml` for a `fix` job, `update-branch.yml` for an `update-branch` job and
 `implement.yml` for an `implement` job, `implement-prd.yml` for an `implement-prd` job and
-`follow-ups.yml` for a `follow-ups` job, as a **thin adapter**: the same subcommands in the same
+`follow-ups.yml` for a `follow-ups` job (and a `setup-check` job, which no reusable runs, as that
+kind's *Service orchestrator* block in `docs/platform-spec.md` says), as a **thin adapter**: the same subcommands in the same
 order, under each job's and step's `if:` rather than in order alone (`service/worker.ts`),
 each a child process of its own installed package, so the service and every subcommand it runs are
 one release. Each kind has a run function of its own, following its workflow's orchestrator

@@ -409,7 +409,21 @@ describe("each reusable sets its subcommands' required inputs", () => {
     );
   };
 
-  it.each([...RUNNER_NAMES, ...COMMAND_NAMES])("%s", (subcommand) => {
+  /**
+   * The workflows with no reusable, whose commands no Actions step runs: the
+   * setup check (#821), which only the service orchestrator serves, since on
+   * Actions a caller's `setup:` already runs in every agent's job.
+   */
+  const SERVICE_ONLY: readonly string[] = ["setup-check"];
+
+  it("knows each service-only workflow by name, and none has a reusable", () => {
+    for (const workflow of SERVICE_ONLY) {
+      expect(COMMAND_NAMES.some((command) => workflowOf(command) === workflow), workflow).toBe(true);
+      expect(fs.existsSync(path.join(".github", "workflows", `${workflow}.yml`)), workflow).toBe(false);
+    }
+  });
+
+  it.each([...RUNNER_NAMES, ...COMMAND_NAMES.filter((command) => !SERVICE_ONLY.includes(workflowOf(command)))])("%s", (subcommand) => {
     const steps = subcommandSteps(subcommand);
     const required = Object.entries(declarationOf(subcommand).inputs as Inputs)
       .filter(([, input]) => input.required)

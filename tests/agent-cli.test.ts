@@ -1974,7 +1974,7 @@ describe("init installs the reference callers into an adopting repo", () => {
 
     // The block itself has to still be there: a doc restructure that moved it
     // would otherwise make this pass by comparing nothing.
-    expect(mandated).toHaveLength(6);
+    expect(mandated).toHaveLength(7);
     expect(byName([...TRIGGER_LABELS, ...STATE_LABELS])).toEqual(byName(mandated));
   });
 
@@ -2054,8 +2054,8 @@ describe("init installs the reference callers into an adopting repo", () => {
     for (const label of filing) {
       expect(setup).not.toContain(label.name);
     }
-    // The mandated six are untouched by any of that.
-    for (const label of [...TRIGGER_LABELS, ...STATE_LABELS]) {
+    // The labels the remaining callers want are untouched by any of that.
+    for (const label of labelSpecsFor(referenceWorkflows)) {
       expect(setup).toContain(labelCommand(label));
     }
   });
@@ -3164,6 +3164,27 @@ describe("init converges the labels the loop owns", () => {
     expect(without.find((c) => c.file === 'label "agent:merge"')).toBeUndefined();
     expect(declined.sent).not.toContain("create agent:merge");
   });
+
+  /**
+   * `agent:setup-check` (#821) is the service's alone: no caller wants it, so
+   * `init` neither creates it nor names it, and installs no caller for it.
+   * The dispatcher converges it on every repository it serves instead.
+   */
+  it("writes no setup-check label and no setup-check caller", async () => {
+    const root = adopted();
+    const { surface, sent } = github(OLD);
+
+    const changes = await init({ dir: root, app: noApp, github: offline, labels: surface });
+
+    expect(sent.filter((write) => write.includes(record.SETUP_CHECK_LABEL))).toEqual([]);
+    expect(changes.filter((c) => c.file.includes("setup-check"))).toEqual([]);
+    expect(fs.readFileSync(path.join(root, "SETUP.md"), "utf8")).not.toContain(record.SETUP_CHECK_LABEL);
+    const workflows = path.join(root, ".github", "workflows");
+    for (const file of fs.readdirSync(workflows)) expect(fs.readFileSync(path.join(workflows, file), "utf8"), file).not.toMatch(/setup-check/);
+    expect(labelSpecsFor(["fix", "follow-ups", "implement", "implement-prd", "merge", "review", "update-branch"]).map((label) => label.name)).not.toContain(
+      record.SETUP_CHECK_LABEL,
+    );
+  });
 });
 
 /**
@@ -3242,6 +3263,7 @@ describe("doctor names the failures that otherwise look like something else", ()
       "agent:fix",
       "agent:update-branch",
       "agent:merge",
+      "agent:setup-check",
       "agent:blocked",
     ],
     visibility: "private",
@@ -4747,6 +4769,7 @@ describe("doctor names the failures that otherwise look like something else", ()
         record.FOLLOW_UPS_LABEL,
         record.MERGE_LABEL,
         record.IMPLEMENT_LABEL,
+        record.SETUP_CHECK_LABEL,
       ]);
     });
 
@@ -4770,7 +4793,10 @@ describe("doctor names the failures that otherwise look like something else", ()
       [...TRIGGER_LABELS.map((label) => label.name), record.FOLLOW_UPS_LABEL].filter((name) => !SERVICE_LABELS.includes(name));
 
     it("passes a service-served repository with no callers and its labels", () => {
-      const findings = rule(empty(), service({ labels: ["agent:implement", "agent:review", "agent:fix", "agent:update-branch", "agent:merge", "agent:blocked"] }));
+      const findings = rule(
+        empty(),
+        service({ labels: ["agent:implement", "agent:review", "agent:fix", "agent:update-branch", "agent:merge", "agent:setup-check", "agent:blocked"] }),
+      );
 
       expect(checks(findings)).toEqual([
         "note orchestrator",
@@ -4953,10 +4979,24 @@ describe("doctor names the failures that otherwise look like something else", ()
       });
     });
 
+    // #821: the setup check's label is the service's alone. `doctor` demands
+    // it of a service repository, and of an Actions one never, where nothing
+    // answers it.
+    it("demands agent:setup-check of a service-served repository, and not of one on Actions", async () => {
+      const without = (labels: readonly string[]) => labels.filter((name) => name !== record.SETUP_CHECK_LABEL);
+      const onService = rule(empty(), service({ labels: without(healthy().labels ?? []) })).find((finding) => finding.check === "labels");
+      expect(onService?.severity).toBe("error");
+      expect(onService?.problem).toMatch(/^agent:setup-check does not exist/);
+      expect(onService?.fix).toBe(labelCommand(TRIGGER_LABELS.find((label) => label.name === record.SETUP_CHECK_LABEL)!));
+
+      const onActions = rule(await installed(), { ...healthy(), labels: without(healthy().labels ?? []) });
+      expect(onActions.filter((finding) => finding.check === "labels")).toEqual([]);
+    });
+
     it("checks the labels the service needs exist, and no others", () => {
       const missing = rule(empty(), service({ labels: ["agent:blocked"] })).find((finding) => finding.check === "labels");
       expect(missing?.severity).toBe("error");
-      expect(missing?.problem).toMatch(/^agent:implement, agent:review, agent:fix, agent:update-branch, agent:merge do not exist/);
+      expect(missing?.problem).toMatch(/^agent:implement, agent:review, agent:fix, agent:update-branch, agent:merge, agent:setup-check do not exist/);
 
       const unread = rule(empty(), service({ labels: undefined })).find((finding) => finding.check === "labels");
       expect(unread?.severity).toBe("warning");

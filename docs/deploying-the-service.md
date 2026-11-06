@@ -509,10 +509,15 @@ App on an account it does not serve, or `AGENT_ORCHESTRATOR` not `service`) has 
 read or written.
 
 **What:** the labels `doctor` demands of a service repository, every trigger label the service
-answers and `agent:blocked`, with the colours and descriptions [`ADOPTING.md`](./ADOPTING.md#3-labels)
-§3 gives them, read from the one list `init` and `doctor` read. It lists the repository's labels
+answers and `agent:blocked`, and the three the follow-ups workflow files with, `agent:follow-ups`,
+`pr-follow-up` and `needs-triage`, which `doctor` only advises: the service answers follow-ups on
+every repository it serves, and without them a filed stub arrives unlabelled, where the next merge's
+duplicate check cannot see it. Each has the colour and description [`ADOPTING.md`](./ADOPTING.md#3-labels)
+§3 gives it, read from the one list `init` and `doctor` read. It lists the repository's labels
 once with the scan's reader, creates each that is missing, and edits each whose colour or
-description differs, the colour compared without regard to case, as `init` does. The writes go
+description differs, the colour compared without regard to case, as `init` does. A label is matched
+by name without regard to case too, as GitHub matches it, so your `Agent:Fix` counts as `agent:fix`:
+it is never created again, at most recoloured, and keeps its name. The writes go
 through a token minted for them alone, Issues: write on that one repository, and only where there
 is a write to make: a pass over a repository whose labels are current mints nothing and logs
 nothing about them. Each write it makes is logged, `scan: labels on <repo>: created \`<label>\``.

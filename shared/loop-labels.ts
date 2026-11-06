@@ -72,6 +72,46 @@ export const TRIGGER_LABELS: readonly LabelSpec[] = [
  */
 export const RETIRED_LABELS: readonly string[] = ["agent:in-progress", "agent:auto-fixed", "agent:queued"];
 
+/**
+ * The labels `doctor` **does not demand**, keyed by the workflow that wants
+ * them — every block `docs/ADOPTING.md` §3 prints after its first.
+ *
+ * Separate from `TRIGGER_LABELS` and `STATE_LABELS` because the two halves that read them want
+ * opposite things. `SETUP.md` should name every label the callers it just
+ * installed will reach for, or an adopter gets a live feature whose only signal
+ * is a `::warning::` inside a green run — the filing half marks nothing, files
+ * its stubs unlabelled, and the next merge cannot see them. `doctor` should
+ * *not* fail over them: none stops a loop a repository is actually running, and
+ * a preflight that errors on a correctly-installed one is a preflight people
+ * learn to skip. So these reach `renderSetup` and never `labelSpecsFor`. The
+ * service's dispatcher, which answers follow-ups on every repository it
+ * serves, converges the `follow-ups` ones there all the same (#823).
+ *
+ * Conditional on the caller, which is why it is a map rather than a list: the
+ * filing caller is the one file in the loop an adopter can decline (§4), and
+ * labels prescribed to a repository that declined it are labels nothing in it
+ * will ever read.
+ */
+export const ADVISORY_LABELS: Readonly<Record<string, readonly LabelSpec[]>> = {
+  "follow-ups": [
+    {
+      name: "agent:follow-ups",
+      color: "6E7781",
+      description: "This PR's review recorded out-of-scope findings; they are filed on merge.",
+    },
+    { name: "pr-follow-up", color: "D4C5F9", description: "Filed from a merged PR's review by the follow-ups workflow" },
+    { name: "needs-triage", color: "D93F0B", description: "Maintainer needs to evaluate this issue" },
+  ],
+};
+
+/**
+ * Whether two label names name one label. GitHub holds a repository's label
+ * names unique without regard to case, so `Agent:Fix` is `agent:fix`: a
+ * create of one where the other is present is refused, and a lookup by either
+ * finds it.
+ */
+export const sameLabelName = (a: string, b: string): boolean => a.toLowerCase() === b.toLowerCase();
+
 /** What a convergence does to one wanted label: create it, edit it to the list's, or leave it. */
 export type LabelWrite = "create" | "edit" | "unchanged";
 
@@ -80,16 +120,17 @@ export type LabelWrite = "create" | "edit" | "unchanged";
  * writes to each wanted label, in `wanted`'s order: one missing is created,
  * one whose colour (compared without regard to case, since GitHub answers it
  * in lower case whatever it was given) or description differs is edited, and
- * one that matches is left. A label of `present` that is not wanted is never
- * named, so nothing here deletes or renames one.
+ * one that matches is left. A present label is matched to a wanted one by
+ * `sameLabelName`, so one differing only in its name's case is never created
+ * again, and at most edited; its name is left as it is. A label of `present`
+ * that is not wanted is never named, so nothing here deletes or renames one.
  */
 export const labelWrites = (
   wanted: readonly LabelSpec[],
   present: readonly LabelSpec[],
 ): readonly { readonly label: LabelSpec; readonly write: LabelWrite }[] => {
-  const byName = new Map(present.map((label) => [label.name, label]));
   return wanted.map((label) => {
-    const current = byName.get(label.name);
+    const current = present.find((held) => sameLabelName(held.name, label.name));
     if (current === undefined) return { label, write: "create" };
     const same = current.color.toLowerCase() === label.color.toLowerCase() && current.description === label.description;
     return { label, write: same ? "unchanged" : "edit" };

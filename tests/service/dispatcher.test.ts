@@ -3,6 +3,7 @@ import { CI_WAIT_SECONDS } from "../../review/collect-checks.js";
 import {
   appGaps,
   COMMENT_PERMISSIONS,
+  CONVERGED_LABEL_SPECS,
   createDispatcher,
   LABEL_KINDS,
   LABEL_PERMISSIONS,
@@ -11,7 +12,6 @@ import {
   SCAN_PERMISSIONS,
   SERVICE_APP_EVENTS,
   SERVICE_APP_PERMISSIONS,
-  SERVICE_LABEL_SPECS,
   SERVICE_LABELS,
   TOKEN_PERMISSIONS,
   type AppGitHub,
@@ -191,13 +191,14 @@ const setup = (
   const commenting = { fails: false };
   /**
    * Each repository's labels (#823), every one the dispatcher converges
-   * unless a test says otherwise; each label write made, with its token;
-   * the repositories whose labels cannot be listed; and the labels whose
-   * writes GitHub refuses.
+   * unless a test says otherwise; each repository whose labels were listed,
+   * once per listing; each label write made, with its token; the
+   * repositories whose labels cannot be listed; and the labels whose writes
+   * GitHub refuses.
    */
   const repoLabels: Record<string, LabelSpec[]> = {};
-  const labelsOf = (repo: string): LabelSpec[] => (repoLabels[repo] ??= SERVICE_LABEL_SPECS.map((label) => ({ ...label })));
-  const labelling = { unlistable: [] as string[], refused: [] as string[], writes: [] as { repo: string; write: "create" | "edit"; label: LabelSpec; token: string }[] };
+  const labelsOf = (repo: string): LabelSpec[] => (repoLabels[repo] ??= CONVERGED_LABEL_SPECS.map((label) => ({ ...label })));
+  const labelling = { listed: [] as string[], unlistable: [] as string[], refused: [] as string[], writes: [] as { repo: string; write: "create" | "edit"; label: LabelSpec; token: string }[] };
   /** Each commit whose pull requests were read, for a check suite's or a status's delivery. */
   const pullsRead: string[] = [];
   /**
@@ -288,18 +289,23 @@ const setup = (
       comments.push({ repo, number, body, token });
     },
     repoLabels: async (repo) => {
+      labelling.listed.push(repo);
       if (labelling.unlistable.includes(repo)) throw new Error(`reading ${repo}'s labels answered 502`);
       return labelsOf(repo).map((label) => ({ ...label }));
     },
     createLabel: async (repo, label, token) => {
       if (labelling.refused.includes(label.name)) throw new Error(`creating the label \`${label.name}\` on ${repo} answered 403`);
+      // GitHub holds label names unique without regard to case.
+      if (labelsOf(repo).some((held) => held.name.toLowerCase() === label.name.toLowerCase())) {
+        throw new Error(`creating the label \`${label.name}\` on ${repo} answered 422`);
+      }
       labelling.writes.push({ repo, write: "create", label, token });
       labelsOf(repo).push({ ...label });
     },
     editLabel: async (repo, label, token) => {
       if (labelling.refused.includes(label.name)) throw new Error(`editing the label \`${label.name}\` on ${repo} answered 403`);
       labelling.writes.push({ repo, write: "edit", label, token });
-      repoLabels[repo] = labelsOf(repo).map((held) => (held.name === label.name ? { ...label } : held));
+      repoLabels[repo] = labelsOf(repo).map((held) => (held.name.toLowerCase() === label.name.toLowerCase() ? { ...label, name: held.name } : held));
     },
     labels: async (repo, number) => (repo === REPO ? (repository.items.find((item) => item.number === number)?.labels ?? []) : []),
     deliveries: async () => {
@@ -3103,18 +3109,28 @@ const repositoriesAdded = (repos: readonly string[], action = "added") => ({
 
 describe("the scan's labels (#823)", () => {
   const spec = (name: string): LabelSpec => {
-    const found = SERVICE_LABEL_SPECS.find((label) => label.name === name);
+    const found = CONVERGED_LABEL_SPECS.find((label) => label.name === name);
     if (found === undefined) throw new Error(`${name} is not a label the dispatcher converges`);
     return found;
   };
 
-  it("converges every trigger label the service answers and the state labels, from the one list", () => {
-    expect(SERVICE_LABEL_SPECS.map((label) => label.name)).toEqual([IMPLEMENT_LABEL, REVIEW_LABEL, FIX_LABEL, UPDATE_BRANCH_LABEL, MERGE_LABEL, "agent:blocked"]);
+  it("converges every trigger label the service answers, the state labels and the follow-ups labels, from the one list", () => {
+    expect(CONVERGED_LABEL_SPECS.map((label) => label.name)).toEqual([
+      IMPLEMENT_LABEL,
+      REVIEW_LABEL,
+      FIX_LABEL,
+      UPDATE_BRANCH_LABEL,
+      MERGE_LABEL,
+      "agent:blocked",
+      FOLLOW_UPS_LABEL,
+      "pr-follow-up",
+      "needs-triage",
+    ]);
   });
 
   it("creates a wanted label a served repository is missing, with the list's colour and description, through a token minted for label writes", async () => {
     const s = setup();
-    s.repoLabels[REPO] = SERVICE_LABEL_SPECS.filter((label) => label.name !== "agent:blocked").map((label) => ({ ...label }));
+    s.repoLabels[REPO] = CONVERGED_LABEL_SPECS.filter((label) => label.name !== "agent:blocked").map((label) => ({ ...label }));
 
     await s.dispatcher.scan();
 
@@ -3126,7 +3142,7 @@ describe("the scan's labels (#823)", () => {
 
   it("edits a wanted label whose colour or description differs, and leaves one differing only in the colour's case", async () => {
     const s = setup();
-    s.repoLabels[REPO] = SERVICE_LABEL_SPECS.map((label) => {
+    s.repoLabels[REPO] = CONVERGED_LABEL_SPECS.map((label) => {
       if (label.name === REVIEW_LABEL) return { ...label, color: "FFFFFF" };
       if (label.name === FIX_LABEL) return { ...label, description: "an old description" };
       return { ...label, color: label.color.toLowerCase() };
@@ -3161,7 +3177,7 @@ describe("the scan's labels (#823)", () => {
     await s.dispatcher.scan();
 
     expect(s.labelling.writes.every(({ write }) => write === "create")).toBe(true);
-    expect(s.labelling.writes.map(({ label }) => label.name)).toEqual(SERVICE_LABEL_SPECS.map((label) => label.name));
+    expect(s.labelling.writes.map(({ label }) => label.name)).toEqual(CONVERGED_LABEL_SPECS.map((label) => label.name));
     expect(s.repoLabels[REPO]?.slice(0, 2)).toEqual([retired, unknown]);
   });
 
@@ -3172,14 +3188,53 @@ describe("the scan's labels (#823)", () => {
 
     await s.dispatcher.scan();
 
+    expect(s.labelling.listed).toEqual([]);
     expect(s.labelling.writes).toEqual([]);
     expect(s.minted).toEqual([]);
     expect(s.repoLabels[REPO]).toEqual([]);
   });
 
+  it("reads and writes no label of a repository on an installation of a foreign account", async () => {
+    const s = setup();
+    s.installations.accounts["stranger"] = ["stranger/repo"];
+    s.repoLabels["stranger/repo"] = [];
+
+    await s.dispatcher.scan();
+
+    expect(s.labelling.listed).toEqual([REPO]);
+    expect(s.labelling.writes.filter(({ repo }) => repo !== REPO)).toEqual([]);
+  });
+
+  it("creates a missing `pr-follow-up`, so `follow-ups:file` can label its stubs", async () => {
+    const s = setup();
+    s.repoLabels[REPO] = CONVERGED_LABEL_SPECS.filter((label) => label.name !== "pr-follow-up").map((label) => ({ ...label }));
+
+    await s.dispatcher.scan();
+
+    expect(s.labelling.writes).toEqual([{ repo: REPO, write: "create", label: spec("pr-follow-up"), token: "minted-token-1" }]);
+    expect(s.lines).toContain("scan: labels on owner/repo: created `pr-follow-up`");
+  });
+
+  it("counts a present label differing only in its name's case as the wanted one: never created, at most edited, never renamed", async () => {
+    const s = setup();
+    s.repoLabels[REPO] = CONVERGED_LABEL_SPECS.map((label) => {
+      if (label.name === FIX_LABEL) return { ...label, name: "Agent:Fix" };
+      if (label.name === REVIEW_LABEL) return { ...label, name: "AGENT:REVIEW", color: "FFFFFF" };
+      return { ...label };
+    });
+
+    await s.dispatcher.scan();
+    await s.dispatcher.scan();
+
+    expect(s.labelling.writes.map(({ write, label }) => [write, label])).toEqual([["edit", spec(REVIEW_LABEL)]]);
+    expect(s.lines.filter((line) => line.includes("could not be"))).toEqual([]);
+    expect(s.repoLabels[REPO]?.map((label) => label.name)).toContain("Agent:Fix");
+    expect(s.repoLabels[REPO]?.find((label) => label.name === "AGENT:REVIEW")?.color).toBe(spec(REVIEW_LABEL).color);
+  });
+
   it("logs a refused label write naming the repository and the label, and still dispatches the repository's labelled items", async () => {
     const s = setup();
-    s.repoLabels[REPO] = SERVICE_LABEL_SPECS.filter((label) => label.name !== "agent:blocked" && label.name !== REVIEW_LABEL).map((label) => ({ ...label }));
+    s.repoLabels[REPO] = CONVERGED_LABEL_SPECS.filter((label) => label.name !== "agent:blocked" && label.name !== REVIEW_LABEL).map((label) => ({ ...label }));
     s.labelling.refused = ["agent:blocked"];
     s.repository.items = [pullItem([REVIEW_LABEL])];
 
@@ -3219,6 +3274,7 @@ describe("the scan's labels (#823)", () => {
 
     expect(result.status).toBe(202);
     expect(result.outcome).toBe("scanned: `installation_repositories` `added` added repositories");
+    expect(s.labelling.listed).not.toContain("owner/new");
     expect(s.repoLabels["owner/new"]).toEqual([]);
     expect(s.lines).toContain(`scan: refused on owner/new: ${ORCHESTRATOR_VARIABLE} is unset, not \`${SERVICE_ORCHESTRATOR}\``);
   });
@@ -3230,7 +3286,7 @@ describe("the scan's labels (#823)", () => {
     const result = await deliver(s, repositoriesAdded([REPO]), undefined, "installation_repositories");
 
     expect(result.outcome).toMatch(/^scanned: /);
-    expect(s.labelling.writes.map(({ repo, write, label }) => [repo, write, label.name])).toEqual(SERVICE_LABEL_SPECS.map((label) => [REPO, "create", label.name]));
+    expect(s.labelling.writes.map(({ repo, write, label }) => [repo, write, label.name])).toEqual(CONVERGED_LABEL_SPECS.map((label) => [REPO, "create", label.name]));
   });
 
   it("scans on the App's installation, and on nothing that removes a repository", async () => {
@@ -3244,6 +3300,6 @@ describe("the scan's labels (#823)", () => {
     expect(s.labelling.writes).toEqual([]);
 
     expect((await deliver(s, { action: "created", repositories: [{ full_name: REPO }] }, undefined, "installation")).outcome).toMatch(/^scanned: /);
-    expect(s.labelling.writes).toHaveLength(SERVICE_LABEL_SPECS.length);
+    expect(s.labelling.writes).toHaveLength(CONVERGED_LABEL_SPECS.length);
   });
 });

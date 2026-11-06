@@ -25,7 +25,15 @@ import {
 } from "./policies.js";
 import type { LabelSurface } from "./labels.js";
 import { DISPATCHER } from "../service/settings.js";
-import { labelWrites, RETIRED_LABELS, STATE_LABELS, TRIGGER_LABELS, type LabelSpec } from "../shared/loop-labels.js";
+import {
+  ADVISORY_LABELS,
+  labelWrites,
+  RETIRED_LABELS,
+  sameLabelName,
+  STATE_LABELS,
+  TRIGGER_LABELS,
+  type LabelSpec,
+} from "../shared/loop-labels.js";
 import {
   appManifest,
   appSettingsUrl,
@@ -114,7 +122,7 @@ const CALLER_PREFIX = "agent-";
  * `init`, `doctor` and the service's dispatcher read, re-exported here for the
  * install path's callers.
  */
-export { RETIRED_LABELS, STATE_LABELS, TRIGGER_LABELS, type LabelSpec } from "../shared/loop-labels.js";
+export { ADVISORY_LABELS, RETIRED_LABELS, STATE_LABELS, TRIGGER_LABELS, type LabelSpec } from "../shared/loop-labels.js";
 
 /**
  * `labelCommand` with `--force`, which creates the label or, where it exists,
@@ -144,36 +152,6 @@ export const labelSpecsFor = (workflows: readonly string[]): readonly LabelSpec[
   ),
   ...STATE_LABELS,
 ];
-
-/**
- * The labels `doctor` **does not demand**, keyed by the workflow that wants
- * them — every block `docs/ADOPTING.md` §3 prints after its first.
- *
- * Separate from the two tables above because the two halves that read them want
- * opposite things. `SETUP.md` should name every label the callers it just
- * installed will reach for, or an adopter gets a live feature whose only signal
- * is a `::warning::` inside a green run — the filing half marks nothing, files
- * its stubs unlabelled, and the next merge cannot see them. `doctor` should
- * *not* fail over them: none stops a loop a repository is actually running, and
- * a preflight that errors on a correctly-installed one is a preflight people
- * learn to skip. So these reach `renderSetup` and never `labelSpecsFor`.
- *
- * Conditional on the caller, which is why it is a map rather than a list: the
- * filing caller is the one file in the loop an adopter can decline (§4), and
- * labels prescribed to a repository that declined it are labels nothing in it
- * will ever read.
- */
-export const ADVISORY_LABELS: Readonly<Record<string, readonly LabelSpec[]>> = {
-  "follow-ups": [
-    {
-      name: "agent:follow-ups",
-      color: "6E7781",
-      description: "This PR's review recorded out-of-scope findings; they are filed on merge.",
-    },
-    { name: "pr-follow-up", color: "D4C5F9", description: "Filed from a merged PR's review by the follow-ups workflow" },
-    { name: "needs-triage", color: "D93F0B", description: "Maintainer needs to evaluate this issue" },
-  ],
-};
 
 /** Those of them an installation of exactly these workflows should be told about. */
 export const advisoryLabelSpecsFor = (workflows: readonly string[]): readonly LabelSpec[] =>
@@ -866,7 +844,6 @@ const convergeLabels = (workflows: readonly string[], github: LabelSurface): rea
     ];
   }
 
-  const names = new Set(present.map((label) => label.name));
   const changes: InitChange[] = labelWrites(wanted, present).map(({ label, write }): InitChange => {
     const file = labelChange(label.name);
     if (write === "unchanged") return { file, action: "unchanged" };
@@ -887,7 +864,7 @@ const convergeLabels = (workflows: readonly string[], github: LabelSurface): rea
   });
 
   for (const name of RETIRED_LABELS) {
-    if (!names.has(name)) continue;
+    if (!present.some((label) => sameLabelName(label.name, name))) continue;
     const file = labelChange(name);
     const carriers = github.carriers(name);
     if (carriers === undefined) {

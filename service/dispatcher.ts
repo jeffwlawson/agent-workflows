@@ -12,7 +12,7 @@ import {
   SERVICE_ORCHESTRATOR,
   UPDATE_BRANCH_LABEL,
 } from "../shared/record.js";
-import { labelWrites, STATE_LABELS, TRIGGER_LABELS, type LabelSpec } from "../shared/loop-labels.js";
+import { ADVISORY_LABELS, labelWrites, STATE_LABELS, TRIGGER_LABELS, type LabelSpec } from "../shared/loop-labels.js";
 import { newestResumeNote } from "../shared/usage-limit.js";
 import type { DispatcherState, StateStore } from "./dispatcher-state.js";
 import {
@@ -386,15 +386,24 @@ export const LABEL_KINDS: {
 export const SERVICE_LABELS: readonly string[] = Object.values(LABEL_KINDS).flatMap((kinds) => Object.keys(kinds));
 
 /**
- * The labels the dispatcher converges on every repository it serves (#823),
- * and the ones `doctor` demands of a repository on the service: every trigger
- * label the service answers, and the state labels, from the one list `init`
- * converges too.
+ * The labels `doctor` demands of a repository on the service (#823): every
+ * trigger label the service answers, and the state labels, from the one list
+ * `init` converges too.
  */
 export const SERVICE_LABEL_SPECS: readonly LabelSpec[] = [
   ...TRIGGER_LABELS.filter((label) => SERVICE_LABELS.includes(label.name)),
   ...STATE_LABELS,
 ];
+
+/**
+ * The labels the dispatcher converges on every repository it serves (#823):
+ * `SERVICE_LABEL_SPECS`, and the follow-ups labels `init` advises
+ * (`agent:follow-ups`, `pr-follow-up` and `needs-triage`), since the service
+ * answers follow-ups everywhere, and without them `follow-ups:file` files
+ * its stubs unlabelled, where the next merge's duplicate check cannot see
+ * them. `doctor` still only advises the second half.
+ */
+export const CONVERGED_LABEL_SPECS: readonly LabelSpec[] = [...SERVICE_LABEL_SPECS, ...(ADVISORY_LABELS["follow-ups"] ?? [])];
 
 /**
  * The trigger labels a scan lists on open items (#581): every one but
@@ -1504,7 +1513,7 @@ export const createDispatcher = (edges: DispatcherEdges) => {
 
   /**
    * **The loop's labels on `repo`** (#823), converged as `init` converges
-   * them: listed once, each of `SERVICE_LABEL_SPECS` missing created and each
+   * them: listed once, each of `CONVERGED_LABEL_SPECS` missing created and each
    * whose colour or description differs edited, with a token minted for the
    * writes alone, and only where there is one to make. A label of any other
    * name, a retired one included, is never touched: deleting one strips it off
@@ -1521,7 +1530,7 @@ export const createDispatcher = (edges: DispatcherEdges) => {
     }
     let writer: Promise<string> | undefined;
     const token = (): Promise<string> => (writer ??= edges.github.mint(repo, LABEL_PERMISSIONS).then((grant) => grant.token));
-    for (const { label, write } of labelWrites(SERVICE_LABEL_SPECS, present)) {
+    for (const { label, write } of labelWrites(CONVERGED_LABEL_SPECS, present)) {
       if (write === "unchanged") continue;
       const verb = write === "create" ? "created" : "edited";
       try {

@@ -9,7 +9,13 @@ import { SUBCOMMANDS, type CliIo } from "../cli.js";
 import { place as placeRedCheck } from "../review/red-check-place.js";
 import { gate } from "../review/gate.js";
 import { publish } from "../review/publish.js";
-import { SERVICE_APP_EVENTS, SERVICE_APP_PERMISSIONS, SERVICE_LABEL_SPECS, SERVICE_LABELS } from "../service/dispatcher.js";
+import {
+  CONVERGED_LABEL_SPECS,
+  SERVICE_APP_EVENTS,
+  SERVICE_APP_PERMISSIONS,
+  SERVICE_LABEL_SPECS,
+  SERVICE_LABELS,
+} from "../service/dispatcher.js";
 import { serveDispatcher, serveWorker } from "../service/serve.js";
 import { SERVICE } from "../service/settings.js";
 import { COMMANDS, RUNNERS } from "../shared/contract.js";
@@ -2933,7 +2939,10 @@ describe("init converges the labels the loop owns", () => {
 
   /**
    * GitHub, as far as this step talks to it: a label list that a write really
-   * changes, so a second run reads what the first one left.
+   * changes, so a second run reads what the first one left. Label names are
+   * unique without regard to case, as GitHub holds them: a create of one
+   * already there in another case is refused, and an edit or a delete by
+   * either case finds it, an edit keeping the name as it was.
    */
   const github = (start: readonly RepoLabel[], carriers: Readonly<Record<string, readonly number[] | undefined>> = {}) => {
     let labels = [...start];
@@ -2943,17 +2952,20 @@ describe("init converges the labels the loop owns", () => {
       carriers: (name) => (name in carriers ? carriers[name] : []),
       create: (label) => {
         sent.push(`create ${label.name}`);
+        if (labels.some((l) => l.name.toLowerCase() === label.name.toLowerCase())) return "HTTP 422: already_exists";
         labels = [...labels, { ...label, color: label.color.toLowerCase() }];
         return undefined;
       },
       edit: (label) => {
         sent.push(`edit ${label.name}`);
-        labels = labels.map((l) => (l.name === label.name ? { ...label, color: label.color.toLowerCase() } : l));
+        labels = labels.map((l) =>
+          l.name.toLowerCase() === label.name.toLowerCase() ? { ...label, name: l.name, color: label.color.toLowerCase() } : l,
+        );
         return undefined;
       },
       remove: (name) => {
         sent.push(`delete ${name}`);
-        labels = labels.filter((l) => l.name !== name);
+        labels = labels.filter((l) => l.name.toLowerCase() !== name.toLowerCase());
         return undefined;
       },
     };
@@ -3037,6 +3049,27 @@ describe("init converges the labels the loop owns", () => {
 
     expect(changes.find((c) => c.file === 'label "agent:fix"')?.action).toBe("created");
     expect(sent).toContain("create agent:fix");
+  });
+
+  /**
+   * GitHub label names are case-insensitive, so `Agent:Fix` is `agent:fix`:
+   * creating it again is refused every run, so it is edited at most, and its
+   * name left as it is. A retired label in another case is the retired label.
+   */
+  it("counts a label differing only in its name's case as the one it names", async () => {
+    const root = adopted();
+    const { surface, sent, now } = github([
+      ...OLD.map((label) => (label.name === "agent:fix" ? { ...label, name: "Agent:Fix" } : label)),
+      { name: "Agent:Queued", color: "ededed", description: "" },
+    ]);
+
+    const changes = await init({ dir: root, app: noApp, github: offline, labels: surface });
+
+    expect(changes.find((c) => c.file === 'label "agent:fix"')?.action).toBe("updated");
+    expect(sent).not.toContain("create agent:fix");
+    expect(now().map((l) => l.name)).toContain("Agent:Fix");
+    expect(changes.find((c) => c.file === 'label "agent:queued"')?.action).toBe("deleted");
+    expect(now().map((l) => l.name)).not.toContain("Agent:Queued");
   });
 
   /**
@@ -4746,14 +4779,18 @@ describe("doctor names the failures that otherwise look like something else", ()
       ]);
     });
 
-    // #823: the dispatcher converges, on every repository it serves, exactly
-    // the labels `doctor` demands of one, with the same colours and descriptions.
-    it("demands of a service-served repository the labels the dispatcher converges there, and no other", () => {
+    // #823: the dispatcher converges, on every repository it serves, the
+    // labels `doctor` demands of one and the follow-ups labels `doctor` only
+    // advises, with the same colours and descriptions.
+    it("demands of a service-served repository the labels the dispatcher converges there, but the follow-ups ones it only advises", () => {
       const unread = rule(empty(), service({ labels: undefined })).find((finding) => finding.check === "labels");
-      expect(unread?.fix).toBe(`Create them by hand:\n       ${SERVICE_LABEL_SPECS.map(labelCommand).join("\n       ")}`);
+      const demanded = SERVICE_LABEL_SPECS.map(labelCommand);
+      expect(unread?.fix).toBe(`Create them by hand:\n       ${demanded.join("\n       ")}`);
 
       const absent = rule(empty(), service({ labels: [] })).find((finding) => finding.check === "labels");
-      expect(absent?.fix).toBe(SERVICE_LABEL_SPECS.map(labelCommand).join("\n       "));
+      expect(absent?.fix).toBe(demanded.join("\n       "));
+
+      expect(CONVERGED_LABEL_SPECS).toEqual([...SERVICE_LABEL_SPECS, ...(ADVISORY_LABELS["follow-ups"] ?? [])]);
     });
 
     /**

@@ -817,8 +817,11 @@ once the queued ones are dropped, the ones that had started, so they end normall
 The dispatcher also writes the record in one place beside its stopped comment: each scan's pass,
 and an `installation` or `installation_repositories` event that adds repositories, **converges the
 loop's labels** (#823) on each repository it serves, before that repository's labelled items are
-read: every trigger label the service answers and the state labels (`SERVICE_LABEL_SPECS`), from
-`shared/loop-labels.ts`, the one list `init` and `doctor` read too. A missing one is created and one
+read: every trigger label the service answers and the state labels (`SERVICE_LABEL_SPECS`, the ones
+`doctor` demands there), and the follow-ups labels `agent:follow-ups`, `pr-follow-up` and
+`needs-triage` (`ADVISORY_LABELS["follow-ups"]`, which `doctor` only advises), together
+`CONVERGED_LABEL_SPECS`, from `shared/loop-labels.ts`, the one list `init` and `doctor` read too. A
+present label is matched by name without regard to case, as GitHub matches it. A missing one is created and one
 whose colour or description differs edited, with a token minted for the writes alone; none is ever
 deleted or renamed, retired ones included, which stays `init`'s and `doctor`'s. A refused list or
 write is logged and tried again next pass, and stops nothing. So a release that adds or recolours a

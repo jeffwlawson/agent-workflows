@@ -15,6 +15,48 @@ import { SANDBOX, type Inputs } from "../shared/contract.js";
 
 const REQUIRED = { required: true } as const;
 
+/** A setting that is optional, and empty where unset. */
+const UNSET = { required: false, default: "" } as const;
+
+/**
+ * **The names a fleet default may take** (#824): every repository variable
+ * the service reads (`REPOSITORY_VARIABLES` in `job.ts`) but the repository's
+ * own scripts, `AGENT_SETUP` and `AGENT_VERIFY`. Held equal to that list, less
+ * those two, by `tests/service/settings.test.ts`, so a release that adds a
+ * repository variable adds it here, and to the deployment guide's list.
+ */
+export const FLEET_DEFAULTS = [
+  "AGENT_MODEL",
+  "AGENT_MODEL_REVIEW",
+  "AGENT_MODEL_FIX",
+  "AGENT_MODEL_UPDATE_BRANCH",
+  "AGENT_MODEL_IMPLEMENT",
+  "AGENT_MODEL_IMPLEMENT_PRD",
+  "AGENT_EFFORT",
+  "AGENT_EFFORT_REVIEW",
+  "AGENT_EFFORT_FIX",
+  "AGENT_EFFORT_UPDATE_BRANCH",
+  "AGENT_EFFORT_IMPLEMENT",
+  "AGENT_EFFORT_IMPLEMENT_PRD",
+  "AGENT_PROMPT_CACHE_TTL",
+  "AGENT_REVIEW_TIMEOUT_MINUTES",
+  "AGENT_TIMEOUT_MINUTES",
+  "AGENT_MAX_FIX_ROUNDS",
+  "AGENT_FIX_MIN_SEVERITY",
+] as const;
+
+export type FleetDefault = (typeof FLEET_DEFAULTS)[number];
+
+/**
+ * The repository variables that are the repository's alone, each with why,
+ * which the dispatcher refuses to start holding (#824).
+ */
+export const REPOSITORY_ONLY = {
+  AGENT_ORCHESTRATOR: "it is the repository's opt-in to the service",
+  AGENT_SETUP: "it is the repository's own setup script, which only its admin sets",
+  AGENT_VERIFY: "it is the repository's own verify command, which only its admin sets",
+} as const;
+
 /**
  * **The dispatcher's settings** (#456). It is the only holder of the GitHub
  * App's key, so everything it reads is about the App, the two doors it opens
@@ -73,6 +115,12 @@ const REQUIRED = { required: true } as const;
  *   (a full disk, a read-only mount, no permission) warns, and the state is
  *   held in memory until a write succeeds (#806); any other error is refused
  *   at start. One dispatcher per file.
+ * - **Fleet defaults** (#824): each name of `FLEET_DEFAULTS`, which a job's
+ *   variable of that name takes where the repository has no such variable.
+ *   Empty is none. Passed on as the repository's own would have been, so the
+ *   checks that run on a repository's value run on it.
+ * - `AGENT_ORCHESTRATOR`, `AGENT_SETUP` and `AGENT_VERIFY`: read only to be
+ *   refused at start (`REPOSITORY_ONLY`), since each is the repository's alone.
  */
 export const DISPATCHER = {
   GITHUB_APP_ID: REQUIRED,
@@ -92,6 +140,26 @@ export const DISPATCHER = {
   REDELIVERY_INTERVAL_MINUTES: { required: false, default: "5" },
   REDELIVERY_WINDOW_MINUTES: { required: false, default: "30" },
   STATE_FILE: { required: false, default: "" },
+  AGENT_MODEL: UNSET,
+  AGENT_MODEL_REVIEW: UNSET,
+  AGENT_MODEL_FIX: UNSET,
+  AGENT_MODEL_UPDATE_BRANCH: UNSET,
+  AGENT_MODEL_IMPLEMENT: UNSET,
+  AGENT_MODEL_IMPLEMENT_PRD: UNSET,
+  AGENT_EFFORT: UNSET,
+  AGENT_EFFORT_REVIEW: UNSET,
+  AGENT_EFFORT_FIX: UNSET,
+  AGENT_EFFORT_UPDATE_BRANCH: UNSET,
+  AGENT_EFFORT_IMPLEMENT: UNSET,
+  AGENT_EFFORT_IMPLEMENT_PRD: UNSET,
+  AGENT_PROMPT_CACHE_TTL: UNSET,
+  AGENT_REVIEW_TIMEOUT_MINUTES: UNSET,
+  AGENT_TIMEOUT_MINUTES: UNSET,
+  AGENT_MAX_FIX_ROUNDS: UNSET,
+  AGENT_FIX_MIN_SEVERITY: UNSET,
+  AGENT_ORCHESTRATOR: UNSET,
+  AGENT_SETUP: UNSET,
+  AGENT_VERIFY: UNSET,
 } as const satisfies Inputs;
 
 /**

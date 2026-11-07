@@ -8,7 +8,7 @@ import { liveStateFiles, openState } from "./dispatcher-state.js";
 import { appGaps, createDispatcher, parseOwners, type AppRecord, type DoorRequest, type DoorResponse } from "./dispatcher.js";
 import { liveAppGitHub } from "./github-app.js";
 import type { Job } from "./job.js";
-import type { DISPATCHER, WORKER } from "./settings.js";
+import { FLEET_DEFAULTS, REPOSITORY_ONLY, type DISPATCHER, type WORKER } from "./settings.js";
 import { admit, heldDoor, jobDoor, lanes, runJob, SUMMARY_FILE } from "./worker.js";
 import { announceStart, installCli, liveGit, liveLauncher, liveSandbox, liveTokens, routeThroughProxy } from "./worker-live.js";
 
@@ -113,6 +113,14 @@ export const serveDispatcher = async (
   if (redeliveryWindow === 0) {
     throw new Error("`REDELIVERY_WINDOW_MINUTES` is `0`, a window no failed delivery is inside. It must be at least 1; `REDELIVERY_INTERVAL_MINUTES=0` turns the poll off.");
   }
+  // A repository's own variable is never a fleet default (#824): refused by
+  // name, as any bad setting is. An empty one is unset, so not refused.
+  for (const [name, why] of Object.entries(REPOSITORY_ONLY)) {
+    if (settings[name as keyof typeof REPOSITORY_ONLY] !== "") {
+      throw new Error(`\`${name}\` is set, and cannot be a fleet default: ${why}. Set it as the repository's own variable instead.`);
+    }
+  }
+  const fleetDefaults = Object.fromEntries(FLEET_DEFAULTS.flatMap((name) => (settings[name] === "" ? [] : [[name, settings[name]] as const])));
   // Opened before anything else is read, so a file that cannot be written for
   // now (a full disk, a read-only mount, no permission) is warned of and kept
   // in memory until it can (#806), and any other error is refused at once
@@ -160,6 +168,7 @@ export const serveDispatcher = async (
     mergedWindowDays,
     redeliveryWindowMinutes: redeliveryWindow,
     version: VERSION,
+    fleetDefaults,
     ...(state === undefined ? {} : { state }),
   });
 
@@ -199,6 +208,9 @@ export const serveDispatcher = async (
       `tokens at http://${settings.TOKEN_HOST}:${tokenPort}/token; jobs to ${settings.WORKER_URL}; ` +
       `serving installations on ${owners.join(", ")}; instance ${dispatcher.instance}`,
   );
+  // The names only: a fleet default's value is not logged (#824).
+  const held = Object.keys(fleetDefaults);
+  log(held.length === 0 ? "fleet defaults: none" : `fleet defaults: ${held.join(", ")}, for a repository without its own variable of the name`);
   // A restart strands no labelled work (#581): what nothing holds a job for is dispatched again.
   log("scanning for labelled work nothing holds a job for");
   const scan = (): Promise<void> =>

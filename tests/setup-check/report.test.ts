@@ -73,6 +73,9 @@ const INPUTS = (over: Partial<Inputs> = {}): Inputs => ({
   TIMEOUT_MINUTES: "30",
   CHECKOUT_RESULT: "passed",
   CHECKOUT_REASON: "",
+  TOOLCHAIN_RESULT: "skipped",
+  TOOLCHAIN_EXIT: "",
+  TOOLCHAIN_OUTPUT: "",
   SETUP_RESULT: "passed",
   SETUP_EXIT: "",
   SETUP_OUTPUT: "",
@@ -119,6 +122,7 @@ describe("setup-check:report says how each step of a setup check ended", () => {
         `**\`agent:setup-check\` passed:** the setup and the verify command passed on \`main\` at ${sha}, in the sandbox. No agent was started.`,
         "",
         `- **Checkout** of \`main\`: passed, at ${sha}.`,
+        "- **Toolchain** (`mise.toml`): skipped: the repository has no `mise.toml` at its root, so the box's own tools were used.",
         "- **Setup** (`AGENT_SETUP`): passed.",
         "- **Verify** (`AGENT_VERIFY`): passed.",
         "",
@@ -184,6 +188,7 @@ describe("setup-check:report says how each step of a setup check ended", () => {
         CHECKOUT: "",
         CHECKOUT_RESULT: "failed",
         CHECKOUT_REASON: "`main` could not be checked out: remote: Repository not found.",
+        TOOLCHAIN_RESULT: "not-run",
         SETUP_RESULT: "not-run",
         VERIFY_RESULT: "not-run",
       }),
@@ -192,6 +197,7 @@ describe("setup-check:report says how each step of a setup check ended", () => {
     const body = posted();
     expect(body).toMatch(/^\*\*`agent:setup-check` failed:\*\* `main` could not be checked out, so neither the setup nor the verify command ran\./);
     expect(body).toContain("- **Checkout** of `main`: failed. Why:\n\n  ```\n  `main` could not be checked out: remote: Repository not found.\n  ```");
+    expect(body).toContain("- **Toolchain** (`mise.toml`): not run, since the checkout did not finish.");
     expect(body).toContain("- **Setup** (`AGENT_SETUP`): not run, since the checkout did not finish.");
     expect(body).toContain("- **Verify** (`AGENT_VERIFY`): not run, since the checkout did not finish.");
     expect(github.issueLabels.get(ISSUE)).toEqual([]);
@@ -278,5 +284,62 @@ describe("setup-check:report says how each step of a setup check ended", () => {
     expect(github.comments).toEqual([]);
     expect(github.issueLabels.get(ISSUE)).toEqual([]);
     expect(logged.some((line) => line.startsWith("::warning::") && line.includes(`#${ISSUE}`))).toBe(true);
+  });
+});
+
+describe("setup-check:report's toolchain row (#822)", () => {
+  /** The report's lines, from its first step's on. */
+  const steps = (body: string): string[] => body.split("\n").filter((line) => line.startsWith("- **"));
+
+  it("puts the toolchain row after the checkout and before the setup", async () => {
+    await run(INPUTS({ TOOLCHAIN_RESULT: "passed" }));
+
+    expect(steps(posted()).map((line) => /^- \*\*(\w+)\*\*/.exec(line)?.[1])).toEqual(["Checkout", "Toolchain", "Setup", "Verify"]);
+  });
+
+  it("says a toolchain that installed passed, and the check passed", async () => {
+    await run(INPUTS({ TOOLCHAIN_RESULT: "passed" }));
+
+    const body = posted();
+    expect(body).toMatch(/^\*\*`agent:setup-check` passed:\*\*/);
+    expect(body).toContain("- **Toolchain** (`mise.toml`): passed: `mise install` installed what it asks for.");
+  });
+
+  it("says the toolchain was skipped where the repository has no mise.toml, and the check goes on", async () => {
+    await run(INPUTS({ TOOLCHAIN_RESULT: "skipped" }));
+
+    const body = posted();
+    expect(body).toMatch(/^\*\*`agent:setup-check` passed:\*\*/);
+    expect(body).toContain("- **Toolchain** (`mise.toml`): skipped: the repository has no `mise.toml` at its root, so the box's own tools were used.");
+  });
+
+  it("gives a failed toolchain's exit code and the end of its output, and marks setup and verify as not run, and why", async () => {
+    await run(
+      INPUTS({ TOOLCHAIN_RESULT: "failed", TOOLCHAIN_EXIT: "1", TOOLCHAIN_OUTPUT: "mise ERROR python@9.9 not found", SETUP_RESULT: "not-run", VERIFY_RESULT: "not-run" }),
+    );
+
+    const body = posted();
+    expect(body).toMatch(/^\*\*`agent:setup-check` failed:\*\* the toolchain `mise\.toml` asks for \(`mise install`\) failed on `main` at [0-9a-f]{40}, in the sandbox, so neither the setup nor the verify command ran\./);
+    expect(body).toContain("- **Toolchain** (`mise.toml`): failed: `mise install` exited with code 1. The end of its output:\n\n  ```\n  mise ERROR python@9.9 not found\n  ```");
+    expect(body).toContain("- **Setup** (`AGENT_SETUP`): not run, since the toolchain `mise.toml` asks for failed to install.");
+    expect(body).toContain("- **Verify** (`AGENT_VERIFY`): not run, since the toolchain `mise.toml` asks for failed to install.");
+  });
+
+  it("says a toolchain that could not be started could not, with why", async () => {
+    const why = "The toolchain `mise.toml` asks for (`mise install`) could not be installed: `/usr/local/bin/mise` is missing from the agent box. Re-run `install-box.sh` on the agent box to install mise.";
+    await run(INPUTS({ TOOLCHAIN_RESULT: "failed", TOOLCHAIN_OUTPUT: why, SETUP_RESULT: "not-run", VERIFY_RESULT: "not-run" }));
+
+    expect(posted()).toContain("- **Toolchain** (`mise.toml`): failed: `mise install` could not be started. The end of its output:");
+    expect(posted()).toContain("install-box.sh");
+  });
+
+  it("says a toolchain that ran out of time did not finish, naming the limit, and marks setup and verify as not run, and why", async () => {
+    await run(INPUTS({ TOOLCHAIN_RESULT: "timed-out", SETUP_RESULT: "not-run", VERIFY_RESULT: "not-run" }));
+
+    const body = posted();
+    expect(body).toMatch(/^\*\*`agent:setup-check` timed out:\*\* the toolchain `mise\.toml` asks for \(`mise install`\) did not finish on/);
+    expect(body).toContain("- **Toolchain** (`mise.toml`): timed out: `mise install` did not finish within its time limit, 30 minutes.");
+    expect(body).toContain("- **Setup** (`AGENT_SETUP`): not run, since the toolchain `mise.toml` asks for timed out.");
+    expect(body).toContain("- **Verify** (`AGENT_VERIFY`): not run, since the toolchain `mise.toml` asks for timed out.");
   });
 });

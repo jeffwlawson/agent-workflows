@@ -58,7 +58,12 @@ Whatever the machine, the service needs:
 agent, so what is installed on it is one set, installed once, not one per repository. The base
 `deploy/unraid/install-box.sh` installs includes `python3-venv`, so a Python repository's setup can
 build a virtualenv in the checkout (`python3 -m venv .venv`; the system Python refuses installs, and
-has no `pip`); `check-box.sh` fails on a box without it. A repository's runtime versions, extra
+has no `pip`); `check-box.sh` fails on a box without it. The base includes **mise** too, at
+`/usr/local/bin/mise`, pinned by `MISE_VERSION` in `agent-service.conf` (default in
+`install-box.sh`), downloaded from mise's GitHub release and checked against that release's
+`SHASUMS256.txt` before it is installed, and skipped where that version is already there;
+`check-box.sh` fails where it is missing or at another version. It installs a repository's own
+Node or Python in each job ([*The toolchain*](#the-toolchain-misetoml)). A repository's runtime versions, extra
 system packages and registry hosts are not the base: [`docs/multi-repo.md`](./multi-repo.md) and
 [ADR 0012](./adr/0012-the-box-is-the-version-a-repository-holds-configuration.md) say where they go,
 and three settings in `agent-service.conf`, the operator's, hold what the box adds for them, each
@@ -68,7 +73,10 @@ serving every repository on the box:
   repository whose packages build against it.
 - **`EGRESS_PRESETS`**: named sets of hosts let through the proxy, so a language is turned on and
   not a list of hosts. `EGRESS_PRESETS="python"` lets a Python repository's packages through
-  (`pypi.org` and `files.pythonhosted.org`). An unknown name is refused.
+  (`pypi.org` and `files.pythonhosted.org`); `EGRESS_PRESETS="node"` lets `nodejs.org` through,
+  where mise downloads a Node a repository's `mise.toml` asks for. An unknown name is refused.
+  The base list already holds `mise-versions.jdx.dev`, mise's version list, since mise is part of
+  every box, and GitHub's release hosts, where Python's prebuilt builds come from.
 - **`EGRESS_EXTRA_HOSTS`**: host names let through as exact matches, for what no preset covers. A
   value that is not a plain host name (a scheme, a port, a path, a wildcard) is refused.
 
@@ -898,9 +906,46 @@ there, so none of it comes back as the agent's work; setup sees the checkout at
 `/home/agent/workspace` too (#526). So a Python virtual environment, whose scripts name its path,
 works for the agent as `node_modules` does.
 
-**`node-version-file` is not supported.** The sandbox runs the agent box's own Node, the one
-`AGENT_SANDBOX_RO_BINDS` and `AGENT_SANDBOX_PATH` give it. A repository that needs another
-toolchain stays on Actions for now.
+### The toolchain (`mise.toml`)
+
+`node-version-file` is not read on the service: without a `mise.toml`, the sandbox runs the agent
+box's own Node and Python, the ones `/usr`, `AGENT_SANDBOX_RO_BINDS` and `AGENT_SANDBOX_PATH` give
+it, one set for every repository on the box. **A repository that needs another Node or Python asks
+for it in a `mise.toml` at its root** (`.mise.toml` works too), and the worker installs it in each
+job (#822):
+
+```toml
+[tools]
+python = "3.12"
+node = "22"
+```
+
+Every job that runs the setup (fix, update-branch on a conflict, implement, implement-prd and the
+setup check) runs a **`toolchain`** phase right before it: `mise install`, with the box's mise, in
+the sandbox the setup gets, in the checkout at the agent's path, with no token and the proxy its
+only way out, under the setup's own time limit. It is logged to the run's `logs/toolchain.log`
+and named in the run's summary. mise's data directory is `.agent-toolchain` in the checkout,
+which the worker first makes git ignore (the checkout's `.git/info/exclude`), so nothing the agent
+commits or the worker pushes carries it, and it goes with the checkout: **nothing is kept between
+jobs**, each downloads what it asks for again (ADR 0012). The checkout is trusted for that one run
+through mise's environment, with no prompt, and no trust is written anywhere.
+
+Once it passed, the installed tools' `bin` directories, as `mise bin-paths` reports them and only
+those inside `.agent-toolchain`, come first on the `PATH` of the setup, the verify command and the
+agent. **Only the tools reach them**: not the file's `[env]`, its tasks or its hooks, though
+`mise install` itself runs any install hooks the file has, in the sandbox, as a pull request's
+setup already runs that pull request's code. mise reads whatever else it reads once triggered,
+`.tool-versions` included, but a `mise.toml` is what to write. Python is a prebuilt build, so it
+needs no compiler.
+
+Without a `mise.toml` the phase is noted as skipped, no sandbox is started, and the job runs as it
+did. A failed or timed-out install ends the job as a failed setup does, with the setup not run: the
+failure names `mise.toml` and quotes the end of mise's output. A box with no `/usr/local/bin/mise`
+says so and to re-run `install-box.sh`.
+
+**The proxy** must let mise's downloads through: `mise-versions.jdx.dev` is on the base list, and
+Python's builds come from GitHub's release hosts, also on it; Node needs `EGRESS_PRESETS="node"`.
+Another host mise is refused shows in tinyproxy's log; add it with `EGRESS_EXTRA_HOSTS`.
 
 ### The setup check
 
@@ -920,14 +965,16 @@ the command the repository's `CLAUDE.md` names as its gate, say `npm run verify`
 (`gh variable set AGENT_VERIFY --body "npm run verify"`) and handed to the sandbox's shell
 through the environment as written, exactly as `AGENT_SETUP` is. Only the setup check reads it.
 
-**What it does:** checks the default branch out at its head with a `read` token; runs `AGENT_SETUP`,
-skipped where unset; where that passed or was skipped, runs `AGENT_VERIFY` the same way, as a phase
+**What it does:** checks the default branch out at its head with a `read` token; runs the
+toolchain phase, `mise install` where the repository has a `mise.toml`
+([*The toolchain*](#the-toolchain-misetoml)), skipped where it has none; where that passed or was
+skipped, runs `AGENT_SETUP`, skipped where unset; where that passed or was skipped, runs `AGENT_VERIFY` the same way, as a phase
 of its own, logged to the run's `logs/verify.log`; then posts **one comment on the issue** saying
-how each of the three ended: passed; failed, with its exit code and the end of its output; skipped,
-and why (`AGENT_SETUP` unset, or `AGENT_VERIFY` unset, which names the variable and how to set it,
+how each step ended: passed; failed, with its exit code and the end of its output; skipped,
+and why (no `mise.toml`, `AGENT_SETUP` unset, or `AGENT_VERIFY` unset, which names the variable and how to set it,
 and stops the check after the setup); not run, since a step before it did not pass; or timed out.
 The comment names the commit checked, and the label then comes off, so it is on exactly while the
-check runs. A comment GitHub refuses still takes the label off. The three steps share the agent's
+check runs. A comment GitHub refuses still takes the label off. The steps share the agent's
 job's time limit, `AGENT_TIMEOUT_MINUTES`, since they are what that job runs before its agent; the
 report gets 5 minutes of its own. It runs in the worker's agent lane for its whole run, as an
 implement job does, though it starts no agent: a setup and a verify command can take as long as an

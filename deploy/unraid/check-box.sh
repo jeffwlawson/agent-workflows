@@ -37,15 +37,22 @@ BOX_IP=${BOX_IP:-192.168.250.11}
 TOKEN_PORT=${TOKEN_PORT:-8791}
 JOBS_PORT=${JOBS_PORT:-8787}
 MIN_NODE=${MIN_NODE:-24.14.0}
+# mise, which installs a repository's mise.toml toolchain in each job's sandbox
+# (#822), at install-box.sh's pin, repeated here; tests/deploy/check-box.test.ts
+# holds the two equal.
+MISE=${MISE:-/usr/local/bin/mise}
+MISE_VERSION=${MISE_VERSION:-2025.10.0}
 REQUIRED_SETTINGS="WORKER_SECRET DISPATCHER_TOKEN_URL CLAUDE_CODE_VERSION CLAUDE_CODE_OAUTH_TOKEN WORK_DIR JOBS_HOST WORKER_PROXY AGENT_SANDBOX_PROXY"
-# What tinyproxy must let through: the model's API, GitHub, the npm registry, the
-# token door. Each as the line the Filter file holds, a regex anchored at both ends.
-ALLOWED_HOSTS="^api\\.anthropic\\.com\$ ^github\\.com\$ ^api\\.github\\.com\$ ^codeload\\.github\\.com\$ ^objects\\.githubusercontent\\.com\$ ^raw\\.githubusercontent\\.com\$ ^release-assets\\.githubusercontent\\.com\$ ^registry\\.npmjs\\.org\$ ^${HOST_IP//./\\.}\$"
+# What tinyproxy must let through: the model's API, GitHub, the npm registry,
+# mise's version list, the token door. Each as the line the Filter file holds,
+# a regex anchored at both ends.
+ALLOWED_HOSTS="^api\\.anthropic\\.com\$ ^github\\.com\$ ^api\\.github\\.com\$ ^codeload\\.github\\.com\$ ^objects\\.githubusercontent\\.com\$ ^raw\\.githubusercontent\\.com\$ ^release-assets\\.githubusercontent\\.com\$ ^registry\\.npmjs\\.org\$ ^mise-versions\\.jdx\\.dev\$ ^${HOST_IP//./\\.}\$"
 # And the hosts the operator's settings ask for (agent-service.conf.example):
 # EGRESS_PRESETS' and EGRESS_EXTRA_HOSTS'. The presets are install-box.sh's,
 # repeated here; tests/deploy/install-box.test.ts holds the two equal.
 declare -A EGRESS_PRESET_HOSTS=(
   [python]="pypi.org files.pythonhosted.org"
+  [node]="nodejs.org"
 )
 unknown_presets=()
 read -ra requested_hosts <<<"${EGRESS_EXTRA_HOSTS:-}"
@@ -95,6 +102,12 @@ if [ -n "$node_version" ] && at_least "$node_version" "$MIN_NODE"; then
   pass "Node is $node_version"
 else
   fail "Node at $NODE is ${node_version:-missing}, below $MIN_NODE: the worker will not start"
+fi
+mise_version=$("$MISE" --version 2>/dev/null | awk '{print $1}')
+if [ "$mise_version" = "$MISE_VERSION" ]; then
+  pass "mise is $mise_version"
+else
+  fail "mise at $MISE is ${mise_version:-missing}, not $MISE_VERSION, so a repository's mise.toml cannot be installed: re-run install-box.sh"
 fi
 for tool in git npm bwrap curl; do
   if command -v "$tool" >/dev/null; then pass "$tool is installed"; else fail "$tool is missing"; fi

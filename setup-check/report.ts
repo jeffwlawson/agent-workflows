@@ -20,8 +20,9 @@ type Io = CommandIo<Declared["outputs"]>;
  * The worker hands it how each step ended, as data, and the end of a failed
  * step's output, raw (ADR 0006); every string of the comment is written here
  * (ADR 0007). One comment: a line saying how the check ended, then one line
- * per step, the checkout of the default branch, the repository's setup
- * (`AGENT_SETUP`) and its verify command (`AGENT_VERIFY`), each passed,
+ * per step, the checkout of the default branch, the toolchain its
+ * `mise.toml` asks for (#822), the repository's setup (`AGENT_SETUP`) and
+ * its verify command (`AGENT_VERIFY`), each passed,
  * failed with its exit code and the end of its output, skipped and why, or
  * timed out; and the commit it checked, read at the checkout's head. Then
  * `agent:setup-check` off, so the label is on exactly while the check runs.
@@ -60,6 +61,7 @@ const headOf = (checkout: string): string | undefined => {
 };
 
 type StepResult = Inputs["SETUP_RESULT"];
+type ToolchainResult = Inputs["TOOLCHAIN_RESULT"];
 
 /** One of the two sandboxed steps, as the report names it and the variable it runs. */
 interface Step {
@@ -85,7 +87,7 @@ const setupCheckReport = (inputs: Inputs, sha: string | undefined): string => {
         ? `- **Checkout** of ${base}: timed out: it did not finish within ${limit}.`
         : checkoutFailed(base, inputs.CHECKOUT_REASON);
 
-  const steps = [checkoutLine, stepLine(setup, inputs, limit), stepLine(verify, inputs, limit)];
+  const steps = [checkoutLine, toolchainLine(inputs, limit), stepLine(setup, inputs, limit), stepLine(verify, inputs, limit)];
   return [`${headline(inputs, setup, verify, at)}`, "", ...steps, "", `[Run](${inputs.RUN_URL}) · To check again, add \`${SETUP_CHECK_LABEL}\` again.`, ""].join("\n");
 };
 
@@ -94,6 +96,10 @@ const headline = (inputs: Inputs, setup: Step, verify: Step, at: string): string
   const label = `\`${SETUP_CHECK_LABEL}\``;
   if (inputs.CHECKOUT_RESULT !== "passed") {
     return `**${label} ${inputs.CHECKOUT_RESULT === "timed-out" ? "timed out" : "failed"}:** ${at} could not be checked out, so neither the setup nor the verify command ran. No agent was started.`;
+  }
+  if (toolchainStopped(inputs.TOOLCHAIN_RESULT)) {
+    const timedOut = inputs.TOOLCHAIN_RESULT === "timed-out";
+    return `**${label} ${timedOut ? "timed out" : "failed"}:** the toolchain \`mise.toml\` asks for (\`mise install\`) ${timedOut ? "did not finish" : "failed"} on ${at}, in the sandbox, so neither the setup nor the verify command ran. No agent was started.`;
   }
   const stopped = [setup, verify].find((step) => step.result === "failed" || step.result === "timed-out");
   if (stopped !== undefined) {
@@ -125,9 +131,30 @@ const stepLine = (step: Step, inputs: Inputs, limit: string): string => {
   }
 };
 
-/** Why a step was not run: the step before it did not pass. */
+/** Whether the toolchain step stopped the check: the setup and the verify command are then not run. */
+const toolchainStopped = (result: ToolchainResult): boolean => result === "failed" || result === "timed-out";
+
+/** The toolchain step's line (#822). */
+const toolchainLine = (inputs: Inputs, limit: string): string => {
+  const named = "- **Toolchain** (`mise.toml`)";
+  switch (inputs.TOOLCHAIN_RESULT) {
+    case "passed":
+      return `${named}: passed: \`mise install\` installed what it asks for.`;
+    case "skipped":
+      return `${named}: skipped: the repository has no \`mise.toml\` at its root, so the box's own tools were used.`;
+    case "timed-out":
+      return `${named}: timed out: \`mise install\` did not finish within ${limit}.`;
+    case "not-run":
+      return `${named}: not run, since the checkout did not finish.`;
+    case "failed":
+      return `${named}: failed${inputs.TOOLCHAIN_EXIT === "" ? ": `mise install` could not be started" : `: \`mise install\` exited with code ${inputs.TOOLCHAIN_EXIT}`}. ${quoted(inputs.TOOLCHAIN_OUTPUT)}`;
+  }
+};
+
+/** Why a step was not run: a step before it did not pass. */
 const notRunBecause = (step: Step, inputs: Inputs): string => {
   if (inputs.CHECKOUT_RESULT !== "passed") return "the checkout did not finish";
+  if (toolchainStopped(inputs.TOOLCHAIN_RESULT)) return `the toolchain \`mise.toml\` asks for ${inputs.TOOLCHAIN_RESULT === "timed-out" ? "timed out" : "failed to install"}`;
   if (step.variable === "AGENT_VERIFY") return inputs.SETUP_RESULT === "timed-out" ? "the setup timed out" : "the setup failed";
   return "the checkout did not finish";
 };

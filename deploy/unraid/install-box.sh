@@ -6,7 +6,9 @@
 # (<file>.bak.<time>) and replaced, and a secret already set is kept.
 #
 # What it sets up: the packages (bubblewrap, tinyproxy, nftables, git, curl),
-# Node from nodejs.org with root owning every file, the `worker` user (no
+# Node from nodejs.org with root owning every file, mise from its GitHub
+# release (which installs a repository's mise.toml toolchain in each job's
+# sandbox, #822), the `worker` user (no
 # sudo), the AppArmor profile that lets bwrap make user namespaces, the egress
 # rule limiting `worker` to loopback (and so to tinyproxy), tinyproxy and its
 # list, the package in /opt, the worker's settings and its systemd unit. To
@@ -32,6 +34,10 @@ conf="$(dirname "$0")/agent-service.conf"
 if [ -f "$conf" ]; then . "$conf"; fi
 
 NODE_VERSION=${NODE_VERSION:-24.21.0}
+# mise, installed to /usr/local/bin/mise, where the worker runs it from in the
+# sandbox. check-box.sh repeats this default, which tests/deploy/check-box.test.ts
+# holds equal.
+MISE_VERSION=${MISE_VERSION:-2025.10.0}
 CLAUDE_CODE_VERSION=${CLAUDE_CODE_VERSION:-2.1.316}
 WORKER_USER=${WORKER_USER:-worker}
 PREFIX=${PREFIX:-/opt/agent-workflows}
@@ -74,6 +80,7 @@ fi
 # repeats this list, which tests/deploy/install-box.test.ts holds equal.
 declare -A EGRESS_PRESET_HOSTS=(
   [python]="pypi.org files.pythonhosted.org"
+  [node]="nodejs.org"
 )
 read -ra extra_packages <<<"${BOX_EXTRA_PACKAGES:-}"
 read -ra presets <<<"${EGRESS_PRESETS:-}"
@@ -97,11 +104,11 @@ for host in "${extra_hosts[@]}"; do
     exit 2
   fi
 done
-# tinyproxy's list: the model's API, GitHub, the npm registry and the token
-# door, then the presets' hosts and the extra hosts, once each, every one a
-# regex anchored at both ends.
+# tinyproxy's list: the model's API, GitHub, the npm registry, mise's version
+# list and the token door, then the presets' hosts and the extra hosts, once
+# each, every one a regex anchored at both ends.
 allowed=(api.anthropic.com github.com api.github.com codeload.github.com objects.githubusercontent.com
-  raw.githubusercontent.com release-assets.githubusercontent.com registry.npmjs.org "$HOST_IP")
+  raw.githubusercontent.com release-assets.githubusercontent.com registry.npmjs.org mise-versions.jdx.dev "$HOST_IP")
 for name in "${presets[@]}"; do
   read -ra hosts <<<"${EGRESS_PRESET_HOSTS[$name]}"
   extra_hosts+=("${hosts[@]}")
@@ -186,6 +193,37 @@ fi
 # Ubuntu everything under /usr/local is root's, so anything that is not, is.
 fixed=$(find /usr/local -xdev ! -user root -print -exec chown -h root:root {} + 2>/dev/null | wc -l)
 echo "  ensured    root owns everything under /usr/local (handed $fixed back)"
+
+echo "== mise $MISE_VERSION"
+# The worker runs it in each job's sandbox to install what a repository's
+# mise.toml asks for (#822). The release's bare linux-x64 binary, checked
+# against the release's SHASUMS256.txt before /usr/local/bin/mise is touched.
+mise_have=$(/usr/local/bin/mise --version 2>/dev/null | awk '{print $1}' || true)
+if [ "$mise_have" = "$MISE_VERSION" ]; then
+  echo "  unchanged  mise $mise_have"
+else
+  asset="mise-v$MISE_VERSION-linux-x64"
+  release="https://github.com/jdx/mise/releases/download/v$MISE_VERSION"
+  dir=$(mktemp -d)
+  for file in "$asset" SHASUMS256.txt; do
+    if ! curl -fsSL --proto '=https' --proto-redir '=https' -o "$dir/$file" "$release/$file"; then
+      rm -rf "$dir"
+      echo "Could not download $release/$file: is mise v$MISE_VERSION released? mise was not changed." >&2
+      exit 1
+    fi
+  done
+  # The line naming this asset, written bare, as ./<asset> or as *<asset>.
+  want=$(awk -v a="$asset" '$2 == a || $2 == "./" a || $2 == "*" a { print $1; exit }' "$dir/SHASUMS256.txt")
+  got=$(sha256sum "$dir/$asset" | awk '{print $1}')
+  if [ -z "$want" ] || [ "$want" != "$got" ]; then
+    rm -rf "$dir"
+    echo "The mise binary downloaded from $release does not match the release's SHASUMS256.txt. mise was not changed." >&2
+    exit 1
+  fi
+  install -o root -g root -m 755 "$dir/$asset" /usr/local/bin/mise
+  rm -rf "$dir"
+  echo "  installed  mise $MISE_VERSION (was ${mise_have:-none}), checked against the release's SHASUMS256.txt"
+fi
 
 echo "== The $WORKER_USER user"
 if id "$WORKER_USER" >/dev/null 2>&1; then

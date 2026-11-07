@@ -843,7 +843,11 @@ each a child process of its own installed package, so the service and every subc
 one release. Each kind has a run function of its own, following its workflow's orchestrator
 blocks, built from shared phase primitives: ask for a token, run a subcommand, run the sandboxed
 runner, and run the repository's setup, `AGENT_SETUP`, in the bwrap sandbox in the checkout with no
-token, never on the worker's host. It writes nothing
+token, never on the worker's host. Right before that setup, in every job that runs one, comes the
+`toolchain` phase (#822): where the checkout has a `mise.toml`, `mise install` in the same sandbox,
+into a git-ignored folder in the checkout, whose `bin` directories then come first on the setup's,
+the verify command's and the agent's `PATH`; without one it is skipped, so the box's `/usr` is a
+repository's runtime only where the repository asks for none. It writes nothing
 to the record and spells no record string; what it reads between phases is the hand-over the
 reusable's glue steps read, copied across as it is; a phase it did not start gets its reason
 written where the next command reads that phase's, as Actions would have it written there. Each subcommand's environment is built by one

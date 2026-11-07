@@ -108,11 +108,18 @@ export interface SandboxRun {
    */
   readonly script: string;
   /**
-   * The repository variable the script is, and the environment variable it
-   * reaches the sandbox's shell as: `AGENT_SETUP`, the repository's setup, or
-   * `AGENT_VERIFY`, its verify command, which a setup check runs after it (#821).
+   * The environment variable the script reaches the sandbox's shell as: a
+   * repository variable, `AGENT_SETUP`, the repository's setup, or
+   * `AGENT_VERIFY`, its verify command, which a setup check runs after it
+   * (#821); or `AGENT_TOOLCHAIN`, the worker's own script installing what the
+   * repository's `mise.toml` asks for (#822).
    */
-  readonly variable: SandboxVariable;
+  readonly variable: SandboxScript;
+  /**
+   * More of the sandbox's environment, set beside the script: the toolchain's
+   * mise settings. None of it is a token.
+   */
+  readonly env?: Readonly<Record<string, string>>;
   /** The host directory bound read-write: the checkout. */
   readonly dir: string;
   /**
@@ -143,6 +150,15 @@ export interface SandboxRun {
 export type SandboxVariable = "AGENT_SETUP" | "AGENT_VERIFY";
 
 /**
+ * The variable the toolchain phase's script reaches the sandbox's shell as
+ * (#822): the worker's own script, not a repository variable.
+ */
+export const TOOLCHAIN_VARIABLE = "AGENT_TOOLCHAIN";
+
+/** Every variable a script reaches the sandbox's shell as. */
+export type SandboxScript = SandboxVariable | typeof TOOLCHAIN_VARIABLE;
+
+/**
  * Runs a script in the bwrap sandbox, never on the worker's host, and answers
  * with its exit code once it has ended, which it is made to where `signal`
  * aborts. Throws where the sandbox could not be started.
@@ -168,8 +184,14 @@ export interface JobEdges {
    * and the sandbox's four inputs, the CLI's prefix already in them.
    */
   readonly agent: Readonly<Record<string, string>>;
-  /** Where the worker's own `claude` is, put first on the runner's `PATH`. */
+  /** Where the worker's own `claude` is, put first on the runner's `PATH`, after any toolchain's (#822). */
   readonly cliBin: string;
+  /**
+   * Where the box's mise is, on the host and so in the sandbox, which sees
+   * the host's `/usr`: `BOX_MISE`, where unset, as `install-box.sh` installs
+   * it. A test points it elsewhere.
+   */
+  readonly mise?: string;
   /** The run's own directory, fresh: the checkout, and each subcommand's output directory and log, go under it. */
   readonly runDir: string;
   /** How long a minute of a time limit is, in milliseconds: a minute, but where a test shortens it. */
@@ -284,6 +306,36 @@ export const SETUP_PHASE = "setup";
 /** The verify phase's name (#821), in the summary and the worker's log: a setup check's, after its setup. */
 export const VERIFY_PHASE = "verify";
 
+/**
+ * The toolchain phase's name (#822), in the summary and the worker's log:
+ * `mise install` from the repository's `mise.toml`, right before its setup.
+ */
+export const TOOLCHAIN_PHASE = "toolchain";
+
+/**
+ * The files at the checkout's root that ask for a toolchain (#822), either
+ * one. Without one the toolchain phase is skipped and the job runs on the
+ * box's own tools. Once one is there, `mise install` reads whatever else mise
+ * reads, `.tool-versions` included.
+ */
+export const TOOLCHAIN_FILES = ["mise.toml", ".mise.toml"] as const;
+
+/**
+ * The folder in the checkout the toolchain is installed into, mise's data
+ * directory (#822). Git ignores it, through the checkout's
+ * `.git/info/exclude`, before mise runs, so nothing committed or pushed can
+ * carry it, and it goes with the checkout, so nothing is kept between jobs
+ * (ADR 0012). The checkout is seen at the agent's path, so the paths an
+ * install records still hold for the agent.
+ */
+export const TOOLCHAIN_DIR = ".agent-toolchain";
+
+/** The file in `TOOLCHAIN_DIR` the toolchain's script writes `mise bin-paths` to: one directory a line. */
+export const TOOLCHAIN_BIN_PATHS = "bin-paths.txt";
+
+/** Where `install-box.sh` installs mise on the box. */
+export const BOX_MISE = "/usr/local/bin/mise";
+
 /** Each sandboxed phase, by the variable it runs: its name, and what its reasons call it. */
 const SANDBOXED: Readonly<Record<SandboxVariable, { readonly phase: string; readonly what: string }>> = {
   AGENT_SETUP: { phase: SETUP_PHASE, what: "The repository's setup (`AGENT_SETUP`)" },
@@ -393,6 +445,48 @@ const tail = (lines: string): string => (lines === "" ? "It wrote no output." : 
 
 const message = (error: unknown): string => (error instanceof Error ? error.message : String(error));
 
+/**
+ * Makes git ignore `name`, a folder at the checkout's root, through the
+ * checkout's own `.git/info/exclude`, which nothing is ever pushed from, so
+ * nothing committed in the checkout can carry it and no diff shows it. A
+ * checkout with no `.git` folder has no git to tell.
+ */
+const excludeFromGit = (checkout: string, name: string): void => {
+  const git = path.join(checkout, ".git");
+  if (fs.lstatSync(git, { throwIfNoEntry: false })?.isDirectory() !== true) return;
+  const exclude = path.join(git, "info", "exclude");
+  const line = `/${name}/`;
+  let held = "";
+  try {
+    held = fs.readFileSync(exclude, "utf8");
+  } catch {
+    // None yet.
+  }
+  if (held.split("\n").includes(line)) return;
+  fs.mkdirSync(path.dirname(exclude), { recursive: true });
+  fs.appendFileSync(exclude, `${held === "" || held.endsWith("\n") ? "" : "\n"}${line}\n`);
+};
+
+/**
+ * The toolchain's `bin` directories, as `mise bin-paths` wrote them into
+ * `folder`'s `TOOLCHAIN_BIN_PATHS`, each as the sandbox sees it: only an
+ * absolute path inside `inside`, the folder as the sandbox sees it, is kept,
+ * since what mise wrote passed through the repository's install hooks first.
+ * None where the file is missing, or is not a plain file.
+ */
+const binPaths = (folder: string, inside: string): readonly string[] => {
+  const file = path.join(folder, TOOLCHAIN_BIN_PATHS);
+  if (fs.lstatSync(folder, { throwIfNoEntry: false })?.isDirectory() !== true) return [];
+  if (fs.lstatSync(file, { throwIfNoEntry: false })?.isFile() !== true) return [];
+  const kept = fs
+    .readFileSync(file, "utf8")
+    .split("\n")
+    .map((line) => line.trim())
+    .filter((line) => path.posix.isAbsolute(line) && !line.includes(":") && path.posix.normalize(line).startsWith(`${inside}/`))
+    .map((line) => path.posix.normalize(line).replace(/\/$/, ""));
+  return [...new Set(kept)];
+};
+
 /** How a subcommand a run started ended, and the output directory it wrote into. */
 interface Ran {
   readonly ok: boolean;
@@ -417,6 +511,18 @@ export interface SetupRan {
  */
 export interface SandboxedRan {
   readonly result: "passed" | "failed" | "timed-out" | "unset";
+  readonly exit?: number;
+  readonly output?: string;
+  readonly failureReason?: string;
+}
+
+/**
+ * How the toolchain phase ended (#822), as a setup check reports it: passed,
+ * failed, timed out, or skipped where the checkout has no `mise.toml`. A
+ * failure carries what `SandboxedRan`'s does.
+ */
+export interface ToolchainRan {
+  readonly result: "passed" | "failed" | "timed-out" | "skipped";
   readonly exit?: number;
   readonly output?: string;
   readonly failureReason?: string;
@@ -450,6 +556,9 @@ export interface Run {
   /**
    * Starts a runner as `run` does, handed what the worker's settings give the
    * agent and the sandbox, with the worker's own `claude` first on its `PATH`.
+   * After a toolchain was installed (#822), its `bin` directories come first
+   * on `AGENT_SANDBOX_PATH`, and, with `AGENT_SANDBOX=none`, where the agent
+   * runs as the runner does, on the runner's `PATH` too.
    */
   readonly runAgent: (runner: Runner, values: Readonly<Record<string, string | undefined>>, cwd: string, signal: AbortSignal) => Promise<Ran>;
   /**
@@ -461,8 +570,23 @@ export interface Run {
    * start-up check would give under `bwrap`. Empty is skipped, and noted so, as an empty `setup:` is on Actions.
    * A setup that could not start, or exited non-zero, is a failure with its
    * reason; one still running at `signal` is ended with its sandbox.
+   *
+   * The toolchain phase (#822), `toolchain`, runs first, under the same
+   * `signal`, so it shares setup's time limit. Where it failed or timed out,
+   * so does this, with its reason, and the setup is not run.
    */
   readonly setup: (script: string, signal: AbortSignal) => Promise<SetupRan>;
+  /**
+   * The toolchain phase (#822): where the checkout has a `mise.toml` (or
+   * `.mise.toml`) at its root, `mise install` in the sandbox as `setup` runs
+   * the setup, with mise's data directory `TOOLCHAIN_DIR` in the checkout,
+   * which git is first made to ignore, and the checkout trusted for that run
+   * alone. Once it passed, the `bin` directories mise reports, those inside
+   * `TOOLCHAIN_DIR` alone, come first on the `PATH` of every later sandboxed
+   * phase and of the agent's runner. Nothing else of `mise.toml` reaches them.
+   * Without one it is noted as skipped and no sandbox is started.
+   */
+  readonly toolchain: (signal: AbortSignal) => Promise<ToolchainRan>;
   /**
    * Runs `script`, the job's `variable`, in the sandbox as `setup` runs the
    * setup, and answers how it ended in full, for a setup check's report
@@ -496,7 +620,7 @@ export const startRun = (job: Job, edges: JobEdges): Run => {
   };
   /** What each subcommand, and the setup, was started with, for the run summary. */
   const started: {
-    readonly subcommand: Subcommand | typeof SETUP_PHASE | typeof VERIFY_PHASE;
+    readonly subcommand: Subcommand | typeof TOOLCHAIN_PHASE | typeof SETUP_PHASE | typeof VERIFY_PHASE;
     readonly env: Readonly<Record<string, string>>;
     readonly cwd: string;
     readonly log: string;
@@ -578,15 +702,30 @@ export const startRun = (job: Job, edges: JobEdges): Run => {
     }
   };
 
-  const sandboxed = async (variable: SandboxVariable, script: string, signal: AbortSignal): Promise<SandboxedRan> => {
-    const { phase, what } = SANDBOXED[variable];
-    if (script === "") {
-      note(phase, `skipped: ${variable} is unset`);
-      return { result: "unset" };
-    }
+  /** Where the checkout is seen in the sandbox: the agent's path under `bwrap`, its own under `none`. */
+  const at = edges.agent["AGENT_SANDBOX"] === "bwrap" ? SANDBOX_WORKTREE : checkout;
+  /**
+   * The installed toolchain's `bin` directories, as the sandbox sees them,
+   * once the toolchain phase passed (#822): first on every later `PATH`.
+   */
+  let toolBins: readonly string[] = [];
+  const withTools = (pathList: string): string => [...toolBins, pathList].filter((part) => part !== "").join(":");
+
+  /** One script run in the sandbox as a phase of its own, and how it ended. */
+  const inSandbox = async (
+    step: {
+      readonly phase: typeof TOOLCHAIN_PHASE | typeof SETUP_PHASE | typeof VERIFY_PHASE;
+      readonly what: string;
+      readonly variable: SandboxScript;
+      readonly script: string;
+      readonly env?: Readonly<Record<string, string>>;
+    },
+    signal: AbortSignal,
+  ): Promise<Omit<SandboxedRan, "result"> & { readonly result: "passed" | "failed" | "timed-out" }> => {
+    const { phase, what, variable, script } = step;
     const log = path.join(logs, `${phase}.log`);
     const proxy = edges.agent["AGENT_SANDBOX_PROXY"] ?? "";
-    started.push({ subcommand: phase as typeof SETUP_PHASE | typeof VERIFY_PHASE, env: { [variable]: script }, cwd: checkout, log });
+    started.push({ subcommand: phase, env: { ...step.env, [variable]: script }, cwd: checkout, log });
     // A proxy is the sandbox's only way out (#537), so one the relay would not
     // take is refused here, by the rule the worker's start-up check reads
     // under `bwrap`: under `none` the worker starts with it, and a sandbox
@@ -602,10 +741,11 @@ export const startRun = (job: Job, edges: JobEdges): Run => {
       code = await edges.sandbox({
         script,
         variable,
+        ...(step.env === undefined ? {} : { env: step.env }),
         dir: checkout,
-        at: edges.agent["AGENT_SANDBOX"] === "bwrap" ? SANDBOX_WORKTREE : checkout,
+        at,
         roBinds: (edges.agent["AGENT_SANDBOX_RO_BINDS"] ?? "").split(":").filter((dir) => dir !== ""),
-        path: edges.agent["AGENT_SANDBOX_PATH"] ?? "",
+        path: withTools(edges.agent["AGENT_SANDBOX_PATH"] ?? ""),
         ...(proxy === "" ? {} : { proxy }),
         log,
         signal,
@@ -633,7 +773,58 @@ export const startRun = (job: Job, edges: JobEdges): Run => {
     };
   };
 
+  const sandboxed = async (variable: SandboxVariable, script: string, signal: AbortSignal): Promise<SandboxedRan> => {
+    const { phase, what } = SANDBOXED[variable];
+    if (script === "") {
+      note(phase, `skipped: ${variable} is unset`);
+      return { result: "unset" };
+    }
+    return inSandbox({ phase: phase as typeof SETUP_PHASE | typeof VERIFY_PHASE, what, variable, script }, signal);
+  };
+
+  const toolchain = async (signal: AbortSignal): Promise<ToolchainRan> => {
+    const asked = TOOLCHAIN_FILES.find((file) => fs.existsSync(path.join(checkout, file)));
+    if (asked === undefined) {
+      note(TOOLCHAIN_PHASE, "skipped: the checkout has no mise.toml at its root");
+      return { result: "skipped" };
+    }
+    const what = `The toolchain \`${asked}\` asks for (\`mise install\`)`;
+    const mise = edges.mise ?? BOX_MISE;
+    if (!fs.existsSync(mise)) {
+      const failureReason = `${what} could not be installed: \`${mise}\` is missing from the agent box. Re-run \`install-box.sh\` on the agent box to install mise.`;
+      note(TOOLCHAIN_PHASE, `failure: ${failureReason}`);
+      return { result: "failed", output: failureReason, failureReason };
+    }
+    const folder = path.join(checkout, TOOLCHAIN_DIR);
+    // Whatever the tree put at the folder's name, a link is not followed:
+    // the folder is the sandbox's to make, and the host reads it after.
+    if (fs.lstatSync(folder, { throwIfNoEntry: false })?.isSymbolicLink() === true) fs.rmSync(folder);
+    fs.rmSync(path.join(folder, TOOLCHAIN_BIN_PATHS), { force: true });
+    excludeFromGit(checkout, TOOLCHAIN_DIR);
+    const inside = `${at}/${TOOLCHAIN_DIR}`;
+    const quotedMise = `'${mise.replaceAll("'", `'\\''`)}'`;
+    const ran = await inSandbox(
+      {
+        phase: TOOLCHAIN_PHASE,
+        what,
+        variable: TOOLCHAIN_VARIABLE,
+        script: `${quotedMise} install\n${quotedMise} bin-paths > "$MISE_DATA_DIR/${TOOLCHAIN_BIN_PATHS}"`,
+        env: { MISE_DATA_DIR: inside, MISE_TRUSTED_CONFIG_PATHS: at, MISE_YES: "1" },
+      },
+      signal,
+    );
+    if (ran.result !== "passed") return ran;
+    toolBins = binPaths(folder, inside);
+    return ran;
+  };
+
   const setup = async (script: string, signal: AbortSignal): Promise<SetupRan> => {
+    const tools = await toolchain(signal);
+    if (tools.result === "timed-out" || tools.result === "failed") {
+      note(SETUP_PHASE, "not run: the toolchain mise.toml asks for was not installed");
+      if (tools.result === "timed-out") return { ok: false, timedOut: true };
+      return { ok: false, timedOut: false, ...(tools.failureReason === undefined ? {} : { failureReason: tools.failureReason }) };
+    }
     const ran = await sandboxed("AGENT_SETUP", script, signal);
     if (ran.result === "passed" || ran.result === "unset") return { ok: true, timedOut: false };
     if (ran.result === "timed-out") return { ok: false, timedOut: true };
@@ -655,12 +846,25 @@ export const startRun = (job: Job, edges: JobEdges): Run => {
     checkout,
     ask,
     run: (subcommand, values, cwd, signal) => launch(subcommand, values, cwd, signal, edges.host),
-    runAgent: (runner, values, cwd, signal) =>
-      launch(runner, { ...edges.agent, ...values }, cwd, signal, {
-        ...edges.host,
-        PATH: [edges.cliBin, edges.host.PATH].filter((part) => part !== undefined && part !== "").join(":"),
-      }),
+    runAgent: (runner, values, cwd, signal) => {
+      const sandboxPath = edges.agent["AGENT_SANDBOX_PATH"];
+      // With no sandbox the agent runs as the runner does, so the toolchain
+      // goes on the runner's own `PATH`; under `bwrap` its paths are the
+      // sandbox's, and `AGENT_SANDBOX_PATH` carries them.
+      const runnerTools = edges.agent["AGENT_SANDBOX"] === "bwrap" ? [] : toolBins;
+      return launch(
+        runner,
+        { ...edges.agent, ...(sandboxPath === undefined || toolBins.length === 0 ? {} : { AGENT_SANDBOX_PATH: withTools(sandboxPath) }), ...values },
+        cwd,
+        signal,
+        {
+          ...edges.host,
+          PATH: [...runnerTools, edges.cliBin, edges.host.PATH].filter((part) => part !== undefined && part !== "").join(":"),
+        },
+      );
+    },
     setup,
+    toolchain,
     sandboxed,
     notStarted,
     done,
@@ -2470,23 +2674,27 @@ const runMerge = async (job: MergeJob, edges: JobEdges): Promise<readonly Phase[
  *
  * 1. A `read` token, then the checkout of the default branch at its head, by
  *    its name, as implement's agent's job checks it out.
- * 2. `AGENT_SETUP`, through the setup primitive: in the sandbox, in the
- *    checkout, with no token, the sandbox's proxy its only way out. Unset is
- *    skipped, and the check goes on.
- * 3. Where the setup passed or was skipped, `AGENT_VERIFY` the same way, as a
+ * 2. The toolchain (#822), through the toolchain primitive: `mise install`
+ *    in the sandbox where the checkout has a `mise.toml`, as an agent's job
+ *    runs it before its setup. Without one it is skipped, and the check goes
+ *    on.
+ * 3. Where the toolchain passed or was skipped, `AGENT_SETUP`, through the
+ *    sandbox primitive: in the sandbox, in the checkout, with no token, the
+ *    sandbox's proxy its only way out. Unset is skipped, and the check goes on.
+ * 4. Where the setup passed or was skipped, `AGENT_VERIFY` the same way, as a
  *    phase of its own. Unset is skipped.
- * 4. A `write` token, then `setup-check:report`, however the steps before it
+ * 5. A `write` token, then `setup-check:report`, however the steps before it
  *    ended, handed how each did: the report and the label's removal are its.
  *
  * **No agent is started**, so no runner is, and no `read` token is minted for
- * one. Steps 1 to 3 share the agent's job's limit, `AGENT_TIMEOUT_MINUTES`
+ * one. Steps 1 to 4 share the agent's job's limit, `AGENT_TIMEOUT_MINUTES`
  * (`fixTimeLimit`), since they are what that job runs before its agent; the
  * report gets `SETUP_CHECK_REPORT_MINUTES` of its own. Where no `write` token
  * is granted the report cannot run, the label stays on, and the worker's log
  * says why; the next scan runs the check again.
  */
 const runSetupCheck = async (job: SetupCheckJob, edges: JobEdges): Promise<readonly Phase[]> => {
-  const { note, limit, checkout, ask, run, sandboxed, done } = startRun(job, edges);
+  const { note, limit, checkout, ask, run, toolchain, sandboxed, done } = startRun(job, edges);
   const minutes = fixTimeLimit(job.variables.AGENT_TIMEOUT_MINUTES);
   const checkLimit = limit(minutes);
 
@@ -2514,11 +2722,18 @@ const runSetupCheck = async (job: SetupCheckJob, edges: JobEdges): Promise<reado
 
   /** A step as the report is told it: how it ran, or that it was not run, since one before it did not pass. */
   type Step = Omit<SandboxedRan, "result" | "failureReason"> & { readonly result: SandboxedRan["result"] | "not-run" };
-  const notRun: Step = { result: "not-run" };
-  const setup: Step = checkoutResult === "passed" ? await sandboxed("AGENT_SETUP", job.variables.AGENT_SETUP, checkLimit.signal) : notRun;
+  type ToolchainStep = Omit<ToolchainRan, "result" | "failureReason"> & { readonly result: ToolchainRan["result"] | "not-run" };
+  const notRun = { result: "not-run" } as const;
+  const tools: ToolchainStep = checkoutResult === "passed" ? await toolchain(checkLimit.signal) : notRun;
+  const toolsPassed = tools.result === "passed" || tools.result === "skipped";
+  const setup: Step = toolsPassed ? await sandboxed("AGENT_SETUP", job.variables.AGENT_SETUP, checkLimit.signal) : notRun;
+  if (checkoutResult === "passed" && !toolsPassed) note(SETUP_PHASE, "not run: the toolchain mise.toml asks for was not installed");
   const setupPassed = setup.result === "passed" || setup.result === "unset";
   const verify: Step = setupPassed ? await sandboxed("AGENT_VERIFY", job.variables.AGENT_VERIFY, checkLimit.signal) : notRun;
-  if (!setupPassed) note(VERIFY_PHASE, `not run: ${checkoutResult === "passed" ? "the setup did not pass" : "the checkout did not finish"}`);
+  if (!setupPassed) {
+    const why = checkoutResult !== "passed" ? "the checkout did not finish" : toolsPassed ? "the setup did not pass" : "the toolchain mise.toml asks for was not installed";
+    note(VERIFY_PHASE, `not run: ${why}`);
+  }
   checkLimit.clear();
 
   const write = await ask("write");
@@ -2541,6 +2756,9 @@ const runSetupCheck = async (job: SetupCheckJob, edges: JobEdges): Promise<reado
       TIMEOUT_MINUTES: String(minutes),
       CHECKOUT_RESULT: checkoutResult,
       CHECKOUT_REASON: checkoutReason,
+      TOOLCHAIN_RESULT: tools.result,
+      TOOLCHAIN_EXIT: tools.exit === undefined ? "" : String(tools.exit),
+      TOOLCHAIN_OUTPUT: tools.output ?? "",
       SETUP_RESULT: setup.result,
       SETUP_EXIT: setup.exit === undefined ? "" : String(setup.exit),
       SETUP_OUTPUT: setup.output ?? "",

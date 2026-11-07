@@ -6,7 +6,7 @@ import type { InputValues } from "../shared/env.js";
 import { PACKAGE_NAME } from "../shared/manifest.js";
 import { WORKFLOW_DIR } from "../shared/pins.js";
 import { ORCHESTRATOR_VARIABLE, SERVICE_ORCHESTRATOR, SETUP_CHECK_LABEL } from "../shared/record.js";
-import { parseOwners, type AppGitHub } from "./dispatcher.js";
+import { foreignAccount, parseOwners, type AppGitHub } from "./dispatcher.js";
 import { liveAppGitHub } from "./github-app.js";
 import type { FLEET_CHECK } from "./settings.js";
 
@@ -220,12 +220,13 @@ export const checkFleet = async (edges: FleetEdges): Promise<number> => {
   const { github, stdout } = edges;
   const packageName = edges.packageName ?? PACKAGE_NAME;
   const owner = (await github.app()).owner;
-  const served = new Set([owner, ...edges.extraOwners].map((account) => account.toLowerCase()));
+  // The dispatcher's own rule for the accounts it serves, not a copy of it.
+  const foreign = foreignAccount([owner, ...edges.extraOwners]);
   const accounts = await github.installations();
   let failed = false;
   let checked = 0;
   for (const account of accounts) {
-    if (!served.has(account.toLowerCase())) {
+    if (foreign(account) !== undefined) {
       stdout(`${account}: not served, since it is neither the App's owner nor an account EXTRA_OWNERS lists, so its repositories are not checked\n`);
       continue;
     }

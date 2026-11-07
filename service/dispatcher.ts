@@ -648,18 +648,26 @@ export const parseOwners = (setting: string): readonly string[] =>
     .map((owner) => owner.trim())
     .filter((owner) => owner !== "");
 
-export const createDispatcher = (edges: DispatcherEdges) => {
-  const now = edges.now ?? (() => new Date());
-  // GitHub's logins are case-insensitive, so the comparison is too.
-  const owners = new Set(edges.owners.map((owner) => owner.toLowerCase()));
-  /**
-   * Why an installation on `account` is not served, or `undefined` where it
-   * is: on the App's owner's account, or one the settings list.
-   */
-  const foreign = (account: string): string | undefined =>
-    owners.has(account.toLowerCase())
+/**
+ * **Which accounts the service serves**: given the accounts it serves (the
+ * App's owner and the ones `EXTRA_OWNERS` lists), why an installation on
+ * `account` is not served, or `undefined` where it is. The dispatcher's rule,
+ * and the fleet check's (#825), so the fleet check checks the repositories
+ * the dispatcher serves and no other. GitHub's logins are case-insensitive,
+ * so the comparison is too.
+ */
+export const foreignAccount = (owners: readonly string[]): ((account: string) => string | undefined) => {
+  const served = new Set(owners.map((owner) => owner.toLowerCase()));
+  return (account) =>
+    served.has(account.toLowerCase())
       ? undefined
       : `the App's installation is on ${account}, which is neither the App's owner nor an account EXTRA_OWNERS lists`;
+};
+
+export const createDispatcher = (edges: DispatcherEdges) => {
+  const now = edges.now ?? (() => new Date());
+  /** Why an installation on an account is not served, or `undefined` where it is. */
+  const foreign = foreignAccount(edges.owners);
   const newId = edges.newId ?? randomUUID;
   const instance = edges.instance ?? randomUUID();
   const jobs = new Map<string, Dispatched>();

@@ -1,0 +1,6 @@
+schema_version: "1.1"
+name: pick-around-conflict
+context:
+  scaffold_script: place-files.sh
+expected_outcome: |
+  Leaves #865 out (open blocker #850), orders #861 before #862 because #862 restructures the code #861 changes, holds #863 until the open PR #858 on the same file merges, asks the whole batch in one brief, labels nothing before the yes, and queues nothing while #860 is still building.

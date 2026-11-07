@@ -1,0 +1,56 @@
+#!/usr/bin/env bash
+# wait-until: poll `snapshot` until a jq predicate holds over the watched items, or a bound passes.
+# usage: wait-until <minutes> '<jq predicate>' <number>...
+#   The predicate is read with `jq -e` over the array of snapshot lines, one object per number in
+#   the order given; see `snapshot` for the fields. For example, #801 approved with no trigger
+#   label on it:
+#     wait-until 120 '.[0].verdict.state == "success" and (.[0].labels | any(startswith("agent:")) | not)' 801
+#   EVERY      the first sleep, in seconds (default 60). Each poll where nothing changed doubles it,
+#   MAX_EVERY  up to this (default 480); a change brings it back to EVERY.
+#   REPO, CONDUCT_CACHE: as snapshot reads them.
+#
+# Prints its pid first, so it is stopped with `kill <pid>`; then one line per item whose snapshot
+# changed, and nothing on a poll where none did; then MATCH or TIMEOUT with the time and the last
+# snapshot. Exit 0 on MATCH, 1 on TIMEOUT, 2 on bad usage, 3 after five polls in a row failed.
+set -u
+[ $# -ge 3 ] || { echo "usage: wait-until <minutes> '<jq predicate>' <number>..." >&2; exit 2; }
+minutes=$1 predicate=$2; shift 2
+case $minutes in ''|*[!0-9]*) echo "wait-until: <minutes> must be a whole number, not '$minutes'" >&2; exit 2;; esac
+echo '[]' | jq -e "$predicate" >/dev/null 2>&1
+[ $? -eq 3 ] && { echo "wait-until: the predicate does not compile: $predicate" >&2; exit 2; }
+
+here=$(cd "$(dirname "$0")" && pwd)
+every=${EVERY:-60} cap=${MAX_EVERY:-480} sleep_for=${EVERY:-60}
+end=$(( $(date +%s) + minutes * 60 ))
+now() { date -u +%H:%M:%SZ; }
+echo "wait-until pid=$$ started $(now), for up to $minutes minutes, watching $*"
+
+last=() current=() failures=0
+while :; do
+  if out=$("$here/snapshot" "$@" 2>/dev/null); then
+    failures=0
+    current=()
+    while IFS= read -r line; do current+=("$line"); done <<<"$out"
+    changed=0
+    for i in "${!current[@]}"; do
+      if [ "${current[$i]}" != "${last[$i]:-}" ]; then
+        changed=1
+        [ ${#last[@]} -eq 0 ] || echo "$(now) changed: ${current[$i]}"
+      fi
+    done
+    last=("${current[@]}")
+    if jq -se "$predicate" >/dev/null 2>&1 <<<"$out"; then
+      echo "MATCH $(now)"; printf '%s\n' "${current[@]}"; exit 0
+    fi
+    if [ $changed -eq 1 ]; then sleep_for=$every; else sleep_for=$(( sleep_for * 2 > cap ? cap : sleep_for * 2 )); fi
+  else
+    failures=$((failures + 1))
+    echo "$(now) poll failed ($failures in a row)"
+    [ $failures -ge 5 ] && { echo "wait-until: five polls in a row failed; stopping. Run snapshot $* to see why." >&2; exit 3; }
+  fi
+  left=$(( end - $(date +%s) ))
+  [ $left -gt 0 ] || break
+  sleep $(( sleep_for < left ? sleep_for : left ))
+done
+echo "TIMEOUT $(now)"; [ ${#last[@]} -eq 0 ] || printf '%s\n' "${last[@]}"
+exit 1

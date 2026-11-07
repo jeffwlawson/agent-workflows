@@ -1,0 +1,77 @@
+#!/usr/bin/env bash
+# snapshot: one line of compact JSON per watched issue or pull request, read through REST.
+# usage: snapshot <number>...
+#   REPO           <owner>/<repo>; default: the origin remote of the current directory.
+#   CONDUCT_CACHE  where ETags and bodies are kept; default ~/.cache/conduct/<owner>-<repo>.
+#
+# Every call is conditional (If-None-Match with the stored ETag). GitHub does not count a 304
+# against the token's hourly limit, so a poll where nothing changed costs nothing. A poll makes
+# one listing call for everything watched (the 100 most recently updated issues and pull
+# requests), one `issues/<n>` call for each watched item the listing does not hold, and, for each
+# open pull request, `pulls/<n>`, the combined status and the check runs on its head.
+# stderr ends with the count: "snapshot: <calls> calls, <counted> counted against the limit".
+#
+# A line: {"n","pr","state","merged","draft","head","mergeable","labels","comments","updated",
+# "verdict":{"state","description","url"}|null,"statuses":{context:state},"checks":{"ok","failed","pending"}}.
+# "verdict" is the agent-review status on the head; its url is the loop's latest review.
+set -u
+[ $# -ge 1 ] || { echo "usage: snapshot <number>..." >&2; exit 2; }
+for tool in gh jq; do command -v "$tool" >/dev/null || { echo "snapshot needs $tool on PATH" >&2; exit 2; }; done
+for n in "$@"; do case $n in ''|*[!0-9]*) echo "snapshot: '$n' is not an issue or pull request number" >&2; exit 2;; esac; done
+
+if [ -z "${REPO:-}" ]; then
+  url=$(git remote get-url origin 2>/dev/null) || { echo "snapshot: set REPO=<owner>/<repo>, or run it in a checkout with an origin remote" >&2; exit 2; }
+  REPO=$(sed -E 's#^(https?://[^/]+/|git@[^:]+:|ssh://git@[^/]+/)##; s#\.git$##' <<<"$url")
+fi
+cache=${CONDUCT_CACHE:-$HOME/.cache/conduct/${REPO//\//-}}
+mkdir -p "$cache" || exit 2
+log=$(mktemp) || exit 2
+trap 'rm -f "$log"' EXIT
+
+# get <path>: the response body on stdout, the cached one on a 304. Each call is logged as
+# "<http status> <path>" so the count at the end is of calls actually made.
+get() {
+  local key out status
+  key=$(printf '%s' "$1" | cksum | tr ' ' '-')
+  local cond=()
+  [ -s "$cache/$key.etag" ] && [ -s "$cache/$key.json" ] && cond=(-H "If-None-Match: $(cat "$cache/$key.etag")")
+  out=$(gh api -i ${cond[@]+"${cond[@]}"} "repos/$REPO/$1" 2>/dev/null)
+  status=$(head -1 <<<"$out" | awk '{print $2}')
+  echo "${status:-none} $1" >>"$log"
+  case $status in
+    304) cat "$cache/$key.json" ;;
+    200)
+      awk 'b { print; next } /^\r?$/ { b = 1 }' <<<"$out" >"$cache/$key.json"
+      grep -i '^etag:' <<<"$out" | head -1 | sed -E 's/^[Ee][Tt][Aa][Gg]: *//' | tr -d '\r' >"$cache/$key.etag"
+      cat "$cache/$key.json" ;;
+    *) echo "snapshot: GET repos/$REPO/$1 answered ${status:-nothing}" >&2; return 1 ;;
+  esac
+}
+
+listing=$(get "issues?state=all&sort=updated&direction=desc&per_page=100") || exit 1
+rc=0
+for n in "$@"; do
+  item=$(jq -c --argjson n "$n" '.[] | select(.number == $n)' <<<"$listing")
+  [ -n "$item" ] || item=$(get "issues/$n") || { rc=1; continue; }
+  base=$(jq -c '{n: .number, pr: (.pull_request != null), state, merged: (.pull_request.merged_at != null),
+    labels: [.labels[].name], comments, updated: .updated_at}' <<<"$item")
+  if jq -e '.pr and .state == "open"' <<<"$base" >/dev/null; then
+    pull=$(get "pulls/$n") || { rc=1; continue; }
+    head=$(jq -r .head.sha <<<"$pull")
+    status=$(get "commits/$head/status") || { rc=1; continue; }
+    runs=$(get "commits/$head/check-runs?per_page=100") || { rc=1; continue; }
+    jq -c --argjson pull "$pull" --argjson status "$status" --argjson runs "$runs" '. + {
+      draft: $pull.draft, head: $pull.head.sha, mergeable: $pull.mergeable_state,
+      verdict: ([$status.statuses[] | select(.context == "agent-review")] | first
+        | if . == null then null else {state, description, url: .target_url} end),
+      statuses: ([$status.statuses[] | {(.context): .state}] | add // {}),
+      checks: {
+        ok: [$runs.check_runs[] | select(.status == "completed" and (.conclusion | IN("success", "neutral", "skipped")))] | length,
+        failed: [$runs.check_runs[] | select(.status == "completed" and (.conclusion | IN("success", "neutral", "skipped") | not))] | length,
+        pending: [$runs.check_runs[] | select(.status != "completed")] | length } }' <<<"$base"
+  else
+    echo "$base"
+  fi
+done
+echo "snapshot: $(wc -l <"$log" | tr -d ' ') calls, $(grep -vc '^304 ' "$log") counted against the limit" >&2
+exit $rc

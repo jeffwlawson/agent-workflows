@@ -1,6 +1,6 @@
 # Triage into Agent Briefs
 
-For an issue the gate sent to triage: no current *Agent Brief*, or one later commits made stale. The brief is the loop's contract: the review grades the PR against it. `issue-tracker.md` (*Before a brief*, *Criteria as behaviour*) and `triage-labels.md`, from the repo or the loop's release (SKILL.md, *Two sources of rules*), own the rules; `/triage`'s `AGENT-BRIEF.md` (in `~/.claude/skills/triage/`) owns the writing. Read them before dispatching.
+For an issue the gate sent to triage: no current *Agent Brief*, or one later commits made stale. The brief is the loop's contract: the review grades the PR against it. `issue-tracker.md` (*Before a brief*, *Criteria as behaviour*) and `triage-labels.md`, from the repo or the loop's release (SKILL.md, *Two sources of rules*), own the rules; `/triage`'s `AGENT-BRIEF.md` (in its folder beside this skill's: `~/.claude/skills/triage/` for a user-level install) owns the writing. Read them before dispatching. Where `AGENT-BRIEF.md` is missing, `/triage` is not installed: say so with the install line from the loop's `skills/README.md`, and stop.
 
 ## 1. One subagent per issue, in parallel
 

@@ -1,0 +1,6 @@
+schema_version: "1.1"
+name: watch-to-hand-back
+context:
+  scaffold_script: place-files.sh
+expected_outcome: |
+  Watches #846 with wait-until in the background on a hand-back predicate, stops the watcher by its pid, routes the hand-back to merge-check in a fresh Opus sub-agent because it touches how the loop's token is minted, writes down the full head SHA, asks checkpoint 2 as a brief, and on a yes merges with the full-SHA guard.

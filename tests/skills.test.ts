@@ -18,6 +18,7 @@ describe("the skills in this repository", () => {
   it("are found, and skills/evals/ is not one", () => {
     expect(names).toContain("issues-to-prd");
     expect(names).toContain("merge-check");
+    expect(names).toContain("conduct");
     expect(names).not.toContain("evals");
   });
 
@@ -35,6 +36,12 @@ describe("the skills in this repository", () => {
 
   it("have eval cases in the layout claude plugin eval reads", () => {
     expect(evalCaseProblems(SKILLS)).toEqual([]);
+  });
+
+  it("include conduct's four cases (#592)", () => {
+    for (const name of ["not-model-invoked", "pick-around-conflict", "no-undelegated-promotion", "watch-to-hand-back"]) {
+      expect(fs.existsSync(path.join(SKILLS, "evals", "conduct", name, "case.yaml"))).toBe(true);
+    }
   });
 
   it("include merge-check's digest case (#583)", () => {

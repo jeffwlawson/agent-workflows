@@ -1,4 +1,5 @@
 import { spawnSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
@@ -25,7 +26,7 @@ const SCRIPT = fs.readFileSync(path.join(DEPLOY, "install-box.sh"), "utf8");
 
 const STUBS: Record<string, string> = { id: "echo 0", "apt-get": "", chown: "", systemctl: "" };
 
-/** The list install-box.sh wrote at v0.9.18, with HOST_IP at its default. */
+/** The list install-box.sh writes, with HOST_IP at its default: v0.9.18's, and mise's version list (#822). */
 const BASE_ALLOWLIST = [
   "^api\\.anthropic\\.com$",
   "^github\\.com$",
@@ -35,6 +36,7 @@ const BASE_ALLOWLIST = [
   "^raw\\.githubusercontent\\.com$",
   "^release-assets\\.githubusercontent\\.com$",
   "^registry\\.npmjs\\.org$",
+  "^mise-versions\\.jdx\\.dev$",
   "^192\\.168\\.250\\.1$",
 ];
 const BASE_INSTALL = "apt-get install -y -qq bubblewrap tinyproxy nftables git curl ca-certificates xz-utils python3-venv";
@@ -149,6 +151,15 @@ describe("install-box.sh's EGRESS_PRESETS and EGRESS_EXTRA_HOSTS", () => {
     expect(allowlist).toEqual([...BASE_ALLOWLIST, "^pypi\\.org$", "^files\\.pythonhosted\\.org$"]);
   });
 
+  it("adds the node preset's host, nodejs.org, and leaves the python preset as it was (#822)", () => {
+    expect(install(['EGRESS_PRESETS="node"']).allowlist).toEqual([...BASE_ALLOWLIST, "^nodejs\\.org$"]);
+    expect(install(['EGRESS_PRESETS="python node"']).allowlist).toEqual([...BASE_ALLOWLIST, "^pypi\\.org$", "^files\\.pythonhosted\\.org$", "^nodejs\\.org$"]);
+  });
+
+  it("lets mise's version list through on every box, with no preset (#822)", () => {
+    expect(install().allowlist).toContain("^mise-versions\\.jdx\\.dev$");
+  });
+
   it("adds an extra host as an exact match", () => {
     const { status, allowlist } = install(['EGRESS_EXTRA_HOSTS="example.org"']);
 
@@ -167,7 +178,7 @@ describe("install-box.sh's EGRESS_PRESETS and EGRESS_EXTRA_HOSTS", () => {
     const { status, output, calls } = refuse(['EGRESS_PRESETS="python pyhton"']);
 
     expect(status).toBe(2);
-    expect(output).toContain("EGRESS_PRESETS names 'pyhton', which is no preset; the presets are: python. Nothing was changed.");
+    expect(output).toContain("EGRESS_PRESETS names 'pyhton', which is no preset; the presets are: node python. Nothing was changed.");
     expect(calls.filter((call) => !call.startsWith("id "))).toEqual([]);
   });
 
@@ -187,7 +198,83 @@ describe("install-box.sh's EGRESS_PRESETS and EGRESS_EXTRA_HOSTS", () => {
     const presets = (text: string) => /^declare -A EGRESS_PRESET_HOSTS=\(\n[\s\S]*?^\)$/m.exec(text)?.[0];
     const install = presets(SCRIPT);
     expect(install).toContain('[python]="pypi.org files.pythonhosted.org"');
+    expect(install).toContain('[node]="nodejs.org"');
     expect(presets(fs.readFileSync(path.join(DEPLOY, "check-box.sh"), "utf8"))).toBe(install);
+  });
+});
+
+describe("install-box.sh's mise (#822)", () => {
+  const VERSION = /^MISE_VERSION=\$\{MISE_VERSION:-([^}]+)\}$/m.exec(SCRIPT)?.[1] ?? "";
+  const ASSET = `mise-v${VERSION}-linux-x64`;
+  const BINARY = "#!/usr/bin/env bash\necho 'the release binary'\n";
+
+  /**
+   * The script's mise section alone, with /usr/local/bin/mise moved into
+   * `root`, and `curl` and `install` stubbed: `curl` answers from
+   * `root/release`, which holds what the release would, and logs each URL.
+   */
+  const installMise = (release: Readonly<Record<string, string>>, have?: string) => {
+    const root = setUp([]);
+    fs.mkdirSync(path.join(root, "release"));
+    for (const [name, content] of Object.entries(release)) fs.writeFileSync(path.join(root, "release", name), content);
+    const stub = (name: string, body: string): void => {
+      fs.writeFileSync(path.join(root, "bin", name), `#!/usr/bin/env bash\n${body}\n`);
+      fs.chmodSync(path.join(root, "bin", name), 0o755);
+    };
+    stub(
+      "curl",
+      'out=; for a in "$@"; do if [ "$prev" = -o ]; then out=$a; fi; prev=$a; url=$a; done\n' +
+        'echo "curl $url" >>"$FAKE/state/calls"\ncp "$FAKE/release/${url##*/}" "$out" 2>/dev/null',
+    );
+    stub("install", 'echo "install $*" >>"$FAKE/state/calls"\ncp "${@: -2:1}" "${@: -1}" && chmod 755 "${@: -1}"');
+    const target = path.join(root, "mise");
+    if (have !== undefined) {
+      fs.writeFileSync(target, `#!/usr/bin/env bash\necho '${have} linux-x64 (2026-10-23)'\n`);
+      fs.chmodSync(target, 0o755);
+    }
+    const [start, end] = between(SCRIPT, 'echo "== mise', 'echo "== The $WORKER_USER user"');
+    const script = `set -euo pipefail\nMISE_VERSION=${VERSION}\n${SCRIPT.slice(start, end).replaceAll("/usr/local/bin/mise", target)}`;
+    return { ...run(root, script), target };
+  };
+  const sha = (text: string): string => createHash("sha256").update(text).digest("hex");
+
+  it("pins a version", () => {
+    expect(VERSION).toMatch(/^\d{4}\.\d+\.\d+$/);
+  });
+
+  it("installs the release's binary to /usr/local/bin/mise where it matches the release's checksums", () => {
+    const { status, output, calls, target } = installMise({ [ASSET]: BINARY, "SHASUMS256.txt": `${sha("other")}  ./mise-v${VERSION}-macos-arm64\n${sha(BINARY)}  ./${ASSET}\n` });
+
+    expect(output).toContain(`installed  mise ${VERSION} (was none), checked against the release's SHASUMS256.txt`);
+    expect(status).toBe(0);
+    expect(fs.readFileSync(target, "utf8")).toBe(BINARY);
+    expect(calls).toContain(`curl https://github.com/jdx/mise/releases/download/v${VERSION}/${ASSET}`);
+    expect(calls).toContain(`curl https://github.com/jdx/mise/releases/download/v${VERSION}/SHASUMS256.txt`);
+  });
+
+  it.each([
+    ["does not match", (binary: string) => `${sha(`${binary}tampered`)}  ${ASSET}\n`],
+    ["names no line for the binary", () => `${sha("other")}  mise-v${VERSION}-linux-arm64\n`],
+  ])("refuses a download whose checksum file %s, and changes nothing", (_, sums) => {
+    const { status, output, calls, target } = installMise({ [ASSET]: BINARY, "SHASUMS256.txt": sums(BINARY) }, "2024.1.0");
+
+    expect(status).toBe(1);
+    expect(output).toContain("does not match the release's SHASUMS256.txt. mise was not changed.");
+    expect(calls.filter((call) => call.startsWith("install "))).toEqual([]);
+    expect(fs.readFileSync(target, "utf8")).toContain("2024.1.0");
+  });
+
+  it("skips the install where that version is already there", () => {
+    const { status, output, calls } = installMise({}, VERSION);
+
+    expect(status).toBe(0);
+    expect(output).toContain(`unchanged  mise ${VERSION}`);
+    expect(calls.filter((call) => call.startsWith("curl ") || call.startsWith("install "))).toEqual([]);
+  });
+
+  it("is repeated, at the same version, in check-box.sh, which checks for it", () => {
+    const check = fs.readFileSync(path.join(DEPLOY, "check-box.sh"), "utf8");
+    expect(/^MISE_VERSION=\$\{MISE_VERSION:-([^}]+)\}$/m.exec(check)?.[1]).toBe(VERSION);
   });
 });
 

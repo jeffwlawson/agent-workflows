@@ -553,6 +553,12 @@ const FIX_PREPARE = {
  */
 const SETUP_CHECK_STEP = { required: true, accepts: ["passed", "failed", "timed-out", "unset", "not-run"] } as const satisfies Input;
 
+/**
+ * How a setup check's toolchain step ended (#822): as `SETUP_CHECK_STEP`, but
+ * `skipped` where the checkout has no `mise.toml`, since it runs no variable.
+ */
+const SETUP_CHECK_TOOLCHAIN = { required: true, accepts: ["passed", "failed", "timed-out", "skipped", "not-run"] } as const satisfies Input;
+
 /** How a job ended, as Actions' `needs.<job>.result` says it. */
 const RESULTS = ["success", "failure", "cancelled", "skipped"] as const satisfies Accepts;
 
@@ -1168,8 +1174,9 @@ const MERGE_PUBLISH = {
  *   On a run that finished, nothing.
  * - `setup-check:report` (#821) ends every setup check, the service's alone:
  *   one comment on `ISSUE_NUMBER` saying how the checkout of `BASE_REF`, the
- *   repository's setup and its verify command each ended, from what the
- *   worker hands it (`CHECKOUT_RESULT`, `SETUP_RESULT`, `VERIFY_RESULT`, each
+ *   toolchain its `mise.toml` asks for (#822), the repository's setup and its
+ *   verify command each ended, from what the worker hands it
+ *   (`CHECKOUT_RESULT`, `TOOLCHAIN_RESULT`, `SETUP_RESULT`, `VERIFY_RESULT`, each
  *   step's exit code and the end of its output, raw), naming the commit it
  *   reads at `CHECKOUT`'s head; then `agent:setup-check` off. A write GitHub
  *   refuses is a warning, so a report that could not be posted still takes the
@@ -1559,6 +1566,9 @@ export const COMMANDS = {
       TIMEOUT_MINUTES: EMPTY,
       CHECKOUT_RESULT: { required: true, accepts: ["passed", "failed", "timed-out"] },
       CHECKOUT_REASON: EMPTY,
+      TOOLCHAIN_RESULT: SETUP_CHECK_TOOLCHAIN,
+      TOOLCHAIN_EXIT: EMPTY,
+      TOOLCHAIN_OUTPUT: EMPTY,
       SETUP_RESULT: SETUP_CHECK_STEP,
       SETUP_EXIT: EMPTY,
       SETUP_OUTPUT: EMPTY,

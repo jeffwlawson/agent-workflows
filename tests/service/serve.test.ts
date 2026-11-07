@@ -5,6 +5,7 @@ import { generateKeyPairSync } from "node:crypto";
 import { Server } from "node:http";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { serveDispatcher, serveWorker } from "../../service/serve.js";
+import { FLEET_DEFAULTS, REPOSITORY_ONLY, type FleetDefault } from "../../service/settings.js";
 
 let scratch: string;
 
@@ -15,6 +16,12 @@ beforeEach(() => {
 afterEach(() => {
   fs.rmSync(scratch, { recursive: true, force: true });
 });
+
+/** The dispatcher's fleet defaults and the names it refuses as one (#824), each unset. */
+const NO_FLEET_DEFAULTS = Object.fromEntries([...FLEET_DEFAULTS, ...Object.keys(REPOSITORY_ONLY)].map((name) => [name, ""])) as Record<
+  FleetDefault | keyof typeof REPOSITORY_ONLY,
+  ""
+>;
 
 const SETTINGS = {
   WORKER_SECRET: "secret",
@@ -106,7 +113,28 @@ describe("the dispatcher's start", () => {
     REDELIVERY_INTERVAL_MINUTES: "5",
     REDELIVERY_WINDOW_MINUTES: "30",
     STATE_FILE: "",
+    ...NO_FLEET_DEFAULTS,
   } as const;
+
+  // #824: each is the repository's alone, so never a fleet default.
+  it.each(["AGENT_ORCHESTRATOR", "AGENT_SETUP", "AGENT_VERIFY"])("refuses %s among its settings, naming it and why, before it reads the App's key", async (name) => {
+    const lines: string[] = [];
+    const key = path.join(scratch, "no-such-key.pem");
+
+    await expect(
+      serveDispatcher({ ...DISPATCHER_SETTINGS, GITHUB_APP_PRIVATE_KEY_FILE: key, SCAN_DISPATCH_LIMIT: "2", [name]: "service" }, (text) => lines.push(text)),
+    ).rejects.toThrow(new RegExp(`^\`${name}\` is set, and cannot be a fleet default: it is the repository's `));
+
+    expect(lines).toEqual([]);
+  });
+
+  it("starts past a fleet default, as far as reading the App's key", async () => {
+    const key = path.join(scratch, "no-such-key.pem");
+
+    await expect(
+      serveDispatcher({ ...DISPATCHER_SETTINGS, GITHUB_APP_PRIVATE_KEY_FILE: key, SCAN_DISPATCH_LIMIT: "2", AGENT_MODEL: "a-model" }, () => {}),
+    ).rejects.toThrow(/`GITHUB_APP_PRIVATE_KEY_FILE` names/);
+  });
 
   // #596: a limit of 0 would not turn the scan off, only stop it dispatching.
   it.each([
@@ -247,6 +275,7 @@ const DISPATCHER_START = {
   REDELIVERY_INTERVAL_MINUTES: "0",
   REDELIVERY_WINDOW_MINUTES: "30",
   STATE_FILE: "",
+  ...NO_FLEET_DEFAULTS,
 } as const;
 
 const MINUTE = 60 * 1000;
@@ -290,12 +319,13 @@ describe("the dispatcher's timed scan", () => {
     for (const server of servers.splice(0)) server.close();
   });
 
-  const start = async (interval: string): Promise<void> => {
+  const start = async (interval: string, more: Partial<typeof NO_FLEET_DEFAULTS> | Readonly<Record<FleetDefault, string>> = {}): Promise<void> => {
     const key = path.join(scratch, "app.pem");
     fs.writeFileSync(key, generateKeyPairSync("rsa", { modulusLength: 2048 }).privateKey.export({ type: "pkcs1", format: "pem" }));
     await serveDispatcher(
       {
         ...DISPATCHER_START,
+        ...more,
         GITHUB_APP_PRIVATE_KEY_FILE: key,
         SCAN_INTERVAL_MINUTES: interval,
       },
@@ -309,6 +339,22 @@ describe("the dispatcher's timed scan", () => {
     for (const resolve of asks.splice(0)) resolve();
     await settle();
   };
+
+  // #824: the names it holds, never their values.
+  it("logs at start the names of the fleet defaults it holds, and none of their values", async () => {
+    await start("0", { AGENT_MODEL: "secret-fleet-model", AGENT_MAX_FIX_ROUNDS: "secret-fleet-rounds" } as Readonly<Record<FleetDefault, string>>);
+    await release();
+
+    expect(lines.filter((line) => line.includes(" fleet defaults: "))).toEqual([expect.stringMatching(/ fleet defaults: AGENT_MODEL, AGENT_MAX_FIX_ROUNDS, /)]);
+    expect(lines.join("")).not.toContain("secret-fleet");
+  });
+
+  it("logs at start that it holds no fleet defaults, where it holds none", async () => {
+    await start("0");
+    await release();
+
+    expect(lines.filter((line) => line.includes(" fleet defaults: "))).toEqual([expect.stringMatching(/ fleet defaults: none\n$/)]);
+  });
 
   it("scans again every SCAN_INTERVAL_MINUTES after the start scan, and a failed scan does not stop the timer", async () => {
     await start("60");

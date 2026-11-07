@@ -49,6 +49,12 @@ the declaration.
    is red until all three are in; a new output file is the same, without the third. Where the
    reusable needs a new caller input or secret to set it, the two-step rule in
    [*This repo runs its own loop*](../adr/0010-this-repo-runs-its-own-loop-on-the-last-release.md) (ADR 0010) applies.
+   **An input read from a repository variable** is one more name in `REPOSITORY_VARIABLES`
+   (`service/job.ts`), so the service carries it, and, unless it is the repository's alone as
+   `AGENT_SETUP` is, one more fleet default (#824): a name in `FLEET_DEFAULTS` and the dispatcher's
+   settings (`service/settings.ts`), its row in the dispatcher's settings table and in the list
+   under *Fleet defaults* in `docs/deploying-the-service.md`. `tests/service/settings.test.ts` is red
+   until all are in.
 6. **A change to anything a runner reads from the record** (a marker, a status context, a trailer,
    a branch pattern, a trusted login) is a change to `docs/platform-spec.md` §4 in the same commit.
    Where TypeScript spells it, it spells it once, in `shared/record.ts`.

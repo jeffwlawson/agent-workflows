@@ -755,7 +755,11 @@ The **dispatcher** (#456) is the only holder of the GitHub App's key. GitHub's w
 one of its doors, and a trigger label's delivery on a repository that opted in, with the App
 installed on its owner's account or one its `EXTRA_OWNERS` lists, becomes a **job**
 for the worker: what the label's event carried, the repository variables the service reads, the App's login read
-off the App's own record, an id, a deadline and the release. A job has a **kind**, one per workflow
+off the App's own record, an id, a deadline and the release. Each variable is the repository's own
+where it has one, else the dispatcher's **fleet default** (#824), a setting of the dispatcher's
+under the variable's own name, else empty, the built-in default; `AGENT_ORCHESTRATOR`,
+`AGENT_SETUP` and `AGENT_VERIFY` are the repository's alone, and the dispatcher refuses to start
+holding one. A job has a **kind**, one per workflow
 the service serves, named in its `workflow` field and routed to from the trigger label: at this
 release the kinds are `review` (`ReviewJob`), from `agent:review`, `fix` (`FixJob`), from
 `agent:fix`, and `update-branch` (`UpdateBranchJob`), from `agent:update-branch`, each on a pull

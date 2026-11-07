@@ -18,7 +18,7 @@ import {
 } from "../service/dispatcher.js";
 import { runFleetCheck } from "../service/fleet-check.js";
 import { serveDispatcher, serveWorker } from "../service/serve.js";
-import { SERVICE } from "../service/settings.js";
+import { FLEET_DEFAULTS, REPOSITORY_ONLY, SERVICE } from "../service/settings.js";
 import { COMMANDS, RUNNERS } from "../shared/contract.js";
 import * as record from "../shared/record.js";
 import { SUBPROCESS_TIMEOUT } from "../vitest.config.js";
@@ -807,7 +807,7 @@ describe("the CLI starts the dispatcher", () => {
   });
 
   it("starts with its declared settings, an optional one unset read as its default", async () => {
-    const { code } = await invoke(["dispatcher"], { ...SETTINGS, TOKEN_PORT: "9001" });
+    const { code } = await invoke(["dispatcher"], { ...SETTINGS, TOKEN_PORT: "9001", AGENT_MODEL: "a-fleet-model" });
 
     expect(code).toBe(0);
     expect(start).toHaveBeenCalledWith(
@@ -825,6 +825,9 @@ describe("the CLI starts the dispatcher", () => {
         REDELIVERY_INTERVAL_MINUTES: "5",
         REDELIVERY_WINDOW_MINUTES: "30",
         STATE_FILE: "",
+        // #824: the fleet defaults, and the names it refuses as one, each read.
+        ...Object.fromEntries([...FLEET_DEFAULTS, ...Object.keys(REPOSITORY_ONLY)].map((name) => [name, ""])),
+        AGENT_MODEL: "a-fleet-model",
       },
       expect.any(Function),
     );

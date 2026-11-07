@@ -288,7 +288,8 @@ repository variables the service reads (`AGENT_MODEL`, `AGENT_MODEL_REVIEW`, `AG
 `AGENT_MODEL_UPDATE_BRANCH`, `AGENT_MODEL_IMPLEMENT`, `AGENT_MODEL_IMPLEMENT_PRD`, `AGENT_EFFORT`,
 `AGENT_EFFORT_REVIEW`, `AGENT_EFFORT_FIX`, `AGENT_EFFORT_UPDATE_BRANCH`, `AGENT_EFFORT_IMPLEMENT`,
 `AGENT_EFFORT_IMPLEMENT_PRD`, `AGENT_PROMPT_CACHE_TTL`, `AGENT_REVIEW_TIMEOUT_MINUTES`, `AGENT_TIMEOUT_MINUTES`, `AGENT_MAX_FIX_ROUNDS`, `AGENT_FIX_MIN_SEVERITY`, `AGENT_SETUP` and `AGENT_VERIFY`,
-each unset as empty), the App's login, a job id, a deadline and the package's version. An
+each the repository's own, else the dispatcher's fleet default, else empty: [*Fleet
+defaults*](#fleet-defaults), below), the App's login, a job id, a deadline and the package's version. An
 implement job and an implement-prd job each carry the issue's number, title and state, and the
 repository's default branch as its base, which stands in for the `default-branch` a caller hands
 `implement.yml` and `implement-prd.yml`; a setup-check job carries the same. A follow-ups job carries the pull request's number alone,
@@ -328,8 +329,72 @@ so does an App whose own record cannot be read, since that is where the App's ow
 | `REDELIVERY_INTERVAL_MINUTES` | optional | `5` | how many minutes apart the dispatcher lists the App's recent webhook deliveries and asks GitHub to send again each that failed (*What it does not keep*, below); it also does so at start. One list call each time, and a line only when it asks for a redelivery or the list cannot be read. At most `1440`, a day: more is refused at start, naming the setting. `0` turns the poll off |
 | `REDELIVERY_WINDOW_MINUTES` | optional | `30` | how many minutes back a failed delivery is redelivered; one older is left lost, so an event long past is never sent again. A positive whole number: `0` is refused at start |
 | `STATE_FILE` | optional | `""` | the path of the file the dispatcher keeps its dispatched jobs and the scan's counts in, so a restart keeps them (*What it does not keep*, below). Empty is none: both are held in memory only. A full disk, read-only mount or no permission at start warns once and runs from memory until a write succeeds (*What it does not keep*, below); any other error is refused at start, naming the setting. One dispatcher per file |
+| `AGENT_MODEL` | optional | `""` | a fleet default: the value a job's `AGENT_MODEL` takes where the repository has no such variable ([*Fleet defaults*](#fleet-defaults), below). Empty is none |
+| `AGENT_MODEL_REVIEW` | optional | `""` | a fleet default: the value a job's `AGENT_MODEL_REVIEW` takes where the repository has no such variable ([*Fleet defaults*](#fleet-defaults), below). Empty is none |
+| `AGENT_MODEL_FIX` | optional | `""` | a fleet default: the value a job's `AGENT_MODEL_FIX` takes where the repository has no such variable ([*Fleet defaults*](#fleet-defaults), below). Empty is none |
+| `AGENT_MODEL_UPDATE_BRANCH` | optional | `""` | a fleet default: the value a job's `AGENT_MODEL_UPDATE_BRANCH` takes where the repository has no such variable ([*Fleet defaults*](#fleet-defaults), below). Empty is none |
+| `AGENT_MODEL_IMPLEMENT` | optional | `""` | a fleet default: the value a job's `AGENT_MODEL_IMPLEMENT` takes where the repository has no such variable ([*Fleet defaults*](#fleet-defaults), below). Empty is none |
+| `AGENT_MODEL_IMPLEMENT_PRD` | optional | `""` | a fleet default: the value a job's `AGENT_MODEL_IMPLEMENT_PRD` takes where the repository has no such variable ([*Fleet defaults*](#fleet-defaults), below). Empty is none |
+| `AGENT_EFFORT` | optional | `""` | a fleet default: the value a job's `AGENT_EFFORT` takes where the repository has no such variable ([*Fleet defaults*](#fleet-defaults), below). Empty is none |
+| `AGENT_EFFORT_REVIEW` | optional | `""` | a fleet default: the value a job's `AGENT_EFFORT_REVIEW` takes where the repository has no such variable ([*Fleet defaults*](#fleet-defaults), below). Empty is none |
+| `AGENT_EFFORT_FIX` | optional | `""` | a fleet default: the value a job's `AGENT_EFFORT_FIX` takes where the repository has no such variable ([*Fleet defaults*](#fleet-defaults), below). Empty is none |
+| `AGENT_EFFORT_UPDATE_BRANCH` | optional | `""` | a fleet default: the value a job's `AGENT_EFFORT_UPDATE_BRANCH` takes where the repository has no such variable ([*Fleet defaults*](#fleet-defaults), below). Empty is none |
+| `AGENT_EFFORT_IMPLEMENT` | optional | `""` | a fleet default: the value a job's `AGENT_EFFORT_IMPLEMENT` takes where the repository has no such variable ([*Fleet defaults*](#fleet-defaults), below). Empty is none |
+| `AGENT_EFFORT_IMPLEMENT_PRD` | optional | `""` | a fleet default: the value a job's `AGENT_EFFORT_IMPLEMENT_PRD` takes where the repository has no such variable ([*Fleet defaults*](#fleet-defaults), below). Empty is none |
+| `AGENT_PROMPT_CACHE_TTL` | optional | `""` | a fleet default: the value a job's `AGENT_PROMPT_CACHE_TTL` takes where the repository has no such variable ([*Fleet defaults*](#fleet-defaults), below). Empty is none |
+| `AGENT_REVIEW_TIMEOUT_MINUTES` | optional | `""` | a fleet default: the value a job's `AGENT_REVIEW_TIMEOUT_MINUTES` takes where the repository has no such variable ([*Fleet defaults*](#fleet-defaults), below). Empty is none |
+| `AGENT_TIMEOUT_MINUTES` | optional | `""` | a fleet default: the value a job's `AGENT_TIMEOUT_MINUTES` takes where the repository has no such variable ([*Fleet defaults*](#fleet-defaults), below). Empty is none |
+| `AGENT_MAX_FIX_ROUNDS` | optional | `""` | a fleet default: the value a job's `AGENT_MAX_FIX_ROUNDS` takes where the repository has no such variable ([*Fleet defaults*](#fleet-defaults), below). Empty is none |
+| `AGENT_FIX_MIN_SEVERITY` | optional | `""` | a fleet default: the value a job's `AGENT_FIX_MIN_SEVERITY` takes where the repository has no such variable ([*Fleet defaults*](#fleet-defaults), below). Empty is none |
+| `AGENT_ORCHESTRATOR` | optional | `""` | never a fleet default: the repository's opt-in. Set, the dispatcher refuses to start, naming it |
+| `AGENT_SETUP` | optional | `""` | never a fleet default: the repository's own setup script, which only its admin sets. Set, the dispatcher refuses to start, naming it |
+| `AGENT_VERIFY` | optional | `""` | never a fleet default: the repository's own verify command, which only its admin sets. Set, the dispatcher refuses to start, naming it |
 
 Each door also answers `GET /health` with `200`.
+
+### Fleet defaults
+
+A fleet-wide choice, the model, effort, the time limits, the fix-round budget or the fix
+threshold, need not be one variable per repository (#824). The dispatcher's settings may hold a
+**fleet default** under a repository variable's own name, and for each job each variable resolves
+in this order:
+
+1. the repository's variable, where it exists, whatever its value, empty included;
+2. the dispatcher's fleet default, where it has one; one set but empty is none;
+3. the built-in default, as the job's runner applies it to an empty value.
+
+So a repository variable is an override, not a requirement. Set them where the dispatcher's other
+settings are set, in its environment: on Unraid, its `service.env` (*A worked example*, below).
+Nothing goes in `agent-service.conf`. A change takes effect when the dispatcher next starts with it in
+its environment; on Unraid, Docker reads `service.env` only when it creates the container, so a
+change there means a new container (*A worked example*, below).
+
+A fleet default is passed on exactly as the repository's own variable would have been: the job
+carries the resolved value in `variables`, its deadline is worked out from the resolved time
+limits, and the checks that run on a repository's value (a time limit, a severity, a budget) run
+on it unchanged. Nothing new validates it.
+
+The names a fleet default may take, `FLEET_DEFAULTS` in `service/settings.ts`, are every
+repository variable the service reads but the repository's own scripts:
+
+- `AGENT_MODEL`, `AGENT_MODEL_REVIEW`, `AGENT_MODEL_FIX`, `AGENT_MODEL_UPDATE_BRANCH`,
+  `AGENT_MODEL_IMPLEMENT`, `AGENT_MODEL_IMPLEMENT_PRD`;
+- `AGENT_EFFORT`, `AGENT_EFFORT_REVIEW`, `AGENT_EFFORT_FIX`, `AGENT_EFFORT_UPDATE_BRANCH`,
+  `AGENT_EFFORT_IMPLEMENT`, `AGENT_EFFORT_IMPLEMENT_PRD`;
+- `AGENT_PROMPT_CACHE_TTL`;
+- `AGENT_REVIEW_TIMEOUT_MINUTES`, `AGENT_TIMEOUT_MINUTES`;
+- `AGENT_MAX_FIX_ROUNDS`, `AGENT_FIX_MIN_SEVERITY`.
+
+A release that adds a repository variable adds it to this list. A name outside it is not a fleet
+default and is not read. Three names are the repository's alone, and the dispatcher **refuses to
+start** with any of them set, naming the setting and why:
+
+- `AGENT_ORCHESTRATOR`: the repository's opt-in to the service;
+- `AGENT_SETUP` and `AGENT_VERIFY`: the repository's own scripts, which only its admin sets.
+
+Where a setting came from is in the dispatcher's log, by name, never by value. At start it logs
+`fleet defaults:` and the names it holds, or `none`. Each dispatch's line ends `, with fleet
+defaults for` and the names a job took from them, where it took any.
 
 ### What it does not keep
 
@@ -872,7 +937,7 @@ job for its item.
 
 A repository's setup is its repository variable `AGENT_SETUP`: a script, the install and anything
 else its verify command needs, the same text a caller's `setup:` input holds on Actions. Only an
-admin can set it. The dispatcher reads it with the other variables and the job carries it; the
+admin can set it. It is never a fleet default ([*Fleet defaults*](#fleet-defaults)). The dispatcher reads it with the other variables and the job carries it; the
 worker hands it to the sandbox's shell through the environment, as written, and never splices it
 into a command line. Unset or empty, the setup is skipped. A fix job runs it after `fix:prepare`
 and before its runner, an implement job after `implement:prepare`, an implement-prd job after

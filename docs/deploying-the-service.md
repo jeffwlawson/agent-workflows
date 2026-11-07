@@ -931,8 +931,9 @@ jobs**, each downloads what it asks for again (ADR 0012). The checkout is truste
 through mise's environment, with no prompt, and no trust is written anywhere.
 
 Once it passed, the installed tools' `bin` directories, as `mise bin-paths` reports them and only
-those inside `.agent-toolchain`, come first on the `PATH` of the setup, the verify command and the
-agent. **Only the tools reach them**: not the file's `[env]`, its tasks or its hooks, though
+those inside `.agent-toolchain`, come first on the `PATH` of the setup and the verify command, and
+on the agent's right after the worker's own `claude`, so a `claude` the repository installs never
+shadows the one pinned at `CLAUDE_CODE_VERSION`. **Only the tools reach them**: not the file's `[env]`, its tasks or its hooks, though
 `mise install` itself runs any install hooks the file has, in the sandbox, as a pull request's
 setup already runs that pull request's code. mise reads whatever else it reads once triggered,
 `.tool-versions` included, but a `mise.toml` is what to write. Python is a prebuilt build, so it
@@ -940,7 +941,9 @@ needs no compiler.
 
 Without a `mise.toml` the phase is noted as skipped, no sandbox is started, and the job runs as it
 did. A failed or timed-out install ends the job as a failed setup does, with the setup not run: the
-failure names `mise.toml` and quotes the end of mise's output. A box with no `/usr/local/bin/mise`
+failure names `mise.toml` and quotes the end of mise's output. A repository whose tree already
+has `.agent-toolchain` (a file, a folder, anything in one) is refused the same way before mise
+runs, since what is tracked there would not be ignored. A box with no `/usr/local/bin/mise`
 says so and to re-run `install-box.sh`.
 
 **The proxy** must let mise's downloads through: `mise-versions.jdx.dev` is on the base list, and

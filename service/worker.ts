@@ -184,7 +184,7 @@ export interface JobEdges {
    * and the sandbox's four inputs, the CLI's prefix already in them.
    */
   readonly agent: Readonly<Record<string, string>>;
-  /** Where the worker's own `claude` is, put first on the runner's `PATH`, after any toolchain's (#822). */
+  /** Where the worker's own `claude` is, put first on the runner's `PATH` and the agent's, ahead of any toolchain's (#822). */
   readonly cliBin: string;
   /**
    * Where the box's mise is, on the host and so in the sandbox, which sees
@@ -556,9 +556,10 @@ export interface Run {
   /**
    * Starts a runner as `run` does, handed what the worker's settings give the
    * agent and the sandbox, with the worker's own `claude` first on its `PATH`.
-   * After a toolchain was installed (#822), its `bin` directories come first
-   * on `AGENT_SANDBOX_PATH`, and, with `AGENT_SANDBOX=none`, where the agent
-   * runs as the runner does, on the runner's `PATH` too.
+   * After a toolchain was installed (#822), its `bin` directories come next,
+   * right after that `claude`, on `AGENT_SANDBOX_PATH`, and, with
+   * `AGENT_SANDBOX=none`, where the agent runs as the runner does, on the
+   * runner's `PATH` too.
    */
   readonly runAgent: (runner: Runner, values: Readonly<Record<string, string | undefined>>, cwd: string, signal: AbortSignal) => Promise<Ran>;
   /**
@@ -583,7 +584,10 @@ export interface Run {
    * which git is first made to ignore, and the checkout trusted for that run
    * alone. Once it passed, the `bin` directories mise reports, those inside
    * `TOOLCHAIN_DIR` alone, come first on the `PATH` of every later sandboxed
-   * phase and of the agent's runner. Nothing else of `mise.toml` reaches them.
+   * phase, and right after the worker's own `claude` on the agent's.
+   * A tree that already has `TOOLCHAIN_DIR` is refused as a failed install,
+   * and so is any error preparing for mise or reading what it wrote: none
+   * is thrown out of the job. Nothing else of `mise.toml` reaches them.
    * Without one it is noted as skipped and no sandbox is started.
    */
   readonly toolchain: (signal: AbortSignal) => Promise<ToolchainRan>;
@@ -795,12 +799,28 @@ export const startRun = (job: Job, edges: JobEdges): Run => {
       note(TOOLCHAIN_PHASE, `failure: ${failureReason}`);
       return { result: "failed", output: failureReason, failureReason };
     }
+    /** A toolchain that did not get as far as mise, or whose result could not be read: failed, with why, never thrown. */
+    const refused = (failureReason: string): ToolchainRan => {
+      note(TOOLCHAIN_PHASE, `failure: ${failureReason}`);
+      return { result: "failed", output: failureReason, failureReason };
+    };
     const folder = path.join(checkout, TOOLCHAIN_DIR);
-    // Whatever the tree put at the folder's name, a link is not followed:
-    // the folder is the sandbox's to make, and the host reads it after.
-    if (fs.lstatSync(folder, { throwIfNoEntry: false })?.isSymbolicLink() === true) fs.rmSync(folder);
-    fs.rmSync(path.join(folder, TOOLCHAIN_BIN_PATHS), { force: true });
-    excludeFromGit(checkout, TOOLCHAIN_DIR);
+    // The folder is the sandbox's to make, and the host reads it after, so
+    // anything the tree put at its name (a file, a link, a folder, anything
+    // in one) is refused rather than removed or read: what is tracked there
+    // is not hidden by the git exclude, and would be committed beside it.
+    let held: boolean;
+    try {
+      held = fs.lstatSync(folder, { throwIfNoEntry: false }) !== undefined;
+      if (!held) excludeFromGit(checkout, TOOLCHAIN_DIR);
+    } catch (error) {
+      return refused(`${what} could not be prepared: ${message(error)}`);
+    }
+    if (held) {
+      return refused(
+        `${what} was not installed: the repository's tree already has \`${TOOLCHAIN_DIR}\`, the folder the worker installs the toolchain into. Remove it from the tree, or rename it, and run again.`,
+      );
+    }
     const inside = `${at}/${TOOLCHAIN_DIR}`;
     const quotedMise = `'${mise.replaceAll("'", `'\\''`)}'`;
     const ran = await inSandbox(
@@ -814,7 +834,11 @@ export const startRun = (job: Job, edges: JobEdges): Run => {
       signal,
     );
     if (ran.result !== "passed") return ran;
-    toolBins = binPaths(folder, inside);
+    try {
+      toolBins = binPaths(folder, inside);
+    } catch (error) {
+      return refused(`${what} installed, but what \`mise bin-paths\` wrote could not be read: ${message(error)}`);
+    }
     return ran;
   };
 
@@ -851,16 +875,18 @@ export const startRun = (job: Job, edges: JobEdges): Run => {
       // With no sandbox the agent runs as the runner does, so the toolchain
       // goes on the runner's own `PATH`; under `bwrap` its paths are the
       // sandbox's, and `AGENT_SANDBOX_PATH` carries them.
+      // The worker's own `claude` stays first on both, ahead of the
+      // toolchain's, so a `claude` the repository installs never shadows the
+      // one pinned at `CLAUDE_CODE_VERSION`.
       const runnerTools = edges.agent["AGENT_SANDBOX"] === "bwrap" ? [] : toolBins;
+      const cliFirst = (rest: readonly (string | undefined)[], tools: readonly string[]): string =>
+        [edges.cliBin, ...tools, ...rest.flatMap((part) => (part ?? "").split(":")).filter((part) => part !== edges.cliBin)].filter((part) => part !== "").join(":");
       return launch(
         runner,
-        { ...edges.agent, ...(sandboxPath === undefined || toolBins.length === 0 ? {} : { AGENT_SANDBOX_PATH: withTools(sandboxPath) }), ...values },
+        { ...edges.agent, ...(sandboxPath === undefined || toolBins.length === 0 ? {} : { AGENT_SANDBOX_PATH: cliFirst([sandboxPath], toolBins) }), ...values },
         cwd,
         signal,
-        {
-          ...edges.host,
-          PATH: [...runnerTools, edges.cliBin, edges.host.PATH].filter((part) => part !== undefined && part !== "").join(":"),
-        },
+        { ...edges.host, PATH: cliFirst([edges.host.PATH], runnerTools) },
       );
     },
     setup,

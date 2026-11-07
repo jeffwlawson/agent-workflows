@@ -354,9 +354,12 @@ repository.
 > `.git/info/exclude`, so nothing committed or pushed carries it and it goes with the checkout:
 > nothing is kept between jobs (ADR 0012). The checkout is trusted for that run alone, through
 > mise's environment, so no trust is written anywhere. After it passes, the `bin` directories
-> `mise bin-paths` reports, those inside the folder alone, come first on the `PATH` of the setup,
-> the verify command and the agent (`AGENT_SANDBOX_PATH`, and the runner's own `PATH` under
-> `none`). Nothing else of `mise.toml` reaches them: not its `[env]`, its tasks or its hooks,
+> `mise bin-paths` reports, those inside the folder alone, come first on the `PATH` of the setup
+> and the verify command, and on the agent's right after the worker's own `claude`
+> (`AGENT_SANDBOX_PATH`, and the runner's own `PATH` under `none`), so a `claude` the repository
+> installs never shadows the one pinned at `CLAUDE_CODE_VERSION`. A tree that already has
+> `.agent-toolchain`, as a file, a folder or anything in one, is refused before mise runs, as a
+> failed install. Nothing else of `mise.toml` reaches them: not its `[env]`, its tasks or its hooks,
 > though `mise install` runs its install hooks in the sandbox, as a pull request's setup already
 > runs its code. Without a `mise.toml` the phase is noted as skipped and no sandbox is started. A
 > failed or timed-out install ends the agent's job as a failed or timed-out setup does, the setup
@@ -808,8 +811,8 @@ build, and an orchestrator other than Actions sets its environment in its own co
 >   `agent:review` `implement:publish` adds names the App's login as its sender, which the
 >   dispatcher trusts, so it answers it as a review job.
 >
-> Not run: `node-version-file`, since the sandbox runs the worker box's own Node, and the session
-> transcript's upload.
+> Not run: the session transcript's upload. `node-version-file` is not read: the sandbox runs the
+> worker box's own Node, and a `mise.toml` is how a repository asks for another (§3, #822).
 
 ### `implement:gate`
 
@@ -1397,8 +1400,9 @@ earlier run of this PRD left commits on `RESCUE_BRANCH`, that branch fetched to
 > chain up at the next `agent:implement`. Each slice is a job of its own, so another repository's
 > jobs run between two slices of a chain.
 >
-> Not run: `node-version-file`, since the sandbox runs the worker box's own Node, the session
-> transcript's upload, and the write logs' upload, which stay in the run's directory.
+> Not run: the session transcript's upload, and the write logs' upload, which stay in the run's
+> directory. `node-version-file` is not read: the sandbox runs the worker box's own Node, and a
+> `mise.toml` is how a repository asks for another (§3, #822).
 
 ### `implement-prd:gate`
 
@@ -2858,8 +2862,8 @@ diffing, which the orchestrator prepares, and `RESCUE_BRANCH` fetched to
 >   the head of their own, never the agent's, so nothing the agent's job touched is where the
 >   `push` token is used, and a rescue is checked against the head the round started from.
 >
-> Not run: `node-version-file`, since the sandbox runs the worker box's own Node, and the session
-> transcript's upload.
+> Not run: the session transcript's upload. `node-version-file` is not read: the sandbox runs the
+> worker box's own Node, and a `mise.toml` is how a repository asks for another (§3, #822).
 
 ### `fix:gate`
 
@@ -3352,8 +3356,8 @@ neither.
 >   reason does not hold: the guard is harmless there, and only leaves the re-request to a person
 >   where another label's job is still to run.
 >
-> Not run: `node-version-file`, since the sandbox runs the worker box's own Node, and the session
-> transcript's upload.
+> Not run: the session transcript's upload. `node-version-file` is not read: the sandbox runs the
+> worker box's own Node, and a `mise.toml` is how a repository asks for another (§3, #822).
 
 ### `update-branch:gate`
 

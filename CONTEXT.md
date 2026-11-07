@@ -845,8 +845,8 @@ blocks, built from shared phase primitives: ask for a token, run a subcommand, r
 runner, and run the repository's setup, `AGENT_SETUP`, in the bwrap sandbox in the checkout with no
 token, never on the worker's host. Right before that setup, in every job that runs one, comes the
 `toolchain` phase (#822): where the checkout has a `mise.toml`, `mise install` in the same sandbox,
-into a git-ignored folder in the checkout, whose `bin` directories then come first on the setup's,
-the verify command's and the agent's `PATH`; without one it is skipped, so the box's `/usr` is a
+into a git-ignored folder in the checkout, whose `bin` directories then come first on the setup's
+and the verify command's `PATH`, and on the agent's right after the worker's own `claude`; without one it is skipped, so the box's `/usr` is a
 repository's runtime only where the repository asks for none. It writes nothing
 to the record and spells no record string; what it reads between phases is the hand-over the
 reusable's glue steps read, copied across as it is; a phase it did not start gets its reason

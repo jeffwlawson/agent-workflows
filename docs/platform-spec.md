@@ -356,7 +356,8 @@ repository.
 > mise's environment, so no trust is written anywhere. After it passes, the `bin` directories
 > `mise bin-paths` reports, those inside the folder alone, come first on the `PATH` of the setup
 > and the verify command, and on the agent's right after the worker's own `claude`
-> (`AGENT_SANDBOX_PATH`, and the runner's own `PATH` under `none`), so a `claude` the repository
+> (`AGENT_SANDBOX_PATH`), under `bwrap` alone: under `none` the runner is a host process holding
+> the tokens, so the toolchain stays off its `PATH`, and the run notes it. So a `claude` the repository
 > installs never shadows the one pinned at `CLAUDE_CODE_VERSION`. A tree that already has
 > `.agent-toolchain`, as a file, a folder or anything in one, is refused before mise runs, as a
 > failed install. Nothing else of `mise.toml` reaches them: not its `[env]`, its tasks or its hooks,

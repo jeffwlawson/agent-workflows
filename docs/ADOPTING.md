@@ -576,7 +576,7 @@ so they cost a run per label and carry a pin to keep fresh (§4). Keep them wher
   box's Python or Node is not the one the repository needs, write a `mise.toml`** at its root
   (`[tools]`, say `python = "3.12"`): every job installs what it asks for with mise, in the
   sandbox, before `AGENT_SETUP`, and puts it first on the setup's and the verify command's `PATH`,
-  and on the agent's after its own `claude`
+  and, under `AGENT_SANDBOX=bwrap`, on the agent's after its own `claude`
   ([deploying-the-service.md](./deploying-the-service.md#the-toolchain-misetoml)). The box's
   operator may need to let Node's downloads through the proxy (`EGRESS_PRESETS="node"`). `doctor` warns
   where a caller still installed passes `setup:` and `AGENT_SETUP` is unset or empty, or could not

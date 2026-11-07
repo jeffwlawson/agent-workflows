@@ -3027,17 +3027,22 @@ describe("the toolchain, before the setup (#822)", () => {
     expect(s.env("implement")["PATH"]).toBe(`/work/claude-code/bin:${HOST.PATH}`);
   });
 
-  it("puts them first on the runner's own PATH under AGENT_SANDBOX=none, where the checkout is seen at its own path", async () => {
+  it("keeps them off the runner's PATH under AGENT_SANDBOX=none, where the runner holds the tokens on the host, and notes that only setup and verify get them", async () => {
     const binOf = (checkout: string): string => `${checkout}/${TOOLCHAIN_DIR}/installs/python/3.12/bin`;
     const s = setup(IMPLEMENT_ORDINARY, { checkoutFiles: MISE_TOML, toolchainBins: (checkout) => [binOf(checkout), `${INSIDE}/x/bin`, "/opt/elsewhere/bin"] });
-    await runJob(WITH_SETUP, { ...s.edges, agent: { ...AGENT, AGENT_SANDBOX: "none" } });
+    const phases = await runJob(WITH_SETUP, { ...s.edges, agent: { ...AGENT, AGENT_SANDBOX: "none" } });
 
     const checkout = path.join(s.runDir, "checkout");
     const bin = binOf(checkout);
     expect(s.sandboxed[0]).toMatchObject({ at: checkout, env: { MISE_DATA_DIR: path.join(checkout, TOOLCHAIN_DIR), MISE_TRUSTED_CONFIG_PATHS: checkout } });
     expect(s.sandboxed[1]?.path).toBe(`${bin}:${AGENT.AGENT_SANDBOX_PATH}`);
-    expect(s.env("implement")["PATH"]).toBe(`/work/claude-code/bin:${bin}:${HOST.PATH}`);
-    expect(s.env("implement")["AGENT_SANDBOX_PATH"]).toBe(`/work/claude-code/bin:${bin}:/usr/bin`);
+    expect(s.env("implement")["PATH"]).toBe(`/work/claude-code/bin:${HOST.PATH}`);
+    expect(s.env("implement")["PATH"]?.split(":").some((part) => part.includes(TOOLCHAIN_DIR))).toBe(false);
+    expect(s.env("implement")["AGENT_SANDBOX_PATH"]).toBe(AGENT.AGENT_SANDBOX_PATH);
+    expect(phases).toContainEqual({
+      name: TOOLCHAIN_PHASE,
+      outcome: "not on the agent's PATH: with AGENT_SANDBOX=none the agent runs on the host, so the toolchain reaches the setup and the verify command only",
+    });
   });
 
   it.each(["bwrap", "none"])(
@@ -3066,8 +3071,8 @@ describe("the toolchain, before the setup (#822)", () => {
         expect(parts[0]).toBe("/work/claude-code/bin");
         expect(parts.indexOf(tools)).toBeGreaterThan(parts.indexOf("/work/claude-code/bin"));
       }
-      expect(s.env("implement")["AGENT_SANDBOX_PATH"]?.split(":")).toContain(tools);
-      if (mode === "none") expect(s.env("implement")["PATH"]?.split(":")).toContain(tools);
+      if (mode === "bwrap") expect(s.env("implement")["AGENT_SANDBOX_PATH"]?.split(":")).toContain(tools);
+      expect(s.env("implement")["PATH"]?.split(":")[0]).toBe("/work/claude-code/bin");
     },
   );
 
@@ -3146,6 +3151,18 @@ describe("the toolchain, before the setup (#822)", () => {
     const status = execFileSync("git", ["status", "--porcelain", "--untracked-files=all", "--ignored=no"], { cwd: checkout, encoding: "utf8", timeout: SUBPROCESS_TIMEOUT });
     expect(status.split("\n").filter((line) => line.includes(TOOLCHAIN_DIR))).toEqual([]);
     expect(status).toContain("mise.toml");
+  });
+
+  it.each(["!/.agent-toolchain/", "!.*"])("refuses, as a failed install, a real checkout whose .gitignore holds %s, which the git exclude does not win against", async (line) => {
+    const s = setup(IMPLEMENT_ORDINARY, { checkoutFiles: { ...MISE_TOML, ".gitignore": `${line}\n` }, gitCheckout: true, toolchainBins: BINS });
+    const phases = await runJob(WITH_SETUP, s.edges);
+
+    expect(s.sandboxed).toEqual([]);
+    expect(s.events).not.toContain("implement");
+    expect(phases).toContainEqual({ name: SETUP_PHASE, outcome: "not run: the toolchain mise.toml asks for was not installed" });
+    const reason = fs.readFileSync(path.join(s.env("implement:conclude")["IMPLEMENT_DIR"]!, "failure_reason.txt"), "utf8");
+    expect(reason).toMatch(/^The toolchain `mise\.toml` asks for \(`mise install`\) was not installed: git does not ignore `\.agent-toolchain\/`/);
+    expect(s.env("implement:conclude")).toMatchObject({ AGENT_RESULT: "failure" });
   });
 
   it.each<[string, { readonly checkoutDirs?: readonly string[]; readonly checkoutFiles?: Readonly<Record<string, string>>; readonly gitCheckout?: boolean }, RegExp]>([

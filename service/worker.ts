@@ -1,3 +1,4 @@
+import { execFileSync } from "node:child_process";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { SANDBOX_WORKTREE } from "../engine/bwrap-args.js";
@@ -333,6 +334,9 @@ export const TOOLCHAIN_DIR = ".agent-toolchain";
 /** The file in `TOOLCHAIN_DIR` the toolchain's script writes `mise bin-paths` to: one directory a line. */
 export const TOOLCHAIN_BIN_PATHS = "bin-paths.txt";
 
+/** How long `git check-ignore` on the toolchain folder may take, in milliseconds. */
+const GIT_CHECK_MS = 30_000;
+
 /** Where `install-box.sh` installs mise on the box. */
 export const BOX_MISE = "/usr/local/bin/mise";
 
@@ -451,9 +455,9 @@ const message = (error: unknown): string => (error instanceof Error ? error.mess
  * nothing committed in the checkout can carry it and no diff shows it. A
  * checkout with no `.git` folder has no git to tell.
  */
-const excludeFromGit = (checkout: string, name: string): void => {
+const excludeFromGit = (checkout: string, name: string): boolean => {
   const git = path.join(checkout, ".git");
-  if (fs.lstatSync(git, { throwIfNoEntry: false })?.isDirectory() !== true) return;
+  if (fs.lstatSync(git, { throwIfNoEntry: false })?.isDirectory() !== true) return false;
   const exclude = path.join(git, "info", "exclude");
   const line = `/${name}/`;
   let held = "";
@@ -462,9 +466,26 @@ const excludeFromGit = (checkout: string, name: string): void => {
   } catch {
     // None yet.
   }
-  if (held.split("\n").includes(line)) return;
+  if (held.split("\n").includes(line)) return true;
   fs.mkdirSync(path.dirname(exclude), { recursive: true });
   fs.appendFileSync(exclude, `${held === "" || held.endsWith("\n") ? "" : "\n"}${line}\n`);
+  return true;
+};
+
+/**
+ * Whether git, in `checkout`, ignores `name`, a folder at its root: the
+ * exclude line does not win against the repository's own `.gitignore`,
+ * where `!/<name>/` or `!.*` un-ignores it. Exit 0 is ignored, 1 is not;
+ * anything else is thrown, so a caller fails closed on it too.
+ */
+const gitIgnores = (checkout: string, name: string): boolean => {
+  try {
+    execFileSync("git", ["-C", checkout, "check-ignore", "-q", `${name}/`], { stdio: "ignore", timeout: GIT_CHECK_MS });
+    return true;
+  } catch (error) {
+    if ((error as { status?: unknown }).status === 1) return false;
+    throw error;
+  }
 };
 
 /**
@@ -557,9 +578,9 @@ export interface Run {
    * Starts a runner as `run` does, handed what the worker's settings give the
    * agent and the sandbox, with the worker's own `claude` first on its `PATH`.
    * After a toolchain was installed (#822), its `bin` directories come next,
-   * right after that `claude`, on `AGENT_SANDBOX_PATH`, and, with
-   * `AGENT_SANDBOX=none`, where the agent runs as the runner does, on the
-   * runner's `PATH` too.
+   * right after that `claude`, on `AGENT_SANDBOX_PATH`, under `bwrap` alone:
+   * with `AGENT_SANDBOX=none` the runner is a host process holding the
+   * tokens, so the toolchain stays off its `PATH`, and that is noted.
    */
   readonly runAgent: (runner: Runner, values: Readonly<Record<string, string | undefined>>, cwd: string, signal: AbortSignal) => Promise<Ran>;
   /**
@@ -584,7 +605,8 @@ export interface Run {
    * which git is first made to ignore, and the checkout trusted for that run
    * alone. Once it passed, the `bin` directories mise reports, those inside
    * `TOOLCHAIN_DIR` alone, come first on the `PATH` of every later sandboxed
-   * phase, and right after the worker's own `claude` on the agent's.
+   * phase, and right after the worker's own `claude` on the agent's under
+   * `bwrap`. A `.gitignore` that un-ignores `TOOLCHAIN_DIR` is refused too.
    * A tree that already has `TOOLCHAIN_DIR` is refused as a failed install,
    * and so is any error preparing for mise or reading what it wrote: none
    * is thrown out of the job. Nothing else of `mise.toml` reaches them.
@@ -810,15 +832,21 @@ export const startRun = (job: Job, edges: JobEdges): Run => {
     // in one) is refused rather than removed or read: what is tracked there
     // is not hidden by the git exclude, and would be committed beside it.
     let held: boolean;
+    let ignored = true;
     try {
       held = fs.lstatSync(folder, { throwIfNoEntry: false }) !== undefined;
-      if (!held) excludeFromGit(checkout, TOOLCHAIN_DIR);
+      if (!held && excludeFromGit(checkout, TOOLCHAIN_DIR)) ignored = gitIgnores(checkout, TOOLCHAIN_DIR);
     } catch (error) {
       return refused(`${what} could not be prepared: ${message(error)}`);
     }
     if (held) {
       return refused(
         `${what} was not installed: the repository's tree already has \`${TOOLCHAIN_DIR}\`, the folder the worker installs the toolchain into. Remove it from the tree, or rename it, and run again.`,
+      );
+    }
+    if (!ignored) {
+      return refused(
+        `${what} was not installed: git does not ignore \`${TOOLCHAIN_DIR}/\`, the folder the worker installs the toolchain into, though the checkout's \`.git/info/exclude\` names it, so the repository's \`.gitignore\` un-ignores it (\`!/${TOOLCHAIN_DIR}/\`, or \`!.*\`). Make the \`.gitignore\` leave \`${TOOLCHAIN_DIR}/\` ignored, and run again.`,
       );
     }
     const inside = `${at}/${TOOLCHAIN_DIR}`;
@@ -873,21 +901,27 @@ export const startRun = (job: Job, edges: JobEdges): Run => {
     run: (subcommand, values, cwd, signal) => launch(subcommand, values, cwd, signal, edges.host),
     runAgent: (runner, values, cwd, signal) => {
       const sandboxPath = edges.agent["AGENT_SANDBOX_PATH"];
-      // With no sandbox the agent runs as the runner does, so the toolchain
-      // goes on the runner's own `PATH`; under `bwrap` its paths are the
-      // sandbox's, and `AGENT_SANDBOX_PATH` carries them.
-      // The worker's own `claude` stays first on both, ahead of the
-      // toolchain's, so a `claude` the repository installs never shadows the
-      // one pinned at `CLAUDE_CODE_VERSION`.
-      const runnerTools = edges.agent["AGENT_SANDBOX"] === "bwrap" ? [] : toolBins;
+      // Only under `bwrap` does the agent see the toolchain, through
+      // `AGENT_SANDBOX_PATH`. With no sandbox the runner is a host process
+      // holding `GH_TOKEN` and `CLAUDE_CODE_OAUTH_TOKEN` that runs `git` by its
+      // bare name, so a `git` an install hook put in the toolchain's `bin`
+      // would run outside bwrap with both: there the toolchain reaches the
+      // setup and the verify command alone, which always run in bwrap.
+      // The worker's own `claude` stays first, ahead of the toolchain's, so a
+      // `claude` the repository installs never shadows the one pinned at
+      // `CLAUDE_CODE_VERSION`.
+      const agentTools = edges.agent["AGENT_SANDBOX"] === "bwrap" ? toolBins : [];
+      if (toolBins.length > 0 && agentTools.length === 0) {
+        note(TOOLCHAIN_PHASE, "not on the agent's PATH: with AGENT_SANDBOX=none the agent runs on the host, so the toolchain reaches the setup and the verify command only");
+      }
       const cliFirst = (rest: readonly (string | undefined)[], tools: readonly string[]): string =>
         [edges.cliBin, ...tools, ...rest.flatMap((part) => (part ?? "").split(":")).filter((part) => part !== edges.cliBin)].filter((part) => part !== "").join(":");
       return launch(
         runner,
-        { ...edges.agent, ...(sandboxPath === undefined || toolBins.length === 0 ? {} : { AGENT_SANDBOX_PATH: cliFirst([sandboxPath], toolBins) }), ...values },
+        { ...edges.agent, ...(sandboxPath === undefined || agentTools.length === 0 ? {} : { AGENT_SANDBOX_PATH: cliFirst([sandboxPath], agentTools) }), ...values },
         cwd,
         signal,
-        { ...edges.host, PATH: cliFirst([edges.host.PATH], runnerTools) },
+        { ...edges.host, PATH: cliFirst([edges.host.PATH], []) },
       );
     },
     setup,

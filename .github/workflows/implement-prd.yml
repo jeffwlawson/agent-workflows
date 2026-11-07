@@ -96,8 +96,11 @@ on:
         default: main
       node-version-file:
         description: >-
-          The file `actions/setup-node` reads the version from. Empty skips the
-          setup step entirely: a repo whose toolchain is not Node still gets its
+          The file `actions/setup-node` reads the version from. The mise step
+          comes first: where the checkout has a `mise.toml` or `.mise.toml` at
+          its root, the toolchain is installed from it and this input is not
+          read. Empty skips the setup step
+          entirely: a repo whose toolchain is not Node still gets its
           slices implemented, running on the Node the runner package requires.
         type: string
         default: .nvmrc
@@ -644,12 +647,43 @@ jobs:
           SUB: ${{ needs.gate.outputs.sub }}
         run: '"$RUNNER_TEMP/node_modules/.bin/agent-workflows" implement-prd:prepare'
 
+      # The adopter's toolchain from their `mise.toml` (ADR 0012, layer 2), the
+      # same file and the same mise the service installs from (#822, #836):
+      # `mise.toml` or `.mise.toml` at the checkout's root asks for it, and
+      # *Setup Node.js* runs only where it did not. A repository without the
+      # file runs exactly the steps it ran before. `version:` is the box's
+      # `MISE_VERSION` (`deploy/unraid/install-box.sh`), and
+      # `tests/workflows.test.ts` holds the two equal.
+      #
+      # The file is the pull request's code, as `setup:` is, so the steps hold
+      # what `setup:` holds and nothing more: no `env:`, `github_token: ""` so
+      # no token reaches `mise install` or anything after it, and no cache, so
+      # nothing an install wrote can be restored into a later run. Trust is the
+      # checkout's alone, by `MISE_TRUSTED_CONFIG_PATHS` for this job; nothing
+      # is written to the runner's global mise config.
+      - name: Look for a mise.toml
+        id: mise
+        run: |
+          if [ -f mise.toml ] || [ -f .mise.toml ]; then
+            echo "MISE_TRUSTED_CONFIG_PATHS=$GITHUB_WORKSPACE" >> "$GITHUB_ENV"
+            echo "found=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Install the toolchain from mise.toml
+        if: steps.mise.outputs.found == 'true'
+        uses: jdx/mise-action@v5
+        with:
+          version: 2026.10.18
+          github_token: ""
+          persist_github_token: false
+          cache: false
+
       # Both setup steps are the adopter's toolchain, so both are skippable.
       # `npm install -g @anthropic-ai/claude-code` below is not: that is the
       # agent's own runtime, and every runner image already has the Node it
       # needs for it.
       - name: Setup Node.js
-        if: inputs.node-version-file != ''
+        if: inputs.node-version-file != '' && steps.mise.outputs.found != 'true'
         uses: actions/setup-node@v7
         with:
           node-version-file: ${{ inputs.node-version-file }}
@@ -677,8 +711,10 @@ jobs:
       # without a Node named here the runner would run on the image's, below
       # the package's `engines.node` (#335). So it names one in exactly that
       # case and none otherwise, leaving an adopter's own version file to decide
-      # the Node their commands run on. `tests/workflows.test.ts` holds it to
-      # `engines.node`.
+      # the Node their commands run on. A `mise.toml` is such a file: where the
+      # mise step ran, a Node it names decides, and where it names none, the
+      # package's own Node set up above is still first on `PATH`.
+      # `tests/workflows.test.ts` holds it to `engines.node`.
       - name: Authenticate to GitHub Packages
         uses: actions/setup-node@v7
         with:

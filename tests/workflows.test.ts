@@ -4307,6 +4307,108 @@ describe("every workflow in the loop is called rather than copied", () => {
 });
 
 /**
+ * **The toolchain layer on Actions** (ADR 0012, layer 2; #836): every job that
+ * sets up the adopter's Node from `node-version-file` installs the toolchain
+ * from a `mise.toml` instead, where the checkout has one at its root, with the
+ * same mise the box runs (#822). A step of its own looks for the file, and its
+ * output gates both the mise step and *Setup Node.js*, so a repository without
+ * the file runs the steps it ran before.
+ */
+describe("the toolchain from mise.toml", () => {
+  const MISE_FILES = ["review", "fix", "update-branch", "implement", "implement-prd"].map((name) => path.join(WORKFLOW_DIR, `${name}.yml`));
+  const LOOK = "Look for a mise.toml";
+  const INSTALL = "Install the toolchain from mise.toml";
+  const FOUND = "steps.mise.outputs.found == 'true'";
+  const NOT_FOUND = "steps.mise.outputs.found != 'true'";
+
+  /** Each job of these files whose *Setup Node.js* is the adopter's, by `<file> <job>`. */
+  const toolchainJobs: readonly (readonly [string, Job])[] = MISE_FILES.flatMap((file) =>
+    Object.entries(workflowOf(file).jobs)
+      .filter(([, job]) => (job.steps ?? []).some((s) => s.name === "Setup Node.js"))
+      .map(([id, job]) => [`${path.basename(file)} ${id}`, job] as const),
+  );
+  const named = (job: Job, name: string): Step | undefined => (job.steps ?? []).find((s) => s.name === name);
+  const at = (job: Job, name: string): number => {
+    const i = (job.steps ?? []).findIndex((s) => s.name === name);
+    expect(i, `no \`${name}\` step`).toBeGreaterThan(-1);
+    return i;
+  };
+
+  it("is in every job with an adopter's Setup Node.js: review's two, and one in each of the other four", () => {
+    expect(toolchainJobs.map(([name]) => name)).toEqual([
+      "review.yml red-check",
+      "review.yml review",
+      "fix.yml fix",
+      "update-branch.yml update-branch",
+      "implement.yml implement",
+      "implement-prd.yml implement-prd",
+    ]);
+  });
+
+  it.each(toolchainJobs)("%s: looks for mise.toml or .mise.toml at the checkout's root, and trusts the checkout alone", (_name, job) => {
+    const look = named(job, LOOK);
+    const checkout = (job.steps ?? []).findIndex((s) => (s.uses ?? "").startsWith("actions/checkout@"));
+
+    expect(look?.id).toBe("mise");
+    expect(look?.["working-directory"]).toBeUndefined();
+    expect(look?.run ?? "").toContain("[ -f mise.toml ] || [ -f .mise.toml ]");
+    expect(look?.run ?? "").toContain('echo "found=true" >> "$GITHUB_OUTPUT"');
+    expect(look?.run ?? "").toContain('echo "MISE_TRUSTED_CONFIG_PATHS=$GITHUB_WORKSPACE" >> "$GITHUB_ENV"');
+    // Nothing global: no `mise trust`, which writes the runner's own config.
+    expect(look?.run ?? "").not.toMatch(/mise trust|~\/|\$HOME/);
+    expect(at(job, LOOK)).toBeGreaterThan(checkout);
+  });
+
+  it.each(toolchainJobs)("%s: gates the mise step and Setup Node.js on what it found, in that order, before setup:", (_name, job) => {
+    const look = named(job, LOOK);
+    const gate = look?.if;
+    const and = gate === undefined ? "" : `${gate} && `;
+
+    expect(named(job, INSTALL)?.uses).toBe("jdx/mise-action@v5");
+    expect(named(job, INSTALL)?.if).toBe(`${and}${FOUND}`);
+    expect(named(job, "Setup Node.js")?.if).toBe(`${and}inputs.node-version-file != '' && ${NOT_FOUND}`);
+    expect(named(job, "Install dependencies")?.if ?? "").not.toContain("steps.mise");
+    expect(at(job, INSTALL)).toBe(at(job, LOOK) + 1);
+    expect(at(job, "Setup Node.js")).toBe(at(job, INSTALL) + 1);
+    expect(at(job, "Install dependencies")).toBe(at(job, "Setup Node.js") + 1);
+  });
+
+  /**
+   * The `mise.toml` is the pull request's code, as `setup:` is, so the mise
+   * steps hold nothing `setup:` does not: no `env:` beyond its own, and the
+   * action's `github_token` input, which defaults to the job's token and hands
+   * it to `mise install`, emptied. And no cache, which a later run could
+   * restore what this one's code wrote from.
+   */
+  it.each(toolchainJobs)("%s: hands the mise steps no secret or token that setup: is not handed", (_name, job) => {
+    const setup = named(job, "Install dependencies");
+    const install = named(job, INSTALL);
+
+    for (const step of [named(job, LOOK), install]) {
+      expect(Object.keys(step?.env ?? {}).filter((key) => !(key in (setup?.env ?? {})))).toEqual([]);
+    }
+    expect(install?.with).toEqual({ version: install?.with?.["version"], github_token: "", persist_github_token: false, cache: false });
+    expect(JSON.stringify(install)).not.toMatch(/secrets\.|github\.token|GITHUB_TOKEN/);
+    expect(setup?.env).toBeUndefined();
+  });
+
+  it.each(toolchainJobs)("%s: pins mise to the box's MISE_VERSION", (_name, job) => {
+    const box = /^MISE_VERSION=\$\{MISE_VERSION:-([^}]+)\}$/m.exec(fs.readFileSync("deploy/unraid/install-box.sh", "utf8"))?.[1];
+
+    expect(box, "install-box.sh's default").toMatch(/^\d+\.\d+\.\d+$/);
+    expect(String(named(job, INSTALL)?.with?.["version"])).toBe(box);
+  });
+
+  it.each(MISE_FILES)("%s: says in node-version-file's description that the mise step comes first", (file) => {
+    const description = (workflowOf(file).on?.workflow_call?.inputs?.["node-version-file"]?.description ?? "").replace(/\s+/g, " ");
+
+    expect(description).toContain("The mise step comes first");
+    expect(description).toContain("`mise.toml` or `.mise.toml`");
+    expect(description).toContain("Empty skips the setup step");
+  });
+});
+
+/**
  * This repository's own callers run on `main`, but the reusable each one calls
  * is the one at its pinned tag — the last release (ADR 0010, *This repo runs
  * its own loop*). So a local caller can name a secret or an input its own
@@ -5167,6 +5269,8 @@ describe("implement's agent job runs implement:prepare and implement:bundle from
       ["Keep the package's registry to the package's steps", "glue"],
       ["Install the package", `npm install --prefix "$RUNNER_TEMP" --no-save @jeffwlawson/agent-workflows@${VERSION}`],
       ["Create branch", COMMAND("implement:prepare")],
+      ["Look for a mise.toml", "glue"],
+      ["Install the toolchain from mise.toml", undefined],
       ["Setup Node.js", undefined],
       ["Install dependencies", "adopter"],
       ["Install Claude Code", "adopter"],
@@ -5364,6 +5468,8 @@ describe("implement-prd's agent job runs implement-prd:prepare and implement-prd
       ["Keep the package's registry to the package's steps", "glue"],
       ["Install the package", `npm install --prefix "$RUNNER_TEMP" --no-save @jeffwlawson/agent-workflows@${VERSION}`],
       ["Prepare the PRD branch", BY_PATH("implement-prd:prepare")],
+      ["Look for a mise.toml", "glue"],
+      ["Install the toolchain from mise.toml", undefined],
       ["Setup Node.js", undefined],
       ["Install dependencies", "adopter"],
       ["Install Claude Code", "adopter"],
@@ -7643,22 +7749,31 @@ describe("the runner package is installed from GitHub Packages", () => {
    * gets that line's latest release, above a minor the floor names (#460).
    *
    * So the last `setup-node` before the run that names a Node decides it, and
-   * there has to be one, **for each value of `node-version-file`**: a step
-   * gated on that input naming a file only names a Node when it is set, so with
-   * `''` the toolchain step is skipped and something else must name one. Read
-   * once with the input empty and once set, by evaluating the two expression
+   * there has to be one, **for each value of `node-version-file`, with and
+   * without a `mise.toml`** (#836): a step gated on that input naming a file
+   * only names a Node when it is set and mise did not run, so otherwise the
+   * toolchain step is skipped and something else must name one. The mise
+   * step counts as naming the adopter's file, as `node-version-file` does.
+   * Read with each input and each finding, by evaluating the two expression
    * shapes these files use and refusing any other, so a third shape is a
    * failure here rather than a guess. A `node-version` is held to the floor; a
    * `node-version-file` is the adopter's toolchain input, which this file
    * cannot read the far end of.
    */
   const NODE_VERSION_FILE_SET = "inputs.node-version-file != ''";
+  const MISE_NOT_FOUND = "steps.mise.outputs.found != 'true'";
   const NODE_VERSION_FALLBACK = /^\$\{\{ inputs\.node-version-file == '' && '([^']*)' \|\| '' \}\}$/;
 
-  /** What a step names for the Node with the input at `input`: a version, a file, or nothing. */
-  const nodeNamedBy = (step: Step, input: string): { readonly version: string } | { readonly file: string } | undefined => {
+  /** What a step names for the Node with the input at `input` and a `mise.toml` or none: a version, a file, or nothing. */
+  const nodeNamedBy = (
+    step: Step,
+    input: string,
+    mise: boolean,
+  ): { readonly version: string } | { readonly file: string } | undefined => {
+    if ((step.uses ?? "").startsWith("jdx/mise-action@")) return mise ? { file: "mise.toml" } : undefined;
     if (!(step.uses ?? "").startsWith("actions/setup-node@")) return undefined;
     if (input === "" && (step.if ?? "").includes(NODE_VERSION_FILE_SET)) return undefined;
+    if (mise && (step.if ?? "").includes(MISE_NOT_FOUND)) return undefined;
     const file = step.with?.["node-version-file"];
     const raw = step.with?.["node-version"];
     let version: string | undefined;
@@ -7677,13 +7792,17 @@ describe("the runner package is installed from GitHub Packages", () => {
     return undefined;
   };
 
-  it.each(runnerWorkflows.flatMap((file) => ["", ".nvmrc"].map((input) => [file, input] as const)))(
-    "%s: runs the runner on a Node the package's engines accept, with node-version-file %j",
-    (file, input) => {
+  it.each(
+    runnerWorkflows.flatMap((file) =>
+      ["", ".nvmrc"].flatMap((input) => [false, true].map((mise) => [file, input, mise] as const)),
+    ),
+  )(
+    "%s: runs the runner on a Node the package's engines accept, with node-version-file %j and a mise.toml %s",
+    (file, input, mise) => {
       const floor = Number(/^>=(\d+)(?:\.\d+){0,2}$/.exec(manifest.engines.node)?.[1]);
       const naming = stepsOf(file)
         .slice(0, runnerStepIndex(file))
-        .map((s) => nodeNamedBy(s, input))
+        .map((s) => nodeNamedBy(s, input, mise))
         .filter((n) => n !== undefined);
       const decides = naming[naming.length - 1];
 
@@ -9329,6 +9448,8 @@ describe("the red check runs a PR's tests against the merge-base, holding nothin
       "Install the package",
       "Put the PR's test files over the merge-base",
       "Hand the placement to the job",
+      "Look for a mise.toml",
+      "Install the toolchain from mise.toml",
       "Setup Node.js",
       "Install dependencies",
       "Run the tests against the merge-base",
@@ -9377,7 +9498,7 @@ describe("the red check runs a PR's tests against the merge-base, holding nothin
     expect(classify?.env?.["OUTPUT_DIR"]).toBe("${{ runner.temp }}");
     expect(classify?.env?.["SETUP_OUTCOME"]).toBe("${{ steps.setup.outcome }}");
     expect(classify?.env?.["EXIT_CODE"]).toBe("${{ steps.run.outputs.exit-code }}");
-    for (const name of ["Setup Node.js", "Install dependencies", "Run the tests against the merge-base"]) {
+    for (const name of ["Look for a mise.toml", "Install the toolchain from mise.toml", "Setup Node.js", "Install dependencies", "Run the tests against the merge-base"]) {
       expect(steps.find((s) => s.name === name)?.if ?? "", name).toMatch(/^steps\.placed\.outputs\.status == 'ready'/);
     }
   });
@@ -11171,6 +11292,8 @@ describe("update-branch.yml decides nothing in inline shell", () => {
       ["Keep the package's registry to the package's steps", "glue"],
       ["Install the package", INSTALL],
       ["Repeat the conflicted merge", COMMAND("update-branch:prepare")],
+      ["Look for a mise.toml", "glue"],
+      ["Install the toolchain from mise.toml", undefined],
       ["Setup Node.js", undefined],
       ["Install dependencies", "adopter"],
       ["Install Claude Code", "adopter"],

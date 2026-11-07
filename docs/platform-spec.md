@@ -344,6 +344,28 @@ repository.
 > `AGENT_SANDBOX_PROXY` is set, under `AGENT_SANDBOX=none` too, setup's network is its own
 > loopback with the proxy its only way out, as the agent's is (#537). Under `none` with no proxy,
 > setup's network is the host's, with no proxy variables, as the agent's is there.
+>
+> **The toolchain** (#822). The box's `/usr` is every repository's Node and Python, so a
+> repository that needs another version asks for it in a `mise.toml` (or `.mise.toml`) at its
+> root. Every job that runs the setup runs a `toolchain` phase right before it, under the setup's
+> time limit: `mise install`, with the box's `/usr/local/bin/mise`, in a sandbox of the setup's
+> shape, in the checkout at the agent's path, with no token. mise's data directory is
+> `.agent-toolchain` in the checkout, which the worker first adds to the checkout's
+> `.git/info/exclude`, so nothing committed or pushed carries it and it goes with the checkout:
+> nothing is kept between jobs (ADR 0012). The checkout is trusted for that run alone, through
+> mise's environment, so no trust is written anywhere. After it passes, the `bin` directories
+> `mise bin-paths` reports, those inside the folder alone, come first on the `PATH` of the setup
+> and the verify command, and on the agent's right after the worker's own `claude`
+> (`AGENT_SANDBOX_PATH`), under `bwrap` alone: under `none` the runner is a host process holding
+> the tokens, so the toolchain stays off its `PATH`, and the run notes it. So a `claude` the repository
+> installs never shadows the one pinned at `CLAUDE_CODE_VERSION`. A tree that already has
+> `.agent-toolchain`, as a file, a folder or anything in one, is refused before mise runs, as a
+> failed install. Nothing else of `mise.toml` reaches them: not its `[env]`, its tasks or its hooks,
+> though `mise install` runs its install hooks in the sandbox, as a pull request's setup already
+> runs its code. Without a `mise.toml` the phase is noted as skipped and no sandbox is started. A
+> failed or timed-out install ends the agent's job as a failed or timed-out setup does, the setup
+> not run, its reason naming `mise.toml` and quoting the end of mise's output, redacted; a box with
+> no mise says to re-run `install-box.sh`.
 
 ## 4. The record
 
@@ -723,7 +745,8 @@ build, and an orchestrator other than Actions sets its environment in its own co
 > - **The agent's job**, where the gate succeeded and claimed the run: a `read` token; a checkout
 >   of the base branch, by name, with the repository's tags, as `implement.yml`'s, with no token stored in it;
 >   `implement:prepare`, with the same `read` token, which creates `BRANCH` there at `base`, the
->   commit the gate read the base branch at, and fetches the rescue branch; the repository's setup,
+>   commit the gate read the base branch at, and fetches the rescue branch; the toolchain the
+>   checkout's `mise.toml` asks for, where it has one (§3, #822); the repository's setup,
 >   `AGENT_SETUP`, in the bwrap sandbox with no token, where Actions runs the caller's `setup:`; a
 >   fresh `read` token, then the runner in the sandbox its settings name, with it as `GH_TOKEN`;
 >   and `implement:bundle`, handed no token, however those ended, as the bundle step's
@@ -789,8 +812,8 @@ build, and an orchestrator other than Actions sets its environment in its own co
 >   `agent:review` `implement:publish` adds names the App's login as its sender, which the
 >   dispatcher trusts, so it answers it as a review job.
 >
-> Not run: `node-version-file`, since the sandbox runs the worker box's own Node, and the session
-> transcript's upload.
+> Not run: the session transcript's upload. `node-version-file` is not read: the sandbox runs the
+> worker box's own Node, and a `mise.toml` is how a repository asks for another (§3, #822).
 
 ### `implement:gate`
 
@@ -1303,7 +1326,8 @@ earlier run of this PRD left commits on `RESCUE_BRANCH`, that branch fetched to
 >   token; a checkout of the base branch, by name, of its own, as `implement-prd.yml`'s;
 >   `implement-prd:prepare` with the same token, which fetches the PRD branch, checks it out at
 >   `head`, the tip the catch-up left, and fetches the rescue branch;
->   the repository's setup, `AGENT_SETUP`, in the bwrap sandbox with no token; a fresh `read`
+>   the toolchain the checkout's `mise.toml` asks for, where it has one (§3, #822); the
+>   repository's setup, `AGENT_SETUP`, in the bwrap sandbox with no token; a fresh `read`
 >   token, then the runner in the sandbox its settings name, with it as `GH_TOKEN`; and
 >   `implement-prd:bundle`, handed no token, however those ended, as the bundle step's `always()`,
 >   so a stopped build hands its commits over for the rescue.
@@ -1377,8 +1401,9 @@ earlier run of this PRD left commits on `RESCUE_BRANCH`, that branch fetched to
 > chain up at the next `agent:implement`. Each slice is a job of its own, so another repository's
 > jobs run between two slices of a chain.
 >
-> Not run: `node-version-file`, since the sandbox runs the worker box's own Node, the session
-> transcript's upload, and the write logs' upload, which stay in the run's directory.
+> Not run: the session transcript's upload, and the write logs' upload, which stay in the run's
+> directory. `node-version-file` is not read: the sandbox runs the worker box's own Node, and a
+> `mise.toml` is how a repository asks for another (§3, #822).
 
 ### `implement-prd:gate`
 
@@ -2790,7 +2815,8 @@ diffing, which the orchestrator prepares, and `RESCUE_BRANCH` fetched to
 > run, it asks for a `read` token and checks out the event's head as `BRANCH`, fetching
 > `BASE_REF` and the repository's tags, the token passed with each fetch and never stored in the checkout, which keeps only a
 > committer, the App's login, as `fix.yml`'s checkout step sets one. Then `fix:prepare`, with the
-> same token, which fetches `RESCUE_BRANCH` into the checkout; the repository's setup, `AGENT_SETUP`,
+> same token, which fetches `RESCUE_BRANCH` into the checkout; the toolchain the checkout's
+> `mise.toml` asks for, where it has one (§3, #822); the repository's setup, `AGENT_SETUP`,
 > in the bwrap sandbox with no token; and the runner, in the sandbox its settings name, with a fresh
 > `read` token as `GH_TOKEN`. Then `fix:bundle`, however those ended, handed no token. It asks for
 > a `push` token, or, where that is refused, a `write` token for conclude, and where the gate
@@ -2837,8 +2863,8 @@ diffing, which the orchestrator prepares, and `RESCUE_BRANCH` fetched to
 >   the head of their own, never the agent's, so nothing the agent's job touched is where the
 >   `push` token is used, and a rescue is checked against the head the round started from.
 >
-> Not run: `node-version-file`, since the sandbox runs the worker box's own Node, and the session
-> transcript's upload.
+> Not run: the session transcript's upload. `node-version-file` is not read: the sandbox runs the
+> worker box's own Node, and a `mise.toml` is how a repository asks for another (§3, #822).
 
 ### `fix:gate`
 
@@ -3270,7 +3296,8 @@ neither.
 > fetch and never stored, and runs `update-branch:merge` there with the same token: outside the
 > sandbox, since it runs none of the pull request's code, and holding no `push` token, since
 > nothing is pushed until publish. Only where the merge conflicted does the agent's job run: a
-> `read` token, a checkout of its own, `update-branch:prepare` with that token, the repository's
+> `read` token, a checkout of its own, `update-branch:prepare` with that token, the toolchain the
+> checkout's `mise.toml` asks for, where it has one (§3, #822), the repository's
 > setup, `AGENT_SETUP`, in the bwrap sandbox with no token, the runner in the sandbox its settings
 > name with a fresh `read` token as `GH_TOKEN`, and `update-branch:bundle`, handed no token, where
 > those succeeded. A clean merge, or a branch already up to date, runs no setup and no runner.
@@ -3330,8 +3357,8 @@ neither.
 >   reason does not hold: the guard is harmless there, and only leaves the re-request to a person
 >   where another label's job is still to run.
 >
-> Not run: `node-version-file`, since the sandbox runs the worker box's own Node, and the session
-> transcript's upload.
+> Not run: the session transcript's upload. `node-version-file` is not read: the sandbox runs the
+> worker box's own Node, and a `mise.toml` is how a repository asks for another (§3, #822).
 
 ### `update-branch:gate`
 
@@ -4405,7 +4432,8 @@ caller wants it.
 A workflow with no runner, and the one with **no Actions workflow behind it** (#821): on Actions a
 caller's `setup:` already runs in every agent's job, so a box missing what a repository needs is a
 failed run there, where on the service it was a box nobody had checked. A setup check runs what an
-agent's job runs before its agent, the checkout of the default branch, the repository's setup
+agent's job runs before its agent, the checkout of the default branch, the toolchain its
+`mise.toml` asks for (§3, #822), the repository's setup
 `AGENT_SETUP` and its verify command `AGENT_VERIFY`, in the sandbox a real job gets, starts no agent,
 and reports on the issue. It costs no usage.
 
@@ -4426,11 +4454,15 @@ after the setup. **`doctor` cannot check this.** It does not read `AGENT_VERIFY`
 > job would wait behind them.
 >
 > The worker asks for a `read` token and checks the default branch out at its head, by its name, as
-> implement's agent's job does; runs `AGENT_SETUP` in the bwrap sandbox, in the checkout, with no
+> implement's agent's job does; runs the `toolchain` phase, `mise install` where the checkout has a
+> `mise.toml`, as every kind's runs before its setup (§3); where it passed or was skipped, runs
+> `AGENT_SETUP` in the bwrap sandbox, in the checkout, with no
 > token, the sandbox's proxy its only way out, as every kind's setup runs (§6); and where the setup
 > passed or was skipped, runs `AGENT_VERIFY` the same way, as a phase of its own, reaching the shell
-> as `AGENT_VERIFY` rather than `AGENT_SETUP`. A step after one that did not pass is not run. The
-> three share the time limit, and one still running at it is ended. Then it asks for a `write` token
+> as `AGENT_VERIFY` rather than `AGENT_SETUP`. A step after one that did not pass is not run, so a
+> failed or timed-out toolchain runs neither the setup nor the verify command. The setup and the
+> verify command find the installed tools first on their `PATH`. The
+> four share the time limit, and one still running at it is ended. Then it asks for a `write` token
 > and runs `setup-check:report`, however the steps ended, handed how each did. **No runner is
 > started.** Where no `write` token is granted, the report does not run, the label stays on, and the
 > worker's log says why, so the next scan runs the check again.
@@ -4444,14 +4476,16 @@ hands it as data (ADR 0006):
 - a first line, `` **`agent:setup-check` passed:** ``, `incomplete:` (the verify command unset),
   `failed:` or `timed out:`, saying which step did not pass, on which branch and at which commit,
   and that no agent was started;
-- one line for each of the checkout, the setup and the verify command, each `passed`; `failed`,
+- one line for each of the checkout, the toolchain (`mise.toml`), the setup and the verify command,
+  each `passed`; `failed`,
   with its exit code and the end of its output, at most its last 20 lines, redacted as setup's
   failure reason is, fenced so nothing in it renders, and every HTML comment removed, every run of
   backticks in it cut to 200 and saying so, so its fence, one longer, stays below the 256 GitHub's
   renderer mishandles; the checkout `failed`, with its reason fenced the same way; `failed`
   because it could not be started in the sandbox, with why; `skipped`, where its variable is unset,
-  naming it, and for `AGENT_VERIFY` how to set it; `not run`, since a step before it did not pass;
-  or `timed out`, naming the limit;
+  naming it, and for `AGENT_VERIFY` how to set it; for the toolchain, `skipped` where the repository
+  has no `mise.toml`; `not run`, since a step before it did not pass, and which; or `timed out`,
+  naming the limit;
 - the run's link, and that adding `agent:setup-check` again checks again.
 
 Then it takes `agent:setup-check` off, so the label is on exactly while the check runs. Both writes
@@ -4470,6 +4504,9 @@ failure of the command itself writes `failure_reason.txt`, as every subcommand d
 | `TIMEOUT_MINUTES` | optional | `""` | The check's time limit, for a step that ran out of it. |
 | `CHECKOUT_RESULT` | required | | How the checkout ended: `passed`, `failed` or `timed-out`. |
 | `CHECKOUT_REASON` | optional | `""` | Why the checkout failed. |
+| `TOOLCHAIN_RESULT` | required | | How the toolchain step (`mise install` from `mise.toml`, #822) ended: `passed`, `failed`, `timed-out`, `skipped` (no `mise.toml`) or `not-run`. |
+| `TOOLCHAIN_EXIT` | optional | `""` | Its exit code, where it failed. Empty where it could not be started, mise missing from the box among them. |
+| `TOOLCHAIN_OUTPUT` | optional | `""` | The end of its output, raw and redacted, or why it could not be started. |
 | `SETUP_RESULT` | required | | How `AGENT_SETUP` ended: `passed`, `failed`, `timed-out`, `unset` or `not-run`. |
 | `SETUP_EXIT` | optional | `""` | Its exit code, where it failed. Empty where it could not be started. |
 | `SETUP_OUTPUT` | optional | `""` | The end of its output, raw and redacted, or why it could not be started. |

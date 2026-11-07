@@ -571,8 +571,14 @@ so they cost a run per label and carry a pin to keep fresh (§4). Keep them wher
   next push or label rather than merging when CI lands
   ([deploying-the-service.md](./deploying-the-service.md#the-webhook));
 - it reads the repository's install and setup from the repository variable `AGENT_SETUP`, not a
-  caller's `setup:` input, and supports no `node-version-file`
-  ([deploying-the-service.md](./deploying-the-service.md#the-repositorys-setup)). `doctor` warns
+  caller's `setup:` input, and reads no `node-version-file`
+  ([deploying-the-service.md](./deploying-the-service.md#the-repositorys-setup)). **Where the
+  box's Python or Node is not the one the repository needs, write a `mise.toml`** at its root
+  (`[tools]`, say `python = "3.12"`): every job installs what it asks for with mise, in the
+  sandbox, before `AGENT_SETUP`, and puts it first on the setup's and the verify command's `PATH`,
+  and, under `AGENT_SANDBOX=bwrap`, on the agent's after its own `claude`
+  ([deploying-the-service.md](./deploying-the-service.md#the-toolchain-misetoml)). The box's
+  operator may need to let Node's downloads through the proxy (`EGRESS_PRESETS="node"`). `doctor` warns
   where a caller still installed passes `setup:` and `AGENT_SETUP` is unset or empty, or could not
   be read, since the service's runs there start with nothing installed. The service runs setup
   with the proxy as its only way out, so a setup that reaches the network other than through the
@@ -590,7 +596,8 @@ does, and costs no usage, since it starts no agent:
    "npm run verify"`). Both are shell scripts handed to the sandbox's shell as you wrote them.
 2. Add `agent:setup-check` to any open issue
    ([deploying-the-service.md](./deploying-the-service.md#the-setup-check)). On the repository's default branch, in the sandbox a
-   real run gets, the service checks the branch out, runs `AGENT_SETUP`, then `AGENT_VERIFY`, and
+   real run gets, the service checks the branch out, installs what a `mise.toml` asks for, runs
+   `AGENT_SETUP`, then `AGENT_VERIFY`, and
    posts one comment on the issue saying how each step ended, passed, failed (with its exit code
    and the end of its output), skipped (and why) or timed out, and the commit it checked. Then it
    takes the label off. With `AGENT_VERIFY` unset it says so and stops after the setup.

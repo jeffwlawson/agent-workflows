@@ -283,6 +283,28 @@ describe("the sandbox the repository's setup runs in", () => {
     });
   });
 
+  it("runs the toolchain's script as AGENT_TOOLCHAIN, with the run's env beside it, after the sandbox's own (#822)", async () => {
+    const code = await liveSandbox(host())({
+      script: "env > seen.txt",
+      variable: "AGENT_TOOLCHAIN",
+      env: { MISE_DATA_DIR: `${SANDBOX_WORKTREE}/.agent-toolchain`, MISE_YES: "1" },
+      dir: checkout,
+      at: SANDBOX_WORKTREE,
+      roBinds: [],
+      path: "/usr/bin:/bin",
+      proxy: SANDBOX_PROXY,
+      log,
+      signal: new AbortController().signal,
+    });
+
+    expect(code).toBe(0);
+    const seen = fs.readFileSync(path.join(checkout, "seen.txt"), "utf8").split("\n");
+    expect(seen).toContain(`MISE_DATA_DIR=${SANDBOX_WORKTREE}/.agent-toolchain`);
+    expect(seen).toContain("MISE_YES=1");
+    expect(seen).toContain("AGENT_TOOLCHAIN=env > seen.txt");
+    expect(argv().slice(-SETUP_SHELL.length)).toEqual([...sandboxShell("AGENT_TOOLCHAIN")]);
+  });
+
   /** Where in `words` `flag` mounts `from`, and the path it mounts it at: -1 and undefined where it does not. */
   const mountedAt = (words: readonly string[], flag: string, from: string): { at: number; to: string | undefined } => {
     const at = words.findIndex((word, i) => word === flag && words[i + 1] === from);

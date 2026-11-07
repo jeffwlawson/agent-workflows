@@ -99,7 +99,7 @@ describe("the box's packages", () => {
 });
 
 describe("check-box.sh, against the operator's settings for every repository (#820)", () => {
-  const BASE = ["api.anthropic.com", "github.com", "api.github.com", "codeload.github.com", "objects.githubusercontent.com", "raw.githubusercontent.com", "release-assets.githubusercontent.com", "registry.npmjs.org", "192.168.250.1"];
+  const BASE = ["api.anthropic.com", "github.com", "api.github.com", "codeload.github.com", "objects.githubusercontent.com", "raw.githubusercontent.com", "release-assets.githubusercontent.com", "registry.npmjs.org", "mise-versions.jdx.dev", "192.168.250.1"];
   const line = (host: string) => `^${host.replaceAll(".", "\\.")}$`;
   /** A box whose tinyproxy filters through a list holding `hosts`. */
   const withAllowlist = (conf: readonly string[], hosts: readonly string[]): string => {
@@ -145,6 +145,41 @@ describe("check-box.sh, against the operator's settings for every repository (#8
   it("fails for an unknown preset, naming it", () => {
     const { output } = checkBox(withAllowlist(['EGRESS_PRESETS="pyhton"'], BASE));
 
-    expect(output).toContain("  FAIL  EGRESS_PRESETS names 'pyhton', which is no preset (the presets are: python): install-box.sh refuses it\n");
+    expect(output).toContain("  FAIL  EGRESS_PRESETS names 'pyhton', which is no preset (the presets are: node python): install-box.sh refuses it\n");
+  });
+});
+
+describe("check-box.sh's mise (#822)", () => {
+  const VERSION = /^MISE_VERSION=\$\{MISE_VERSION:-([^}]+)\}$/m.exec(fs.readFileSync(path.join(DEPLOY, "check-box.sh"), "utf8"))?.[1] ?? "";
+  /** A box whose mise answers `version`, or that has none. */
+  const withMise = (version?: string): string => {
+    const root = setUp([`MISE=${path.join(os.tmpdir(), "no-such-dir", "mise")}`]);
+    if (version === undefined) return root;
+    const mise = path.join(root, "mise");
+    fs.writeFileSync(mise, `#!/usr/bin/env bash\necho '${version} linux-x64 (2026-10-23)'\n`);
+    fs.chmodSync(mise, 0o755);
+    fs.appendFileSync(path.join(root, "unraid", "agent-service.conf"), `MISE=${mise}\n`);
+    return root;
+  };
+
+  it("fails where mise is missing, saying to re-run install-box.sh", () => {
+    const { status, output } = checkBox(withMise());
+
+    expect(status).toBe(1);
+    expect(output).toMatch(/ {2}FAIL {2}mise at \S+ is missing, not [\d.]+, so a repository's mise\.toml cannot be installed: re-run install-box\.sh\n/);
+  });
+
+  it("fails where mise is not at the pinned version, naming both", () => {
+    const { status, output } = checkBox(withMise("2024.1.0"));
+
+    expect(status).toBe(1);
+    expect(output).toContain(`is 2024.1.0, not ${VERSION}, so a repository's mise.toml cannot be installed: re-run install-box.sh`);
+  });
+
+  it("passes where mise is at the pinned version", () => {
+    const { output } = checkBox(withMise(VERSION));
+
+    expect(output).toContain(`  PASS  mise is ${VERSION}\n`);
+    expect(output).not.toMatch(/FAIL .*mise/);
   });
 });

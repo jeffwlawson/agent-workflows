@@ -1,3 +1,4 @@
+import { execFileSync } from "node:child_process";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
@@ -47,17 +48,22 @@ import {
   serviceRunUrl,
   SETUP_PHASE,
   startRun,
+  TOOLCHAIN_BIN_PATHS,
+  TOOLCHAIN_DIR,
+  TOOLCHAIN_PHASE,
+  TOOLCHAIN_VARIABLE,
   VERIFY_PHASE,
   SUMMARY_FILE,
   type JobEdges,
   type Launch,
   type Phase,
   type SandboxRun,
-  type SandboxVariable,
+  type SandboxScript,
   type Subcommand,
 } from "../../service/worker.js";
 import { COMMANDS, RUNNERS, SANDBOX, type Command, type Runner } from "../../shared/contract.js";
 import type { HostEnvironment } from "../../shared/env.js";
+import { SUBPROCESS_TIMEOUT } from "../../vitest.config.js";
 
 /**
  * Seam 1 of PRD #453: the worker's job, driven through `runJob` with fakes at
@@ -159,9 +165,22 @@ const setup = (
     /** How the repository's setup ends in the sandbox: its exit, the output it writes, or that it hangs or cannot start. */
     readonly setupRun?: { readonly exit?: number; readonly output?: string; readonly hangs?: boolean; readonly throws?: string };
     /** The same, per variable the sandbox runs, where a job runs more than one script there: a setup check's (#821). */
-    readonly sandboxRuns?: Partial<Record<SandboxVariable, { readonly exit?: number; readonly output?: string; readonly hangs?: boolean; readonly throws?: string }>>;
+    readonly sandboxRuns?: Partial<Record<SandboxScript, { readonly exit?: number; readonly output?: string; readonly hangs?: boolean; readonly throws?: string }>>;
     /** Why the checkout fails, where it does. */
     readonly checkoutFails?: string;
+    /** Directories every checkout leaves in its directory, made before its files (#822). */
+    readonly checkoutDirs?: readonly string[];
+    /** Files every checkout leaves in its directory, such as a `mise.toml` (#822). */
+    readonly checkoutFiles?: Readonly<Record<string, string>>;
+    /** Whether every checkout is a real git repository, made with `git init`. */
+    readonly gitCheckout?: boolean;
+    /**
+     * What the toolchain's `mise bin-paths` writes, one line each, where its
+     * sandbox exits 0 (#822): or made from the checkout's host path.
+     */
+    readonly toolchainBins?: readonly string[] | ((checkout: string) => readonly string[]);
+    /** Whether the box has no mise, at the path the worker is pointed at. */
+    readonly noMise?: boolean;
   } = {},
 ) => {
   const sandboxed: SandboxRun[] = [];
@@ -171,6 +190,9 @@ const setup = (
   const asked: TokenKind[] = [];
   // A run's own directory, fresh, so a test can run more than one job.
   const runDir = fs.mkdtempSync(path.join(scratch, "run-"));
+  // The box's mise, which the worker only checks is there: the sandbox is a fake.
+  const mise = path.join(scratch, "mise");
+  fs.writeFileSync(mise, "");
   const edges = {
     token: async (kind: TokenKind) => {
       asked.push(kind);
@@ -209,6 +231,10 @@ const setup = (
           throw new Error("The operation was aborted");
         }
         if (options.checkoutFails !== undefined) throw new Error(options.checkoutFails);
+        fs.mkdirSync(rest.dir, { recursive: true });
+        if (options.gitCheckout === true) execFileSync("git", ["init", "--quiet", rest.dir], { stdio: "ignore", timeout: SUBPROCESS_TIMEOUT });
+        for (const name of options.checkoutDirs ?? []) fs.mkdirSync(path.join(rest.dir, name), { recursive: true });
+        for (const [name, content] of Object.entries(options.checkoutFiles ?? {})) fs.writeFileSync(path.join(rest.dir, name), content);
       },
     },
     sandbox: async (run: SandboxRun) => {
@@ -217,8 +243,16 @@ const setup = (
       const { exit = 0, output, hangs = false, throws } = options.sandboxRuns?.[run.variable] ?? options.setupRun ?? {};
       if (throws !== undefined) throw new Error(throws);
       if (output !== undefined) fs.appendFileSync(run.log, output);
+      if (run.variable === TOOLCHAIN_VARIABLE && exit === 0 && !hangs) {
+        // What mise leaves in the folder: an install, and its bin-paths.
+        const folder = path.join(run.dir, TOOLCHAIN_DIR);
+        fs.mkdirSync(path.join(folder, "installs", "node", "24", "bin"), { recursive: true });
+        fs.writeFileSync(path.join(folder, "installs", "node", "24", "bin", "node"), "");
+        fs.writeFileSync(path.join(folder, TOOLCHAIN_BIN_PATHS), (typeof options.toolchainBins === "function" ? options.toolchainBins(run.dir) : (options.toolchainBins ?? [])).map((line) => `${line}\n`).join(""));
+      }
       return hangs ? hang(run.signal, 143) : exit;
     },
+    mise: options.noMise === true ? path.join(scratch, "no-such-dir", "mise") : mise,
     host: options.host ?? HOST,
     agent: AGENT,
     cliBin: "/work/claude-code/bin",
@@ -2785,6 +2819,7 @@ describe("the worker's setup-check job", () => {
       CHECKOUT: path.join(s.runDir, "checkout"),
       TIMEOUT_MINUTES: String(DEFAULT_FIX_MINUTES),
       CHECKOUT_RESULT: "passed",
+      TOOLCHAIN_RESULT: "skipped",
       SETUP_RESULT: "passed",
       VERIFY_RESULT: "passed",
     });
@@ -2899,6 +2934,342 @@ describe("the worker's setup-check job", () => {
     await runJob(SETUP_CHECK_JOB, s.edges);
 
     for (const name of Object.keys(s.env("setup-check:report"))) expect([...Object.keys(declared("setup-check:report")), ...Object.keys(HOST)], name).toContain(name);
+  });
+});
+
+/**
+ * The toolchain layer (#822): where the checkout has a `mise.toml` at its
+ * root, `mise install` in the sandbox right before setup, into a git-ignored
+ * folder in the checkout, and its `bin` directories first on every later
+ * `PATH`. Through `runJob`, with the fakes above standing for the sandbox and
+ * the checkout.
+ */
+describe("the toolchain, before the setup (#822)", () => {
+  const MISE_TOML = { "mise.toml": '[tools]\npython = "3.12"\n' };
+  const INSIDE = `${SANDBOX_WORKTREE}/${TOOLCHAIN_DIR}`;
+  const BINS = [`${INSIDE}/installs/python/3.12/bin`, `${INSIDE}/installs/node/24/bin`];
+  const WITH_SETUP = { ...IMPLEMENT_JOB, variables: { ...IMPLEMENT_JOB.variables, AGENT_SETUP: "npm ci" } };
+  const phaseNames = (phases: readonly Phase[]): string[] => phases.map(({ name }) => name);
+
+  it("runs mise install in the sandbox, in the checkout at the agent's path, with no token, before the setup, its data in the toolchain folder", async () => {
+    const s = setup(IMPLEMENT_ORDINARY, { checkoutFiles: MISE_TOML });
+    const phases = await runJob(WITH_SETUP, s.edges);
+
+    expect(s.events.slice(s.events.indexOf("implement:prepare"), s.events.indexOf("implement") + 1)).toEqual(["implement:prepare", "sandbox", "sandbox", "read token", "implement"]);
+    expect(s.sandboxed.map(({ variable }) => variable)).toEqual([TOOLCHAIN_VARIABLE, "AGENT_SETUP"]);
+    const [toolchain] = s.sandboxed;
+    expect(toolchain).toMatchObject({
+      variable: "AGENT_TOOLCHAIN",
+      dir: path.join(s.runDir, "checkout"),
+      at: SANDBOX_WORKTREE,
+      path: AGENT.AGENT_SANDBOX_PATH,
+      proxy: AGENT.AGENT_SANDBOX_PROXY,
+      env: { MISE_DATA_DIR: INSIDE, MISE_TRUSTED_CONFIG_PATHS: SANDBOX_WORKTREE, MISE_YES: "1", NO_COLOR: "1" },
+      log: path.join(s.runDir, "logs", "toolchain.log"),
+    });
+    expect(toolchain?.script).toMatch(/' install\n/);
+    expect(toolchain?.script).toContain(`' bin-paths > "$MISE_DATA_DIR/${TOOLCHAIN_BIN_PATHS}"`);
+    for (const token of ["write-token-1", "read-token-2", "read-token-3", AGENT.CLAUDE_CODE_OAUTH_TOKEN]) expect(JSON.stringify(toolchain)).not.toContain(token);
+    const names = phaseNames(phases);
+    expect(names.indexOf(TOOLCHAIN_PHASE)).toBeLessThan(names.indexOf(SETUP_PHASE));
+    expect(phases).toContainEqual({ name: TOOLCHAIN_PHASE, outcome: "success" });
+    const summary = JSON.parse(fs.readFileSync(path.join(s.runDir, SUMMARY_FILE), "utf8")) as { subcommands: { subcommand: string; env: Record<string, string> }[] };
+    expect(summary.subcommands.find(({ subcommand }) => subcommand === TOOLCHAIN_PHASE)?.env).toMatchObject({ MISE_DATA_DIR: INSIDE });
+  });
+
+  it("runs mise with colour off, so its error output reaches a failure reason with no escape codes", async () => {
+    const s = setup(IMPLEMENT_ORDINARY, { checkoutFiles: MISE_TOML });
+    await runJob(WITH_SETUP, s.edges);
+
+    expect(s.sandboxed[0]?.env).toMatchObject({ NO_COLOR: "1" });
+  });
+
+  it("is asked for by a .mise.toml too", async () => {
+    const s = setup(IMPLEMENT_ORDINARY, { checkoutFiles: { ".mise.toml": "[tools]\n" } });
+    await runJob(WITH_SETUP, s.edges);
+
+    expect(s.sandboxed.map(({ variable }) => variable)).toEqual([TOOLCHAIN_VARIABLE, "AGENT_SETUP"]);
+  });
+
+  it("is noted as skipped, with no sandbox started for it, where the checkout has no mise.toml, and the job runs as before", async () => {
+    const s = setup(IMPLEMENT_ORDINARY);
+    const phases = await runJob(WITH_SETUP, s.edges);
+
+    expect(s.sandboxed.map(({ variable }) => variable)).toEqual(["AGENT_SETUP"]);
+    expect(phases).toContainEqual({ name: TOOLCHAIN_PHASE, outcome: "skipped: the checkout has no mise.toml at its root" });
+    expect(s.sandboxed[0]?.path).toBe(AGENT.AGENT_SANDBOX_PATH);
+    expect(s.env("implement")["AGENT_SANDBOX_PATH"]).toBe(AGENT.AGENT_SANDBOX_PATH);
+    expect(s.env("implement")["PATH"]).toBe(`/work/claude-code/bin:${HOST.PATH}`);
+  });
+
+  it.each<[string, Job, Readonly<Partial<Record<Subcommand, Canned>>>, Subcommand | undefined]>([
+    ["fix", { ...FIX_JOB, variables: { ...FIX_JOB.variables, AGENT_SETUP: "npm ci" } }, FIX_ORDINARY, "fix"],
+    ["update-branch", { ...UPDATE_BRANCH_JOB, variables: { ...UPDATE_BRANCH_JOB.variables, AGENT_SETUP: "npm ci" } }, UB_CONFLICTS, "update-branch"],
+    ["implement-prd", { ...PRD_JOB, variables: { ...PRD_JOB.variables, AGENT_SETUP: "npm ci" } }, PRD_BUILD, "implement-prd"],
+    ["setup-check", SETUP_CHECK_JOB, {}, undefined],
+  ])("runs in the %s job too, right before the setup", async (_, job, canned, runner) => {
+    const s = setup(canned, { checkoutFiles: MISE_TOML });
+    await runJob(job, s.edges);
+
+    expect(s.sandboxed.map(({ variable }) => variable).slice(0, 2)).toEqual([TOOLCHAIN_VARIABLE, "AGENT_SETUP"]);
+    if (runner !== undefined) expect(s.events.indexOf(runner)).toBeGreaterThan(s.events.lastIndexOf("sandbox"));
+  });
+
+  it("puts the reported bin directories first on setup's PATH and the agent's, under bwrap, and drops any outside the toolchain folder", async () => {
+    const reported = [...BINS, "/usr/local/evil/bin", "relative/bin", `${INSIDE}/../escaped/bin`, `${SANDBOX_WORKTREE}/other/bin`, ""];
+    const s = setup(IMPLEMENT_ORDINARY, { checkoutFiles: MISE_TOML, toolchainBins: reported });
+    await runJob(WITH_SETUP, s.edges);
+
+    const kept = BINS.join(":");
+    expect(s.sandboxed[1]?.path).toBe(`${kept}:${AGENT.AGENT_SANDBOX_PATH}`);
+    expect(s.env("implement")["AGENT_SANDBOX_PATH"]).toBe(`/work/claude-code/bin:${kept}:/usr/bin`);
+    // The runner itself runs on the host, where the sandbox's paths mean nothing.
+    expect(s.env("implement")["PATH"]).toBe(`/work/claude-code/bin:${HOST.PATH}`);
+  });
+
+  it("keeps them off the runner's PATH under AGENT_SANDBOX=none, where the runner holds the tokens on the host, and notes that only setup and verify get them", async () => {
+    const binOf = (checkout: string): string => `${checkout}/${TOOLCHAIN_DIR}/installs/python/3.12/bin`;
+    const s = setup(IMPLEMENT_ORDINARY, { checkoutFiles: MISE_TOML, toolchainBins: (checkout) => [binOf(checkout), `${INSIDE}/x/bin`, "/opt/elsewhere/bin"] });
+    const phases = await runJob(WITH_SETUP, { ...s.edges, agent: { ...AGENT, AGENT_SANDBOX: "none" } });
+
+    const checkout = path.join(s.runDir, "checkout");
+    const bin = binOf(checkout);
+    expect(s.sandboxed[0]).toMatchObject({ at: checkout, env: { MISE_DATA_DIR: path.join(checkout, TOOLCHAIN_DIR), MISE_TRUSTED_CONFIG_PATHS: checkout } });
+    expect(s.sandboxed[1]?.path).toBe(`${bin}:${AGENT.AGENT_SANDBOX_PATH}`);
+    expect(s.env("implement")["PATH"]).toBe(`/work/claude-code/bin:${HOST.PATH}`);
+    expect(s.env("implement")["PATH"]?.split(":").some((part) => part.includes(TOOLCHAIN_DIR))).toBe(false);
+    expect(s.env("implement")["AGENT_SANDBOX_PATH"]).toBe(AGENT.AGENT_SANDBOX_PATH);
+    expect(phases).toContainEqual({
+      name: TOOLCHAIN_PHASE,
+      outcome: "not on the agent's PATH: with AGENT_SANDBOX=none the agent runs on the host, so the toolchain reaches the setup and the verify command only",
+    });
+  });
+
+  it.each(["bwrap", "none"])(
+    "keeps the worker's own claude first under AGENT_SANDBOX=%s, ahead of a claude the toolchain installed",
+    async (mode) => {
+      const s = setup(IMPLEMENT_ORDINARY, { checkoutFiles: MISE_TOML, toolchainBins: (checkout) => [`${mode === "bwrap" ? SANDBOX_WORKTREE : checkout}/${TOOLCHAIN_DIR}/installs/node/24/bin`] });
+      const sandbox = s.edges.sandbox;
+      const edges = {
+        ...s.edges,
+        agent: { ...AGENT, AGENT_SANDBOX: mode },
+        sandbox: async (run: SandboxRun) => {
+          const code = await sandbox(run);
+          // A `claude` the repository's toolchain put beside its node.
+          if (run.variable === TOOLCHAIN_VARIABLE) fs.writeFileSync(path.join(run.dir, TOOLCHAIN_DIR, "installs", "node", "24", "bin", "claude"), "");
+          return code;
+        },
+      };
+      await runJob(WITH_SETUP, edges);
+
+      const checkout = path.join(s.runDir, "checkout");
+      const tools = `${mode === "bwrap" ? SANDBOX_WORKTREE : checkout}/${TOOLCHAIN_DIR}/installs/node/24/bin`;
+      expect(fs.existsSync(path.join(checkout, TOOLCHAIN_DIR, "installs", "node", "24", "bin", "claude"))).toBe(true);
+      for (const name of ["PATH", "AGENT_SANDBOX_PATH"]) {
+        const parts = (s.env("implement")[name] ?? "").split(":");
+        if (!parts.includes(tools)) continue;
+        expect(parts[0]).toBe("/work/claude-code/bin");
+        expect(parts.indexOf(tools)).toBeGreaterThan(parts.indexOf("/work/claude-code/bin"));
+      }
+      if (mode === "bwrap") expect(s.env("implement")["AGENT_SANDBOX_PATH"]?.split(":")).toContain(tools);
+      expect(s.env("implement")["PATH"]?.split(":")[0]).toBe("/work/claude-code/bin");
+    },
+  );
+
+  it("puts them first on the setup check's verify PATH too", async () => {
+    const s = setup({}, { checkoutFiles: MISE_TOML, toolchainBins: BINS });
+    await runJob(SETUP_CHECK_JOB, s.edges);
+
+    expect(s.sandboxed.map(({ variable, path: sandboxPath }) => [variable, sandboxPath])).toEqual([
+      [TOOLCHAIN_VARIABLE, AGENT.AGENT_SANDBOX_PATH],
+      ["AGENT_SETUP", `${BINS.join(":")}:${AGENT.AGENT_SANDBOX_PATH}`],
+      ["AGENT_VERIFY", `${BINS.join(":")}:${AGENT.AGENT_SANDBOX_PATH}`],
+    ]);
+  });
+
+  it("ends the agent's job before the setup where the install fails, naming mise.toml and quoting the end of its output, redacted", async () => {
+    const s = setup(IMPLEMENT_ORDINARY, {
+      checkoutFiles: MISE_TOML,
+      sandboxRuns: { AGENT_TOOLCHAIN: { exit: 1, output: `mise ERROR python@9.9 not found\nleaked ${AGENT.CLAUDE_CODE_OAUTH_TOKEN}\n` } },
+    });
+    const phases = await runJob(WITH_SETUP, s.edges);
+
+    expect(s.sandboxed.map(({ variable }) => variable)).toEqual([TOOLCHAIN_VARIABLE]);
+    expect(s.events).not.toContain("implement");
+    expect(phases).toContainEqual({ name: SETUP_PHASE, outcome: "not run: the toolchain mise.toml asks for was not installed" });
+    const why = fs.readFileSync(path.join(s.env("implement:conclude")["IMPLEMENT_DIR"]!, "failure_reason.txt"), "utf8");
+    expect(why).toMatch(/^The toolchain `mise\.toml` asks for \(`mise install`\) exited with status 1\. The end of its output:/);
+    expect(why).toContain("mise ERROR python@9.9 not found");
+    expect(why).toContain(`leaked ${REDACTED}`);
+    expect(why).not.toContain(AGENT.CLAUDE_CODE_OAUTH_TOKEN);
+    expect(s.env("implement:conclude")).toMatchObject({ AGENT_RESULT: "failure" });
+  });
+
+  it("ends the agent's job before the setup where the install runs past the job's time limit", async () => {
+    const s = setup(IMPLEMENT_ORDINARY, { minuteMs: 5, checkoutFiles: MISE_TOML, sandboxRuns: { AGENT_TOOLCHAIN: { hangs: true } } });
+    const phases = await runJob(WITH_SETUP, s.edges);
+
+    expect(s.sandboxed.map(({ variable }) => variable)).toEqual([TOOLCHAIN_VARIABLE]);
+    expect(s.sandboxed[0]?.signal.aborted).toBe(true);
+    expect(s.events).not.toContain("implement");
+    expect(phases).toContainEqual({ name: TOOLCHAIN_PHASE, outcome: "timed out" });
+    expect(s.env("implement:conclude")).toMatchObject({ AGENT_RESULT: "cancelled", TIMED_OUT: "true" });
+  });
+
+  it("starts no sandbox where the box has no mise, and says to re-run install-box.sh", async () => {
+    const s = setup(IMPLEMENT_ORDINARY, { checkoutFiles: MISE_TOML, noMise: true });
+    await runJob(WITH_SETUP, s.edges);
+
+    expect(s.sandboxed).toEqual([]);
+    expect(s.events).not.toContain("implement");
+    const why = fs.readFileSync(path.join(s.env("implement:conclude")["IMPLEMENT_DIR"]!, "failure_reason.txt"), "utf8");
+    expect(why).toMatch(/^The toolchain `mise\.toml` asks for \(`mise install`\) could not be installed: `[^`]+` is missing from the agent box\. Re-run `install-box\.sh` on the agent box/);
+  });
+
+  it("makes git ignore the toolchain folder before mise runs, so a real checkout holding it shows nothing of it", async () => {
+    const s = setup(IMPLEMENT_ORDINARY, { checkoutFiles: MISE_TOML, gitCheckout: true, toolchainBins: BINS });
+    const excludedAtStart: boolean[] = [];
+    const sandbox = s.edges.sandbox;
+    const edges = {
+      ...s.edges,
+      sandbox: async (run: SandboxRun) => {
+        if (run.variable === TOOLCHAIN_VARIABLE) {
+          const status = execFileSync("git", ["status", "--porcelain", "--untracked-files=all"], { cwd: run.dir, encoding: "utf8", timeout: SUBPROCESS_TIMEOUT });
+          fs.mkdirSync(path.join(run.dir, TOOLCHAIN_DIR), { recursive: true });
+          fs.writeFileSync(path.join(run.dir, TOOLCHAIN_DIR, "probe"), "");
+          const after = execFileSync("git", ["status", "--porcelain", "--untracked-files=all"], { cwd: run.dir, encoding: "utf8", timeout: SUBPROCESS_TIMEOUT });
+          excludedAtStart.push(status === after);
+        }
+        return sandbox(run);
+      },
+    };
+    await runJob(WITH_SETUP, edges);
+
+    expect(excludedAtStart).toEqual([true]);
+    const checkout = path.join(s.runDir, "checkout");
+    expect(fs.existsSync(path.join(checkout, TOOLCHAIN_DIR, "installs", "node", "24", "bin", "node"))).toBe(true);
+    const status = execFileSync("git", ["status", "--porcelain", "--untracked-files=all", "--ignored=no"], { cwd: checkout, encoding: "utf8", timeout: SUBPROCESS_TIMEOUT });
+    expect(status.split("\n").filter((line) => line.includes(TOOLCHAIN_DIR))).toEqual([]);
+    expect(status).toContain("mise.toml");
+  });
+
+  it.each(["!/.agent-toolchain/", "!.*"])("refuses, as a failed install, a real checkout whose .gitignore holds %s, which the git exclude does not win against", async (line) => {
+    const s = setup(IMPLEMENT_ORDINARY, { checkoutFiles: { ...MISE_TOML, ".gitignore": `${line}\n` }, gitCheckout: true, toolchainBins: BINS });
+    const phases = await runJob(WITH_SETUP, s.edges);
+
+    expect(s.sandboxed).toEqual([]);
+    expect(s.events).not.toContain("implement");
+    expect(phases).toContainEqual({ name: SETUP_PHASE, outcome: "not run: the toolchain mise.toml asks for was not installed" });
+    const reason = fs.readFileSync(path.join(s.env("implement:conclude")["IMPLEMENT_DIR"]!, "failure_reason.txt"), "utf8");
+    expect(reason).toMatch(/^The toolchain `mise\.toml` asks for \(`mise install`\) was not installed: git does not ignore `\.agent-toolchain\/`/);
+    expect(s.env("implement:conclude")).toMatchObject({ AGENT_RESULT: "failure" });
+  });
+
+  it.each<[string, { readonly checkoutDirs?: readonly string[]; readonly checkoutFiles?: Readonly<Record<string, string>>; readonly gitCheckout?: boolean }, RegExp]>([
+    ["the toolchain folder committed as a file", { checkoutFiles: { ...MISE_TOML, [TOOLCHAIN_DIR]: "a file\n" } }, /already has `\.agent-toolchain`/],
+    ["bin-paths.txt committed as a directory", { checkoutDirs: [`${TOOLCHAIN_DIR}/${TOOLCHAIN_BIN_PATHS}`], checkoutFiles: MISE_TOML }, /already has `\.agent-toolchain`/],
+    ["the toolchain folder committed as a directory", { checkoutDirs: [TOOLCHAIN_DIR], checkoutFiles: { ...MISE_TOML, [`${TOOLCHAIN_DIR}/x`]: "" } }, /already has `\.agent-toolchain`/],
+    ["a preparation that throws (the git exclude a directory)", { checkoutDirs: [".git/info/exclude"], checkoutFiles: MISE_TOML }, /could not be prepared: .*EISDIR/],
+  ])("refuses, as a failed install, a checkout with %s, starting no sandbox", async (_, checkout, why) => {
+    const s = setup(IMPLEMENT_ORDINARY, checkout);
+    const phases = await runJob(WITH_SETUP, s.edges);
+
+    expect(s.sandboxed).toEqual([]);
+    expect(s.events).not.toContain("implement");
+    expect(phases).toContainEqual({ name: SETUP_PHASE, outcome: "not run: the toolchain mise.toml asks for was not installed" });
+    const reason = fs.readFileSync(path.join(s.env("implement:conclude")["IMPLEMENT_DIR"]!, "failure_reason.txt"), "utf8");
+    expect(reason).toMatch(/^The toolchain `mise\.toml` asks for \(`mise install`\) /);
+    expect(reason).toMatch(why);
+    expect(s.env("implement:conclude")).toMatchObject({ AGENT_RESULT: "failure" });
+  });
+
+  it("reports an error reading what mise wrote as a failed install, not an exception out of the job", async () => {
+    const s = setup(IMPLEMENT_ORDINARY, { checkoutFiles: MISE_TOML, toolchainBins: BINS });
+    const sandbox = s.edges.sandbox;
+    const edges = {
+      ...s.edges,
+      sandbox: async (run: SandboxRun) => {
+        const code = await sandbox(run);
+        // The folder unreadable once mise is done.
+        if (run.variable === TOOLCHAIN_VARIABLE) fs.chmodSync(path.join(run.dir, TOOLCHAIN_DIR, TOOLCHAIN_BIN_PATHS), 0);
+        return code;
+      },
+    };
+    const phases = await runJob(WITH_SETUP, edges);
+
+    if (process.getuid?.() === 0) return; // root reads it regardless
+    expect(s.events).not.toContain("implement");
+    expect(phases).toContainEqual({ name: SETUP_PHASE, outcome: "not run: the toolchain mise.toml asks for was not installed" });
+    expect(s.env("implement:conclude")).toMatchObject({ AGENT_RESULT: "failure" });
+  });
+
+  describe("in the setup check's report", () => {
+    const toolchainHanded = (s: ReturnType<typeof setup>) =>
+      Object.fromEntries(Object.entries(s.env("setup-check:report")).filter(([name]) => /^(TOOLCHAIN|SETUP|VERIFY)_/.test(name)));
+
+    it("hands the report a toolchain that passed", async () => {
+      const s = setup({}, { checkoutFiles: MISE_TOML, toolchainBins: BINS });
+      await runJob(SETUP_CHECK_JOB, s.edges);
+
+      expect(toolchainHanded(s)).toEqual({ TOOLCHAIN_RESULT: "passed", SETUP_RESULT: "passed", VERIFY_RESULT: "passed" });
+    });
+
+    it("hands the report a tree's own toolchain folder as a toolchain that failed unstarted, and runs neither setup nor verify", async () => {
+      const s = setup({}, { checkoutFiles: { ...MISE_TOML, [TOOLCHAIN_DIR]: "" } });
+      await runJob(SETUP_CHECK_JOB, s.edges);
+
+      expect(s.sandboxed).toEqual([]);
+      expect(toolchainHanded(s)).toMatchObject({ TOOLCHAIN_RESULT: "failed", SETUP_RESULT: "not-run", VERIFY_RESULT: "not-run" });
+      expect(toolchainHanded(s)["TOOLCHAIN_OUTPUT"]).toContain("already has `.agent-toolchain`");
+      expect(toolchainHanded(s)).not.toHaveProperty("TOOLCHAIN_EXIT");
+    });
+
+    it("hands the report a toolchain skipped for want of a mise.toml", async () => {
+      const s = setup({});
+      await runJob(SETUP_CHECK_JOB, s.edges);
+
+      expect(toolchainHanded(s)).toEqual({ TOOLCHAIN_RESULT: "skipped", SETUP_RESULT: "passed", VERIFY_RESULT: "passed" });
+    });
+
+    it("hands the report a failed toolchain's exit code and output, and runs neither setup nor verify", async () => {
+      const s = setup({}, { checkoutFiles: MISE_TOML, sandboxRuns: { AGENT_TOOLCHAIN: { exit: 1, output: "mise ERROR no such version\n" } } });
+      const phases = await runJob(SETUP_CHECK_JOB, s.edges);
+
+      expect(s.sandboxed.map(({ variable }) => variable)).toEqual([TOOLCHAIN_VARIABLE]);
+      expect(toolchainHanded(s)).toEqual({
+        TOOLCHAIN_RESULT: "failed",
+        TOOLCHAIN_EXIT: "1",
+        TOOLCHAIN_OUTPUT: "mise ERROR no such version",
+        SETUP_RESULT: "not-run",
+        VERIFY_RESULT: "not-run",
+      });
+      expect(phases).toContainEqual({ name: VERIFY_PHASE, outcome: "not run: the toolchain mise.toml asks for was not installed" });
+    });
+
+    it("hands the report a missing mise as a toolchain that failed unstarted, naming install-box.sh", async () => {
+      const s = setup({}, { checkoutFiles: MISE_TOML, noMise: true });
+      await runJob(SETUP_CHECK_JOB, s.edges);
+
+      expect(s.sandboxed).toEqual([]);
+      expect(toolchainHanded(s)).toMatchObject({ TOOLCHAIN_RESULT: "failed", SETUP_RESULT: "not-run", VERIFY_RESULT: "not-run" });
+      expect(toolchainHanded(s)["TOOLCHAIN_OUTPUT"]).toContain("install-box.sh");
+      expect(toolchainHanded(s)).not.toHaveProperty("TOOLCHAIN_EXIT");
+    });
+
+    it("hands the report a toolchain that timed out, and runs neither setup nor verify", async () => {
+      const s = setup({}, { minuteMs: 5, checkoutFiles: MISE_TOML, sandboxRuns: { AGENT_TOOLCHAIN: { hangs: true } } });
+      await runJob(SETUP_CHECK_JOB, s.edges);
+
+      expect(s.sandboxed).toHaveLength(1);
+      expect(toolchainHanded(s)).toEqual({ TOOLCHAIN_RESULT: "timed-out", SETUP_RESULT: "not-run", VERIFY_RESULT: "not-run" });
+    });
+
+    it("hands the report a toolchain not run where the checkout failed", async () => {
+      const s = setup({}, { checkoutFails: "remote: Repository not found." });
+      await runJob(SETUP_CHECK_JOB, s.edges);
+
+      expect(toolchainHanded(s)).toEqual({ TOOLCHAIN_RESULT: "not-run", SETUP_RESULT: "not-run", VERIFY_RESULT: "not-run" });
+    });
   });
 });
 

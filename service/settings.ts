@@ -136,9 +136,31 @@ export const WORKER = {
   AGENT_SANDBOX: { ...SANDBOX.AGENT_SANDBOX, default: "bwrap" },
 } as const satisfies Inputs;
 
-/** Every process of the service orchestrator, by the subcommand that runs it, to its settings. */
+/**
+ * **The fleet check's settings** (#825): the dispatcher's own, those it
+ * needs, read in the dispatcher's container, where they are already set, so
+ * it serves the installations the dispatcher serves and no secret is handed
+ * to it any other way.
+ *
+ * - `GITHUB_APP_ID` and `GITHUB_APP_PRIVATE_KEY_FILE`: the App, as the
+ *   dispatcher signs as it.
+ * - `EXTRA_OWNERS`: the accounts whose installations are checked besides the
+ *   App owner's own, as the dispatcher serves them.
+ */
+export const FLEET_CHECK = {
+  GITHUB_APP_ID: REQUIRED,
+  GITHUB_APP_PRIVATE_KEY_FILE: REQUIRED,
+  EXTRA_OWNERS: DISPATCHER.EXTRA_OWNERS,
+} as const satisfies Inputs;
+
+/**
+ * Every subcommand of the service orchestrator, by its name, to its
+ * settings: its two processes, and the fleet check, which a person runs
+ * beside the dispatcher and which ends with an exit code.
+ */
 export const SERVICE = {
   dispatcher: { settings: DISPATCHER },
+  "fleet-check": { settings: FLEET_CHECK },
   worker: { settings: WORKER },
 } as const satisfies Readonly<Record<string, { readonly settings: Inputs }>>;
 

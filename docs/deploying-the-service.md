@@ -834,7 +834,8 @@ container, as `upgrade.sh` asks it: the question names no dispatcher instance, s
 nothing for it, and the shared secret stays in the container. Each part it cannot reach (the
 container stopped, the worker down, no state file) is a line saying so, and the rest still
 answers. It changes nothing and prints no secret. `runs.sh` on the box says how the runs ended;
-`status.sh` says what is held now.
+`status.sh` says what is held now; and `fleet-check.sh`, beside them, says what `doctor` would of
+every repository the service serves (*The upgrade routine*, below).
 
 Every phase has a time limit, as every job on Actions does, so a hung agent cannot hold the queue.
 The gate, the checkout, the budget, the CI wait and the runner share the review's: 15 minutes of CI
@@ -1015,6 +1016,58 @@ Read from the environment. A missing required one stops the worker at start, nam
 | `AGENT_SANDBOX_PROXY` | optional | `""` | an `http:` URL with a host: the proxy every request from the sandbox leaves through, the only way out of the agent's sandbox, and, wherever it is set, of the repository's setup's (spec §3). **Required when `AGENT_SANDBOX` is `bwrap`**, the default: the worker refuses to start with it empty or not such a URL, and refuses an `https:` one, since the sandbox reaches the proxy by a loopback address its TLS certificate does not name. Inside, the proxy variables name a relay on the sandbox's loopback, as an `http:` URL keeping this one's user-info |
 
 The job door also answers `GET /health` with `200`.
+
+## The fleet check
+
+One box upgrade upgrades every repository the service serves at once (ADR 0012), so after one,
+check them as a set: the **fleet check** (#825) is `doctor` for every repository, from the
+service's side. Run it where the dispatcher runs, with the dispatcher's own settings, and no
+argument:
+
+```bash
+agent-workflows fleet-check
+```
+
+On the worked example's Unraid server that is `deploy/unraid/fleet-check.sh`, which runs it in the
+dispatcher's container (*A worked example*, below).
+
+**What it checks:** every repository of every installation the dispatcher serves, the App owner's
+and the ones `EXTRA_OWNERS` lists. One whose `AGENT_ORCHESTRATOR` is `service` gets `doctor`'s own
+rules for a repository on the service, read through the App's API instead of a checkout and `gh`:
+a caller pinned before `v0.8.3`, the guard that has the reusables skip, or a caller left installed;
+a caller's `setup:` where `AGENT_SETUP` is unset; a missing or retired label; and the domain model's
+file. To those it adds three of the service's own: `AGENT_SETUP` unset is a note, `AGENT_VERIFY`
+unset is a note naming the setup check (`agent:setup-check`) as what reads it, and a missing label
+is an error whose fix says the dispatcher's next scan creates it ([*The loop's labels*](#the-loops-labels)).
+Every one of those checks is answered with what the App's token reads, so none is skipped. `doctor`'s
+note that it cannot tell whether the App is installed is answered, and left out: the repository was
+reached through the App. The checks that are Actions' alone are not run, as `doctor` itself says of
+a repository on the service. Any other repository gets one line saying it is not on the service,
+and an installation on an account the dispatcher does not serve gets one line saying it is not
+checked.
+
+**What it prints:** one line per repository, its name and `ok` or its counts of errors and
+warnings, with each finding indented below it, errors first, in `doctor`'s words. A repository or
+an installation it cannot read is a line naming it and the reason, and the rest are still checked.
+It **exits** `0` where every repository was read and none has an error, `1` otherwise, and `2`
+given an argument.
+
+**Read-only.** Each repository is read with a token of its own, minted for it alone with Metadata,
+Variables, Issues and Contents, each read, all of which the App already holds
+([*Permissions*](#permissions)); it makes no write of any kind. It is not run on a schedule and
+opens no issue: a person runs it, and reads it.
+
+### Settings
+
+The dispatcher's own, those it needs, read from the environment, so in the dispatcher's container
+they are already set. A missing required one stops it, naming each. `tests/service/settings.test.ts`
+holds this table equal to `FLEET_CHECK` in `service/settings.ts`.
+
+| Setting | Kind | Default | Meaning |
+|---|---|---|---|
+| `GITHUB_APP_ID` | required | | the App's ID, as the dispatcher's |
+| `GITHUB_APP_PRIVATE_KEY_FILE` | required | | a path to the App's private key, in PEM, as the dispatcher's |
+| `EXTRA_OWNERS` | optional | `""` | the accounts, comma-separated, whose installations are checked besides the App owner's, as the dispatcher serves them |
 
 ## Restarts and outages
 
@@ -1254,6 +1307,24 @@ first. Its halves, `upgrade-unraid.sh` and
 `upgrade-box.sh`, each install a tarball they are handed and can still be run alone, to recover or
 roll back one machine. A release published before its tarball was attached to it cannot be rolled
 back to by script: none of these scripts installs a release without its tarball.
+
+**The upgrade routine** turns "every repository at once" into "every repository checked at once".
+After every upgrade of both:
+
+1. Upgrade: `bash /boot/config/agent-service/upgrade.sh <version>`, as above.
+2. Run the fleet check: `bash /boot/config/agent-service/fleet-check.sh`, as root on Unraid. It
+   runs `fleet-check` in the dispatcher's container with the settings already set there, so no
+   secret is printed, written or put on a command line, and takes no argument
+   ([*The fleet check*](#the-fleet-check)). Read each repository's line; a missing label is one
+   the dispatcher's next scan creates, so a restart of the dispatcher, or the next timed scan,
+   mends it.
+3. Add `agent:setup-check` to an open issue in each repository on the service, and read each
+   report ([*The setup check*](#the-setup-check)): it runs the repository's setup and its verify
+   command on the box, as a real job would.
+4. On a failure, roll back, `bash /boot/config/agent-service/upgrade.sh <earlier version>`, and
+   file an issue naming the release, the repository and what broke.
+
+The routine starts no setup check by itself; each is a label a person adds.
 
 **After a reboot the chain comes back on its own**, as #374 showed with the prototype, the same
 chain of units and scripts: the array

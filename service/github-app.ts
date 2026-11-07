@@ -9,6 +9,7 @@ import {
   type MergedPull,
   type WebhookDelivery,
 } from "./dispatcher.js";
+import type { FleetGitHub, RepositoryEntry } from "./fleet-check.js";
 import type { TokenGrant } from "./job.js";
 
 /**
@@ -25,7 +26,9 @@ import type { TokenGrant } from "./job.js";
  * an item (#596), goes through a token minted for it alone, and a scan's
  * label writes on a repository (#823) through one minted for them. The App's own
  * webhook deliveries, listed and asked for again (#774), take the App's JWT
- * alone, and no installation's permission.
+ * alone, and no installation's permission. The fleet check's reads (#825),
+ * a repository's variables, labels and files, go through a token it mints
+ * and hands each of them, so it reads with the fewest permissions it needs.
  */
 
 const API = "https://api.github.com";
@@ -46,7 +49,7 @@ interface Reply {
 
 const b64url = (value: Buffer | string): string => Buffer.from(value).toString("base64url");
 
-export const liveAppGitHub = (appId: string, privateKey: string): AppGitHub => {
+export const liveAppGitHub = (appId: string, privateKey: string): AppGitHub & FleetGitHub => {
   /** A JWT for the App, nine minutes long and backdated one for clock drift: GitHub's limit is ten. */
   const jwt = (): string => {
     const now = Math.floor(Date.now() / 1000);
@@ -199,6 +202,21 @@ export const liveAppGitHub = (appId: string, privateKey: string): AppGitHub => {
     }
   };
 
+  /** A variable as `vars` resolves it for `repo`, read with `token`, or `undefined` where it is set nowhere. */
+  const variableWith = async (repo: string, name: string, token: string): Promise<string | undefined> => {
+    const reply = await api(`/repos/${repo}/actions/variables/${name}`, token);
+    if (reply.status !== 404) {
+      const value = field(reply, "value");
+      if (reply.status !== 200 || typeof value !== "string") throw new Error(`reading ${name} on ${repo} answered ${reply.status}`);
+      return value;
+    }
+    return organizationVariable(repo, name, token);
+  };
+
+  /** The contents API's path for `file` in `repo`, each segment encoded; `""` is the root. */
+  const contents = (repo: string, file: string): string =>
+    `/repos/${repo}/contents${file === "" ? "" : `/${file.split("/").map(encodeURIComponent).join("/")}`}`;
+
   let app: AppRecord | undefined;
 
   return {
@@ -226,15 +244,30 @@ export const liveAppGitHub = (appId: string, privateKey: string): AppGitHub => {
       return app;
     },
     installation: async (repo) => (await installation(repo))?.account,
-    variable: async (repo, name) => {
-      const token = await reader(repo);
-      const reply = await api(`/repos/${repo}/actions/variables/${name}`, token);
-      if (reply.status !== 404) {
-        const value = field(reply, "value");
-        if (reply.status !== 200 || typeof value !== "string") throw new Error(`reading ${name} on ${repo} answered ${reply.status}`);
-        return value;
+    variable: async (repo, name) => variableWith(repo, name, await reader(repo)),
+    variableWith,
+    labelsWith: async (repo, token) => {
+      const listed = await pages(`/repos/${repo}/labels`, () => token, (reply) => reply.json, `${repo}'s labels`);
+      return listed.map((entry) => record(entry)["name"]).filter((name): name is string => typeof name === "string");
+    },
+    entriesWith: async (repo, dir, token) => {
+      const reply = await api(contents(repo, dir), token);
+      if (reply.status === 404) return undefined;
+      if (reply.status !== 200 || !Array.isArray(reply.json)) {
+        throw new Error(`listing ${dir === "" ? "the root" : dir} of ${repo} answered ${reply.status}${reply.status === 200 ? ", which is not a folder" : ""}`);
       }
-      return organizationVariable(repo, name, token);
+      return (reply.json as unknown[]).flatMap((entry): RepositoryEntry[] => {
+        const { name, type } = record(entry);
+        return typeof name === "string" && typeof type === "string" ? [{ name, type }] : [];
+      });
+    },
+    fileWith: async (repo, file, token) => {
+      const reply = await api(contents(repo, file), token);
+      const content = field(reply, "content");
+      if (reply.status !== 200 || field(reply, "encoding") !== "base64" || typeof content !== "string") {
+        throw new Error(`reading ${file} on ${repo} answered ${reply.status}${reply.status === 200 ? ", with no content the API serves (a file over 1 MB, or not a file)" : ""}`);
+      }
+      return Buffer.from(content, "base64").toString("utf8");
     },
     permission: async (repo, login) => {
       const reply = await api(`/repos/${repo}/collaborators/${encodeURIComponent(login)}/permission`, await reader(repo));

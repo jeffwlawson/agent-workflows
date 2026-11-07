@@ -3,7 +3,7 @@ import * as path from "node:path";
 import { describe, expect, it } from "vitest";
 import { SERVICE_APP_EVENTS, SERVICE_APP_PERMISSIONS } from "../../service/dispatcher.js";
 import { TOKEN_KINDS } from "../../service/job.js";
-import { DISPATCHER, WORKER } from "../../service/settings.js";
+import { DISPATCHER, FLEET_CHECK, WORKER } from "../../service/settings.js";
 import type { Inputs } from "../../shared/contract.js";
 
 /**
@@ -66,6 +66,22 @@ describe("the deployment guide's worker settings", () => {
 
   it("lists every setting the worker declares, and no other, each as required or optional as declared", () => {
     expect(new Map([...table].sort())).toEqual(new Map([...kindOf(WORKER)].sort()));
+  });
+});
+
+describe("the deployment guide's fleet check settings (#825)", () => {
+  const table = rowsOf(sectionsOf(sectionsOf(GUIDE, 2).get("The fleet check") ?? "", 3).get("Settings") ?? "");
+
+  it("finds the table", () => {
+    expect(table.size).toBeGreaterThan(0);
+  });
+
+  it("lists every setting the fleet check declares, and no other, each as required or optional as declared", () => {
+    expect(new Map([...table].sort())).toEqual(new Map([...kindOf(FLEET_CHECK)].sort()));
+  });
+
+  it("reads only settings the dispatcher has, so its container already holds them", () => {
+    for (const [name, setting] of Object.entries(FLEET_CHECK)) expect(DISPATCHER).toHaveProperty(name, setting);
   });
 });
 

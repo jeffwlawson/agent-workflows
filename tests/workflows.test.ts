@@ -7753,8 +7753,13 @@ describe("the runner package is installed from GitHub Packages", () => {
    * without a `mise.toml`** (#836): a step gated on that input naming a file
    * only names a Node when it is set and mise did not run, so otherwise the
    * toolchain step is skipped and something else must name one. The mise
-   * step counts as naming the adopter's file, as `node-version-file` does.
-   * Read with each input and each finding, by evaluating the two expression
+   * step names the adopter's file, as `node-version-file` does, only where the
+   * `mise.toml` has a Node in it; where it has none, mise adds nothing to `PATH`
+   * for Node and an earlier step's Node is still the one the run gets. Where it
+   * has one, that file decides: a step after it naming a version would put its
+   * Node first on `PATH`, under the adopter's `setup:` Node, and the agent and
+   * its verify command would run on a Node `setup:` never saw (#847).
+   * Read with each input and each finding, by evaluating the expression
    * shapes these files use and refusing any other, so a third shape is a
    * failure here rather than a guess. A `node-version` is held to the floor; a
    * `node-version-file` is the adopter's toolchain input, which this file
@@ -7762,18 +7767,22 @@ describe("the runner package is installed from GitHub Packages", () => {
    */
   const NODE_VERSION_FILE_SET = "inputs.node-version-file != ''";
   const MISE_NOT_FOUND = "steps.mise.outputs.found != 'true'";
-  const NODE_VERSION_FALLBACK = /^\$\{\{ inputs\.node-version-file == '' && '([^']*)' \|\| '' \}\}$/;
+  const NODE_VERSION_FALLBACK =
+    /^\$\{\{ inputs\.node-version-file == '' && steps\.mise\.outputs\.found != 'true' && '([^']*)' \|\| '' \}\}$/;
 
-  /** What a step names for the Node with the input at `input` and a `mise.toml` or none: a version, a file, or nothing. */
+  /** A `mise.toml` or none, and whether the one there names a Node. */
+  type Mise = "none" | "names node" | "names no node";
+
+  /** What a step names for the Node with the input at `input` and `mise`: a version, a file, or nothing. */
   const nodeNamedBy = (
     step: Step,
     input: string,
-    mise: boolean,
+    mise: Mise,
   ): { readonly version: string } | { readonly file: string } | undefined => {
-    if ((step.uses ?? "").startsWith("jdx/mise-action@")) return mise ? { file: "mise.toml" } : undefined;
+    if ((step.uses ?? "").startsWith("jdx/mise-action@")) return mise === "names node" ? { file: "mise.toml" } : undefined;
     if (!(step.uses ?? "").startsWith("actions/setup-node@")) return undefined;
     if (input === "" && (step.if ?? "").includes(NODE_VERSION_FILE_SET)) return undefined;
-    if (mise && (step.if ?? "").includes(MISE_NOT_FOUND)) return undefined;
+    if (mise !== "none" && (step.if ?? "").includes(MISE_NOT_FOUND)) return undefined;
     const file = step.with?.["node-version-file"];
     const raw = step.with?.["node-version"];
     let version: string | undefined;
@@ -7782,7 +7791,7 @@ describe("the runner package is installed from GitHub Packages", () => {
       if (text.includes("${{")) {
         const fallback = NODE_VERSION_FALLBACK.exec(text);
         expect(fallback, `an expression this test cannot evaluate: ${text}`).not.toBeNull();
-        version = input === "" ? fallback?.[1] : "";
+        version = input === "" && mise === "none" ? fallback?.[1] : "";
       } else {
         version = text;
       }
@@ -7794,10 +7803,15 @@ describe("the runner package is installed from GitHub Packages", () => {
 
   it.each(
     runnerWorkflows.flatMap((file) =>
-      ["", ".nvmrc"].flatMap((input) => [false, true].map((mise) => [file, input, mise] as const)),
+      ["", ".nvmrc"].flatMap((input) =>
+        (stepsOf(file).some((s) => (s.uses ?? "").startsWith("jdx/mise-action@"))
+          ? (["none", "names node", "names no node"] as const)
+          : (["none"] as const)
+        ).map((mise) => [file, input, mise] as const),
+      ),
     ),
   )(
-    "%s: runs the runner on a Node the package's engines accept, with node-version-file %j and a mise.toml %s",
+    "%s: runs the runner on a Node the package's engines accept, with node-version-file %j and a mise.toml that %s",
     (file, input, mise) => {
       const floor = Number(/^>=(\d+)(?:\.\d+){0,2}$/.exec(manifest.engines.node)?.[1]);
       const naming = stepsOf(file)
@@ -7808,6 +7822,9 @@ describe("the runner package is installed from GitHub Packages", () => {
 
       expect(floor).toBeGreaterThan(0);
       expect(decides, `${file} runs the runner on the image's Node`).toBeDefined();
+      if (mise === "names node") {
+        expect(decides, `${file} runs the runner on a Node over the one mise.toml names`).toEqual({ file: "mise.toml" });
+      }
       if (decides !== undefined && "version" in decides) {
         expect(Number(/^(\d+)/.exec(decides.version)?.[1])).toBeGreaterThanOrEqual(floor);
       }

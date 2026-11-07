@@ -451,18 +451,20 @@ jobs:
       # The cache opt-out: this half declares no toolchain, so it must not
       # infer one.
       #
-      # With `node-version-file: ''` the toolchain step above is skipped, and
-      # without a Node named here the runner would run on the image's, below
-      # the package's `engines.node` (#335). So it names one in exactly that
-      # case and none otherwise, leaving an adopter's own version file to decide
-      # the Node their commands run on. A `mise.toml` is such a file: where the
-      # mise step ran, a Node it names decides, and where it names none, the
-      # package's own Node set up above is still first on `PATH`.
+      # With `node-version-file: ''` and no `mise.toml` the toolchain steps
+      # above are skipped, and without a Node named here the runner would run
+      # on the image's, below the package's `engines.node` (#335). So it names
+      # one in exactly that case and none otherwise, leaving an adopter's own
+      # version file to decide the Node their commands run on. A `mise.toml` is
+      # such a file, whatever the input says: a Node named here would go first
+      # on `PATH`, over the one mise set up for `setup:` (#847). Where the
+      # `mise.toml` names no Node, the job's earlier Node 24 step is still the
+      # one on `PATH`.
       # `tests/workflows.test.ts` holds it to `engines.node`.
       - name: Authenticate to GitHub Packages
         uses: actions/setup-node@v7
         with:
-          node-version: ${{ inputs.node-version-file == '' && '24' || '' }}
+          node-version: ${{ inputs.node-version-file == '' && steps.mise.outputs.found != 'true' && '24' || '' }}
           registry-url: https://npm.pkg.github.com
           scope: "@jeffwlawson"
           package-manager-cache: false

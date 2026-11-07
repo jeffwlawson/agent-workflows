@@ -110,6 +110,12 @@ pull request is what the release reads, not one in the pull request's descriptio
 only where `publish.yml` creates the Release, and a wrong or missing one is fixed by editing the
 Release by hand.
 
+A trailer can also be per box, for an adopter running the service: v0.9.19's asks for
+`sudo bash ~/install-box.sh <version>` on the agent box after the upgrade. One naming
+`~/install-box.sh` relies on `deploy/unraid/upgrade.sh` having copied the release's
+`install-box.sh` to the box's home beside `upgrade-box.sh` (#839); the upgrade copies it and never
+runs it, so without that copy the person would run whatever copy the box last had.
+
 The checks that made this a chore rather than a hazard are still the backstop, and are what a
 rewrite gone wrong lands on: `PIN` in `tests/workflows.test.ts` is derived from `package.json` and
 checked against **both caller sets** — `examples/callers/*.yml` and `.github/workflows/agent-*.yml`

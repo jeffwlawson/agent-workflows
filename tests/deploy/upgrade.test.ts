@@ -503,6 +503,30 @@ describe("upgrade.sh", { concurrent: true }, () => {
     expect(fs.readFileSync(path.join(root, "box-home", "runs.sh"), "utf8")).toBe(fs.readFileSync(path.join(DEPLOY, "runs.sh"), "utf8"));
   });
 
+  it("copies install-box.sh to the box where it is beside the script, and runs it nowhere", async () => {
+    const root = setUp();
+    fs.copyFileSync(path.join(DEPLOY, "install-box.sh"), path.join(root, "unraid", "install-box.sh"));
+    const { status, output, calls } = await run(root);
+
+    expect(status).toBe(0);
+    expect(output).toContain(`Copied ${TARBALL} ${TARBALL}.sha256 upgrade-box.sh check-box.sh install-box.sh agent-service.conf to `);
+    expect(fs.readFileSync(path.join(root, "box-home", "install-box.sh"))).toEqual(fs.readFileSync(path.join(DEPLOY, "install-box.sh")));
+    // Copied for a person to run when a release says to: no command sent to the box names it.
+    const named = calls.filter((call) => /^(ssh|scp) /.test(call) && call.includes("install-box.sh"));
+    expect(named).toHaveLength(1);
+    expect(named[0]).toMatch(/^scp /);
+  });
+
+  it("upgrades without install-box.sh beside the script, copying the rest", async () => {
+    const root = setUp();
+    fs.rmSync(path.join(root, "unraid", "install-box.sh"), { force: true });
+    const { status, output } = await run(root);
+
+    expect(status).toBe(0);
+    expect(output).toContain(`Copied ${TARBALL} ${TARBALL}.sha256 upgrade-box.sh check-box.sh agent-service.conf to `);
+    expect(fs.existsSync(path.join(root, "box-home", "install-box.sh"))).toBe(false);
+  });
+
   it("upgrades onto machines with no package installed yet, printing no stray error", async () => {
     const root = setUp({ fresh: true, conf: `PACKAGE_SOURCE=owner/repo\nPACKAGE_NAME=${NAME}` });
     const { status, output } = await run(root);

@@ -80,7 +80,8 @@ serving every repository on the box:
 - **`EGRESS_EXTRA_HOSTS`**: host names let through as exact matches, for what no preset covers. A
   value that is not a plain host name (a scheme, a port, a path, a wildcard) is refused.
 
-To apply a change, edit `agent-service.conf` and re-run `install-box.sh`: it refuses a bad value
+To apply a change, edit `agent-service.conf` and re-run `install-box.sh` (after an upgrade, the
+copy in the box's home is the release's own, which `upgrade.sh` put there): it refuses a bad value
 before it changes anything, writes the proxy's allowlist (`/etc/tinyproxy/allowlist`) whole as
 the base plus what the settings ask for, and restarts `tinyproxy` only when the list changed.
 `upgrade-box.sh` touches neither packages nor the proxy. `check-box.sh` fails for a package or
@@ -1210,7 +1211,10 @@ bash /boot/config/agent-service/upgrade.sh [--now] <version>
 It downloads the release's tarball and its `.sha256` once, on Unraid (the tokenless install,
 above, from the repository `PACKAGE_SOURCE` names in `agent-service.conf`), checks it, and copies
 it to the box over ssh as `BOX_SSH_USER`, with the box's `upgrade-box.sh`, `check-box.sh`, the run
-index `runs.sh` where it is beside it, and the conf, where the digest is checked again. Then it
+index `runs.sh` and `install-box.sh`, each where it is beside it, and the conf, where the digest is
+checked again. `install-box.sh` is copied and not run: the upgrade installs no packages and leaves
+the proxy alone, and the copy makes a later `sudo bash ~/install-box.sh <version>`, where a release
+asks for one, run that release's script. Then it
 installs on both with neither service touched, waits for the worker to hold no job, restarts the
 worker and straight after it the dispatcher, and runs both check scripts, failing where their versions or the shared secret's fingerprints differ.
 

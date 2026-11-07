@@ -212,6 +212,11 @@ to_copy=("$stage/$tarball" "$stage/$tarball.sha256" "$here/upgrade-box.sh" "$her
 # The run index (#604), where it is beside this script: copied for a person to
 # run on the box, and not required, so an upgrade from before it still runs.
 if [ -f "$here/runs.sh" ]; then to_copy+=("$here/runs.sh"); fi
+# The box's install script, where it is beside this script: copied and never
+# run, so a later sudo bash ~/install-box.sh <version>, which a release's
+# Adopter-Action may ask for, runs this release's copy rather than a stale one.
+# Not required either, so an older set of scripts on Unraid still upgrades.
+if [ -f "$here/install-box.sh" ]; then to_copy+=("$here/install-box.sh"); fi
 if [ -f "$conf" ]; then to_copy+=("$conf"); fi
 copied=$(for file in "${to_copy[@]}"; do basename "$file"; done | paste -sd ' ')
 # The one connection every later ssh and scp shares. Where it cannot be set up,

@@ -37,7 +37,7 @@ NODE_VERSION=${NODE_VERSION:-24.21.0}
 # mise, installed to /usr/local/bin/mise, where the worker runs it from in the
 # sandbox. check-box.sh repeats this default, which tests/deploy/check-box.test.ts
 # holds equal.
-MISE_VERSION=${MISE_VERSION:-2025.10.0}
+MISE_VERSION=${MISE_VERSION:-2026.10.18}
 CLAUDE_CODE_VERSION=${CLAUDE_CODE_VERSION:-2.1.316}
 WORKER_USER=${WORKER_USER:-worker}
 PREFIX=${PREFIX:-/opt/agent-workflows}

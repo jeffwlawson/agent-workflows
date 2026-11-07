@@ -829,7 +829,8 @@ export const startRun = (job: Job, edges: JobEdges): Run => {
         what,
         variable: TOOLCHAIN_VARIABLE,
         script: `${quotedMise} install\n${quotedMise} bin-paths > "$MISE_DATA_DIR/${TOOLCHAIN_BIN_PATHS}"`,
-        env: { MISE_DATA_DIR: inside, MISE_TRUSTED_CONFIG_PATHS: at, MISE_YES: "1" },
+        // Colour off, so a failure reason quoting mise carries no escape codes.
+        env: { MISE_DATA_DIR: inside, MISE_TRUSTED_CONFIG_PATHS: at, MISE_YES: "1", NO_COLOR: "1" },
       },
       signal,
     );

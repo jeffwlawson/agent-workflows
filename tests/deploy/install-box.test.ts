@@ -229,7 +229,7 @@ describe("install-box.sh's mise (#822)", () => {
     stub("install", 'echo "install $*" >>"$FAKE/state/calls"\ncp "${@: -2:1}" "${@: -1}" && chmod 755 "${@: -1}"');
     const target = path.join(root, "mise");
     if (have !== undefined) {
-      fs.writeFileSync(target, `#!/usr/bin/env bash\necho '${have} linux-x64 (2025-10-01)'\n`);
+      fs.writeFileSync(target, `#!/usr/bin/env bash\necho '${have} linux-x64 (2026-10-23)'\n`);
       fs.chmodSync(target, 0o755);
     }
     const [start, end] = between(SCRIPT, 'echo "== mise', 'echo "== The $WORKER_USER user"');

@@ -41,7 +41,7 @@ MIN_NODE=${MIN_NODE:-24.14.0}
 # (#822), at install-box.sh's pin, repeated here; tests/deploy/check-box.test.ts
 # holds the two equal.
 MISE=${MISE:-/usr/local/bin/mise}
-MISE_VERSION=${MISE_VERSION:-2025.10.0}
+MISE_VERSION=${MISE_VERSION:-2026.10.18}
 REQUIRED_SETTINGS="WORKER_SECRET DISPATCHER_TOKEN_URL CLAUDE_CODE_VERSION CLAUDE_CODE_OAUTH_TOKEN WORK_DIR JOBS_HOST WORKER_PROXY AGENT_SANDBOX_PROXY"
 # What tinyproxy must let through: the model's API, GitHub, the npm registry,
 # mise's version list, the token door. Each as the line the Filter file holds,

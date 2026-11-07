@@ -90,7 +90,7 @@
 # mise (from its GitHub release, linux-x64), which installs the Node or Python a
 # repository's mise.toml asks for in each job's sandbox. check-box.sh reads it
 # too, so set it here, not on the command line.
-#MISE_VERSION=2025.10.0
+#MISE_VERSION=2026.10.18
 
 # tinyproxy's port on the box's loopback.
 #PROXY_PORT=3128

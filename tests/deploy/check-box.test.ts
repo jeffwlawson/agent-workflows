@@ -156,7 +156,7 @@ describe("check-box.sh's mise (#822)", () => {
     const root = setUp([`MISE=${path.join(os.tmpdir(), "no-such-dir", "mise")}`]);
     if (version === undefined) return root;
     const mise = path.join(root, "mise");
-    fs.writeFileSync(mise, `#!/usr/bin/env bash\necho '${version} linux-x64 (2025-10-01)'\n`);
+    fs.writeFileSync(mise, `#!/usr/bin/env bash\necho '${version} linux-x64 (2026-10-23)'\n`);
     fs.chmodSync(mise, 0o755);
     fs.appendFileSync(path.join(root, "unraid", "agent-service.conf"), `MISE=${mise}\n`);
     return root;

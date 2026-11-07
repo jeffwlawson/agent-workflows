@@ -2964,7 +2964,7 @@ describe("the toolchain, before the setup (#822)", () => {
       at: SANDBOX_WORKTREE,
       path: AGENT.AGENT_SANDBOX_PATH,
       proxy: AGENT.AGENT_SANDBOX_PROXY,
-      env: { MISE_DATA_DIR: INSIDE, MISE_TRUSTED_CONFIG_PATHS: SANDBOX_WORKTREE, MISE_YES: "1" },
+      env: { MISE_DATA_DIR: INSIDE, MISE_TRUSTED_CONFIG_PATHS: SANDBOX_WORKTREE, MISE_YES: "1", NO_COLOR: "1" },
       log: path.join(s.runDir, "logs", "toolchain.log"),
     });
     expect(toolchain?.script).toMatch(/' install\n/);
@@ -2975,6 +2975,13 @@ describe("the toolchain, before the setup (#822)", () => {
     expect(phases).toContainEqual({ name: TOOLCHAIN_PHASE, outcome: "success" });
     const summary = JSON.parse(fs.readFileSync(path.join(s.runDir, SUMMARY_FILE), "utf8")) as { subcommands: { subcommand: string; env: Record<string, string> }[] };
     expect(summary.subcommands.find(({ subcommand }) => subcommand === TOOLCHAIN_PHASE)?.env).toMatchObject({ MISE_DATA_DIR: INSIDE });
+  });
+
+  it("runs mise with colour off, so its error output reaches a failure reason with no escape codes", async () => {
+    const s = setup(IMPLEMENT_ORDINARY, { checkoutFiles: MISE_TOML });
+    await runJob(WITH_SETUP, s.edges);
+
+    expect(s.sandboxed[0]?.env).toMatchObject({ NO_COLOR: "1" });
   });
 
   it("is asked for by a .mise.toml too", async () => {

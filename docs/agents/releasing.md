@@ -110,6 +110,16 @@ pull request is what the release reads, not one in the pull request's descriptio
 only where `publish.yml` creates the Release, and a wrong or missing one is fixed by editing the
 Release by hand.
 
+**A trailer starts with its scope** (#825), so the release notes say whether the action is done
+once or once per repository: `Per box:` (on a machine the service runs on, once for every
+repository it serves), `Per App:` (once, in the service's GitHub App's settings) or
+`Per repository:` (in each repository that runs the loop, its callers or its variables). For
+example, `Adopter-Action: Per App: Subscribe the App to the \`pull_request_review\` event in its
+settings.` On the service one box upgrade upgrades every repository at once (ADR 0012), so keep
+`Per repository:` rare: a change that can be made on the box or the App, or that the dispatcher can
+converge itself, as it does the labels, is made there instead. This is a rule for writing new
+trailers: past ones are not rewritten, and no code checks it.
+
 A trailer can also be per box, for an adopter running the service: v0.9.19's asks for
 `sudo bash ~/install-box.sh <version>` on the agent box after the upgrade. One naming
 `~/install-box.sh` relies on `deploy/unraid/upgrade.sh` having copied the release's

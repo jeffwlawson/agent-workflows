@@ -832,6 +832,12 @@ deleted or renamed, retired ones included, which stays `init`'s and `doctor`'s. 
 write is logged and tried again next pass, and stops nothing. So a release that adds or recolours a
 label needs nothing done per repository on the service, and a repository there needs neither `init`
 nor callers for its labels (ADR 0012).
+Since one box upgrade upgrades every repository at once, the **fleet check** (#825,
+`service/fleet-check.ts`) checks them at once: `fleet-check`, a subcommand a person runs beside
+the dispatcher with its settings, reads every served repository with read-only App tokens and rules
+on each that opted in with `doctor`'s own `diagnose`, fed from the App's API instead of a checkout
+and `gh`, plus the service's notes on `AGENT_SETUP` and `AGENT_VERIFY`. It is a second source of
+`doctor`'s facts, not a copy of its rules, and writes nothing.
 
 The **worker** (#457) runs each job the way its workflow's reusable runs it, `review.yml` for a
 `review` job, `fix.yml` for a `fix` job, `update-branch.yml` for an `update-branch` job and

@@ -1,6 +1,7 @@
 import { generateKeyPairSync } from "node:crypto";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { COMMENT_PERMISSIONS, LABEL_PERMISSIONS, SCAN_PERMISSIONS, TOKEN_PERMISSIONS } from "../../service/dispatcher.js";
+import { FLEET_PERMISSIONS } from "../../service/fleet-check.js";
 import { liveAppGitHub } from "../../service/github-app.js";
 
 /**
@@ -34,6 +35,8 @@ interface World {
   deliveries?: unknown[];
   /** The repository's labels, as its labels list gives them (#823). */
   labels?: unknown[];
+  /** The files on the repository's default branch, by path (#825). */
+  files?: Record<string, string>;
 }
 
 /**
@@ -66,6 +69,8 @@ const minted: Record<string, string>[] = [];
 const mintedFor: (string[] | undefined)[] = [];
 /** Each request's path and query. */
 const queried: string[] = [];
+/** Each request's method, path and the token it was made with. */
+const requests: { method: string; path: string; authorization: string | null }[] = [];
 /** Each comment posted: its path, its body and the token it was posted with. */
 const commented: { path: string; body: unknown; authorization: string | null }[] = [];
 /** Each label write (#823): its method, path, body and the token it was made with. */
@@ -90,6 +95,7 @@ const mintAnswer = (body: string | undefined): Response => {
 
 const answer = (url: string, init?: RequestInit): Response => {
   const { pathname, searchParams } = new URL(url);
+  requests.push({ method: init?.method ?? "GET", path: pathname, authorization: new Headers(init?.headers).get("authorization") });
   asked.push(pathname);
   queried.push(`${pathname}${searchParams.size === 0 ? "" : `?${searchParams.toString()}`}`);
   const size = Number(searchParams.get("per_page"));
@@ -144,6 +150,17 @@ const answer = (url: string, init?: RequestInit): Response => {
     hooked.push({ method: init?.method ?? "GET", authorization: new Headers(init?.headers).get("authorization") });
     return reply(202, {});
   }
+  const file = /^\/repos\/owner\/repo\/contents(?:\/(.*))?$/.exec(pathname);
+  if (file !== null) {
+    const at = decodeURIComponent(file[1] ?? "");
+    const held = world.files ?? {};
+    if (at in held) return reply(200, { type: "file", name: at.split("/").pop(), encoding: "base64", content: Buffer.from(held[at] ?? "").toString("base64") });
+    const prefix = at === "" ? "" : `${at}/`;
+    const inside = Object.keys(held).filter((name) => name.startsWith(prefix));
+    if (inside.length === 0 && at !== "") return reply(404, { message: "Not Found" });
+    const names = [...new Set(inside.map((name) => name.slice(prefix.length).split("/")[0] ?? ""))];
+    return reply(200, names.map((name) => ({ name, type: held[`${prefix}${name}`] === undefined ? "dir" : "file" })));
+  }
   const own = /^\/repos\/owner\/repo\/actions\/variables\/(.+)$/.exec(pathname);
   if (own !== null) {
     const value = world.repository[own[1] ?? ""];
@@ -162,6 +179,7 @@ beforeEach(() => {
   minted.length = 0;
   mintedFor.length = 0;
   queried.length = 0;
+  requests.length = 0;
   commented.length = 0;
   labelWrites.length = 0;
   hooked.length = 0;
@@ -538,5 +556,44 @@ describe("liveAppGitHub: the App's webhook deliveries (#774)", () => {
 
     expect(await liveAppGitHub("1", KEY).labels(REPO, 7)).toEqual(["agent:review", "bug"]);
     expect(minted).toEqual([SCAN_PERMISSIONS]);
+  });
+});
+
+describe("liveAppGitHub: what the fleet check reads (#825)", () => {
+  it("reads variables, labels, a folder and a file with the token it is handed, and makes no request but a GET besides the mint", async () => {
+    world.repository = { AGENT_ORCHESTRATOR: "service" };
+    world.organization = { AGENT_SETUP: "npm ci" };
+    world.labels = [{ name: "agent:review", color: "0969DA", description: "" }, { name: "bug" }];
+    world.files = { "CONTEXT.md": "# Context\n", ".github/workflows/pr.yml": "on: push\n" };
+    const github = liveAppGitHub("1", KEY);
+
+    const { token } = await github.mint(REPO, FLEET_PERMISSIONS);
+    expect(await github.variableWith(REPO, "AGENT_ORCHESTRATOR", token)).toBe("service");
+    expect(await github.variableWith(REPO, "AGENT_SETUP", token)).toBe("npm ci");
+    expect(await github.variableWith(REPO, "AGENT_VERIFY", token)).toBeUndefined();
+    expect(await github.labelsWith(REPO, token)).toEqual(["agent:review", "bug"]);
+    expect(await github.entriesWith(REPO, "", token)).toEqual([
+      { name: "CONTEXT.md", type: "file" },
+      { name: ".github", type: "dir" },
+    ]);
+    expect(await github.entriesWith(REPO, ".github/workflows", token)).toEqual([{ name: "pr.yml", type: "file" }]);
+    expect(await github.entriesWith(REPO, "docs", token)).toBeUndefined();
+    expect(await github.fileWith(REPO, ".github/workflows/pr.yml", token)).toBe("on: push\n");
+
+    expect(minted).toEqual([FLEET_PERMISSIONS]);
+    const reads = requests.filter((request) => !request.path.endsWith("/access_tokens"));
+    expect(reads.length).toBeGreaterThan(0);
+    for (const request of reads.filter((request) => request.path !== `/repos/${REPO}/installation`)) {
+      expect(request).toMatchObject({ method: "GET", authorization: "Bearer ghs_reader" });
+    }
+    expect(requests.filter((request) => request.method !== "GET").map((request) => request.path)).toEqual(["/app/installations/1/access_tokens"]);
+  });
+
+  it("throws where a file or a folder is refused, naming what and the status", async () => {
+    world.failing = { path: /\/contents/, status: 403 };
+    const github = liveAppGitHub("1", KEY);
+
+    await expect(github.entriesWith(REPO, "", "t")).rejects.toThrow("listing the root of owner/repo answered 403");
+    await expect(github.fileWith(REPO, ".github/workflows/pr.yml", "t")).rejects.toThrow("reading .github/workflows/pr.yml on owner/repo answered 403");
   });
 });

@@ -37,6 +37,7 @@ import {
   type Job,
 } from "../../service/job.js";
 import { openState, serialiseState, type StateFiles } from "../../service/dispatcher-state.js";
+import { checkFleet, type FleetGitHub } from "../../service/fleet-check.js";
 import { admit, heldDoor, jobDoor, lanes } from "../../service/worker.js";
 import { STUB_LABELS } from "../../shared/follow-up-plan.js";
 import type { LabelSpec } from "../../shared/loop-labels.js";
@@ -737,6 +738,41 @@ describe("the accounts the dispatcher serves", () => {
     s.repository.account = "another";
 
     expect((await deliver(s, labelled())).outcome).toMatch(/^dispatched owner\/repo#7/);
+  });
+
+  /**
+   * The fleet check (#825) checks the repositories of the accounts the
+   * dispatcher serves, by the dispatcher's own rule, so for one App owner,
+   * one `EXTRA_OWNERS` and one installation's account both give one answer.
+   */
+  it.each([
+    ["Owner", "", "owner"],
+    ["owner", "", "OWNER"],
+    ["owner", " partner , ,Another ", "another"],
+    ["owner", " partner , ,Another ", "Partner"],
+    ["owner", " partner , ,Another ", "stranger"],
+    ["owner", "", "partner"],
+    ["owner", "own", "owner-two"],
+  ])("serves, or refuses, an account as the fleet check does: owner %j, EXTRA_OWNERS %j, account %j", async (appOwner, extra, account) => {
+    const s = setup({ owners: [appOwner, ...parseOwners(extra)] });
+    s.repository.account = account;
+    const dispatcherServes = !(await deliver(s, labelled())).outcome.includes("neither the App's owner nor an account EXTRA_OWNERS lists");
+
+    const fleet: FleetGitHub = {
+      app: async () => ({ slug: "loop-app", owner: appOwner, permissions: {}, events: [] }),
+      installations: async () => [account],
+      repositories: async () => [],
+      mint: async () => ({ token: "t", expiresAt: "2099-01-01T00:00:00Z" }),
+      variableWith: async () => undefined,
+      labelsWith: async () => [],
+      entriesWith: async () => undefined,
+      fileWith: async () => "",
+    };
+    let out = "";
+    await checkFleet({ github: fleet, extraOwners: parseOwners(extra), stdout: (text) => (out += text) });
+    const fleetServes = !out.includes(`${account}: not served`);
+
+    expect(fleetServes).toBe(dispatcherServes);
   });
 
   it("reads an empty setting as no extra owner", () => {

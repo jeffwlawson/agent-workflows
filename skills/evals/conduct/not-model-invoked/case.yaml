@@ -1,0 +1,6 @@
+schema_version: "1.1"
+name: not-model-invoked
+context:
+  scaffold_script: place-files.sh
+expected_outcome: |
+  Answers the question from the record without invoking the conduct skill, which only the maintainer's /conduct starts, and writes nothing to GitHub.

@@ -7,7 +7,7 @@ and `triage-labels.md` would lose everything below its mapping table (`docs/ADOP
 [`ticket-shape.md`](./ticket-shape.md) is the exception: loop doctrine, hand-written,
 never regenerated.
 
-The loop's own skills, `issues-to-prd` and `merge-check`, live in [`skills/`](../../skills/README.md),
+The loop's own skills, `conduct`, `issues-to-prd` and `merge-check`, live in [`skills/`](../../skills/README.md),
 outside the package. They read `CONTEXT.md` and `docs/agents/` from the release a repository pins,
 so a change to how those files describe the PRD shape, briefs or blocking is a change to what the
 skills do once it is released.

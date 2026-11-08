@@ -159,4 +159,12 @@ describe("wait-until", () => {
     expect(stderr).toContain("the predicate does not compile");
     expect(calls).toEqual([]);
   });
+
+  it("stops on the first poll where the predicate errors, rather than waiting out the bound", () => {
+    const { status, stderr, lines } = run("wait-until", ["5", '.[0].labels | startswith("agent:")', "801"], { EVERY: "1" });
+    expect(status).toBe(2);
+    expect(stderr).toContain("the predicate failed on this snapshot");
+    expect(stderr).toContain('"n":801');
+    expect(lines).toHaveLength(1);
+  });
 });

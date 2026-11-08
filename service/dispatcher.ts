@@ -16,6 +16,7 @@ import {
 import { ADVISORY_LABELS, labelWrites, STATE_LABELS, TRIGGER_LABELS, type LabelSpec } from "../shared/loop-labels.js";
 import { newestResumeNote } from "../shared/usage-limit.js";
 import type { DispatcherState, StateStore } from "./dispatcher-state.js";
+import type { FleetDefault } from "./settings.js";
 import {
   parseHeld,
   parseTokenRequest,
@@ -190,6 +191,13 @@ export type WorkerPost = (body: string, headers: Readonly<Record<string, string>
 /** The worker's held door: posts the signed body, and answers with the worker's status and body. */
 export type WorkerQuery = (body: string, headers: Readonly<Record<string, string>>) => Promise<{ readonly status: number; readonly body: string }>;
 
+/**
+ * The dispatcher's fleet defaults (#824): a value for each repository variable
+ * a job takes where the repository has no variable of that name. An empty one
+ * is none.
+ */
+export type FleetDefaults = Readonly<Partial<Record<FleetDefault, string>>>;
+
 export interface DispatcherEdges {
   readonly github: AppGitHub;
   readonly postJob: WorkerPost;
@@ -241,6 +249,8 @@ export interface DispatcherEdges {
    * memory only. What it held is read here, once, before the first scan.
    */
   readonly state?: StateStore;
+  /** The fleet defaults its settings hold (#824); `undefined` is none. */
+  readonly fleetDefaults?: FleetDefaults;
 }
 
 /** A request as either door received it: its headers, lower-cased, and its raw body. */
@@ -648,18 +658,26 @@ export const parseOwners = (setting: string): readonly string[] =>
     .map((owner) => owner.trim())
     .filter((owner) => owner !== "");
 
-export const createDispatcher = (edges: DispatcherEdges) => {
-  const now = edges.now ?? (() => new Date());
-  // GitHub's logins are case-insensitive, so the comparison is too.
-  const owners = new Set(edges.owners.map((owner) => owner.toLowerCase()));
-  /**
-   * Why an installation on `account` is not served, or `undefined` where it
-   * is: on the App's owner's account, or one the settings list.
-   */
-  const foreign = (account: string): string | undefined =>
-    owners.has(account.toLowerCase())
+/**
+ * **Which accounts the service serves**: given the accounts it serves (the
+ * App's owner and the ones `EXTRA_OWNERS` lists), why an installation on
+ * `account` is not served, or `undefined` where it is. The dispatcher's rule,
+ * and the fleet check's (#825), so the fleet check checks the repositories
+ * the dispatcher serves and no other. GitHub's logins are case-insensitive,
+ * so the comparison is too.
+ */
+export const foreignAccount = (owners: readonly string[]): ((account: string) => string | undefined) => {
+  const served = new Set(owners.map((owner) => owner.toLowerCase()));
+  return (account) =>
+    served.has(account.toLowerCase())
       ? undefined
       : `the App's installation is on ${account}, which is neither the App's owner nor an account EXTRA_OWNERS lists`;
+};
+
+export const createDispatcher = (edges: DispatcherEdges) => {
+  const now = edges.now ?? (() => new Date());
+  /** Why an installation on an account is not served, or `undefined` where it is. */
+  const foreign = foreignAccount(edges.owners);
   const newId = edges.newId ?? randomUUID;
   const instance = edges.instance ?? randomUUID();
   const jobs = new Map<string, Dispatched>();
@@ -765,7 +783,8 @@ export const createDispatcher = (edges: DispatcherEdges) => {
 
   /**
    * Posts a job of `fields`' kind to the worker: the repository's variables
-   * read, and its deadline from its kind's own time limit.
+   * read, each falling back to the fleet default where the repository has
+   * none (#824), and its deadline from its kind's own time limit on them.
    *
    * A scan's job and a delivery's for the same item and kind are one job, not
    * two, where both answer the same label: one a delivery in flight carries
@@ -796,9 +815,24 @@ export const createDispatcher = (edges: DispatcherEdges) => {
         return `failed on ${where}: a redelivery, and the worker could not say which jobs it holds: ${message(error)}`;
       }
     }
+    // Each variable is the repository's own where it has one, whatever its
+    // value, else the fleet default, else empty (#824). Only the names that
+    // came from fleet defaults are logged, never their values.
+    const fleet: Readonly<Partial<Record<string, string>>> = edges.fleetDefaults ?? {};
+    const fromFleet: string[] = [];
     const variables = Object.fromEntries(
-      await Promise.all(REPOSITORY_VARIABLES.map(async (name) => [name, (await edges.github.variable(fields.repo, name)) ?? ""] as const)),
+      await Promise.all(
+        REPOSITORY_VARIABLES.map(async (name) => {
+          const own = await edges.github.variable(fields.repo, name);
+          if (own !== undefined) return [name, own] as const;
+          const fallback = fleet[name];
+          if (fallback === undefined || fallback === "") return [name, ""] as const;
+          fromFleet.push(name);
+          return [name, fallback] as const;
+        }),
+      ),
     ) as Record<RepositoryVariable, string>;
+    const fleetNote = fromFleet.length === 0 ? "" : `, with fleet defaults for ${REPOSITORY_VARIABLES.filter((name) => fromFleet.includes(name)).join(", ")}`;
     const minutes = TIME_LIMITS[fields.workflow](variables) + edges.deadlineMarginMinutes;
     const deadline = new Date(now().getTime() + minutes * 60_000);
     const job = { ...fields, id: newId(), version: edges.version, instance, deadline: deadline.toISOString(), appLogin: login, variables } as Job;
@@ -848,7 +882,7 @@ export const createDispatcher = (edges: DispatcherEdges) => {
     const held = jobs.get(job.id);
     if (held !== undefined) jobs.set(job.id, { ...held, posted: true });
     changed();
-    return `dispatched ${where}${at} as job ${job.id}, deadline ${job.deadline}`;
+    return `dispatched ${where}${at} as job ${job.id}, deadline ${job.deadline}${fleetNote}`;
   };
 
   /**

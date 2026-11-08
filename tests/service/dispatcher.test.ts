@@ -15,6 +15,7 @@ import {
   SERVICE_LABELS,
   TOKEN_PERMISSIONS,
   type AppGitHub,
+  type FleetDefaults,
   type Labelled,
   type WebhookDelivery,
 } from "../../service/dispatcher.js";
@@ -37,6 +38,7 @@ import {
   type Job,
 } from "../../service/job.js";
 import { openState, serialiseState, type StateFiles } from "../../service/dispatcher-state.js";
+import { checkFleet, type FleetGitHub } from "../../service/fleet-check.js";
 import { admit, heldDoor, jobDoor, lanes } from "../../service/worker.js";
 import { STUB_LABELS } from "../../shared/follow-up-plan.js";
 import type { LabelSpec } from "../../shared/loop-labels.js";
@@ -165,6 +167,8 @@ const setup = (
     workerAhead?: number;
     /** The disk the dispatcher's state file is on, kept across its restarts (#618); unset, it keeps its state in memory. */
     files?: ReturnType<typeof fakeFiles>;
+    /** The dispatcher's fleet defaults (#824); unset, it holds none. */
+    fleetDefaults?: FleetDefaults;
   } = {},
 ) => {
   const repository: Repository = {
@@ -350,6 +354,7 @@ const setup = (
       now: () => clock,
       newId: () => `job-${(ids += 1)}`,
       ...(options.files === undefined ? {} : { state: openState("STATE_FILE", STATE_PATH, options.files.files, (line) => lines.push(line)) }),
+      ...(options.fleetDefaults === undefined ? {} : { fleetDefaults: options.fleetDefaults }),
     });
   const s = {
     dispatcher: start(),
@@ -575,6 +580,49 @@ describe("the webhook door", () => {
     expect(job.deadline).toBe(new Date(START.getTime() + (CI_WAIT_SECONDS / 60 + 12 + MARGIN) * MINUTE_MS).toISOString());
   });
 
+  // #824: a repository's variable, else the dispatcher's fleet default, else the built-in default.
+  it("resolves each variable as the repository's own, else the fleet default, else empty", async () => {
+    const unset = setup({ fleetDefaults: { AGENT_MODEL: "fleet-model" } });
+    delete unset.repository.variables["AGENT_MODEL"];
+    expect((await dispatched(unset)).variables.AGENT_MODEL).toBe("fleet-model");
+
+    const set = setup({ fleetDefaults: { AGENT_MODEL: "fleet-model" } });
+    expect((await dispatched(set)).variables.AGENT_MODEL).toBe("a-model");
+
+    const neither = setup();
+    delete neither.repository.variables["AGENT_MODEL"];
+    expect((await dispatched(neither)).variables.AGENT_MODEL).toBe("");
+  });
+
+  it("lets a repository's variable that exists win over the fleet default, whatever its value, and passes over an empty fleet default", async () => {
+    const s = setup({ fleetDefaults: { AGENT_MODEL: "fleet-model", AGENT_EFFORT: "" } });
+    s.repository.variables["AGENT_MODEL"] = "";
+    const job = await dispatched(s);
+
+    expect(job.variables.AGENT_MODEL).toBe("");
+    expect(job.variables.AGENT_EFFORT).toBe("");
+  });
+
+  it("sets the deadline from a fleet default for AGENT_TIMEOUT_MINUTES as from the repository's own", async () => {
+    const fleet = await dispatched(setup({ fleetDefaults: { AGENT_TIMEOUT_MINUTES: "45" } }), labelled({ label: FIX_LABEL }));
+    const own = setup();
+    own.repository.variables["AGENT_TIMEOUT_MINUTES"] = "45";
+    const repository = await dispatched(own, labelled({ label: FIX_LABEL }));
+
+    expect(fleet.deadline).toBe(new Date(START.getTime() + (45 + MARGIN) * MINUTE_MS).toISOString());
+    expect(fleet.deadline).toBe(repository.deadline);
+  });
+
+  it("names in the dispatch's line the settings that came from fleet defaults, and none of their values", async () => {
+    const s = setup({ fleetDefaults: { AGENT_MODEL: "secret-fleet-model", AGENT_EFFORT_REVIEW: "secret-fleet-effort", AGENT_FIX_MIN_SEVERITY: "high" } });
+    delete s.repository.variables["AGENT_MODEL"];
+    const result = await deliver(s, labelled());
+
+    expect(result.outcome).toMatch(/^dispatched owner\/repo#7 .*, with fleet defaults for AGENT_MODEL, AGENT_EFFORT_REVIEW$/);
+    expect(result.outcome).not.toContain("secret-fleet");
+    expect(result.outcome).not.toContain("AGENT_FIX_MIN_SEVERITY");
+  });
+
   it("says so where the worker refuses the job, and mints nothing for it after", async () => {
     const s = setup({ workerStatus: 503 });
     const result = await deliver(s, labelled());
@@ -737,6 +785,41 @@ describe("the accounts the dispatcher serves", () => {
     s.repository.account = "another";
 
     expect((await deliver(s, labelled())).outcome).toMatch(/^dispatched owner\/repo#7/);
+  });
+
+  /**
+   * The fleet check (#825) checks the repositories of the accounts the
+   * dispatcher serves, by the dispatcher's own rule, so for one App owner,
+   * one `EXTRA_OWNERS` and one installation's account both give one answer.
+   */
+  it.each([
+    ["Owner", "", "owner"],
+    ["owner", "", "OWNER"],
+    ["owner", " partner , ,Another ", "another"],
+    ["owner", " partner , ,Another ", "Partner"],
+    ["owner", " partner , ,Another ", "stranger"],
+    ["owner", "", "partner"],
+    ["owner", "own", "owner-two"],
+  ])("serves, or refuses, an account as the fleet check does: owner %j, EXTRA_OWNERS %j, account %j", async (appOwner, extra, account) => {
+    const s = setup({ owners: [appOwner, ...parseOwners(extra)] });
+    s.repository.account = account;
+    const dispatcherServes = !(await deliver(s, labelled())).outcome.includes("neither the App's owner nor an account EXTRA_OWNERS lists");
+
+    const fleet: FleetGitHub = {
+      app: async () => ({ slug: "loop-app", owner: appOwner, permissions: {}, events: [] }),
+      installations: async () => [account],
+      repositories: async () => [],
+      mint: async () => ({ token: "t", expiresAt: "2099-01-01T00:00:00Z" }),
+      variableWith: async () => undefined,
+      labelsWith: async () => [],
+      entriesWith: async () => undefined,
+      fileWith: async () => "",
+    };
+    let out = "";
+    await checkFleet({ github: fleet, extraOwners: parseOwners(extra), stdout: (text) => (out += text) });
+    const fleetServes = !out.includes(`${account}: not served`);
+
+    expect(fleetServes).toBe(dispatcherServes);
   });
 
   it("reads an empty setting as no extra owner", () => {

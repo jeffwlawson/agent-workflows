@@ -289,15 +289,16 @@ const installArgs = (
 };
 
 /**
- * A process of the service orchestrator (PRD #453). It takes no arguments,
+ * A subcommand of the service orchestrator (PRD #453). It takes no arguments,
  * like a runner, and reads its settings from the environment, declared in
  * `service/settings.ts` and read here, so a missing one stops it at start,
- * naming every one missing. It starts, and the process then lives as long as
- * what it serves; a failure to start is reported through `fail()`.
+ * naming every one missing. A process starts, and then lives as long as what
+ * it serves; the fleet check (#825) ends, with an exit code. A failure to
+ * start is reported through `fail()`.
  */
 const serviceProcess = <P extends ServiceProcess>(
   name: P,
-  load: () => Promise<(settings: InputValues<(typeof SERVICE)[P]["settings"]>, stdout: (text: string) => void) => Promise<void>>,
+  load: () => Promise<(settings: InputValues<(typeof SERVICE)[P]["settings"]>, stdout: (text: string) => void) => Promise<number | void>>,
   summary: string,
 ): Subcommand => ({
   kind: "service",
@@ -307,7 +308,7 @@ const serviceProcess = <P extends ServiceProcess>(
     const start = await load();
     const settings = readInputs(SERVICE[name].settings);
     try {
-      await start(settings, io.stdout);
+      return await start(settings, io.stdout);
     } catch (error) {
       fail(error instanceof Error ? error.message : String(error));
     }
@@ -334,6 +335,11 @@ export const SUBCOMMANDS: Readonly<Record<string, Subcommand>> = {
     },
   },
   fix: runner("fix", () => import("./fix/fix.js")),
+  "fleet-check": serviceProcess(
+    "fleet-check",
+    async () => (await import("./service/fleet-check.js")).runFleetCheck,
+    "Check every repository the service's App serves, as `doctor` would, with the App's read tokens (read-only).",
+  ),
   "fix:gate": writingCommand(
     "fix:gate",
     async () => (await import("./fix/gate.js")).gate,
@@ -564,7 +570,7 @@ const usage = (): string => {
 Runners and commands for a GitHub Actions agent loop, invoked one per workflow
 step, plus the install path \`init\` and \`doctor\`, which you run by hand,
 and the service orchestrator's \`dispatcher\` and \`worker\`, which you
-deploy.
+deploy, and its \`fleet-check\`, which you run beside the dispatcher.
 
 Subcommands:
 ${commands}
@@ -572,7 +578,7 @@ ${commands}
 
 Exit codes:
   0  the command succeeded
-  1  the run failed, or \`doctor\` found something; the reason is on
+  1  the run failed, or \`doctor\` or \`fleet-check\` found something; the reason is on
      stderr, and in OUTPUT_DIR/failure_reason.txt where OUTPUT_DIR is set
   2  bad usage
 `;

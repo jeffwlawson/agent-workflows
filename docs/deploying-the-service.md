@@ -288,7 +288,8 @@ repository variables the service reads (`AGENT_MODEL`, `AGENT_MODEL_REVIEW`, `AG
 `AGENT_MODEL_UPDATE_BRANCH`, `AGENT_MODEL_IMPLEMENT`, `AGENT_MODEL_IMPLEMENT_PRD`, `AGENT_EFFORT`,
 `AGENT_EFFORT_REVIEW`, `AGENT_EFFORT_FIX`, `AGENT_EFFORT_UPDATE_BRANCH`, `AGENT_EFFORT_IMPLEMENT`,
 `AGENT_EFFORT_IMPLEMENT_PRD`, `AGENT_PROMPT_CACHE_TTL`, `AGENT_REVIEW_TIMEOUT_MINUTES`, `AGENT_TIMEOUT_MINUTES`, `AGENT_MAX_FIX_ROUNDS`, `AGENT_FIX_MIN_SEVERITY`, `AGENT_SETUP` and `AGENT_VERIFY`,
-each unset as empty), the App's login, a job id, a deadline and the package's version. An
+each the repository's own, else the dispatcher's fleet default, else empty: [*Fleet
+defaults*](#fleet-defaults), below), the App's login, a job id, a deadline and the package's version. An
 implement job and an implement-prd job each carry the issue's number, title and state, and the
 repository's default branch as its base, which stands in for the `default-branch` a caller hands
 `implement.yml` and `implement-prd.yml`; a setup-check job carries the same. A follow-ups job carries the pull request's number alone,
@@ -328,8 +329,72 @@ so does an App whose own record cannot be read, since that is where the App's ow
 | `REDELIVERY_INTERVAL_MINUTES` | optional | `5` | how many minutes apart the dispatcher lists the App's recent webhook deliveries and asks GitHub to send again each that failed (*What it does not keep*, below); it also does so at start. One list call each time, and a line only when it asks for a redelivery or the list cannot be read. At most `1440`, a day: more is refused at start, naming the setting. `0` turns the poll off |
 | `REDELIVERY_WINDOW_MINUTES` | optional | `30` | how many minutes back a failed delivery is redelivered; one older is left lost, so an event long past is never sent again. A positive whole number: `0` is refused at start |
 | `STATE_FILE` | optional | `""` | the path of the file the dispatcher keeps its dispatched jobs and the scan's counts in, so a restart keeps them (*What it does not keep*, below). Empty is none: both are held in memory only. A full disk, read-only mount or no permission at start warns once and runs from memory until a write succeeds (*What it does not keep*, below); any other error is refused at start, naming the setting. One dispatcher per file |
+| `AGENT_MODEL` | optional | `""` | a fleet default: the value a job's `AGENT_MODEL` takes where the repository has no such variable ([*Fleet defaults*](#fleet-defaults), below). Empty is none |
+| `AGENT_MODEL_REVIEW` | optional | `""` | a fleet default: the value a job's `AGENT_MODEL_REVIEW` takes where the repository has no such variable ([*Fleet defaults*](#fleet-defaults), below). Empty is none |
+| `AGENT_MODEL_FIX` | optional | `""` | a fleet default: the value a job's `AGENT_MODEL_FIX` takes where the repository has no such variable ([*Fleet defaults*](#fleet-defaults), below). Empty is none |
+| `AGENT_MODEL_UPDATE_BRANCH` | optional | `""` | a fleet default: the value a job's `AGENT_MODEL_UPDATE_BRANCH` takes where the repository has no such variable ([*Fleet defaults*](#fleet-defaults), below). Empty is none |
+| `AGENT_MODEL_IMPLEMENT` | optional | `""` | a fleet default: the value a job's `AGENT_MODEL_IMPLEMENT` takes where the repository has no such variable ([*Fleet defaults*](#fleet-defaults), below). Empty is none |
+| `AGENT_MODEL_IMPLEMENT_PRD` | optional | `""` | a fleet default: the value a job's `AGENT_MODEL_IMPLEMENT_PRD` takes where the repository has no such variable ([*Fleet defaults*](#fleet-defaults), below). Empty is none |
+| `AGENT_EFFORT` | optional | `""` | a fleet default: the value a job's `AGENT_EFFORT` takes where the repository has no such variable ([*Fleet defaults*](#fleet-defaults), below). Empty is none |
+| `AGENT_EFFORT_REVIEW` | optional | `""` | a fleet default: the value a job's `AGENT_EFFORT_REVIEW` takes where the repository has no such variable ([*Fleet defaults*](#fleet-defaults), below). Empty is none |
+| `AGENT_EFFORT_FIX` | optional | `""` | a fleet default: the value a job's `AGENT_EFFORT_FIX` takes where the repository has no such variable ([*Fleet defaults*](#fleet-defaults), below). Empty is none |
+| `AGENT_EFFORT_UPDATE_BRANCH` | optional | `""` | a fleet default: the value a job's `AGENT_EFFORT_UPDATE_BRANCH` takes where the repository has no such variable ([*Fleet defaults*](#fleet-defaults), below). Empty is none |
+| `AGENT_EFFORT_IMPLEMENT` | optional | `""` | a fleet default: the value a job's `AGENT_EFFORT_IMPLEMENT` takes where the repository has no such variable ([*Fleet defaults*](#fleet-defaults), below). Empty is none |
+| `AGENT_EFFORT_IMPLEMENT_PRD` | optional | `""` | a fleet default: the value a job's `AGENT_EFFORT_IMPLEMENT_PRD` takes where the repository has no such variable ([*Fleet defaults*](#fleet-defaults), below). Empty is none |
+| `AGENT_PROMPT_CACHE_TTL` | optional | `""` | a fleet default: the value a job's `AGENT_PROMPT_CACHE_TTL` takes where the repository has no such variable ([*Fleet defaults*](#fleet-defaults), below). Empty is none |
+| `AGENT_REVIEW_TIMEOUT_MINUTES` | optional | `""` | a fleet default: the value a job's `AGENT_REVIEW_TIMEOUT_MINUTES` takes where the repository has no such variable ([*Fleet defaults*](#fleet-defaults), below). Empty is none |
+| `AGENT_TIMEOUT_MINUTES` | optional | `""` | a fleet default: the value a job's `AGENT_TIMEOUT_MINUTES` takes where the repository has no such variable ([*Fleet defaults*](#fleet-defaults), below). Empty is none |
+| `AGENT_MAX_FIX_ROUNDS` | optional | `""` | a fleet default: the value a job's `AGENT_MAX_FIX_ROUNDS` takes where the repository has no such variable ([*Fleet defaults*](#fleet-defaults), below). Empty is none |
+| `AGENT_FIX_MIN_SEVERITY` | optional | `""` | a fleet default: the value a job's `AGENT_FIX_MIN_SEVERITY` takes where the repository has no such variable ([*Fleet defaults*](#fleet-defaults), below). Empty is none |
+| `AGENT_ORCHESTRATOR` | optional | `""` | never a fleet default: the repository's opt-in. Set, the dispatcher refuses to start, naming it |
+| `AGENT_SETUP` | optional | `""` | never a fleet default: the repository's own setup script, which only its admin sets. Set, the dispatcher refuses to start, naming it |
+| `AGENT_VERIFY` | optional | `""` | never a fleet default: the repository's own verify command, which only its admin sets. Set, the dispatcher refuses to start, naming it |
 
 Each door also answers `GET /health` with `200`.
+
+### Fleet defaults
+
+A fleet-wide choice, the model, effort, the time limits, the fix-round budget or the fix
+threshold, need not be one variable per repository (#824). The dispatcher's settings may hold a
+**fleet default** under a repository variable's own name, and for each job each variable resolves
+in this order:
+
+1. the repository's variable, where it exists, whatever its value, empty included;
+2. the dispatcher's fleet default, where it has one; one set but empty is none;
+3. the built-in default, as the job's runner applies it to an empty value.
+
+So a repository variable is an override, not a requirement. Set them where the dispatcher's other
+settings are set, in its environment: on Unraid, its `service.env` (*A worked example*, below).
+Nothing goes in `agent-service.conf`. A change takes effect when the dispatcher next starts with it in
+its environment; on Unraid, Docker reads `service.env` only when it creates the container, so a
+change there means a new container (*A worked example*, below).
+
+A fleet default is passed on exactly as the repository's own variable would have been: the job
+carries the resolved value in `variables`, its deadline is worked out from the resolved time
+limits, and the checks that run on a repository's value (a time limit, a severity, a budget) run
+on it unchanged. Nothing new validates it.
+
+The names a fleet default may take, `FLEET_DEFAULTS` in `service/settings.ts`, are every
+repository variable the service reads but the repository's own scripts:
+
+- `AGENT_MODEL`, `AGENT_MODEL_REVIEW`, `AGENT_MODEL_FIX`, `AGENT_MODEL_UPDATE_BRANCH`,
+  `AGENT_MODEL_IMPLEMENT`, `AGENT_MODEL_IMPLEMENT_PRD`;
+- `AGENT_EFFORT`, `AGENT_EFFORT_REVIEW`, `AGENT_EFFORT_FIX`, `AGENT_EFFORT_UPDATE_BRANCH`,
+  `AGENT_EFFORT_IMPLEMENT`, `AGENT_EFFORT_IMPLEMENT_PRD`;
+- `AGENT_PROMPT_CACHE_TTL`;
+- `AGENT_REVIEW_TIMEOUT_MINUTES`, `AGENT_TIMEOUT_MINUTES`;
+- `AGENT_MAX_FIX_ROUNDS`, `AGENT_FIX_MIN_SEVERITY`.
+
+A release that adds a repository variable adds it to this list. A name outside it is not a fleet
+default and is not read. Three names are the repository's alone, and the dispatcher **refuses to
+start** with any of them set, naming the setting and why:
+
+- `AGENT_ORCHESTRATOR`: the repository's opt-in to the service;
+- `AGENT_SETUP` and `AGENT_VERIFY`: the repository's own scripts, which only its admin sets.
+
+Where a setting came from is in the dispatcher's log, by name, never by value. At start it logs
+`fleet defaults:` and the names it holds, or `none`. Each dispatch's line ends `, with fleet
+defaults for` and the names a job took from them, where it took any.
 
 ### What it does not keep
 
@@ -834,7 +899,8 @@ container, as `upgrade.sh` asks it: the question names no dispatcher instance, s
 nothing for it, and the shared secret stays in the container. Each part it cannot reach (the
 container stopped, the worker down, no state file) is a line saying so, and the rest still
 answers. It changes nothing and prints no secret. `runs.sh` on the box says how the runs ended;
-`status.sh` says what is held now.
+`status.sh` says what is held now; and `fleet-check.sh`, beside them, says what `doctor` would of
+every repository the service serves (*The upgrade routine*, below).
 
 Every phase has a time limit, as every job on Actions does, so a hung agent cannot hold the queue.
 The gate, the checkout, the budget, the CI wait and the runner share the review's: 15 minutes of CI
@@ -871,7 +937,7 @@ job for its item.
 
 A repository's setup is its repository variable `AGENT_SETUP`: a script, the install and anything
 else its verify command needs, the same text a caller's `setup:` input holds on Actions. Only an
-admin can set it. The dispatcher reads it with the other variables and the job carries it; the
+admin can set it. It is never a fleet default ([*Fleet defaults*](#fleet-defaults)). The dispatcher reads it with the other variables and the job carries it; the
 worker hands it to the sandbox's shell through the environment, as written, and never splices it
 into a command line. Unset or empty, the setup is skipped. A fix job runs it after `fix:prepare`
 and before its runner, an implement job after `implement:prepare`, an implement-prd job after
@@ -1015,6 +1081,58 @@ Read from the environment. A missing required one stops the worker at start, nam
 | `AGENT_SANDBOX_PROXY` | optional | `""` | an `http:` URL with a host: the proxy every request from the sandbox leaves through, the only way out of the agent's sandbox, and, wherever it is set, of the repository's setup's (spec §3). **Required when `AGENT_SANDBOX` is `bwrap`**, the default: the worker refuses to start with it empty or not such a URL, and refuses an `https:` one, since the sandbox reaches the proxy by a loopback address its TLS certificate does not name. Inside, the proxy variables name a relay on the sandbox's loopback, as an `http:` URL keeping this one's user-info |
 
 The job door also answers `GET /health` with `200`.
+
+## The fleet check
+
+One box upgrade upgrades every repository the service serves at once (ADR 0012), so after one,
+check them as a set: the **fleet check** (#825) is `doctor` for every repository, from the
+service's side. Run it where the dispatcher runs, with the dispatcher's own settings, and no
+argument:
+
+```bash
+agent-workflows fleet-check
+```
+
+On the worked example's Unraid server that is `deploy/unraid/fleet-check.sh`, which runs it in the
+dispatcher's container (*A worked example*, below).
+
+**What it checks:** every repository of every installation the dispatcher serves, the App owner's
+and the ones `EXTRA_OWNERS` lists. One whose `AGENT_ORCHESTRATOR` is `service` gets `doctor`'s own
+rules for a repository on the service, read through the App's API instead of a checkout and `gh`:
+a caller pinned before `v0.8.3`, the guard that has the reusables skip, or a caller left installed;
+a caller's `setup:` where `AGENT_SETUP` is unset; a missing or retired label; and the domain model's
+file. To those it adds three of the service's own: `AGENT_SETUP` unset is a note, `AGENT_VERIFY`
+unset is a note naming the setup check (`agent:setup-check`) as what reads it, and a missing label
+is an error whose fix says the dispatcher's next scan creates it ([*The loop's labels*](#the-loops-labels)).
+Every one of those checks is answered with what the App's token reads, so none is skipped. `doctor`'s
+note that it cannot tell whether the App is installed is answered, and left out: the repository was
+reached through the App. The checks that are Actions' alone are not run, as `doctor` itself says of
+a repository on the service. Any other repository gets one line saying it is not on the service,
+and an installation on an account the dispatcher does not serve gets one line saying it is not
+checked.
+
+**What it prints:** one line per repository, its name and `ok` or its counts of errors and
+warnings, with each finding indented below it, errors first, in `doctor`'s words. A repository or
+an installation it cannot read is a line naming it and the reason, and the rest are still checked.
+It **exits** `0` where every repository was read and none has an error, `1` otherwise, and `2`
+given an argument.
+
+**Read-only.** Each repository is read with a token of its own, minted for it alone with Metadata,
+Variables, Issues and Contents, each read, all of which the App already holds
+([*Permissions*](#permissions)); it makes no write of any kind. It is not run on a schedule and
+opens no issue: a person runs it, and reads it.
+
+### Settings
+
+The dispatcher's own, those it needs, read from the environment, so in the dispatcher's container
+they are already set. A missing required one stops it, naming each. `tests/service/settings.test.ts`
+holds this table equal to `FLEET_CHECK` in `service/settings.ts`.
+
+| Setting | Kind | Default | Meaning |
+|---|---|---|---|
+| `GITHUB_APP_ID` | required | | the App's ID, as the dispatcher's |
+| `GITHUB_APP_PRIVATE_KEY_FILE` | required | | a path to the App's private key, in PEM, as the dispatcher's |
+| `EXTRA_OWNERS` | optional | `""` | the accounts, comma-separated, whose installations are checked besides the App owner's, as the dispatcher serves them |
 
 ## Restarts and outages
 
@@ -1254,6 +1372,24 @@ first. Its halves, `upgrade-unraid.sh` and
 `upgrade-box.sh`, each install a tarball they are handed and can still be run alone, to recover or
 roll back one machine. A release published before its tarball was attached to it cannot be rolled
 back to by script: none of these scripts installs a release without its tarball.
+
+**The upgrade routine** turns "every repository at once" into "every repository checked at once".
+After every upgrade of both:
+
+1. Upgrade: `bash /boot/config/agent-service/upgrade.sh <version>`, as above.
+2. Run the fleet check: `bash /boot/config/agent-service/fleet-check.sh`, as root on Unraid. It
+   runs `fleet-check` in the dispatcher's container with the settings already set there, so no
+   secret is printed, written or put on a command line, and takes no argument
+   ([*The fleet check*](#the-fleet-check)). Read each repository's line; a missing label is one
+   the dispatcher's next scan creates, so a restart of the dispatcher, or the next timed scan,
+   mends it.
+3. Add `agent:setup-check` to an open issue in each repository on the service, and read each
+   report ([*The setup check*](#the-setup-check)): it runs the repository's setup and its verify
+   command on the box, as a real job would.
+4. On a failure, roll back, `bash /boot/config/agent-service/upgrade.sh <earlier version>`, and
+   file an issue naming the release, the repository and what broke.
+
+The routine starts no setup check by itself; each is a label a person adds.
 
 **After a reboot the chain comes back on its own**, as #374 showed with the prototype, the same
 chain of units and scripts: the array

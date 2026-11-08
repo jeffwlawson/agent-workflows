@@ -1601,11 +1601,18 @@ export const readDomainModel = (dir: string): DomainModel | undefined => {
   } catch {
     return undefined;
   }
-  return {
-    context: entries.has(CONTEXT_FILE),
-    glossaries: GLOSSARY_FILES.filter((file) => entries.has(file)),
-  };
+  return domainModelOf(entries);
 };
+
+/**
+ * The domain model out of the names of the files at a repository's root,
+ * however they were listed: off a checkout by `readDomainModel`, or through
+ * the App's API by the service's fleet check (#825), so both rule on one fact.
+ */
+export const domainModelOf = (files: ReadonlySet<string>): DomainModel => ({
+  context: files.has(CONTEXT_FILE),
+  glossaries: GLOSSARY_FILES.filter((file) => files.has(file)),
+});
 
 /**
  * Rule on a repository served by the service orchestrator (#455). Every job
@@ -2004,7 +2011,8 @@ const nothingRead = (facts: RepoFacts): boolean =>
 
 const TAGS: Readonly<Record<Severity, string>> = { error: "FAIL", warning: "warn", note: "note" };
 
-const render = (finding: Finding): string =>
+/** One finding as `doctor` prints it, and as the service's fleet check prints it under its repository (#825). */
+export const render = (finding: Finding): string =>
   `${TAGS[finding.severity]}  ${finding.check}: ${finding.problem}\n` +
   `      fix: ${finding.fix}\n`;
 

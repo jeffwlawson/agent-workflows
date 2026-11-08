@@ -16,8 +16,9 @@ import {
   SERVICE_LABEL_SPECS,
   SERVICE_LABELS,
 } from "../service/dispatcher.js";
+import { runFleetCheck } from "../service/fleet-check.js";
 import { serveDispatcher, serveWorker } from "../service/serve.js";
-import { SERVICE } from "../service/settings.js";
+import { FLEET_DEFAULTS, REPOSITORY_ONLY, SERVICE } from "../service/settings.js";
 import { COMMANDS, RUNNERS } from "../shared/contract.js";
 import * as record from "../shared/record.js";
 import { SUBPROCESS_TIMEOUT } from "../vitest.config.js";
@@ -88,6 +89,8 @@ vi.mock("../review/gate.js", () => ({ gate: vi.fn() }));
 // And the service's two starts: the dispatcher's would listen on two ports,
 // and the worker's would install the agent's CLI and listen on one.
 vi.mock("../service/serve.js", () => ({ serveDispatcher: vi.fn(), serveWorker: vi.fn() }));
+// And the fleet check's, which would read the App's key and ask GitHub.
+vi.mock("../service/fleet-check.js", () => ({ runFleetCheck: vi.fn() }));
 
 /** Every write of a `failure_reason.txt` since the spy was last cleared. */
 const reasonsWritten = (): readonly unknown[] =>
@@ -454,11 +457,12 @@ describe("every subcommand is declared in the contract, as its kind", () => {
   /**
    * The install path, which a human types and which takes flags, and the
    * service orchestrator's processes (PRD #453), which are an orchestrator
-   * rather than a step one runs: in neither map, and the only subcommands that
+   * rather than a step one runs, with its fleet check (#825), which a person
+   * runs beside the dispatcher: in neither map, and the only subcommands that
    * are not. Another has to be added here on purpose.
    */
   const INSTALL_PATH = ["doctor", "init"];
-  const SERVICE_PROCESSES = ["dispatcher", "worker"];
+  const SERVICE_PROCESSES = ["dispatcher", "fleet-check", "worker"];
 
   const registered = (kind: string): string[] =>
     Object.entries(SUBCOMMANDS)
@@ -716,6 +720,63 @@ describe("the CLI starts the worker", () => {
   });
 });
 
+describe("the CLI runs the fleet check (#825)", () => {
+  class Exited extends Error {}
+  const SETTINGS = { GITHUB_APP_ID: "12345", GITHUB_APP_PRIVATE_KEY_FILE: "/app/app.pem" } as const;
+  const check = vi.mocked(runFleetCheck);
+  let exitCode: number | undefined;
+  let exit: MockInstance<typeof process.exit>;
+  let logged: MockInstance<typeof console.error>;
+
+  beforeEach(() => {
+    check.mockReset();
+    exitCode = undefined;
+    exit = vi.spyOn(process, "exit").mockImplementation(((code?: number) => {
+      exitCode = code;
+      throw new Exited();
+    }) as never);
+    logged = vi.spyOn(console, "error").mockImplementation(() => {});
+  });
+
+  afterEach(() => {
+    exit.mockRestore();
+    logged.mockRestore();
+  });
+
+  it.each([0, 1])("runs with the dispatcher's settings it needs, and exits with the check's code, %i", async (answer) => {
+    check.mockResolvedValue(answer);
+    const { code } = await invoke(["fleet-check"], { ...SETTINGS, EXTRA_OWNERS: "friend" });
+
+    expect(code).toBe(answer);
+    expect(check).toHaveBeenCalledWith({ ...SETTINGS, EXTRA_OWNERS: "friend" }, expect.any(Function));
+  });
+
+  it("refuses an argument with 2, checking nothing", async () => {
+    const { code, err } = await invoke(["fleet-check", "owner/repo"], SETTINGS);
+
+    expect(code).toBe(2);
+    expect(err).toContain("`fleet-check` takes no arguments, but got: owner/repo");
+    expect(check).not.toHaveBeenCalled();
+  });
+
+  it("refuses to run without the App's ID and key, naming each", async () => {
+    await expect(invoke(["fleet-check"], {})).rejects.toThrow(Exited);
+
+    expect(exitCode).toBe(1);
+    expect(check).not.toHaveBeenCalled();
+    expect(logged).toHaveBeenCalledWith("\nFAILED: Missing required env vars: GITHUB_APP_ID, GITHUB_APP_PRIVATE_KEY_FILE");
+  });
+
+  it("turns a check that could not list what the App serves into fail(), with the reason", async () => {
+    check.mockRejectedValue(new Error("The fleet check could not list what the App serves: reading the App's installations answered 401"));
+
+    await expect(invoke(["fleet-check"], SETTINGS)).rejects.toThrow(Exited);
+
+    expect(exitCode).toBe(1);
+    expect(logged).toHaveBeenCalledWith("\nFAILED: The fleet check could not list what the App serves: reading the App's installations answered 401");
+  });
+});
+
 describe("the CLI starts the dispatcher", () => {
   class Exited extends Error {}
   const SETTINGS = {
@@ -746,7 +807,7 @@ describe("the CLI starts the dispatcher", () => {
   });
 
   it("starts with its declared settings, an optional one unset read as its default", async () => {
-    const { code } = await invoke(["dispatcher"], { ...SETTINGS, TOKEN_PORT: "9001" });
+    const { code } = await invoke(["dispatcher"], { ...SETTINGS, TOKEN_PORT: "9001", AGENT_MODEL: "a-fleet-model" });
 
     expect(code).toBe(0);
     expect(start).toHaveBeenCalledWith(
@@ -764,6 +825,9 @@ describe("the CLI starts the dispatcher", () => {
         REDELIVERY_INTERVAL_MINUTES: "5",
         REDELIVERY_WINDOW_MINUTES: "30",
         STATE_FILE: "",
+        // #824: the fleet defaults, and the names it refuses as one, each read.
+        ...Object.fromEntries([...FLEET_DEFAULTS, ...Object.keys(REPOSITORY_ONLY)].map((name) => [name, ""])),
+        AGENT_MODEL: "a-fleet-model",
       },
       expect.any(Function),
     );
@@ -999,6 +1063,7 @@ describe("a test runs a subcommand with exactly the inputs it gives", () => {
     expect(declaredInputs("doctor")).toEqual([]);
     expect(declaredInputs("dispatcher")).toEqual(Object.keys(SERVICE.dispatcher.settings));
     expect(declaredInputs("worker")).toEqual(Object.keys(SERVICE.worker.settings));
+    expect(declaredInputs("fleet-check")).toEqual(Object.keys(SERVICE["fleet-check"].settings));
     expect(declaredInputs("review:publish")).toEqual(Object.keys(COMMANDS["review:publish"].inputs));
     expect(declaredInputs("implement")).toEqual(Object.keys(RUNNERS.implement.inputs));
   });

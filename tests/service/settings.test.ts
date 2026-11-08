@@ -2,8 +2,8 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import { describe, expect, it } from "vitest";
 import { SERVICE_APP_EVENTS, SERVICE_APP_PERMISSIONS } from "../../service/dispatcher.js";
-import { TOKEN_KINDS } from "../../service/job.js";
-import { DISPATCHER, WORKER } from "../../service/settings.js";
+import { REPOSITORY_VARIABLES, TOKEN_KINDS } from "../../service/job.js";
+import { DISPATCHER, FLEET_CHECK, FLEET_DEFAULTS, REPOSITORY_ONLY, WORKER } from "../../service/settings.js";
 import type { Inputs } from "../../shared/contract.js";
 
 /**
@@ -57,6 +57,27 @@ describe("the deployment guide's dispatcher settings", () => {
   });
 });
 
+// #824: a fleet default may take every repository variable's name the service
+// reads, but the repository's own scripts, and the dispatcher reads each.
+describe("the dispatcher's fleet defaults", () => {
+  const section = sectionsOf(sectionsOf(GUIDE, 2).get("The dispatcher") ?? "", 3).get("Fleet defaults") ?? "";
+  const listed = (intro: RegExp): readonly string[] =>
+    [...((intro.exec(section)?.[1] ?? "").matchAll(/`([A-Z_]+)`/g))].map((match) => match[1] ?? "");
+
+  it("are every repository variable the service reads but AGENT_SETUP and AGENT_VERIFY", () => {
+    expect([...FLEET_DEFAULTS]).toEqual(REPOSITORY_VARIABLES.filter((name) => name !== "AGENT_SETUP" && name !== "AGENT_VERIFY"));
+  });
+
+  it("are each an optional setting of the dispatcher's, empty where unset, as is each name it refuses", () => {
+    for (const name of [...FLEET_DEFAULTS, ...Object.keys(REPOSITORY_ONLY)]) expect(DISPATCHER).toHaveProperty(name, { required: false, default: "" });
+  });
+
+  it("are listed in the guide's Fleet defaults section, every one and no other, with the three it refuses", () => {
+    expect(listed(/repository\svariable\sthe\sservice\sreads\sbut\sthe\srepository's\sown\sscripts:\n\n((?:- .*\n(?: {2}.*\n)*)+)/)).toEqual([...FLEET_DEFAULTS]);
+    expect(listed(/refuses\sto\sstart\*\*\swith\sany\sof\sthem\sset,\snaming\sthe\ssetting\sand\swhy:\n\n((?:- .*\n(?: {2}.*\n)*)+)/)).toEqual(Object.keys(REPOSITORY_ONLY));
+  });
+});
+
 describe("the deployment guide's worker settings", () => {
   const table = rowsOf(sectionsOf(sectionsOf(GUIDE, 2).get("The worker") ?? "", 3).get("Settings") ?? "");
 
@@ -66,6 +87,22 @@ describe("the deployment guide's worker settings", () => {
 
   it("lists every setting the worker declares, and no other, each as required or optional as declared", () => {
     expect(new Map([...table].sort())).toEqual(new Map([...kindOf(WORKER)].sort()));
+  });
+});
+
+describe("the deployment guide's fleet check settings (#825)", () => {
+  const table = rowsOf(sectionsOf(sectionsOf(GUIDE, 2).get("The fleet check") ?? "", 3).get("Settings") ?? "");
+
+  it("finds the table", () => {
+    expect(table.size).toBeGreaterThan(0);
+  });
+
+  it("lists every setting the fleet check declares, and no other, each as required or optional as declared", () => {
+    expect(new Map([...table].sort())).toEqual(new Map([...kindOf(FLEET_CHECK)].sort()));
+  });
+
+  it("reads only settings the dispatcher has, so its container already holds them", () => {
+    for (const [name, setting] of Object.entries(FLEET_CHECK)) expect(DISPATCHER).toHaveProperty(name, setting);
   });
 });
 

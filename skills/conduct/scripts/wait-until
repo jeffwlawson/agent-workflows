@@ -11,8 +11,9 @@
 #
 # Prints its pid first, so it is stopped with `kill <pid>`; then one line per item whose snapshot
 # changed, and nothing on a poll where none did; then MATCH or TIMEOUT with the time and the last
-# snapshot. Exit 0 on MATCH, 1 on TIMEOUT, 2 on bad usage (a predicate that fails to compile, or
-# that errors on a snapshot rather than yielding false), 3 after five polls in a row failed.
+# snapshot. A predicate that yields false, null or nothing has not matched yet. Exit 0 on MATCH, 1 on
+# TIMEOUT, 2 on bad usage (a predicate that fails to compile, or that errors on a snapshot), 3 after
+# five polls in a row failed.
 set -u
 [ $# -ge 3 ] || { echo "usage: wait-until <minutes> '<jq predicate>' <number>..." >&2; exit 2; }
 minutes=$1 predicate=$2; shift 2
@@ -43,7 +44,7 @@ while :; do
     err=$(jq -se "$predicate" 2>&1 >/dev/null <<<"$out")
     case $? in
       0) echo "MATCH $(now)"; printf '%s\n' "${current[@]}"; exit 0;;
-      1) ;; # false or null: no match yet
+      1|4) ;; # false, null, or no output (a select that matched nothing): no match yet
       *) echo "wait-until: the predicate failed on this snapshot, so it would never match: $err" >&2
          printf '%s\n' "${current[@]}" >&2; exit 2;;
     esac

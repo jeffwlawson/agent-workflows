@@ -160,6 +160,12 @@ describe("wait-until", () => {
     expect(calls).toEqual([]);
   });
 
+  it("reads a predicate that yields nothing as no match yet", () => {
+    const { status, lines } = run("wait-until", ["0", '.[] | select(.verdict.state == "success")', "801"], { EVERY: "1" });
+    expect(status).toBe(1);
+    expect(lines[1]).toMatch(/^TIMEOUT /);
+  });
+
   it("stops on the first poll where the predicate errors, rather than waiting out the bound", () => {
     const { status, stderr, lines } = run("wait-until", ["5", '.[0].labels | startswith("agent:")', "801"], { EVERY: "1" });
     expect(status).toBe(2);

@@ -195,6 +195,22 @@ const encodeProjectPath = (cwd: string): string => cwd.replace(/[\\/]+$/, "").re
  * time, so the session paths line up. It also writes the host-side copy
  * Sandcastle checks for before resuming.
  */
+/**
+ * Claude Code's user settings in the sandbox's home, which starts empty. They
+ * blank the attribution Claude adds by default, the `Co-Authored-By: Claude`
+ * trailer on a commit and the "Generated with Claude Code" line on a pull
+ * request: the loop's work goes out under its own git identity, and a vendor
+ * credit is not the owner's to carry. User scope, so a repository's own
+ * `.claude/settings.json` still decides for itself.
+ */
+export const CLAUDE_SETTINGS = { attribution: { commit: "", pr: "" } } as const;
+
+const writeClaudeSettings = async (root: string): Promise<void> => {
+  const dir = path.join(root, "home", ".claude");
+  await mkdir(dir, { recursive: true });
+  await writeFile(path.join(dir, "settings.json"), `${JSON.stringify(CLAUDE_SETTINGS, null, 2)}\n`);
+};
+
 export const bwrap = (settings: BwrapSettings) => {
   let sessionStore: string | undefined;
 
@@ -220,6 +236,7 @@ export const bwrap = (settings: BwrapSettings) => {
       const root = await realpath(await mkdtemp(path.join(tmpdir(), "bwrap-job-")));
       await mkdir(path.join(root, "home", "workspace"), { recursive: true });
       await mkdir(path.join(root, "tmp"), { recursive: true });
+      await writeClaudeSettings(root);
       if (sessionStore !== undefined) await cp(sessionStore, sessionsIn(root), { recursive: true });
       // Copied, never linked, from the checkout: what the agent changes stays
       // in the sandbox. A symlink is copied as the link it is, never followed,

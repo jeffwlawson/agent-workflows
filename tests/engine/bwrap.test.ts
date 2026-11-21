@@ -5,7 +5,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { bwrapArgs } from "../../engine/bwrap-args.js";
-import { assertHostTarget, bwrap, CARRY_HOOKS, carriable, excludePattern, toHost, untrackedPaths } from "../../engine/bwrap.js";
+import { assertHostTarget, bwrap, CARRY_HOOKS, CLAUDE_SETTINGS, carriable, excludePattern, toHost, untrackedPaths } from "../../engine/bwrap.js";
 import { RELAY_PORT } from "../../engine/proxy-relay.js";
 import { SUBPROCESS_TIMEOUT } from "../../vitest.config.js";
 
@@ -193,6 +193,20 @@ describe("copyFileOut", () => {
  * one carries it from the run that wrote it to the next: kept on close, seeded
  * into the next sandbox, and copied to where Sandcastle looks on the host.
  */
+describe("Claude Code's settings in the sandbox's home", () => {
+  it("blank its commit and pull-request attribution, and are the host's nothing", async () => {
+    const h = await create();
+    try {
+      const settings = await hostOf(h, "/home/agent/.claude/settings.json");
+      expect(JSON.parse(fs.readFileSync(settings, "utf8"))).toEqual({ attribution: { commit: "", pr: "" } });
+      expect(CLAUDE_SETTINGS).toEqual({ attribution: { commit: "", pr: "" } });
+      expect(fs.existsSync(path.join(home, ".claude", "settings.json"))).toBe(false);
+    } finally {
+      await h.close();
+    }
+  });
+});
+
 describe("the session, between a runner's two passes", () => {
   it("is seeded into the next sandbox of the same provider, and copied where Sandcastle looks for it", async () => {
     const sessions = provider();
